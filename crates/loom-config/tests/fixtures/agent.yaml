@@ -1,0 +1,66 @@
+version: 1
+
+allowed_roots:
+- ~/src
+- ~/work
+
+relay:
+  enabled: true
+  url: wss://relay.example.com
+  cloudflare_access:
+    client_id_env: LOOM_CF_ACCESS_CLIENT_ID
+    client_secret_env: LOOM_CF_ACCESS_CLIENT_SECRET
+
+socket:
+  dir: null
+
+storage:
+  data_dir: ~/.local/share/loom
+
+lifecycle:
+  default_workspace: ~/src
+
+instructions:
+  max_bytes: 64KiB
+
+llm:
+  default_model: openai/gpt-5
+  providers:
+    openai:
+      auth: chatgpt
+    openai-codex:
+      auth: codex_oauth
+
+tools:
+  read:
+    max_lines: 2000
+    max_bytes: 50KiB
+  shell:
+    program: /bin/bash
+    timeout: 10m
+    pty: false
+
+policy:
+  default: ask
+  rules:
+  - tool: read
+    action: allow
+  - tool: shell
+    command_prefix: ["git status", "git diff", "cargo check", "cargo test"]
+    action: allow
+  - tool: shell
+    command_prefix: ["rm -rf /", "sudo"]
+    action: deny
+
+sandbox:
+  backend: landlock
+  network: false
+  max_output: 1MiB
+
+context:
+  max_tool_output_tokens: 8000
+  compaction_threshold: 0.8
+
+logging:
+  level: info
+
