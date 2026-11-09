@@ -1,0 +1,24 @@
+[package]
+name = "loom-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+nix = { version = "0.31.3", features = ["signal", "process"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+similar = "3.2.1"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+tokio-util = "0.7.20"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
