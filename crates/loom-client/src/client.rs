@@ -472,6 +472,38 @@ impl Client {
         }
     }
 
+    pub async fn rename_session(
+        &self,
+        session: &SessionId,
+        title: Option<String>,
+    ) -> Result<SessionInfo> {
+        self.session(Command::RenameSession {
+            session: session.clone(),
+            title,
+        })
+        .await
+    }
+
+    pub async fn list_directory(&self, path: &str) -> Result<loom_proto::DirectoryListing> {
+        let command = Command::ListDirectory {
+            path: path.to_string(),
+        };
+        match self.request(command).await? {
+            Payload::Directory(listing) => Ok(listing),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn read_file(&self, path: &str) -> Result<loom_proto::FileContent> {
+        let command = Command::ReadFile {
+            path: path.to_string(),
+        };
+        match self.request(command).await? {
+            Payload::FileContent(content) => Ok(content),
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub async fn workspace_changes(&self) -> Result<loom_proto::WorkspaceChanges> {
         match self.request(Command::GetWorkspaceChanges).await? {
             Payload::WorkspaceChanges(changes) => Ok(changes),
