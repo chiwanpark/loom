@@ -396,6 +396,13 @@ impl Client {
         .await
     }
 
+    pub async fn delete_session(&self, session: &SessionId) -> Result<()> {
+        self.ok(Command::DeleteSession {
+            session: session.clone(),
+        })
+        .await
+    }
+
     pub async fn archive_session(
         &self,
         session: &SessionId,
