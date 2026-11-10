@@ -25,6 +25,7 @@ fn kinds(events: &[loom_proto::SequencedEvent]) -> Vec<&'static str> {
             SessionEvent::TurnFinished { .. } => "turn",
             SessionEvent::Warning { .. } => "warning",
             SessionEvent::Error { .. } => "error",
+            SessionEvent::ContextCompacted { .. } => "compacted",
         })
         .collect()
 }

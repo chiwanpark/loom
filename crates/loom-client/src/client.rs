@@ -439,6 +439,13 @@ impl Client {
         .await
     }
 
+    pub async fn metrics(&self) -> Result<loom_proto::AgentMetrics> {
+        match self.request(Command::GetMetrics).await? {
+            Payload::Metrics(metrics) => Ok(metrics),
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub async fn host_key(&self) -> Result<loom_proto::HostKeyInfo> {
         match self.request(Command::GetHostKey).await? {
             Payload::HostKey(info) => Ok(info),

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::error::{CoreError, Result};
+use crate::metrics::Metrics;
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::session::{Session, SessionParams};
 use crate::store::{EventStore, store_path};
@@ -28,6 +29,7 @@ pub struct AgentOptions {
     pub http: Option<HttpClient>,
     pub providers: Vec<Arc<dyn LlmProvider>>,
     pub persist: bool,
+    pub sandbox_exe: Option<PathBuf>,
 }
 
 impl AgentOptions {
@@ -39,6 +41,7 @@ impl AgentOptions {
             http: None,
             providers: Vec::new(),
             persist: true,
+            sandbox_exe: None,
         }
     }
 }
@@ -48,10 +51,12 @@ struct Inner {
     dirs: Dirs,
     auth: Auth,
     overrides: Vec<Arc<dyn LlmProvider>>,
+    sandbox_exe: Option<PathBuf>,
     runtime: RuntimeCell,
     sessions: Mutex<BTreeMap<SessionId, Session>>,
     notices: broadcast::Sender<AgentNotice>,
     store: Option<EventStore>,
+    metrics: Arc<Metrics>,
 }
 
 #[derive(Clone)]
@@ -91,7 +96,12 @@ impl Agent {
         let store = CredentialStore::in_dir(&data_dir(&options.config, &options.dirs));
         let auth = Auth::new(store, http);
         let data = data_dir(&options.config, &options.dirs);
-        let runtime = Runtime::build(options.config, &auth, &options.providers)?;
+        let runtime = Runtime::build(
+            options.config,
+            &auth,
+            &options.providers,
+            options.sandbox_exe.as_deref(),
+        )?;
         let (notices, _) = broadcast::channel(64);
         let (store, stored) = if options.persist {
             let path = store_path(&data, workspace.root());
@@ -111,10 +121,12 @@ impl Agent {
                 dirs: options.dirs,
                 auth,
                 overrides: options.providers,
+                sandbox_exe: options.sandbox_exe,
                 runtime: RuntimeCell::new(runtime),
                 sessions: Mutex::new(BTreeMap::new()),
                 notices,
                 store,
+                metrics: Arc::new(Metrics::default()),
             }),
         };
         for stored in stored {
@@ -131,6 +143,7 @@ impl Agent {
             system_agents_md: self.inner.dirs.system_agents_md(),
             model,
             store: self.inner.store.clone(),
+            metrics: self.inner.metrics.clone(),
         }
     }
 
@@ -173,7 +186,12 @@ impl Agent {
         next.socket = current.socket.clone();
         next.storage = current.storage.clone();
         next.lifecycle = current.lifecycle.clone();
-        let runtime = Runtime::build(next, &self.inner.auth, &self.inner.overrides)?;
+        let runtime = Runtime::build(
+            next,
+            &self.inner.auth,
+            &self.inner.overrides,
+            self.inner.sandbox_exe.as_deref(),
+        )?;
         self.inner.runtime.replace(runtime);
         self.notify(AgentNotice::ConfigReloaded {
             restart_required: restart.clone(),
@@ -197,6 +215,18 @@ impl Agent {
             .get(id)
             .cloned()
             .ok_or_else(|| CoreError::UnknownSession(id.0.clone()))
+    }
+
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.inner.metrics
+    }
+
+    pub fn metrics_snapshot(&self) -> loom_proto::AgentMetrics {
+        let sessions = self.sessions();
+        let busy = sessions.iter().filter(|s| s.is_busy()).count();
+        self.inner
+            .metrics
+            .snapshot(sessions.len() as u64, busy as u64)
     }
 
     pub fn list_sessions(&self) -> Vec<SessionInfo> {

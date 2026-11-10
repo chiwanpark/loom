@@ -338,6 +338,13 @@ fn render(note: Notification, streamed: &mut bool) -> Option<Approval> {
             SessionEvent::Error { message } => {
                 let _ = writeln!(out, "[error] {message}");
             }
+            SessionEvent::ContextCompacted {
+                removed_messages,
+                summarized,
+            } => {
+                let how = if summarized { "summarized" } else { "trimmed" };
+                let _ = writeln!(out, "[context {how}: {removed_messages} messages]");
+            }
         },
         Notification::LoginFinished { result, .. } => match result {
             Ok(account) => {

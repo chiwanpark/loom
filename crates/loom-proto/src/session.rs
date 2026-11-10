@@ -180,6 +180,10 @@ pub enum SessionEvent {
     Error {
         message: String,
     },
+    ContextCompacted {
+        removed_messages: u32,
+        summarized: bool,
+    },
 }
 
 impl SessionEvent {

@@ -45,6 +45,7 @@ fn protocol_error(message: &str) -> ApiError {
 
 impl Connection {
     pub fn new(agent: Agent, info: AgentInfo, out: mpsc::Sender<ServerMessage>) -> Self {
+        agent.metrics().connection_opened();
         Self {
             agent,
             info,
@@ -276,6 +277,7 @@ impl Connection {
         let llm = |e: loom_llm::LlmError| convert::llm_error(&e);
         match command {
             Command::GetAgentInfo => Ok(Payload::AgentInfo(self.agent_info())),
+            Command::GetMetrics => Ok(Payload::Metrics(agent.metrics_snapshot())),
             Command::ListProviders => {
                 let runtime = agent.runtime();
                 let statuses = agent.auth().status().await.map_err(llm)?;
@@ -382,6 +384,7 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        self.agent.metrics().connection_closed();
         self.terminals.close_all();
         for (_, task) in self.subscriptions.drain() {
             task.abort();

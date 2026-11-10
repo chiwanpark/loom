@@ -165,6 +165,7 @@ pub enum Command {
         label: String,
     },
     GetHostKey,
+    GetMetrics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +183,25 @@ pub enum Payload {
     Terminal(TerminalId),
     HostKey(HostKeyInfo),
     Clients(Vec<AuthorizedClient>),
+    Metrics(AgentMetrics),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMetrics {
+    pub uptime_secs: u64,
+    pub sessions: u64,
+    pub busy_sessions: u64,
+    pub connections: u64,
+    pub connections_total: u64,
+    pub turns_completed: u64,
+    pub turns_failed: u64,
+    pub turns_interrupted: u64,
+    pub tool_calls: u64,
+    pub tool_errors: u64,
+    pub approvals: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub compactions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

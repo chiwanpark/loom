@@ -16,10 +16,12 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::compaction;
 use crate::convert;
 use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
 use crate::instructions::{PromptInputs, build_system_prompt};
+use crate::metrics::Metrics;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, now_unix};
@@ -41,12 +43,14 @@ struct State {
     policy: SessionPolicy,
     turn: Option<Turn>,
     approvals: HashMap<String, oneshot::Sender<Decision>>,
+    context_tokens: Option<u64>,
 }
 
 struct Core {
     id: SessionId,
     created_at: u64,
     store: Option<EventStore>,
+    metrics: Arc<Metrics>,
     hub: EventHub,
     state: Mutex<State>,
     runtime: RuntimeCell,
@@ -66,6 +70,7 @@ pub(crate) struct SessionParams {
     pub system_agents_md: PathBuf,
     pub model: Option<ModelRef>,
     pub store: Option<EventStore>,
+    pub metrics: Arc<Metrics>,
 }
 
 enum TurnError {
@@ -85,6 +90,7 @@ impl Core {
     }
 
     fn emit(&self, event: SessionEvent) {
+        self.metrics.observe(&event);
         self.hub.emit(event);
     }
 
@@ -169,6 +175,7 @@ impl Session {
                 id,
                 created_at,
                 store: params.store,
+                metrics: params.metrics,
                 hub,
                 state: Mutex::new(State {
                     model: params.model,
@@ -177,6 +184,7 @@ impl Session {
                     policy: state.policy,
                     turn: None,
                     approvals: HashMap::new(),
+                    context_tokens: None,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -364,6 +372,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
                 core.emit(SessionEvent::Warning { message });
             }
         }
+        maybe_compact(core, &runtime, &model, provider.as_ref(), cancel).await?;
         let (messages, reasoning) = {
             let state = core.lock();
             (state.history.clone(), state.reasoning)
@@ -403,7 +412,12 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             });
         }
         let calls: Vec<LlmToolCall> = message.tool_calls().cloned().collect();
-        core.lock().history.push(Message::Assistant(message));
+        {
+            let mut state = core.lock();
+            let usage = &message.usage;
+            state.context_tokens = (usage.input > 0).then_some(usage.input + usage.output);
+            state.history.push(Message::Assistant(message));
+        }
         core.persist();
         if calls.is_empty() {
             return Ok(());
@@ -436,6 +450,82 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
     Err(TurnError::Failed(format!(
         "stopped after {MAX_ROUNDS_PER_TURN} model calls in one turn"
     )))
+}
+
+async fn maybe_compact(
+    core: &Arc<Core>,
+    runtime: &Runtime,
+    model: &ModelRef,
+    provider: &dyn loom_llm::LlmProvider,
+    cancel: &CancellationToken,
+) -> Result<(), TurnError> {
+    let context = &runtime.config.context;
+    let limit = context.window_tokens as f64 * context.compaction_threshold;
+    let (used, history) = {
+        let state = core.lock();
+        let used = state
+            .context_tokens
+            .unwrap_or_else(|| compaction::estimate_tokens(&state.history));
+        (used, state.history.clone())
+    };
+    if (used as f64) < limit {
+        return Ok(());
+    }
+    match compaction::plan(&history) {
+        compaction::Plan::Nothing => Ok(()),
+        compaction::Plan::Elide => {
+            let removed = {
+                let mut state = core.lock();
+                let removed = compaction::elide_tool_results(&mut state.history);
+                state.context_tokens = None;
+                core.persist_state(&state);
+                removed
+            };
+            core.emit(SessionEvent::ContextCompacted {
+                removed_messages: removed as u32,
+                summarized: false,
+            });
+            Ok(())
+        }
+        compaction::Plan::Summarize { split } => {
+            core.hub.set_state(SessionState::Thinking);
+            let request = compaction::summary_request(&model.model, &history[..split]);
+            let summary = tokio::select! {
+                result = async {
+                    let stream = provider.stream(request).await?;
+                    loom_llm::collect(stream).await
+                } => result,
+                _ = cancel.cancelled() => return Err(TurnError::Interrupted),
+            };
+            match summary {
+                Ok(message) if !message.text().trim().is_empty() => {
+                    {
+                        let mut state = core.lock();
+                        if state.history.len() >= split {
+                            compaction::apply_summary(
+                                &mut state.history,
+                                split,
+                                message.text().trim(),
+                            );
+                        }
+                        state.context_tokens = None;
+                        core.persist_state(&state);
+                    }
+                    core.emit(SessionEvent::ContextCompacted {
+                        removed_messages: split as u32,
+                        summarized: true,
+                    });
+                }
+                Ok(_) => core.emit(SessionEvent::Warning {
+                    message: "could not compact the context: the summary was empty".into(),
+                }),
+                Err(err) => core.emit(SessionEvent::Warning {
+                    message: format!("could not compact the context: {err}"),
+                }),
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn stream_response(

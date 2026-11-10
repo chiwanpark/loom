@@ -1,7 +1,10 @@
 use std::sync::{Arc, RwLock};
 
-use loom_config::AgentConfig;
+use std::path::Path;
+
+use loom_config::{AgentConfig, SandboxBackend};
 use loom_llm::{Auth, LlmError, LlmProvider, ModelRef, ProviderSet};
+use loom_tools::sandbox::{LauncherKind, SandboxLauncher, SandboxPolicy, find_bwrap};
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
 #[derive(Clone)]
@@ -16,6 +19,7 @@ impl Runtime {
         config: AgentConfig,
         auth: &Auth,
         overrides: &[Arc<dyn LlmProvider>],
+        sandbox_exe: Option<&Path>,
     ) -> Result<Self, LlmError> {
         let mut providers = ProviderSet::from_config(&config.llm, auth)?;
         for provider in overrides {
@@ -30,7 +34,8 @@ impl Runtime {
                 });
             }
         }
-        let tools = ToolRegistry::builtin(builtin_tools(&config));
+        let tools = ToolRegistry::builtin(builtin_tools(&config, sandbox_exe)?);
+        providers.activate(auth);
         Ok(Self {
             config: Arc::new(config),
             providers,
@@ -45,9 +50,41 @@ impl Runtime {
     }
 }
 
-pub fn builtin_tools(config: &AgentConfig) -> BuiltinConfig {
+fn sandbox_launcher(
+    config: &AgentConfig,
+    sandbox_exe: Option<&Path>,
+) -> Result<Option<SandboxLauncher>, LlmError> {
+    let sandbox = &config.sandbox;
+    let policy = SandboxPolicy {
+        writable: sandbox.writable.clone(),
+        network: sandbox.network,
+    };
+    let unavailable = |message: &str| LlmError::Config {
+        field: "sandbox.backend".into(),
+        message: message.into(),
+    };
+    let kind = match sandbox.backend {
+        SandboxBackend::None => return Ok(None),
+        SandboxBackend::Landlock => LauncherKind::Landlock {
+            exe: sandbox_exe
+                .ok_or_else(|| {
+                    unavailable("landlock needs the loom-agent binary to launch commands")
+                })?
+                .to_path_buf(),
+        },
+        SandboxBackend::Bubblewrap => LauncherKind::Bubblewrap {
+            bwrap: find_bwrap().ok_or_else(|| unavailable("bwrap is not installed"))?,
+        },
+    };
+    Ok(Some(SandboxLauncher { kind, policy }))
+}
+
+pub fn builtin_tools(
+    config: &AgentConfig,
+    sandbox_exe: Option<&Path>,
+) -> Result<BuiltinConfig, LlmError> {
     let shell = &config.tools.shell;
-    BuiltinConfig {
+    Ok(BuiltinConfig {
         read_limits: Limits {
             max_lines: config.tools.read.max_lines,
             max_bytes: config.tools.read.max_bytes.as_usize(),
@@ -60,9 +97,11 @@ pub fn builtin_tools(config: &AgentConfig) -> BuiltinConfig {
                 max_bytes: shell.max_bytes.as_usize(),
             },
             pty: shell.pty,
+            sandbox: sandbox_launcher(config, sandbox_exe)?,
+            max_saved_output: Some(config.sandbox.max_output.as_u64()),
             ..ShellConfig::default()
         },
-    }
+    })
 }
 
 #[derive(Clone)]
