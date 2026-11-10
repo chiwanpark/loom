@@ -78,6 +78,8 @@ pub enum Theme {
 pub struct AppearanceConfig {
     pub theme: Theme,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
     pub ui_font_size: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +91,7 @@ impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
             theme: Theme::Dark,
+            theme_name: None,
             ui_font: None,
             ui_font_size: 15.0,
             mono_font: None,
@@ -195,7 +198,7 @@ mod tests {
     #[test]
     fn parses_and_round_trips_hosts() {
         let text = format!(
-            "hosts:\n- kind: local\n  name: here\n- kind: ssh\n  name: box\n  destination: me@box\n- kind: relay\n  name: home\n  url: wss://relay.example.com\n  host_id: {}\n  host_key: {}\n  cloudflare_access:\n    client_id_env: ID\n    client_secret_env: SECRET\nappearance:\n  theme: light\n",
+            "hosts:\n- kind: local\n  name: here\n- kind: ssh\n  name: box\n  destination: me@box\n- kind: relay\n  name: home\n  url: wss://relay.example.com\n  host_id: {}\n  host_key: {}\n  cloudflare_access:\n    client_id_env: ID\n    client_secret_env: SECRET\nappearance:\n  theme: light\n  theme_name: Gruvbox Light\n",
             "a".repeat(64),
             "b".repeat(43)
         );
@@ -203,6 +206,10 @@ mod tests {
         assert_eq!(config.hosts.len(), 3);
         assert_eq!(config.hosts[1].name(), "box");
         assert_eq!(config.appearance.theme, Theme::Light);
+        assert_eq!(
+            config.appearance.theme_name.as_deref(),
+            Some("Gruvbox Light")
+        );
         let again = ClientConfig::parse(&config.to_yaml(), "client.yaml").unwrap();
         assert_eq!(again, config);
         let dir = tempfile::tempdir().unwrap();
