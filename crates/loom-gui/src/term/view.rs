@@ -4,19 +4,23 @@ use std::rc::Rc;
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement, Pixels, Point, Render, Rgba, ScrollEvent, ShapedLine, SharedString,
-    Size, Styled, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, fill,
-    point, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
+    Render, Rgba, ScrollEvent, ShapedLine, SharedString, Size, Styled, TextAlign, TextRun,
+    TouchPhase, UTF16Selection, UnderlineStyle, Window, canvas, div, fill, point, px, size,
 };
 use gpui_component::ActiveTheme;
-use loom_vt::input::{encode_key, encode_paste, encode_text};
-use loom_vt::{AlacrittyTerminal, CursorShape, Snapshot, TerminalEmulator};
+use loom_vt::input::{Modifiers as VtModifiers, encode_key, encode_paste, encode_text};
+use loom_vt::mouse::{self, CellMetrics, MouseButton as VtButton};
+use loom_vt::{
+    AlacrittyTerminal, CursorShape, GridPoint, SelectionKind, Side, Snapshot, TerminalEmulator,
+};
 
 use super::keys::map_key;
 use super::palette::{Rgb, dim, resolve};
 
 pub const MIN_COLS: u16 = 2;
 pub const MIN_ROWS: u16 = 1;
+const DRAG_THRESHOLD: f32 = 3.0;
 
 pub trait TerminalIo: 'static {
     fn write(&self, data: Vec<u8>);
@@ -39,6 +43,11 @@ pub struct TerminalView {
     font_size: Pixels,
     exited: Option<i32>,
     read_only: bool,
+    display_offset: usize,
+    mouse_down_at: Option<Point<Pixels>>,
+    selecting: bool,
+    reported_button: Option<VtButton>,
+    scroll_px: Pixels,
 }
 
 pub fn mono_font(family: Option<&str>, cx: &App) -> Font {
@@ -65,6 +74,11 @@ impl TerminalView {
             font_size,
             exited: None,
             read_only: false,
+            display_offset: 0,
+            mouse_down_at: None,
+            selecting: false,
+            reported_button: None,
+            scroll_px: px(0.),
         }
     }
 
@@ -126,6 +140,175 @@ impl TerminalView {
         if let Some(io) = self.writable() {
             io.write(data);
             self.emulator.scroll_to_bottom();
+            self.emulator.clear_selection();
+            cx.notify();
+        }
+    }
+
+    fn write_raw(&self, data: Vec<u8>) {
+        if !data.is_empty()
+            && let Some(io) = self.writable()
+        {
+            io.write(data);
+        }
+    }
+
+    pub fn selection_text(&self) -> Option<String> {
+        self.emulator.selection_text()
+    }
+
+    fn grid_point(&self, position: Point<Pixels>) -> Option<(GridPoint, Side)> {
+        let metrics = self.metrics?;
+        let (cols, rows) = self.emulator.size();
+        let cell = CellMetrics {
+            cell_width: f32::from(metrics.cell.width),
+            line_height: f32::from(metrics.cell.height),
+            cols: usize::from(cols),
+            rows: usize::from(rows),
+        };
+        let relative = position - metrics.origin;
+        Some(mouse::point_and_side(
+            f32::from(relative.x),
+            f32::from(relative.y),
+            cell,
+            self.display_offset,
+        ))
+    }
+
+    fn reports_mouse(&self, shift: bool) -> bool {
+        self.writable().is_some() && mouse::wants_mouse(self.emulator.modes(), shift)
+    }
+
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus.focus(window, cx);
+        let Some((point, side)) = self.grid_point(event.position) else {
+            return;
+        };
+        let button = vt_button(event.button);
+        if self.reports_mouse(event.modifiers.shift) {
+            if let Some(button) = button
+                && let Some(bytes) = mouse::button_report(
+                    point,
+                    button,
+                    vt_modifiers(event.modifiers),
+                    true,
+                    self.emulator.modes(),
+                )
+            {
+                self.reported_button = Some(button);
+                self.write_raw(bytes);
+            }
+            return;
+        }
+        match event.button {
+            MouseButton::Left => {
+                self.mouse_down_at = Some(event.position);
+                self.selecting = false;
+                let kind = match event.click_count {
+                    0 => return,
+                    1 => SelectionKind::Simple,
+                    2 => SelectionKind::Semantic,
+                    _ => SelectionKind::Lines,
+                };
+                if kind == SelectionKind::Simple
+                    && event.modifiers.shift
+                    && self.emulator.has_selection()
+                {
+                    self.emulator.update_selection(point, side);
+                    self.selecting = true;
+                } else {
+                    self.emulator.start_selection(kind, point, side);
+                    self.selecting = kind != SelectionKind::Simple;
+                }
+                cx.notify();
+            }
+            MouseButton::Middle => {
+                if let Some(text) = cx.read_from_primary().and_then(|item| item.text()) {
+                    self.paste(&text, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((point, side)) = self.grid_point(event.position) else {
+            return;
+        };
+        if self.reports_mouse(event.modifiers.shift) {
+            let held = event.pressed_button.and_then(vt_button);
+            if (held.is_none() || self.reported_button.is_some())
+                && let Some(bytes) = mouse::motion_report(
+                    point,
+                    held,
+                    vt_modifiers(event.modifiers),
+                    self.emulator.modes(),
+                )
+            {
+                self.write_raw(bytes);
+            }
+            return;
+        }
+        if event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        let Some(down) = self.mouse_down_at else {
+            return;
+        };
+        if !self.selecting {
+            let moved = event.position - down;
+            let distance = (f32::from(moved.x).powi(2) + f32::from(moved.y).powi(2)).sqrt();
+            if distance <= DRAG_THRESHOLD {
+                return;
+            }
+            self.selecting = true;
+        }
+        self.emulator.update_selection(point, side);
+        if !self.emulator.modes().alt_screen
+            && let Some(metrics) = self.metrics
+        {
+            let (_, rows) = self.emulator.size();
+            let top = metrics.origin.y;
+            let bottom = top + metrics.cell.height * f32::from(rows);
+            if event.position.y < top {
+                self.emulator.scroll(1);
+            } else if event.position.y > bottom {
+                self.emulator.scroll(-1);
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(button) = self.reported_button.take() {
+            if let Some((point, _)) = self.grid_point(event.position)
+                && let Some(bytes) = mouse::button_report(
+                    point,
+                    button,
+                    vt_modifiers(event.modifiers),
+                    false,
+                    self.emulator.modes(),
+                )
+            {
+                self.write_raw(bytes);
+            }
+            return;
+        }
+        if event.button == MouseButton::Left {
+            if self.selecting
+                && let Some(text) = self.emulator.selection_text()
+            {
+                cx.write_to_primary(ClipboardItem::new_string(text));
+            } else if !self.selecting && self.emulator.has_selection() {
+                self.emulator.clear_selection();
+            }
+            self.mouse_down_at = None;
+            self.selecting = false;
             cx.notify();
         }
     }
@@ -163,8 +346,14 @@ impl TerminalView {
                     cx.stop_propagation();
                 }
                 "c" => {
-                    let text = self.emulator.snapshot().text();
-                    cx.write_to_clipboard(ClipboardItem::new_string(text.trim_end().to_owned()));
+                    if let Some(text) = self.emulator.selection_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                    cx.stop_propagation();
+                }
+                "a" => {
+                    self.emulator.select_all();
+                    cx.notify();
                     cx.stop_propagation();
                 }
                 _ => {}
@@ -186,9 +375,36 @@ impl TerminalView {
             .metrics
             .map(|m| m.cell.height)
             .unwrap_or(self.font_size);
-        let delta = event.delta.pixel_delta(line_height).y;
-        let lines = (delta / line_height).round() as i32;
-        if lines != 0 {
+        if event.touch_phase == TouchPhase::Started {
+            self.scroll_px = px(0.);
+            return;
+        }
+        let before = (self.scroll_px / line_height) as i32;
+        self.scroll_px += event.delta.pixel_delta(line_height).y;
+        let lines = (self.scroll_px / line_height) as i32 - before;
+        if let Some(metrics) = self.metrics {
+            let (_, rows) = self.emulator.size();
+            let height = metrics.cell.height * f32::from(rows.max(1));
+            self.scroll_px %= height;
+        }
+        if lines == 0 {
+            return;
+        }
+        let shift = event.modifiers.shift;
+        let modes = self.emulator.modes();
+        if self.reports_mouse(shift) {
+            if let Some((point, _)) = self.grid_point(event.position)
+                && let Some(reports) =
+                    mouse::scroll_report(point, lines, vt_modifiers(event.modifiers), modes)
+            {
+                for report in reports {
+                    self.write_raw(report);
+                }
+            }
+        } else if self.writable().is_some() && modes.alt_screen && modes.alternate_scroll && !shift
+        {
+            self.write_raw(mouse::alt_scroll(lines));
+        } else {
             self.emulator.scroll(lines);
             cx.notify();
         }
@@ -204,6 +420,24 @@ impl TerminalView {
             ),
             metrics.cell,
         ))
+    }
+}
+
+fn vt_button(button: MouseButton) -> Option<VtButton> {
+    match button {
+        MouseButton::Left => Some(VtButton::Left),
+        MouseButton::Middle => Some(VtButton::Middle),
+        MouseButton::Right => Some(VtButton::Right),
+        _ => None,
+    }
+}
+
+fn vt_modifiers(mods: gpui::Modifiers) -> VtModifiers {
+    VtModifiers {
+        shift: mods.shift,
+        alt: mods.alt,
+        ctrl: mods.control,
+        meta: mods.platform,
     }
 }
 
@@ -309,6 +543,7 @@ struct Colors {
     background: Rgb,
     cursor: Hsla,
     marked_background: Hsla,
+    selection: Rgb,
 }
 
 fn to_rgb(color: Hsla) -> Rgb {
@@ -370,6 +605,9 @@ fn cell_style(cell: &loom_vt::Cell, colors: &Colors) -> Style {
     }
     if flags.hidden {
         fg = bg;
+    }
+    if flags.selected {
+        bg = colors.selection;
     }
     Style {
         fg,
@@ -515,6 +753,7 @@ impl Render for TerminalView {
             background: to_rgb(theme.background),
             cursor: theme.caret,
             marked_background: theme.selection,
+            selection: to_rgb(theme.selection),
         };
         let font = self.font.clone();
         let font_size = self.font_size;
@@ -528,12 +767,14 @@ impl Render for TerminalView {
             .bg(hsla(colors.background))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_scroll(cx.listener(Self::on_scroll))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.focus.focus(window, cx);
-                }),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .child(
                 canvas(
                     move |bounds, window, cx| {
@@ -553,11 +794,9 @@ impl Render for TerminalView {
                         let (snapshot, marked, focused) = prepaint_view.update(cx, |view, _| {
                             view.resize(cols, rows);
                             view.metrics = Some(metrics);
-                            (
-                                view.emulator.snapshot(),
-                                view.marked.clone(),
-                                view.focus.is_focused(window),
-                            )
+                            let snapshot = view.emulator.snapshot();
+                            view.display_offset = snapshot.display_offset;
+                            (snapshot, view.marked.clone(), view.focus.is_focused(window))
                         });
                         let rows =
                             layout_rows(&snapshot, &colors, &font, font_size, cell_width, window);

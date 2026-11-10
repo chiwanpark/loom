@@ -3,7 +3,9 @@ Copyright (C) Chiwan Park
 
 Loom is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See LICENSE for the full text.
 
-Portions of crates/loom-gui are adapted from Zed (https://github.com/zed-industries/zed, revision d2a4fb6), Copyright Zed Industries, Inc., licensed under GPL-3.0-or-later:
+Portions of crates/loom-gui and crates/loom-vt are adapted from Zed (https://github.com/zed-industries/zed, revision d2a4fb6), Copyright Zed Industries, Inc., licensed under GPL-3.0-or-later:
 
-- src/ui/tab.rs: the tab element from crates/ui/src/components/tab.rs.
-- src/ui/tabs.rs and the tab bar in src/ui/workspace.rs: tab insertion, reordering, and drag-and-drop handling from crates/workspace/src/pane.rs and crates/workspace/src/workspace.rs.
+- crates/loom-vt/src/mouse.rs: mouse report encoding, alternate scroll, and pixel-to-cell mapping from crates/terminal/src/mappings/mouse.rs.
+- crates/loom-gui/src/term/view.rs: selection by click count, drag threshold, and mouse-mode bypass from crates/terminal/src/terminal.rs.
+- crates/loom-gui/src/ui/tab.rs: the tab element from crates/ui/src/components/tab.rs.
+- crates/loom-gui/src/ui/tabs.rs and the tab bar in crates/loom-gui/src/ui/workspace.rs: tab insertion, reordering, and drag-and-drop handling from crates/workspace/src/pane.rs and crates/workspace/src/workspace.rs.
