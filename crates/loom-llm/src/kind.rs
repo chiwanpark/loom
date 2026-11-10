@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -15,12 +15,33 @@ use crate::providers;
 use crate::retry::RetryPolicy;
 use crate::store::CredentialStore;
 
+#[derive(Clone, Default)]
+pub(crate) struct CustomKinds(Arc<RwLock<Vec<Arc<dyn ProviderKind>>>>);
+
+impl std::fmt::Debug for CustomKinds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ids: Vec<String> = self.list().iter().map(|k| k.id().to_string()).collect();
+        f.debug_tuple("CustomKinds").field(&ids).finish()
+    }
+}
+
+impl CustomKinds {
+    pub fn list(&self) -> Vec<Arc<dyn ProviderKind>> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn replace(&self, kinds: Vec<Arc<dyn ProviderKind>>) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = kinds;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Shared {
     pub store: CredentialStore,
     pub http: HttpClient,
     pub auth_base_urls: HashMap<String, String>,
     pub retry: RetryPolicy,
+    pub custom: CustomKinds,
 }
 
 impl Shared {
@@ -56,7 +77,7 @@ pub(crate) struct StartedLogin {
 pub(crate) trait ProviderKind: Send + Sync {
     fn id(&self) -> ProviderId;
 
-    fn display_name(&self) -> &'static str;
+    fn display_name(&self) -> String;
 
     fn login_methods(&self) -> Vec<LoginMethodInfo>;
 
@@ -85,16 +106,23 @@ pub(crate) trait ProviderKind: Send + Sync {
     }
 }
 
-pub(crate) fn kinds() -> &'static [&'static dyn ProviderKind] {
-    providers::KINDS
+pub(crate) fn builtin_kind(id: &str) -> Option<Arc<dyn ProviderKind>> {
+    providers::builtin()
+        .into_iter()
+        .find(|k| k.id().as_str() == id)
 }
 
-pub(crate) fn kind(id: &str) -> Option<&'static dyn ProviderKind> {
-    kinds().iter().copied().find(|k| k.id().as_str() == id)
+pub(crate) fn kinds(shared: &Shared) -> Vec<Arc<dyn ProviderKind>> {
+    let mut all = providers::builtin();
+    all.extend(shared.custom.list());
+    all
 }
 
-pub(crate) fn require_kind(id: &ProviderId) -> Result<&'static dyn ProviderKind> {
-    kind(id.as_str()).ok_or_else(|| LlmError::UnknownProvider(id.to_string()))
+pub(crate) fn require_kind(shared: &Shared, id: &ProviderId) -> Result<Arc<dyn ProviderKind>> {
+    kinds(shared)
+        .into_iter()
+        .find(|k| &k.id() == id)
+        .ok_or_else(|| LlmError::UnknownProvider(id.to_string()))
 }
 
 pub(crate) fn parse_settings<T: serde::de::DeserializeOwned + Default>(

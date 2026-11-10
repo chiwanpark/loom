@@ -127,6 +127,7 @@ impl Auth {
                 http,
                 auth_base_urls: HashMap::new(),
                 retry: RetryPolicy::default(),
+                custom: Default::default(),
             }),
             pending: Arc::default(),
         }
@@ -157,7 +158,7 @@ impl Auth {
     }
 
     pub fn providers(&self) -> Vec<ProviderId> {
-        kinds().iter().map(|k| k.id()).collect()
+        kinds(&self.shared).iter().map(|k| k.id()).collect()
     }
 
     pub async fn start_login(
@@ -165,7 +166,7 @@ impl Auth {
         provider: &ProviderId,
         method: LoginMethod,
     ) -> Result<LoginStarted> {
-        let started = require_kind(provider)?
+        let started = require_kind(&self.shared, provider)?
             .start_login(&self.shared, method)
             .await?;
         let login_id = uuid::Uuid::new_v4().to_string();
@@ -219,26 +220,32 @@ impl Auth {
 
     pub async fn set_api_key(&self, provider: &ProviderId, key: Option<String>) -> Result<()> {
         let key = key.filter(|k| !k.trim().is_empty());
-        require_kind(provider)?.set_api_key(&self.shared, key).await
+        require_kind(&self.shared, provider)?
+            .set_api_key(&self.shared, key)
+            .await
     }
 
     pub async fn select_account(&self, provider: &ProviderId, account: &str) -> Result<()> {
-        require_kind(provider)?
+        require_kind(&self.shared, provider)?
             .select_account(&self.shared, account)
             .await
     }
 
     pub async fn logout(&self, provider: &ProviderId) -> Result<()> {
-        require_kind(provider)?.logout(&self.shared).await
+        require_kind(&self.shared, provider)?
+            .logout(&self.shared)
+            .await
     }
 
     pub async fn provider_status(&self, provider: &ProviderId) -> Result<ProviderStatus> {
-        require_kind(provider)?.status(&self.shared).await
+        require_kind(&self.shared, provider)?
+            .status(&self.shared)
+            .await
     }
 
     pub async fn status(&self) -> Result<Vec<ProviderStatus>> {
         let mut all = Vec::new();
-        for kind in kinds() {
+        for kind in kinds(&self.shared) {
             all.push(kind.status(&self.shared).await?);
         }
         Ok(all)

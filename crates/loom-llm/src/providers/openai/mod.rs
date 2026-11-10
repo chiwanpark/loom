@@ -163,8 +163,8 @@ impl ProviderKind for Kind {
         ID
     }
 
-    fn display_name(&self) -> &'static str {
-        "OpenAI"
+    fn display_name(&self) -> String {
+        "OpenAI".into()
     }
 
     fn login_methods(&self) -> Vec<LoginMethodInfo> {
@@ -240,7 +240,7 @@ impl ProviderKind for Kind {
         let creds = load(&shared.store).await?;
         Ok(ProviderStatus {
             provider: ID,
-            display_name: self.display_name().into(),
+            display_name: self.display_name(),
             login_methods: self.login_methods(),
             api_key_set: creds.api_key.is_some(),
             accounts: creds

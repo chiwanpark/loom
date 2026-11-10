@@ -143,8 +143,8 @@ impl ProviderKind for Kind {
         ID
     }
 
-    fn display_name(&self) -> &'static str {
-        "OpenAI Codex (legacy)"
+    fn display_name(&self) -> String {
+        "OpenAI Codex (legacy)".into()
     }
 
     fn login_methods(&self) -> Vec<LoginMethodInfo> {
@@ -219,7 +219,7 @@ impl ProviderKind for Kind {
             .await?;
         Ok(ProviderStatus {
             provider: ID,
-            display_name: self.display_name().into(),
+            display_name: self.display_name(),
             login_methods: self.login_methods(),
             api_key_set: false,
             accounts: credential

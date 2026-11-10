@@ -7,8 +7,9 @@ use loom_config::{LlmConfig, ProviderSetting};
 use crate::HttpClient;
 use crate::auth::Auth;
 use crate::error::{LlmError, Result};
-use crate::kind::{kind, kinds};
+use crate::kind::{ProviderKind, builtin_kind};
 use crate::provider::{LlmProvider, ProviderId};
+use crate::providers::compatible::{CompatibleKind, is_custom};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelRef {
@@ -44,7 +45,7 @@ pub fn http_client() -> HttpClient {
 }
 
 pub fn known_providers() -> Vec<ProviderId> {
-    kinds().iter().map(|k| k.id()).collect()
+    crate::providers::builtin().iter().map(|k| k.id()).collect()
 }
 
 fn config_error(id: &str, message: String) -> LlmError {
@@ -56,22 +57,39 @@ fn config_error(id: &str, message: String) -> LlmError {
 
 pub fn validate_config(config: &LlmConfig) -> Result<()> {
     for id in config.providers.ids() {
-        let kind = kind(id).ok_or_else(|| {
-            let known: Vec<String> = known_providers().iter().map(|p| p.to_string()).collect();
-            config_error(
-                id,
-                format!("unknown provider; known providers: {}", known.join(", ")),
-            )
-        })?;
-        if let ProviderSetting::Configured(settings) = config.providers.setting(id) {
-            kind.validate(settings)
-                .map_err(|message| config_error(id, message))?;
+        let setting = config.providers.setting(id);
+        if let Some(kind) = builtin_kind(id) {
+            if let ProviderSetting::Configured(settings) = setting {
+                kind.validate(settings)
+                    .map_err(|message| config_error(id, message))?;
+            }
+            continue;
+        }
+        match setting {
+            ProviderSetting::Configured(settings) if is_custom(settings) => {
+                CompatibleKind::validate_settings(settings)
+                    .map_err(|message| config_error(id, message))?;
+            }
+            _ => {
+                let known: Vec<String> = known_providers().iter().map(|p| p.to_string()).collect();
+                return Err(config_error(
+                    id,
+                    format!(
+                        "unknown provider; known providers: {}, or set type: openai-compatible",
+                        known.join(", ")
+                    ),
+                ));
+            }
         }
     }
     if let Some(model) = &config.default_model {
         let model = ModelRef::parse(model)?;
-        let enabled = kind(model.provider.as_str()).is_some()
-            && config.providers.setting(model.provider.as_str()) != ProviderSetting::Disabled;
+        let id = model.provider.as_str();
+        let enabled = match config.providers.setting(id) {
+            ProviderSetting::Disabled => false,
+            ProviderSetting::Default => builtin_kind(id).is_some(),
+            ProviderSetting::Configured(_) => true,
+        };
         if !enabled {
             return Err(LlmError::Config {
                 field: "llm.default_model".into(),
@@ -85,6 +103,7 @@ pub fn validate_config(config: &LlmConfig) -> Result<()> {
 #[derive(Clone, Default)]
 pub struct ProviderSet {
     providers: BTreeMap<ProviderId, Arc<dyn LlmProvider>>,
+    custom: Vec<Arc<dyn ProviderKind>>,
 }
 
 impl ProviderSet {
@@ -94,7 +113,7 @@ impl ProviderSet {
             providers: config.providers.clone(),
         })?;
         let mut set = Self::default();
-        for kind in kinds() {
+        for kind in crate::providers::builtin() {
             let id = kind.id();
             let settings = match config.providers.setting(id.as_str()) {
                 ProviderSetting::Disabled => continue,
@@ -103,7 +122,24 @@ impl ProviderSet {
             };
             set.insert(kind.build(settings, auth.shared())?);
         }
+        let mut custom: Vec<Arc<dyn ProviderKind>> = Vec::new();
+        for id in config.providers.ids() {
+            if builtin_kind(id).is_some() {
+                continue;
+            }
+            if let ProviderSetting::Configured(settings) = config.providers.setting(id) {
+                let kind = CompatibleKind::new(id, settings)
+                    .map_err(|message| config_error(id, message))?;
+                set.insert(kind.build(Some(settings), auth.shared())?);
+                custom.push(Arc::new(kind));
+            }
+        }
+        set.custom = custom;
         Ok(set)
+    }
+
+    pub fn activate(&self, auth: &Auth) {
+        auth.shared().custom.replace(self.custom.clone());
     }
 
     pub fn insert(&mut self, provider: Arc<dyn LlmProvider>) {
