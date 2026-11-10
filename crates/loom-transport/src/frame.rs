@@ -6,6 +6,9 @@ use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
+use loom_crypto::CryptoError;
+use loom_crypto::SecureChannel;
+use loom_crypto::noise::{SecureReceiver, SecureSender};
 pub use loom_proto::MAX_FRAME_LEN;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,9 +16,10 @@ pub enum PeerInfo {
     Memory,
     Local { uid: u32, pid: Option<i32> },
     Command { program: String },
+    Relay { label: String, pubkey: [u8; 32] },
 }
 
-type Guard = Arc<dyn std::any::Any + Send + Sync>;
+pub type Guard = Arc<dyn std::any::Any + Send + Sync>;
 type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
 type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
@@ -49,9 +53,27 @@ impl Diagnostics {
     }
 }
 
+enum SenderInner {
+    Framed(FramedWrite<BoxWrite, LengthDelimitedCodec>),
+    Secure(Option<SecureSender>),
+}
+
+enum ReceiverInner {
+    Framed(FramedRead<BoxRead, LengthDelimitedCodec>),
+    Secure(SecureReceiver),
+}
+
 pub struct FrameSender {
-    inner: FramedWrite<BoxWrite, LengthDelimitedCodec>,
+    inner: SenderInner,
     _guard: Option<Guard>,
+}
+
+fn crypto_error(err: CryptoError) -> io::Error {
+    match err {
+        CryptoError::Closed => io::Error::new(io::ErrorKind::BrokenPipe, err.to_string()),
+        CryptoError::Io(err) => err,
+        other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
+    }
 }
 
 impl FrameSender {
@@ -62,26 +84,53 @@ impl FrameSender {
                 format!("frame of {} bytes exceeds the limit", frame.len()),
             ));
         }
-        self.inner.send(frame).await
+        match &mut self.inner {
+            SenderInner::Framed(inner) => inner.send(frame).await,
+            SenderInner::Secure(Some(sender)) => sender.send(&frame).await.map_err(crypto_error),
+            SenderInner::Secure(None) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "the stream is closed",
+            )),
+        }
     }
 
     pub async fn close(&mut self) -> io::Result<()> {
-        SinkExt::<Bytes>::close(&mut self.inner).await
+        match &mut self.inner {
+            SenderInner::Framed(inner) => SinkExt::<Bytes>::close(inner).await,
+            SenderInner::Secure(sender) => {
+                sender.take();
+                Ok(())
+            }
+        }
     }
 }
 
 pub struct FrameReceiver {
-    inner: FramedRead<BoxRead, LengthDelimitedCodec>,
+    inner: ReceiverInner,
     _guard: Option<Guard>,
 }
 
 impl FrameReceiver {
     pub async fn recv(&mut self) -> io::Result<Option<Bytes>> {
-        match self.inner.next().await {
-            Some(Ok(frame)) => Ok(Some(frame.freeze())),
-            Some(Err(err)) => Err(err),
-            None => Ok(None),
+        match &mut self.inner {
+            ReceiverInner::Framed(inner) => match inner.next().await {
+                Some(Ok(frame)) => Ok(Some(frame.freeze())),
+                Some(Err(err)) => Err(err),
+                None => Ok(None),
+            },
+            ReceiverInner::Secure(receiver) => match receiver.recv().await {
+                Ok(frame) => Ok(frame.map(Bytes::from)),
+                Err(err) => Err(crypto_error(err)),
+            },
         }
+    }
+}
+
+impl std::fmt::Debug for FrameStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameStream")
+            .field("peer", &self.peer)
+            .finish_non_exhaustive()
     }
 }
 
@@ -114,15 +163,31 @@ impl FrameStream {
     {
         Self {
             sender: FrameSender {
-                inner: FramedWrite::new(Box::new(writer), codec()),
+                inner: SenderInner::Framed(FramedWrite::new(Box::new(writer), codec())),
                 _guard: guard.clone(),
             },
             receiver: FrameReceiver {
-                inner: FramedRead::new(Box::new(reader), codec()),
+                inner: ReceiverInner::Framed(FramedRead::new(Box::new(reader), codec())),
                 _guard: guard,
             },
             peer,
             diagnostics,
+        }
+    }
+
+    pub fn secure(channel: SecureChannel, peer: PeerInfo, guard: Option<Guard>) -> Self {
+        let (sender, receiver) = channel.split();
+        Self {
+            sender: FrameSender {
+                inner: SenderInner::Secure(Some(sender)),
+                _guard: guard.clone(),
+            },
+            receiver: FrameReceiver {
+                inner: ReceiverInner::Secure(receiver),
+                _guard: guard,
+            },
+            peer,
+            diagnostics: None,
         }
     }
 
