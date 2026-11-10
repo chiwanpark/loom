@@ -13,10 +13,15 @@ use tokio::sync::broadcast;
 const BASE: &str = "llm:\n  default_model: scripted/test-model\npolicy:\n  default: ask\n";
 
 async fn next_notice(rx: &mut broadcast::Receiver<AgentNotice>) -> AgentNotice {
-    tokio::time::timeout(Duration::from_secs(10), rx.recv())
-        .await
-        .expect("timed out waiting for a notice")
-        .unwrap()
+    loop {
+        let notice = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("timed out waiting for a notice")
+            .unwrap();
+        if !matches!(notice, AgentNotice::SessionUpdated(_)) {
+            return notice;
+        }
+    }
 }
 
 fn replace(path: &Path, text: &str) {

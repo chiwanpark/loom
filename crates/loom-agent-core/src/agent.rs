@@ -20,6 +20,7 @@ pub enum AgentNotice {
     ConfigReloaded { restart_required: Vec<String> },
     ConfigRejected { message: String },
     ShuttingDown,
+    SessionUpdated(Box<SessionInfo>),
 }
 
 pub struct AgentOptions {
@@ -204,7 +205,16 @@ impl Agent {
         let model = model.map(|m| runtime.parse_model(m)).transpose()?;
         let session = Session::new(self.session_params(model));
         self.insert(session.clone());
+        self.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
         Ok(session)
+    }
+
+    pub fn set_archived(&self, id: &SessionId, archived: bool) -> Result<SessionInfo> {
+        let session = self.session(id)?;
+        session.set_archived(archived);
+        let info = session.info();
+        self.notify(AgentNotice::SessionUpdated(Box::new(info.clone())));
+        Ok(info)
     }
 
     pub fn session(&self, id: &SessionId) -> Result<Session> {

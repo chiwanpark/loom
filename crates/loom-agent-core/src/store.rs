@@ -43,6 +43,8 @@ pub struct SessionState {
     pub reasoning: Option<loom_llm::ReasoningEffort>,
     pub policy: SessionPolicy,
     pub history: Vec<Message>,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone)]

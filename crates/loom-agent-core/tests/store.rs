@@ -160,3 +160,41 @@ async fn persistence_can_be_disabled() {
     let agent = loom_agent_core::Agent::new(options).unwrap();
     assert!(agent.list_sessions().is_empty());
 }
+
+#[tokio::test]
+async fn archived_sessions_stay_archived_and_are_announced() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(config.clone(), vec![]);
+    let mut notices = h.agent.notices();
+    let kept = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let archived = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let info = h.agent.set_archived(archived.id(), true).unwrap();
+    assert!(info.archived);
+    let mut announced = Vec::new();
+    while let Ok(notice) = notices.try_recv() {
+        if let loom_agent_core::AgentNotice::SessionUpdated(info) = notice {
+            announced.push((info.id.clone(), info.archived));
+        }
+    }
+    assert_eq!(
+        announced,
+        vec![
+            (kept.id().clone(), false),
+            (archived.id().clone(), false),
+            (archived.id().clone(), true),
+        ]
+    );
+    h.agent.shutdown().await;
+
+    let (agent, _) = h.reopen(config, vec![]);
+    let sessions = agent.list_sessions();
+    assert_eq!(sessions.len(), 2);
+    let flags: Vec<_> = sessions
+        .iter()
+        .map(|s| (s.id.clone(), s.archived))
+        .collect();
+    assert!(flags.contains(&(kept.id().clone(), false)));
+    assert!(flags.contains(&(archived.id().clone(), true)));
+    let restored = agent.set_archived(archived.id(), false).unwrap();
+    assert!(!restored.archived);
+}

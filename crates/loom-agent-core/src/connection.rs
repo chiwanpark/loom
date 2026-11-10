@@ -357,6 +357,14 @@ impl Connection {
                 handle.set_policy_default(default.map(convert::policy_from_proto));
                 Ok(Payload::Session(handle.info()))
             }
+            Command::ArchiveSession {
+                session: id,
+                archived,
+            } => self
+                .agent
+                .set_archived(&id, archived)
+                .map(Payload::Session)
+                .map_err(|e| convert::api_error(&e)),
             Command::ListModels { .. }
             | Command::StartLogin { .. }
             | Command::CompleteLogin { .. }
@@ -541,6 +549,7 @@ async fn forward_notices(
             }
             Ok(AgentNotice::ConfigRejected { message }) => Notice::ConfigRejected { message },
             Ok(AgentNotice::ShuttingDown) => Notice::ShuttingDown,
+            Ok(AgentNotice::SessionUpdated(info)) => Notice::SessionUpdated(*info),
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,
         };

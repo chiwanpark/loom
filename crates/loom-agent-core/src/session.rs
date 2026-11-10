@@ -44,6 +44,7 @@ struct State {
     turn: Option<Turn>,
     approvals: HashMap<String, oneshot::Sender<Decision>>,
     context_tokens: Option<u64>,
+    archived: bool,
 }
 
 struct Core {
@@ -104,6 +105,7 @@ impl Core {
                     reasoning: state.reasoning,
                     policy: state.policy.clone(),
                     history: state.history.clone(),
+                    archived: state.archived,
                 },
             );
         }
@@ -185,6 +187,7 @@ impl Session {
                     turn: None,
                     approvals: HashMap::new(),
                     context_tokens: None,
+                    archived: state.archived,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -203,13 +206,14 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        let (model, reasoning, policy_default, title) = {
+        let (model, reasoning, policy_default, title, archived) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
                 state.reasoning,
                 state.policy.default,
                 title(&state.history),
+                state.archived,
             )
         };
         SessionInfo {
@@ -219,6 +223,7 @@ impl Session {
             policy_default: policy_default.map(convert::policy_to_proto),
             created_at: self.core.created_at,
             title,
+            archived,
             state: self.core.hub.state(),
             last_seq: self.core.hub.last_seq(),
         }
@@ -247,6 +252,18 @@ impl Session {
 
     pub fn set_policy_default(&self, default: Option<PolicyAction>) {
         self.core.lock().policy.default = default;
+        self.core.persist();
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.core.lock().archived
+    }
+
+    pub fn set_archived(&self, archived: bool) {
+        if archived {
+            self.interrupt();
+        }
+        self.core.lock().archived = archived;
         self.core.persist();
     }
 
