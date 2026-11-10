@@ -40,6 +40,9 @@ tools:
     timeout: 10m
     pty: false
 
+terminal:
+  shell: null
+
 policy:
   default: ask
   rules:

@@ -23,6 +23,7 @@ pub struct AgentConfig {
     pub instructions: InstructionsConfig,
     pub llm: LlmConfig,
     pub tools: ToolsConfig,
+    pub terminal: TerminalConfig,
     pub policy: PolicyConfig,
     pub sandbox: SandboxConfig,
     pub context: ContextConfig,
@@ -41,6 +42,7 @@ impl Default for AgentConfig {
             instructions: InstructionsConfig::default(),
             llm: LlmConfig::default(),
             tools: ToolsConfig::default(),
+            terminal: TerminalConfig::default(),
             policy: PolicyConfig::default(),
             sandbox: SandboxConfig::default(),
             context: ContextConfig::default(),
@@ -64,6 +66,13 @@ pub struct RelayConfig {
 pub struct CloudflareAccessConfig {
     pub client_id_env: String,
     pub client_secret_env: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -299,6 +308,7 @@ impl AgentConfig {
         self.socket.dir.iter_mut().for_each(expand);
         self.storage.data_dir.iter_mut().for_each(expand);
         self.lifecycle.default_workspace.iter_mut().for_each(expand);
+        self.terminal.shell.iter_mut().for_each(expand);
         expand(&mut self.tools.shell.program);
     }
 

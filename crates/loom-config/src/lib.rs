@@ -8,7 +8,7 @@ pub use agent::{
     AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, InstructionsConfig,
     LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, PolicyAction, PolicyConfig, PolicyRule,
     ProviderSetting, ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig,
-    ShellToolConfig, SocketConfig, StorageConfig, ToolsConfig,
+    ShellToolConfig, SocketConfig, StorageConfig, TerminalConfig, ToolsConfig,
 };
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;
