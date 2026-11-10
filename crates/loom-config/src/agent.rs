@@ -279,6 +279,20 @@ pub enum LogLevel {
 }
 
 impl AgentConfig {
+    pub fn runtime_dir(&self, dirs: &crate::Dirs) -> PathBuf {
+        self.socket
+            .dir
+            .clone()
+            .unwrap_or_else(|| dirs.default_runtime_dir())
+    }
+
+    pub fn data_dir(&self, dirs: &crate::Dirs) -> PathBuf {
+        self.storage
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| dirs.default_data_dir())
+    }
+
     pub fn expand_paths(&mut self, home: &Path) {
         let expand = |path: &mut PathBuf| *path = expand_home(path, home);
         self.allowed_roots.iter_mut().for_each(expand);
