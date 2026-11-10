@@ -1,0 +1,36 @@
+# Starts a Loom agent for `lifecycle.default_workspace` at login, so the
+# relay path has an agent to reach (docs/ARCHITECTURE.md, Section 5.2).
+#
+# Install:
+#   install -Dm644 contrib/systemd/loom-agent.service ~/.config/systemd/user/loom-agent.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now loom-agent.service
+#
+# Adjust ExecStart if loom-agent is not in ~/.cargo/bin. Relay secrets referenced
+# from agent.yaml (for example LOOM_CF_ACCESS_CLIENT_ID) can go in
+# ~/.config/loom/agent.env as KEY=value lines.
+
+[Unit]
+Description=Loom agent (default workspace)
+Documentation=https://github.com/chiwanpark/loom/blob/main/docs/ARCHITECTURE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/loom/agent.env
+ExecStart=%h/.cargo/bin/loom-agent serve --default
+# Agents spawned from this one (SpawnAgent, stdio --spawn) stay in this unit's
+# cgroup, so stopping the unit sends SIGTERM, the graceful shutdown, to all of
+# them. Each interrupts its turns, flushes its event store, and removes its
+# registry entry. They also stop when the main agent exits.
+KillMode=control-group
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+# Exit code 3 means another agent already serves the workspace; do not loop.
+RestartPreventExitStatus=3
+SuccessExitStatus=3
+
+[Install]
+WantedBy=default.target

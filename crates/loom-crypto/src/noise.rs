@@ -657,4 +657,69 @@ mod tests {
         drop(cs);
         assert!(hr.recv().await.unwrap().is_none());
     }
+
+    /// Frame sizes that exercise fragmentation: small, around one chunk, and
+    /// around two chunks.
+    fn frame_len() -> impl proptest::strategy::Strategy<Value = usize> {
+        use proptest::prelude::*;
+        prop_oneof![
+            0..300usize,
+            (CHUNK - 2)..(CHUNK + 3),
+            (2 * CHUNK - 2)..(2 * CHUNK + 3),
+        ]
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+
+        /// Any sequence of frames arrives intact and in order, in both directions,
+        /// whatever the fragmentation and however often the keys rotate.
+        #[test]
+        fn frames_roundtrip_through_fragmentation_and_rekeying(
+            lens in proptest::collection::vec(frame_len(), 1..6),
+            seed in proptest::prelude::any::<u8>(),
+            rekey in 1u64..8,
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let (_dir, host) = host();
+                let responder = TestResponder::default();
+                let client = ClientIdentity::generate().unwrap();
+                responder
+                    .clients
+                    .lock()
+                    .unwrap()
+                    .insert(client.public_key(), "test".into());
+                let (c, r) =
+                    handshake(&host, &responder, &client, host.static_public(), Mode::Connect)
+                        .await;
+                let c = c.unwrap();
+                let (h, _) = r.unwrap();
+                c.set_rekey_interval(rekey);
+                h.set_rekey_interval(rekey);
+                let (cs, mut cr) = c.split();
+                let (hs, mut hr) = h.split();
+                let frames: Vec<Vec<u8>> = lens
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &len)| {
+                        (0..len)
+                            .map(|j| (j as u8).wrapping_mul(31) ^ seed ^ i as u8)
+                            .collect()
+                    })
+                    .collect();
+                for frame in &frames {
+                    let (sent, received) = tokio::join!(cs.send(frame), hr.recv());
+                    sent.unwrap();
+                    assert_eq!(&received.unwrap().unwrap(), frame);
+                    let (sent, received) = tokio::join!(hs.send(frame), cr.recv());
+                    sent.unwrap();
+                    assert_eq!(&received.unwrap().unwrap(), frame);
+                }
+            });
+        }
+    }
 }

@@ -1,0 +1,43 @@
+---
+source: crates/loom-config/tests/templates.rs
+expression: "AgentConfig::default().to_yaml()"
+---
+version: 1
+allowed_roots:
+- "~"
+relay:
+  enabled: false
+socket: {}
+storage: {}
+lifecycle: {}
+instructions:
+  max_bytes: 64KiB
+llm:
+  providers: {}
+tools:
+  read:
+    max_lines: 2000
+    max_bytes: 50KiB
+  shell:
+    program: /bin/bash
+    max_lines: 2000
+    max_bytes: 50KiB
+    pty: false
+terminal:
+  detached_timeout: 10m
+policy:
+  default: ask
+  rules:
+  - tool: read
+    action: allow
+sandbox:
+  backend: none
+  network: true
+  writable: []
+  max_output: 1MiB
+context:
+  max_tool_output_tokens: 8000
+  window_tokens: 200000
+  compaction_threshold: 0.8
+logging:
+  level: info
