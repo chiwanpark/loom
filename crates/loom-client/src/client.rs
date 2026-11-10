@@ -472,6 +472,28 @@ impl Client {
         }
     }
 
+    pub async fn workspace_changes(&self) -> Result<loom_proto::WorkspaceChanges> {
+        match self.request(Command::GetWorkspaceChanges).await? {
+            Payload::WorkspaceChanges(changes) => Ok(changes),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn file_diff(
+        &self,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> Result<loom_proto::FileDiff> {
+        let command = Command::GetFileDiff {
+            path: path.to_string(),
+            old_path: old_path.map(str::to_string),
+        };
+        match self.request(command).await? {
+            Payload::FileDiff(diff) => Ok(diff),
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub async fn host_key(&self) -> Result<loom_proto::HostKeyInfo> {
         match self.request(Command::GetHostKey).await? {
             Payload::HostKey(info) => Ok(info),
