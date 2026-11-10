@@ -58,7 +58,8 @@ actions!(
         ToggleRightDock,
         ToggleCommandPalette,
         FindSession,
-        FindAgent
+        FindAgent,
+        SelectTheme
     ]
 );
 
@@ -76,6 +77,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-shift-p", ToggleCommandPalette, Some(CONTEXT)),
         KeyBinding::new("ctrl-p", FindSession, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-o", FindAgent, Some(CONTEXT)),
+        KeyBinding::new("ctrl-k ctrl-t", SelectTheme, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-n", NewSession, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-w", CloseTab, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-`", NewTerminal, Some(CONTEXT)),
@@ -201,6 +203,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("pane: activate right", Box::new(ActivatePaneRight)),
         ("pane: activate up", Box::new(ActivatePaneUp)),
         ("pane: activate down", Box::new(ActivatePaneDown)),
+        ("theme: select theme", Box::new(SelectTheme)),
         ("agent: providers and sign-in", Box::new(ShowProviders)),
         ("hosts: add ssh host", Box::new(AddSshHost)),
         ("hosts: pair with a relay", Box::new(PairRelay)),
@@ -1634,6 +1637,52 @@ impl Workspace {
         open_picker("Agents", "Find an agent…", items, window, cx);
     }
 
+    fn on_select_theme(&mut self, _: &SelectTheme, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.entity().downgrade();
+        let current = cx.theme().theme_name().clone();
+        let items = crate::themes::names(cx)
+            .into_iter()
+            .map(|(name, mode)| {
+                let workspace = workspace.clone();
+                let label = name.clone();
+                let detail = match (mode.is_dark(), name == current) {
+                    (true, true) => "dark · current",
+                    (true, false) => "dark",
+                    (false, true) => "light · current",
+                    (false, false) => "light",
+                };
+                PickerItem::new(label, move |window, cx| {
+                    let name = name.clone();
+                    let _ = workspace.update(cx, |ws, cx| {
+                        ws.set_theme(name.to_string(), mode, window, cx)
+                    });
+                })
+                .detail(detail)
+            })
+            .collect();
+        open_picker("Themes", "Select a theme…", items, window, cx);
+    }
+
+    fn set_theme(
+        &mut self,
+        name: String,
+        mode: gpui_component::ThemeMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let appearance = &mut self.config.appearance;
+        appearance.theme = if mode.is_dark() {
+            loom_config::Theme::Dark
+        } else {
+            loom_config::Theme::Light
+        };
+        appearance.theme_name = Some(name);
+        crate::themes::apply(&self.config.appearance, cx);
+        self.save_config(window, cx);
+        window.refresh();
+        cx.notify();
+    }
+
     fn on_add_ssh(&mut self, _: &AddSshHost, window: &mut Window, cx: &mut Context<Self>) {
         self.add_ssh_dialog(window, cx);
     }
@@ -2445,6 +2494,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_find_session))
             .on_action(cx.listener(Self::on_find_agent))
+            .on_action(cx.listener(Self::on_select_theme))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))

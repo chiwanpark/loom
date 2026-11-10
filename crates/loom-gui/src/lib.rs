@@ -8,4 +8,5 @@ pub mod conversation;
 pub mod fuzzy;
 pub mod state;
 pub mod term;
+pub mod themes;
 pub mod ui;

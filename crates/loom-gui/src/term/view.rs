@@ -16,7 +16,7 @@ use loom_vt::{
 };
 
 use super::keys::map_key;
-use super::palette::{Rgb, dim, resolve};
+use super::palette::{Ansi, Rgb, ThemeColors, dim, resolve, theme_ansi};
 
 pub const MIN_COLS: u16 = 2;
 pub const MIN_ROWS: u16 = 1;
@@ -544,6 +544,7 @@ struct Colors {
     cursor: Hsla,
     marked_background: Hsla,
     selection: Rgb,
+    ansi: Ansi,
 }
 
 fn to_rgb(color: Hsla) -> Rgb {
@@ -595,8 +596,8 @@ struct Style {
 
 fn cell_style(cell: &loom_vt::Cell, colors: &Colors) -> Style {
     let flags = cell.flags;
-    let mut fg = resolve(cell.fg, colors.foreground, flags.bold);
-    let mut bg = resolve(cell.bg, colors.background, false);
+    let mut fg = resolve(cell.fg, colors.foreground, flags.bold, &colors.ansi);
+    let mut bg = resolve(cell.bg, colors.background, false, &colors.ansi);
     if flags.dim {
         fg = dim(fg);
     }
@@ -754,6 +755,19 @@ impl Render for TerminalView {
             cursor: theme.caret,
             marked_background: theme.selection,
             selection: to_rgb(theme.selection),
+            ansi: theme_ansi(&ThemeColors {
+                dark: theme.is_dark(),
+                background: to_rgb(theme.background),
+                foreground: to_rgb(theme.foreground),
+                muted: to_rgb(theme.muted),
+                muted_foreground: to_rgb(theme.muted_foreground),
+                red: (to_rgb(theme.red), to_rgb(theme.red_light)),
+                green: (to_rgb(theme.green), to_rgb(theme.green_light)),
+                yellow: (to_rgb(theme.yellow), to_rgb(theme.yellow_light)),
+                blue: (to_rgb(theme.blue), to_rgb(theme.blue_light)),
+                magenta: (to_rgb(theme.magenta), to_rgb(theme.magenta_light)),
+                cyan: (to_rgb(theme.cyan), to_rgb(theme.cyan_light)),
+            }),
         };
         let font = self.font.clone();
         let font_size = self.font_size;

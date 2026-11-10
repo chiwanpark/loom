@@ -10,3 +10,12 @@ Portions of crates/loom-gui and crates/loom-vt are adapted from Zed (https://git
 - crates/loom-gui/src/ui/panes.rs and the pane rendering in crates/loom-gui/src/ui/workspace.rs: the pane split tree, pane removal, directional pane lookup, and split-on-drop targets from crates/workspace/src/pane_group.rs, crates/workspace/src/pane.rs, and crates/workspace/src/workspace.rs.
 - crates/loom-gui/src/ui/tab.rs: the tab element from crates/ui/src/components/tab.rs.
 - crates/loom-gui/src/ui/tabs.rs and the tab bar in crates/loom-gui/src/ui/workspace.rs: tab insertion, reordering, and drag-and-drop handling from crates/workspace/src/pane.rs and crates/workspace/src/workspace.rs.
+
+The theme files in crates/loom-gui/assets/themes are copied unmodified from gpui-component (https://github.com/longbridge/gpui-component, tag v0.9.1, themes/), Copyright Longbridge, licensed under Apache-2.0. Each file names the original color scheme and its author:
+
+- ayu.json: Ayu, adapted by Zed Industries from https://github.com/ayu-theme.
+- catppuccin.json: Catppuccin (https://github.com/catppuccin/catppuccin).
+- everforest.json: Everforest by sainnhe (https://github.com/sainnhe/everforest).
+- gruvbox.json: Gruvbox by Pavel Pertsev (https://github.com/morhetz/gruvbox).
+- solarized.json: Solarized by Ethan Schoonover (https://ethanschoonover.com/solarized).
+- tokyonight.json: Tokyo Night by Folke Lemaitre (https://github.com/folke/tokyonight.nvim).
