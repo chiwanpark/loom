@@ -31,5 +31,5 @@ workspace = true
 
 [dev-dependencies]
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "test-util"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "test-util", "net", "io-std", "signal"] }
 wiremock = "0.6.5"
