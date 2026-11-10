@@ -60,7 +60,7 @@ mod tests {
         roundtrip(SessionEvent::AssistantMessage {
             text: "done".into(),
             reasoning: Some("thought".into()),
-            model: "openai/gpt".into(),
+            model: "provider/model".into(),
         });
     }
 }

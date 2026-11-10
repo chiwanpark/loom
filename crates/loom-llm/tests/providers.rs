@@ -2,14 +2,13 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, codex_access_token, now, sse_body, text_response_events};
+use std::sync::Arc;
+
+use common::{CODEX, Harness, OPENAI, codex_access_token, id, now, sse_body, text_response_events};
 use futures::StreamExt;
-use loom_config::{CodexProviderConfig, OpenAiAuth, OpenAiProviderConfig};
-use loom_llm::auth::{ChatGptAccount, CodexCredential, OAuthTokens};
-use loom_llm::responses::RetryPolicy;
 use loom_llm::{
-    CodexProvider, CompletionChunk, CompletionRequest, LlmError, LlmProvider, Message,
-    OpenAiProvider, ToolDefinition, collect,
+    CompletionChunk, CompletionRequest, LlmError, LlmProvider, Message, RetryPolicy,
+    ToolDefinition, collect,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -29,17 +28,35 @@ fn sse(events: &[Value]) -> ResponseTemplate {
         .set_body_string(sse_body(events))
 }
 
-fn api_key_provider(h: &Harness) -> OpenAiProvider {
-    OpenAiProvider::new(
-        h.http.clone(),
-        h.auth.clone(),
-        &OpenAiProviderConfig {
-            auth: OpenAiAuth::ApiKey,
-            api_key_env: Some("LOOM_TEST_UNSET_OPENAI_KEY".into()),
-            base_url: Some(format!("{}/v1", h.server.uri())),
-        },
+async fn harness() -> Harness {
+    let mut h = Harness::new().await;
+    h.auth = h.auth.clone().with_retry(fast_retry());
+    h
+}
+
+async fn set_api_key(h: &Harness) {
+    h.auth
+        .set_api_key(&id(OPENAI), Some("sk-test".into()))
+        .await
+        .unwrap();
+}
+
+fn api_key_provider(h: &Harness) -> Arc<dyn LlmProvider> {
+    h.provider(
+        OPENAI,
+        json!({
+            "auth": "api_key",
+            "api_key_env": "LOOM_TEST_UNSET_OPENAI_KEY",
+            "base_url": format!("{}/v1", h.server.uri()),
+        }),
     )
-    .with_retry(fast_retry())
+}
+
+fn chatgpt_provider(h: &Harness) -> Arc<dyn LlmProvider> {
+    h.provider(
+        OPENAI,
+        json!({"base_url": format!("{}/v1", h.server.uri())}),
+    )
 }
 
 fn request() -> CompletionRequest {
@@ -60,8 +77,8 @@ fn request() -> CompletionRequest {
 
 #[tokio::test]
 async fn api_key_streams_text() {
-    let h = Harness::new().await;
-    h.auth.set_api_key(Some("sk-test".into())).await.unwrap();
+    let h = harness().await;
+    set_api_key(&h).await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .and(header("authorization", "Bearer sk-test"))
@@ -97,15 +114,15 @@ async fn api_key_streams_text() {
 
 #[tokio::test]
 async fn missing_api_key_is_not_authenticated() {
-    let h = Harness::new().await;
+    let h = harness().await;
     let err = api_key_provider(&h).stream(request()).await.err().unwrap();
     assert!(matches!(err, LlmError::NotAuthenticated { .. }));
 }
 
 #[tokio::test]
 async fn retries_server_errors() {
-    let h = Harness::new().await;
-    h.auth.set_api_key(Some("sk-test".into())).await.unwrap();
+    let h = harness().await;
+    set_api_key(&h).await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(ResponseTemplate::new(503).set_body_string("busy"))
@@ -128,8 +145,8 @@ async fn retries_server_errors() {
 
 #[tokio::test]
 async fn quota_errors_fail_without_retry() {
-    let h = Harness::new().await;
-    h.auth.set_api_key(Some("sk-test".into())).await.unwrap();
+    let h = harness().await;
+    set_api_key(&h).await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(ResponseTemplate::new(429).set_body_json(json!({
@@ -156,8 +173,8 @@ async fn quota_errors_fail_without_retry() {
 
 #[tokio::test]
 async fn stream_failure_is_reported() {
-    let h = Harness::new().await;
-    h.auth.set_api_key(Some("sk-test".into())).await.unwrap();
+    let h = harness().await;
+    set_api_key(&h).await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(sse(&[
@@ -176,30 +193,30 @@ async fn stream_failure_is_reported() {
 }
 
 async fn store_chatgpt_account(h: &Harness) {
-    h.store
-        .update(|c| {
-            c.openai.upsert(ChatGptAccount {
-                client_id: "oaiapp_1".into(),
-                issuer: "https://auth.openai.com".into(),
-                subject: "user-1".into(),
-                email: None,
-                id_token: None,
-                tokens: Some(OAuthTokens {
-                    access_token: "chatgpt-access".into(),
-                    refresh_token: "r".into(),
-                    expires_at: now() + 3600,
-                    scopes: vec!["chatgpt.tokens.use.direct".into()],
-                    saved_at: now(),
-                }),
-            })
-        })
-        .await
-        .unwrap();
+    h.set_section(
+        OPENAI,
+        json!({
+            "active": "oaiapp_1",
+            "accounts": [{
+                "client_id": "oaiapp_1",
+                "issuer": "https://auth.openai.com",
+                "subject": "user-1",
+                "tokens": {
+                    "access_token": "chatgpt-access",
+                    "refresh_token": "r",
+                    "expires_at": now() + 3600,
+                    "scopes": ["chatgpt.tokens.use.direct"],
+                    "saved_at": now(),
+                },
+            }],
+        }),
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn chatgpt_uses_additional_tools_and_omits_unsupported_fields() {
-    let h = Harness::new().await;
+    let h = harness().await;
     store_chatgpt_account(&h).await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
@@ -207,14 +224,7 @@ async fn chatgpt_uses_additional_tools_and_omits_unsupported_fields() {
         .respond_with(sse(&text_response_events("hey")))
         .mount(&h.server)
         .await;
-    let provider = OpenAiProvider::new(
-        h.http.clone(),
-        h.auth.clone(),
-        &OpenAiProviderConfig {
-            base_url: Some(format!("{}/v1", h.server.uri())),
-            ..OpenAiProviderConfig::default()
-        },
-    );
+    let provider = chatgpt_provider(&h);
     let message = collect(provider.stream(request()).await.unwrap())
         .await
         .unwrap();
@@ -228,7 +238,7 @@ async fn chatgpt_uses_additional_tools_and_omits_unsupported_fields() {
 
 #[tokio::test]
 async fn chatgpt_lists_visible_models() {
-    let h = Harness::new().await;
+    let h = harness().await;
     store_chatgpt_account(&h).await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
@@ -241,14 +251,7 @@ async fn chatgpt_lists_visible_models() {
         })))
         .mount(&h.server)
         .await;
-    let provider = OpenAiProvider::new(
-        h.http.clone(),
-        h.auth.clone(),
-        &OpenAiProviderConfig {
-            base_url: Some(format!("{}/v1", h.server.uri())),
-            ..OpenAiProviderConfig::default()
-        },
-    );
+    let provider = chatgpt_provider(&h);
     let models = provider.list_models().await.unwrap();
     let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, vec!["gpt-a", "gpt-b"]);
@@ -257,21 +260,19 @@ async fn chatgpt_lists_visible_models() {
 
 #[tokio::test]
 async fn codex_sends_account_headers() {
-    let h = Harness::new().await;
+    let h = harness().await;
     let token = codex_access_token("acct-7");
-    let stored = token.clone();
-    h.store
-        .update(move |c| {
-            c.openai_codex = Some(CodexCredential {
-                account_id: "acct-7".into(),
-                access_token: stored,
-                refresh_token: "r".into(),
-                expires_at: now() + 3600,
-                saved_at: now(),
-            })
-        })
-        .await
-        .unwrap();
+    h.set_section(
+        CODEX,
+        json!({
+            "account_id": "acct-7",
+            "access_token": token,
+            "refresh_token": "r",
+            "expires_at": now() + 3600,
+            "saved_at": now(),
+        }),
+    )
+    .await;
     let auth_header = format!("Bearer {token}");
     Mock::given(method("POST"))
         .and(path("/backend-api/codex/responses"))
@@ -287,13 +288,9 @@ async fn codex_sends_account_headers() {
         .expect(1)
         .mount(&h.server)
         .await;
-    let provider = CodexProvider::new(
-        h.http.clone(),
-        h.auth.clone(),
-        &CodexProviderConfig {
-            base_url: Some(format!("{}/backend-api", h.server.uri())),
-            ..CodexProviderConfig::default()
-        },
+    let provider = h.provider(
+        CODEX,
+        json!({"base_url": format!("{}/backend-api", h.server.uri())}),
     );
     let message = collect(provider.stream(request()).await.unwrap())
         .await

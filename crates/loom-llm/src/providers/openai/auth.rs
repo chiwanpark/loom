@@ -1,11 +1,73 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::callback::CallbackParams;
-use super::jwt::{IdTokenCheck, verify_id_token};
-use super::pkce::{Pkce, random_token};
-use super::store::{ChatGptAccount, OAuthTokens, now_unix};
 use crate::error::{LlmError, Result};
+use crate::oauth::callback::CallbackParams;
+use crate::oauth::jwt::{IdTokenCheck, verify_id_token};
+use crate::oauth::pkce::{Pkce, random_token};
+use crate::oauth::token_error;
+use crate::store::now_unix;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenAiCredentials {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    #[serde(default)]
+    pub accounts: Vec<ChatGptAccount>,
+}
+
+impl OpenAiCredentials {
+    pub fn active_account(&self) -> Option<&ChatGptAccount> {
+        let active = self.active.as_deref()?;
+        self.accounts.iter().find(|a| a.client_id == active)
+    }
+
+    pub fn account_mut(&mut self, client_id: &str) -> Option<&mut ChatGptAccount> {
+        self.accounts.iter_mut().find(|a| a.client_id == client_id)
+    }
+
+    pub fn upsert(&mut self, account: ChatGptAccount) {
+        let client_id = account.client_id.clone();
+        match self.account_mut(&client_id) {
+            Some(existing) => *existing = account,
+            None => self.accounts.push(account),
+        }
+        self.active = Some(client_id);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatGptAccount {
+    pub client_id: String,
+    pub issuer: String,
+    pub subject: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<OAuthTokens>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: u64,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub saved_at: u64,
+}
+
+impl OAuthTokens {
+    pub fn is_fresh(&self, margin_secs: u64) -> bool {
+        self.expires_at > now_unix() + margin_secs
+    }
+}
 
 pub const DYNAMIC_CLIENT_ID: &str = "dynamic_agent_client";
 pub const AGENT_NAME: &str = "Loom";
@@ -97,10 +159,6 @@ fn check_redirect_uri(redirect_uri: &str) -> Result<()> {
 }
 
 impl SiwcClient {
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::with_endpoints(http, SiwcEndpoints::default())
-    }
-
     pub fn with_endpoints(http: reqwest::Client, endpoints: SiwcEndpoints) -> Self {
         Self {
             http,
@@ -302,38 +360,6 @@ impl SiwcClient {
     }
 }
 
-pub(crate) fn token_error(provider: &str, status: u16, body: &str) -> LlmError {
-    let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
-    let code = parsed.as_ref().and_then(|v| {
-        v["error"]
-            .as_str()
-            .or_else(|| v["error"]["code"].as_str())
-            .map(str::to_owned)
-    });
-    let message = parsed
-        .as_ref()
-        .and_then(|v| {
-            v["error_description"]
-                .as_str()
-                .or_else(|| v["error"]["message"].as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| body.to_owned());
-    if matches!(code.as_deref(), Some("invalid_grant" | "invalid_client")) {
-        return LlmError::NotAuthenticated {
-            provider: provider.to_owned(),
-            message: format!("{message}; sign in again"),
-        };
-    }
-    LlmError::Api {
-        provider: provider.to_owned(),
-        status,
-        code,
-        message: format!("token request failed: {message}"),
-        retry_after: None,
-    }
-}
-
 fn tokens_from_response(
     token: TokenResponse,
     previous_refresh: Option<&str>,
@@ -387,7 +413,7 @@ mod tests {
 
     #[test]
     fn first_login_uses_dynamic_client() {
-        let client = SiwcClient::new(reqwest::Client::new());
+        let client = SiwcClient::with_endpoints(reqwest::Client::new(), SiwcEndpoints::default());
         let pending = client
             .start(&loopback_redirect_uri(1455), "urn:uuid:x", None)
             .unwrap();
@@ -406,7 +432,7 @@ mod tests {
 
     #[test]
     fn reauth_uses_saved_client_and_hints() {
-        let client = SiwcClient::new(reqwest::Client::new());
+        let client = SiwcClient::with_endpoints(reqwest::Client::new(), SiwcEndpoints::default());
         let account = ChatGptAccount {
             client_id: "oaiapp_1".into(),
             issuer: "https://auth.openai.com".into(),

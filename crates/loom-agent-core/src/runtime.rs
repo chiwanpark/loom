@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use loom_config::AgentConfig;
-use loom_llm::{Auth, HttpClient, LlmProvider, ProviderSet};
+use loom_llm::{Auth, LlmError, LlmProvider, ModelRef, ProviderSet};
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
 #[derive(Clone)]
@@ -15,19 +15,33 @@ impl Runtime {
     pub fn build(
         config: AgentConfig,
         auth: &Auth,
-        http: &HttpClient,
         overrides: &[Arc<dyn LlmProvider>],
-    ) -> Self {
-        let mut providers = ProviderSet::from_config(&config.llm, auth, http);
+    ) -> Result<Self, LlmError> {
+        let mut providers = ProviderSet::from_config(&config.llm, auth)?;
         for provider in overrides {
             providers.insert(provider.clone());
         }
+        if let Some(model) = &config.llm.default_model {
+            let model = ModelRef::parse(model)?;
+            if !providers.contains(&model.provider) {
+                return Err(LlmError::Config {
+                    field: "llm.default_model".into(),
+                    message: format!("provider {} is unknown or disabled", model.provider),
+                });
+            }
+        }
         let tools = ToolRegistry::builtin(builtin_tools(&config));
-        Self {
+        Ok(Self {
             config: Arc::new(config),
             providers,
             tools,
-        }
+        })
+    }
+
+    pub fn parse_model(&self, model: &str) -> Result<ModelRef, LlmError> {
+        let model = ModelRef::parse(model)?;
+        self.providers.get(&model.provider)?;
+        Ok(model)
     }
 }
 

@@ -1,24 +1,22 @@
 use async_trait::async_trait;
-use loom_config::CodexProviderConfig;
 
-use crate::auth::Auth;
-use crate::auth::codex::ORIGINATOR;
+use super::auth::ORIGINATOR;
+use super::{ID, Settings, access_token};
 use crate::error::Result;
+use crate::kind::Shared;
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{chunk_stream, send_with_retry};
-use crate::responses::{Flavor, RetryPolicy, build_body};
+use crate::responses::{Flavor, build_body};
 use crate::types::CompletionRequest;
 
-pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
-pub struct CodexProvider {
-    http: reqwest::Client,
-    auth: Auth,
+pub(crate) struct CodexProvider {
+    shared: Shared,
     url: String,
-    retry: RetryPolicy,
 }
 
-pub fn responses_url(base_url: &str) -> String {
+fn responses_url(base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
     let base = if base.is_empty() {
         DEFAULT_BASE_URL
@@ -35,33 +33,28 @@ pub fn responses_url(base_url: &str) -> String {
 }
 
 impl CodexProvider {
-    pub fn new(http: reqwest::Client, auth: Auth, config: &CodexProviderConfig) -> Self {
+    pub(crate) fn new(shared: Shared, settings: Settings) -> Self {
         Self {
-            http,
-            auth,
-            url: responses_url(config.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)),
-            retry: RetryPolicy::default(),
+            shared,
+            url: responses_url(settings.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)),
         }
-    }
-
-    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
-        self.retry = retry;
-        self
     }
 }
 
 #[async_trait]
 impl LlmProvider for CodexProvider {
     fn id(&self) -> ProviderId {
-        ProviderId::OpenAiCodex
+        ID
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<ChunkStream> {
-        let provider = self.id().as_str();
-        let (token, account_id) = self.auth.codex_access_token().await?;
+        let id = ID;
+        let provider = id.as_str();
+        let (token, account_id) = access_token(&self.shared).await?;
         let body = build_body(provider, Flavor::Codex, &request);
-        let response = send_with_retry(provider, self.retry, || {
+        let response = send_with_retry(provider, self.shared.retry, || {
             let mut builder = self
+                .shared
                 .http
                 .post(&self.url)
                 .bearer_auth(&token)

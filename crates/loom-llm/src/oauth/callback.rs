@@ -4,7 +4,7 @@ use url::Url;
 use crate::error::{LlmError, Result};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CallbackParams {
+pub(crate) struct CallbackParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -18,7 +18,7 @@ pub struct CallbackParams {
 }
 
 impl CallbackParams {
-    pub fn from_query(query: &str) -> Self {
+    pub(crate) fn from_query(query: &str) -> Self {
         let mut params = Self::default();
         for (key, value) in url::form_urlencoded::parse(query.trim_start_matches('?').as_bytes()) {
             let value = Some(value.trim().to_owned()).filter(|v| !v.is_empty());
@@ -34,7 +34,7 @@ impl CallbackParams {
         params
     }
 
-    pub fn from_redirect_url(input: &str, redirect_uri: &str) -> Result<Self> {
+    pub(crate) fn from_redirect_url(input: &str, redirect_uri: &str) -> Result<Self> {
         let url = Url::parse(input.trim())
             .map_err(|_| LlmError::login("paste the full callback URL from the browser"))?;
         let expected = Url::parse(redirect_uri)

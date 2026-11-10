@@ -7,8 +7,12 @@ pub type Result<T, E = LlmError> = std::result::Result<T, E>;
 
 #[derive(Debug, Error)]
 pub enum LlmError {
-    #[error("provider {0} is not configured")]
-    ProviderDisabled(String),
+    #[error("provider {0} is unknown or disabled")]
+    UnknownProvider(String),
+    #[error("{field}: {message}")]
+    Config { field: String, message: String },
+    #[error("{0}")]
+    Unsupported(String),
     #[error("invalid model {0:?}: use <provider>/<model>")]
     InvalidModel(String),
     #[error("not signed in to {provider}: {message}")]

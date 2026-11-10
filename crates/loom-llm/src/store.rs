@@ -1,10 +1,13 @@
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::error::{LlmError, Result};
 
@@ -14,99 +17,33 @@ const VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credentials {
     pub version: u32,
-    #[serde(default)]
-    pub openai: OpenAiCredentials,
-    #[serde(
-        default,
-        rename = "openai-codex",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub openai_codex: Option<CodexCredential>,
+    #[serde(flatten)]
+    pub sections: BTreeMap<String, Value>,
 }
 
 impl Default for Credentials {
     fn default() -> Self {
         Self {
             version: VERSION,
-            openai: OpenAiCredentials::default(),
-            openai_codex: None,
+            sections: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenAiCredentials {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active: Option<String>,
-    #[serde(default)]
-    pub accounts: Vec<ChatGptAccount>,
-}
-
-impl OpenAiCredentials {
-    pub fn active_account(&self) -> Option<&ChatGptAccount> {
-        let active = self.active.as_deref()?;
-        self.accounts.iter().find(|a| a.client_id == active)
+impl Credentials {
+    pub fn section(&self, provider: &str) -> Option<&Value> {
+        self.sections.get(provider)
     }
 
-    pub fn account_mut(&mut self, client_id: &str) -> Option<&mut ChatGptAccount> {
-        self.accounts.iter_mut().find(|a| a.client_id == client_id)
-    }
-
-    pub fn upsert(&mut self, account: ChatGptAccount) {
-        let client_id = account.client_id.clone();
-        match self.account_mut(&client_id) {
-            Some(existing) => *existing = account,
-            None => self.accounts.push(account),
+    pub fn set_section(&mut self, provider: &str, value: Option<Value>) {
+        match value {
+            Some(value) => {
+                self.sections.insert(provider.to_owned(), value);
+            }
+            None => {
+                self.sections.remove(provider);
+            }
         }
-        self.active = Some(client_id);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatGptAccount {
-    pub client_id: String,
-    pub issuer: String,
-    pub subject: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tokens: Option<OAuthTokens>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OAuthTokens {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: u64,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-    pub saved_at: u64,
-}
-
-impl OAuthTokens {
-    pub fn is_fresh(&self, margin_secs: u64) -> bool {
-        self.expires_at > now_unix() + margin_secs
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodexCredential {
-    pub account_id: String,
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: u64,
-    pub saved_at: u64,
-}
-
-impl CodexCredential {
-    pub fn is_fresh(&self, margin_secs: u64) -> bool {
-        self.expires_at > now_unix() + margin_secs
     }
 }
 
@@ -190,18 +127,29 @@ impl CredentialStore {
         .await
     }
 
-    pub async fn host_id(&self) -> Result<String> {
-        if let Some(id) = self.load().await?.openai.host_id {
-            return Ok(id);
-        }
-        self.update(|creds| {
-            creds
-                .openai
-                .host_id
-                .get_or_insert_with(|| format!("urn:uuid:{}", uuid::Uuid::new_v4()))
-                .clone()
+    pub(crate) async fn load_section<T: DeserializeOwned>(
+        &self,
+        provider: &str,
+    ) -> Result<Option<T>> {
+        let creds = self.load().await?;
+        decode_section(&self.path, &creds, provider)
+    }
+
+    pub(crate) async fn update_section<T, R, F>(&self, provider: &str, f: F) -> Result<R>
+    where
+        T: Serialize + DeserializeOwned + Send + 'static,
+        F: FnOnce(&mut Option<T>) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let path = self.path.clone();
+        let provider = provider.to_owned();
+        self.update(move |creds| {
+            let mut section = decode_section::<T>(&path, creds, &provider)?;
+            let result = f(&mut section);
+            creds.set_section(&provider, encode_section(&path, section.as_ref())?);
+            Ok(result)
         })
-        .await
+        .await?
     }
 }
 
@@ -215,6 +163,51 @@ impl StoreGuard {
         let path = self.path.clone();
         blocking(move || write_credentials(&path, &creds)).await
     }
+
+    pub(crate) async fn load_section<T: DeserializeOwned>(
+        &self,
+        provider: &str,
+    ) -> Result<Option<T>> {
+        let creds = self.load().await?;
+        decode_section(&self.path, &creds, provider)
+    }
+
+    pub(crate) async fn save_section<T: Serialize>(
+        &self,
+        provider: &str,
+        section: Option<&T>,
+    ) -> Result<()> {
+        let mut creds = self.load().await?;
+        creds.set_section(provider, encode_section(&self.path, section)?);
+        self.save(creds).await
+    }
+}
+
+fn store_error(path: &Path, message: impl Into<String>) -> LlmError {
+    LlmError::Store {
+        path: path.to_path_buf(),
+        message: message.into(),
+    }
+}
+
+fn decode_section<T: DeserializeOwned>(
+    path: &Path,
+    creds: &Credentials,
+    provider: &str,
+) -> Result<Option<T>> {
+    creds
+        .section(provider)
+        .map(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|e| store_error(path, format!("invalid {provider} section: {e}")))
+        })
+        .transpose()
+}
+
+fn encode_section<T: Serialize>(path: &Path, section: Option<&T>) -> Result<Option<Value>> {
+    section
+        .map(|s| serde_json::to_value(s).map_err(|e| store_error(path, e.to_string())))
+        .transpose()
 }
 
 async fn blocking<T, F>(f: F) -> Result<T>
@@ -224,10 +217,7 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| LlmError::Store {
-            path: PathBuf::new(),
-            message: e.to_string(),
-        })?
+        .map_err(|e| store_error(Path::new(""), e.to_string()))?
 }
 
 fn lock_path(path: &Path) -> PathBuf {
@@ -250,15 +240,13 @@ fn read_credentials(path: &Path) -> Result<Credentials> {
     if text.trim().is_empty() {
         return Ok(Credentials::default());
     }
-    let creds: Credentials = serde_json::from_str(&text).map_err(|e| LlmError::Store {
-        path: path.to_path_buf(),
-        message: e.to_string(),
-    })?;
+    let creds: Credentials =
+        serde_json::from_str(&text).map_err(|e| store_error(path, e.to_string()))?;
     if creds.version > VERSION {
-        return Err(LlmError::Store {
-            path: path.to_path_buf(),
-            message: format!("unsupported version {}", creds.version),
-        });
+        return Err(store_error(
+            path,
+            format!("unsupported version {}", creds.version),
+        ));
     }
     Ok(creds)
 }
@@ -274,10 +262,7 @@ fn write_credentials(path: &Path, creds: &Credentials) -> Result<()> {
     file.as_file()
         .set_permissions(std::fs::Permissions::from_mode(0o600))
         .map_err(io_err)?;
-    let json = serde_json::to_vec_pretty(creds).map_err(|e| LlmError::Store {
-        path: path.to_path_buf(),
-        message: e.to_string(),
-    })?;
+    let json = serde_json::to_vec_pretty(creds).map_err(|e| store_error(path, e.to_string()))?;
     file.write_all(&json).map_err(io_err)?;
     file.as_file().sync_all().map_err(io_err)?;
     file.persist(path).map_err(|e| io_err(e.error))?;
@@ -286,17 +271,13 @@ fn write_credentials(path: &Path, creds: &Credentials) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
-    fn account(client_id: &str) -> ChatGptAccount {
-        ChatGptAccount {
-            client_id: client_id.into(),
-            issuer: "https://auth.openai.com".into(),
-            subject: "sub".into(),
-            email: None,
-            id_token: None,
-            tokens: None,
-        }
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct Section {
+        token: String,
     }
 
     #[tokio::test]
@@ -307,11 +288,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_writes_private_file() {
+    async fn sections_are_stored_at_top_level_with_private_mode() {
         let dir = tempfile::tempdir().unwrap();
         let store = CredentialStore::in_dir(&dir.path().join("nested"));
         store
-            .update(|c| c.openai.api_key = Some("sk-test".into()))
+            .update_section::<Section, _, _>("alpha", |s| *s = Some(Section { token: "t".into() }))
             .await
             .unwrap();
         let mode = std::fs::metadata(store.path())
@@ -319,32 +300,28 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
-        let creds = store.load().await.unwrap();
-        assert_eq!(creds.openai.api_key.as_deref(), Some("sk-test"));
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(store.path()).unwrap()).unwrap();
+        assert_eq!(raw, json!({"version": 1, "alpha": {"token": "t"}}));
+        let loaded: Option<Section> = store.load_section("alpha").await.unwrap();
+        assert_eq!(loaded.unwrap().token, "t");
+        store
+            .update_section::<Section, _, _>("alpha", |s| *s = None)
+            .await
+            .unwrap();
+        assert!(store.load().await.unwrap().sections.is_empty());
     }
 
     #[tokio::test]
-    async fn host_id_is_stable() {
+    async fn invalid_sections_are_reported() {
         let dir = tempfile::tempdir().unwrap();
         let store = CredentialStore::in_dir(dir.path());
-        let first = store.host_id().await.unwrap();
-        assert!(first.starts_with("urn:uuid:"));
-        assert_eq!(store.host_id().await.unwrap(), first);
-    }
-
-    #[tokio::test]
-    async fn upsert_replaces_and_activates() {
-        let mut creds = OpenAiCredentials::default();
-        creds.upsert(account("a"));
-        creds.upsert(account("b"));
-        let mut replaced = account("a");
-        replaced.email = Some("x@example.com".into());
-        creds.upsert(replaced);
-        assert_eq!(creds.accounts.len(), 2);
-        assert_eq!(
-            creds.active_account().unwrap().email.as_deref(),
-            Some("x@example.com")
-        );
+        store
+            .update(|c| c.set_section("alpha", Some(json!({"wrong": 1}))))
+            .await
+            .unwrap();
+        let err = store.load_section::<Section>("alpha").await.unwrap_err();
+        assert!(err.to_string().contains("invalid alpha section"));
     }
 
     #[tokio::test]
@@ -356,7 +333,7 @@ mod tests {
             let store = store.clone();
             tasks.push(tokio::spawn(async move {
                 store
-                    .update(move |c| c.openai.accounts.push(account(&i.to_string())))
+                    .update(move |c| c.set_section(&format!("p{i}"), Some(json!(i))))
                     .await
                     .unwrap();
             }));
@@ -364,6 +341,6 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
-        assert_eq!(store.load().await.unwrap().openai.accounts.len(), 8);
+        assert_eq!(store.load().await.unwrap().sections.len(), 8);
     }
 }

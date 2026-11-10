@@ -1,16 +1,31 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use super::callback::CallbackParams;
-use super::jwt::unverified_claims;
-use super::pkce::{Pkce, random_token};
-use super::siwc::token_error;
-use super::store::{CodexCredential, now_unix};
 use crate::error::{LlmError, Result};
+use crate::oauth::callback::CallbackParams;
+use crate::oauth::jwt::unverified_claims;
+use crate::oauth::pkce::{Pkce, random_token};
+use crate::oauth::token_error;
+use crate::store::now_unix;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexCredential {
+    pub account_id: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: u64,
+    pub saved_at: u64,
+}
+
+impl CodexCredential {
+    pub fn is_fresh(&self, margin_secs: u64) -> bool {
+        self.expires_at > now_unix() + margin_secs
+    }
+}
 
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
@@ -104,10 +119,6 @@ fn parse_manual_input(input: &str) -> CallbackParams {
 }
 
 impl CodexClient {
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::with_endpoints(http, CodexEndpoints::default())
-    }
-
     pub fn with_endpoints(http: reqwest::Client, endpoints: CodexEndpoints) -> Self {
         Self { http, endpoints }
     }
@@ -365,7 +376,7 @@ mod tests {
 
     #[test]
     fn browser_url_has_codex_parameters() {
-        let client = CodexClient::new(reqwest::Client::new());
+        let client = CodexClient::with_endpoints(reqwest::Client::new(), CodexEndpoints::default());
         let pending = client.start_browser().unwrap();
         let url = Url::parse(&pending.url).unwrap();
         let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();

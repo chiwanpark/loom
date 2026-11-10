@@ -1,22 +1,25 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use loom_llm::auth::codex::{ACCOUNT_CLAIM, CodexClient, CodexEndpoints};
-use loom_llm::auth::siwc::{SiwcClient, SiwcEndpoints};
-use loom_llm::{Auth, CredentialStore};
+use loom_config::{LlmConfig, ProvidersConfig};
+use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ProviderId, ProviderSet};
 use serde_json::{Value, json};
 use wiremock::MockServer;
 
 pub const TEST_KEY: &[u8] = include_bytes!("../fixtures/test_rsa.pem");
 pub const TEST_JWKS: &str = include_str!("../fixtures/test_jwks.json");
+pub const OPENAI: &str = "openai";
+pub const CODEX: &str = "openai-codex";
+const ACCOUNT_CLAIM: &str = "https://api.openai.com/auth";
 
 pub struct Harness {
     pub server: MockServer,
     pub auth: Auth,
     pub store: CredentialStore,
-    pub http: reqwest::Client,
     _dir: tempfile::TempDir,
 }
 
@@ -25,20 +28,49 @@ impl Harness {
         let server = MockServer::start().await;
         let dir = tempfile::tempdir().unwrap();
         let store = CredentialStore::in_dir(dir.path());
-        let http = reqwest::Client::new();
-        let auth = Auth::with_clients(
-            store.clone(),
-            SiwcClient::with_endpoints(http.clone(), SiwcEndpoints::for_issuer(&server.uri())),
-            CodexClient::with_endpoints(http.clone(), CodexEndpoints { base: server.uri() }),
-        );
+        let auth = Auth::new(store.clone(), HttpClient::new())
+            .with_auth_base_url(OPENAI, server.uri())
+            .with_auth_base_url(CODEX, server.uri());
         Self {
             server,
             auth,
             store,
-            http,
             _dir: dir,
         }
     }
+
+    pub fn provider(&self, id: &str, settings: Value) -> Arc<dyn LlmProvider> {
+        let config = LlmConfig {
+            default_model: None,
+            providers: ProvidersConfig([(id.to_owned(), Some(settings))].into_iter().collect()),
+        };
+        ProviderSet::from_config(&config, &self.auth)
+            .unwrap()
+            .get(&ProviderId::new(id))
+            .unwrap()
+    }
+
+    pub async fn set_section(&self, id: &str, value: Value) {
+        let id = id.to_owned();
+        self.store
+            .update(move |c| c.set_section(&id, Some(value)))
+            .await
+            .unwrap();
+    }
+
+    pub async fn section(&self, id: &str) -> Value {
+        self.store
+            .load()
+            .await
+            .unwrap()
+            .section(id)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+}
+
+pub fn id(value: &str) -> ProviderId {
+    ProviderId::new(value)
 }
 
 pub fn sign_id_token(claims: &Value) -> String {

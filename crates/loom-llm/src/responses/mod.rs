@@ -1,7 +1,5 @@
-pub mod http;
-pub mod request;
-pub mod stream;
+pub(crate) mod http;
+pub(crate) mod request;
+pub(crate) mod stream;
 
-pub use http::RetryPolicy;
 pub use request::{Flavor, build_body};
-pub use stream::ResponsesState;

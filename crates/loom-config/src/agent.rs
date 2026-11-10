@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::dirs::expand_home;
 use crate::error::ConfigError;
@@ -107,64 +109,29 @@ pub struct LlmConfig {
     pub providers: ProvidersConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct ProvidersConfig {
-    pub openai: Option<OpenAiProviderConfig>,
-    #[serde(rename = "openai-codex")]
-    pub openai_codex: Option<CodexProviderConfig>,
-}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ProvidersConfig(pub BTreeMap<String, Option<Value>>);
 
-impl Default for ProvidersConfig {
-    fn default() -> Self {
-        Self {
-            openai: Some(OpenAiProviderConfig::default()),
-            openai_codex: Some(CodexProviderConfig::default()),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSetting<'a> {
+    Default,
+    Disabled,
+    Configured(&'a Value),
 }
 
 impl ProvidersConfig {
-    pub fn is_enabled(&self, provider: &str) -> bool {
-        match provider {
-            "openai" => self.openai.is_some(),
-            "openai-codex" => self.openai_codex.is_some(),
-            _ => false,
+    pub fn setting(&self, provider: &str) -> ProviderSetting<'_> {
+        match self.0.get(provider) {
+            None => ProviderSetting::Default,
+            Some(None) | Some(Some(Value::Null)) => ProviderSetting::Disabled,
+            Some(Some(value)) => ProviderSetting::Configured(value),
         }
     }
-}
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct OpenAiProviderConfig {
-    pub auth: OpenAiAuth,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum OpenAiAuth {
-    #[default]
-    Chatgpt,
-    ApiKey,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct CodexProviderConfig {
-    pub auth: CodexAuth,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CodexAuth {
-    #[default]
-    CodexOauth,
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -383,44 +350,20 @@ impl AgentConfig {
                     format!("{model:?} must have the form <provider>/<model>"),
                 ));
             };
-            if name.is_empty() {
+            if provider.is_empty() || name.is_empty() {
                 return Err(invalid(
                     "llm.default_model",
-                    format!("{model:?} has no model name"),
-                ));
-            }
-            if !self.llm.providers.is_enabled(provider) {
-                return Err(invalid(
-                    "llm.default_model",
-                    format!("provider {provider:?} is not configured; use openai or openai-codex"),
+                    format!("{model:?} must have the form <provider>/<model>"),
                 ));
             }
         }
-        if let Some(openai) = &self.llm.providers.openai {
-            if let Some(url) = &openai.base_url {
-                check_url_scheme(url, &["https://", "http://"])
-                    .map_err(|message| invalid("llm.providers.openai.base_url", message))?;
-            }
-            if openai
-                .api_key_env
-                .as_deref()
-                .is_some_and(|env| env.trim().is_empty())
-            {
+        for id in self.llm.providers.ids() {
+            if id.is_empty() || id.contains('/') {
                 return Err(invalid(
-                    "llm.providers.openai.api_key_env",
-                    "must not be empty".into(),
+                    "llm.providers",
+                    format!("{id:?} is not a valid provider ID"),
                 ));
             }
-        }
-        if let Some(url) = self
-            .llm
-            .providers
-            .openai_codex
-            .as_ref()
-            .and_then(|codex| codex.base_url.as_ref())
-        {
-            check_url_scheme(url, &["https://", "http://"])
-                .map_err(|message| invalid("llm.providers.openai-codex.base_url", message))?;
         }
 
         if self.tools.read.max_lines == 0 {

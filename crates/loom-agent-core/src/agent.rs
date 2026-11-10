@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use loom_config::{AgentConfig, Dirs};
-use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
+use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, http_client};
 use loom_proto::{SessionId, SessionInfo};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,6 @@ struct Inner {
     workspace: Arc<Workspace>,
     dirs: Dirs,
     auth: Auth,
-    http: HttpClient,
     overrides: Vec<Arc<dyn LlmProvider>>,
     runtime: RuntimeCell,
     sessions: Mutex<BTreeMap<SessionId, Session>>,
@@ -85,15 +84,14 @@ impl Agent {
         let workspace = Arc::new(Workspace::new(&options.workspace)?);
         let http = options.http.unwrap_or_else(http_client);
         let store = CredentialStore::in_dir(&data_dir(&options.config, &options.dirs));
-        let auth = Auth::new(store, http.clone());
-        let runtime = Runtime::build(options.config, &auth, &http, &options.providers);
+        let auth = Auth::new(store, http);
+        let runtime = Runtime::build(options.config, &auth, &options.providers)?;
         let (notices, _) = broadcast::channel(64);
         Ok(Self {
             inner: Arc::new(Inner {
                 workspace,
                 dirs: options.dirs,
                 auth,
-                http,
                 overrides: options.providers,
                 runtime: RuntimeCell::new(runtime),
                 sessions: Mutex::new(BTreeMap::new()),
@@ -126,28 +124,24 @@ impl Agent {
         let _ = self.inner.notices.send(notice);
     }
 
-    pub fn apply_config(&self, mut next: AgentConfig) -> Vec<String> {
+    pub fn apply_config(&self, mut next: AgentConfig) -> Result<Vec<String>> {
         let current = self.config();
         let restart = restart_required(&current, &next);
         next.relay = current.relay.clone();
         next.socket = current.socket.clone();
         next.storage = current.storage.clone();
         next.lifecycle = current.lifecycle.clone();
-        let runtime = Runtime::build(
-            next,
-            &self.inner.auth,
-            &self.inner.http,
-            &self.inner.overrides,
-        );
+        let runtime = Runtime::build(next, &self.inner.auth, &self.inner.overrides)?;
         self.inner.runtime.replace(runtime);
         self.notify(AgentNotice::ConfigReloaded {
             restart_required: restart.clone(),
         });
-        restart
+        Ok(restart)
     }
 
     pub fn create_session(&self, model: Option<&str>) -> Result<Session> {
-        let model = model.map(ModelRef::parse).transpose()?;
+        let runtime = self.inner.runtime.current();
+        let model = model.map(|m| runtime.parse_model(m)).transpose()?;
         let session = Session::new(SessionParams {
             runtime: self.inner.runtime.clone(),
             workspace: self.inner.workspace.clone(),

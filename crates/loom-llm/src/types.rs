@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::provider::ProviderId;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -24,10 +26,10 @@ impl InputContent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub call_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub item_id: Option<String>,
     pub name: String,
     pub arguments: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_data: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,14 +38,12 @@ pub enum AssistantContent {
     Text {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        item_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        phase: Option<String>,
+        provider_data: Option<Value>,
     },
     Reasoning {
         summary: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        item: Option<Value>,
+        provider_data: Option<Value>,
     },
     ToolCall(ToolCall),
 }
@@ -68,7 +68,7 @@ pub struct Usage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantMessage {
-    pub provider: String,
+    pub provider: ProviderId,
     pub model: String,
     pub content: Vec<AssistantContent>,
     #[serde(default)]
@@ -76,6 +76,15 @@ pub struct AssistantMessage {
     pub stop_reason: StopReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<String>,
+}
+
+impl AssistantContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            provider_data: None,
+        }
+    }
 }
 
 impl AssistantMessage {

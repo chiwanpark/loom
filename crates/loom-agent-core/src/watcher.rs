@@ -65,8 +65,15 @@ pub async fn reload(agent: &Agent, path: &Path, dirs: &Dirs) {
     match loaded {
         Ok(Ok(config)) => {
             if *agent.config() != config {
-                let restart = agent.apply_config(config);
-                tracing::info!(?restart, "configuration reloaded");
+                match agent.apply_config(config) {
+                    Ok(restart) => tracing::info!(?restart, "configuration reloaded"),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "configuration rejected");
+                        agent.notify(AgentNotice::ConfigRejected {
+                            message: err.to_string(),
+                        });
+                    }
+                }
             }
         }
         Ok(Err(err)) => {

@@ -10,7 +10,7 @@ use loom_proto::{SessionEvent, TurnOutcome};
 use serde_json::json;
 use tokio::sync::broadcast;
 
-const BASE: &str = "llm:\n  default_model: openai/test-model\npolicy:\n  default: ask\n";
+const BASE: &str = "llm:\n  default_model: scripted/test-model\npolicy:\n  default: ask\n";
 
 async fn next_notice(rx: &mut broadcast::Receiver<AgentNotice>) -> AgentNotice {
     tokio::time::timeout(Duration::from_secs(10), rx.recv())
@@ -84,4 +84,15 @@ async fn reloads_config_from_disk() {
     let config = h.agent.config();
     assert_eq!(config.policy.default, PolicyAction::Deny);
     assert_eq!(config.socket.dir, None);
+
+    replace(
+        &path,
+        "llm:\n  default_model: scripted/test-model\n  providers:\n    missing-provider: {}\n",
+    );
+    let notice = next_notice(&mut notices).await;
+    assert!(
+        matches!(&notice, AgentNotice::ConfigRejected { message } if message.contains("missing-provider")),
+        "{notice:?}"
+    );
+    assert_eq!(h.agent.config().policy.default, PolicyAction::Deny);
 }

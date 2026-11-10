@@ -117,18 +117,22 @@ fn convert_assistant(
     let mut text_index = 0;
     for content in &message.content {
         match content {
-            AssistantContent::Reasoning { item, .. } => {
-                if same_model && let Some(item) = item {
+            AssistantContent::Reasoning { provider_data, .. } => {
+                if same_model
+                    && let Some(item) = provider_data
+                    && item.get("type").and_then(Value::as_str) == Some("reasoning")
+                {
                     input.push(item.clone());
                 }
             }
             AssistantContent::Text {
                 text,
-                item_id,
-                phase,
+                provider_data,
             } => {
-                let id = match item_id {
-                    Some(id) if same_provider && id.len() <= 64 => id.clone(),
+                let data = provider_data.as_ref().filter(|_| same_provider);
+                let field = |key: &str| data.and_then(|d| d.get(key)).and_then(Value::as_str);
+                let id = match field("id") {
+                    Some(id) if id.len() <= 64 => id.to_owned(),
                     _ if text_index == 0 => format!("msg_loom_{index}"),
                     _ => format!("msg_loom_{index}_{text_index}"),
                 };
@@ -140,9 +144,7 @@ fn convert_assistant(
                     "status": "completed",
                     "id": id,
                 });
-                if let Some(phase) = phase
-                    && same_provider
-                {
+                if let Some(phase) = field("phase") {
                     item["phase"] = json!(phase);
                 }
                 input.push(item);
@@ -158,7 +160,12 @@ fn convert_assistant(
                     "name": call.name,
                     "arguments": arguments,
                 });
-                if let Some(id) = &call.item_id
+                let item_id = call
+                    .provider_data
+                    .as_ref()
+                    .and_then(|d| d.get("id"))
+                    .and_then(Value::as_str);
+                if let Some(id) = item_id
                     && same_model
                     && id.starts_with("fc")
                 {
@@ -220,20 +227,19 @@ mod tests {
                     content: vec![
                         AssistantContent::Reasoning {
                             summary: "think".into(),
-                            item: Some(
+                            provider_data: Some(
                                 json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "enc"}),
                             ),
                         },
                         AssistantContent::Text {
                             text: "calling".into(),
-                            item_id: Some("msg_1".into()),
-                            phase: None,
+                            provider_data: Some(json!({"id": "msg_1"})),
                         },
                         AssistantContent::ToolCall(ToolCall {
                             call_id: "call_1".into(),
-                            item_id: Some("fc_1".into()),
                             name: "read".into(),
                             arguments: json!({"path": "a"}),
+                            provider_data: Some(json!({"id": "fc_1"})),
                         }),
                     ],
                     usage: Usage::default(),

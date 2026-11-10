@@ -49,7 +49,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::agent::{LogLevel, OpenAiAuth};
+    use crate::agent::{LogLevel, ProviderSetting};
     use crate::units::ByteSize;
 
     const EXAMPLE: &str = include_str!("../tests/fixtures/agent.yaml");
@@ -90,17 +90,19 @@ mod tests {
         assert_eq!(config.tools.read.max_bytes, ByteSize::kib(50));
         assert_eq!(config.policy.rules.len(), 3);
         assert_eq!(config.policy.rules[1].command_prefix.len(), 4);
+        assert_eq!(config.llm.providers.0.len(), 2);
+        assert!(config.llm.default_model.is_some());
     }
 
     #[test]
     fn empty_file_uses_defaults() {
         let config = parse("").unwrap();
         assert_eq!(config.allowed_roots, [PathBuf::from("/home/u")]);
+        assert!(config.llm.providers.0.is_empty());
         assert_eq!(
-            config.llm.providers.openai.unwrap().auth,
-            OpenAiAuth::Chatgpt
+            config.llm.providers.setting("any"),
+            ProviderSetting::Default
         );
-        assert!(config.llm.providers.openai_codex.is_some());
     }
 
     #[test]
@@ -135,9 +137,15 @@ mod tests {
 
     #[test]
     fn disables_provider_with_null() {
-        let config = parse("llm:\n  providers:\n    openai-codex: null\n").unwrap();
-        assert!(config.llm.providers.openai_codex.is_none());
-        assert!(config.llm.providers.openai.is_some());
+        let config =
+            parse("llm:\n  providers:\n    first: null\n    second:\n      key: value\n").unwrap();
+        let providers = &config.llm.providers;
+        assert_eq!(providers.setting("first"), ProviderSetting::Disabled);
+        assert_eq!(
+            providers.setting("second"),
+            ProviderSetting::Configured(&serde_json::json!({"key": "value"}))
+        );
+        assert_eq!(providers.setting("third"), ProviderSetting::Default);
     }
 
     #[test]
@@ -147,11 +155,9 @@ mod tests {
             ("relay:\n  enabled: true\n", "relay.url"),
             ("relay:\n  enabled: true\n  url: https://x\n", "relay.url"),
             ("llm:\n  default_model: gpt-5\n", "llm.default_model"),
-            ("llm:\n  default_model: other/gpt-5\n", "llm.default_model"),
-            (
-                "llm:\n  default_model: openai/gpt-5\n  providers:\n    openai: null\n",
-                "llm.default_model",
-            ),
+            ("llm:\n  default_model: /model\n", "llm.default_model"),
+            ("llm:\n  default_model: provider/\n", "llm.default_model"),
+            ("llm:\n  providers:\n    a/b: {}\n", "llm.providers"),
             (
                 "policy:\n  rules:\n  - tool: read\n    action: allow\n    command_prefix: [ls]\n",
                 "policy.rules[0].command_prefix",

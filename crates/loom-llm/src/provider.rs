@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 
 use async_trait::async_trait;
@@ -10,32 +11,51 @@ use crate::types::{AssistantMessage, CompletionChunk, CompletionRequest, ModelIn
 
 pub type ChunkStream = BoxStream<'static, Result<CompletionChunk>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ProviderId {
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "openai-codex")]
-    OpenAiCodex,
-}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderId(Cow<'static, str>);
 
 impl ProviderId {
-    pub const ALL: [ProviderId; 2] = [ProviderId::OpenAi, ProviderId::OpenAiCodex];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAi => "openai",
-            Self::OpenAiCodex => "openai-codex",
-        }
+    pub const fn from_static(id: &'static str) -> Self {
+        Self(Cow::Borrowed(id))
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|p| p.as_str() == value)
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(Cow::Owned(id.into()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 impl fmt::Display for ProviderId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for ProviderId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for ProviderId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl PartialEq<str> for ProviderId {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for ProviderId {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
     }
 }
 

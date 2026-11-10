@@ -9,25 +9,9 @@ use serde_json::Value;
 use super::stream::ResponsesState;
 use crate::error::{LlmError, Result};
 use crate::provider::ChunkStream;
+use crate::retry::RetryPolicy;
 use crate::sse::{SseEvent, decode_sse};
 use crate::types::CompletionChunk;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub base_delay: Duration,
-    pub max_delay: Duration,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries: 2,
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-        }
-    }
-}
 
 pub(crate) async fn send_with_retry<F>(
     provider: &str,
@@ -132,7 +116,7 @@ pub(crate) async fn api_error(provider: &str, response: reqwest::Response) -> Ll
         .and_then(|e| e.get("resets_at"))
         .and_then(Value::as_u64)
     {
-        let now = crate::auth::store::now_unix();
+        let now = crate::store::now_unix();
         let minutes = resets_at.saturating_sub(now).div_ceil(60);
         message = format!("{message} (resets in about {minutes} min)");
     }

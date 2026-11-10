@@ -16,7 +16,9 @@ use loom_llm::{
 use loom_proto::{SessionEvent, TurnOutcome};
 use serde_json::Value;
 
+pub const PROVIDER: &str = "scripted";
 pub const MODEL: &str = "test-model";
+pub const MODEL_REF: &str = "scripted/test-model";
 
 pub enum Script {
     Reply(AssistantMessage),
@@ -26,12 +28,11 @@ pub enum Script {
 
 pub fn text(reply: &str) -> Script {
     Script::Reply(AssistantMessage {
-        provider: "openai".into(),
+        provider: ProviderId::from_static(PROVIDER),
         model: MODEL.into(),
         content: vec![AssistantContent::Text {
             text: reply.into(),
-            item_id: None,
-            phase: None,
+            provider_data: None,
         }],
         usage: Usage {
             input: 10,
@@ -46,16 +47,16 @@ pub fn text(reply: &str) -> Script {
 
 pub fn calls(calls: &[(&str, &str, Value)]) -> Script {
     Script::Reply(AssistantMessage {
-        provider: "openai".into(),
+        provider: ProviderId::from_static(PROVIDER),
         model: MODEL.into(),
         content: calls
             .iter()
             .map(|(id, name, args)| {
                 AssistantContent::ToolCall(ToolCall {
                     call_id: (*id).into(),
-                    item_id: None,
                     name: (*name).into(),
                     arguments: args.clone(),
+                    provider_data: None,
                 })
             })
             .collect(),
@@ -91,7 +92,7 @@ impl ScriptedProvider {
 #[async_trait]
 impl LlmProvider for ScriptedProvider {
     fn id(&self) -> ProviderId {
-        ProviderId::OpenAi
+        ProviderId::from_static(PROVIDER)
     }
 
     async fn stream(&self, request: CompletionRequest) -> loom_llm::Result<ChunkStream> {
@@ -104,7 +105,7 @@ impl LlmProvider for ScriptedProvider {
             .unwrap_or_else(|| text("(no more scripts)"));
         match script {
             Script::Fail(message) => Err(LlmError::Stream {
-                provider: "openai".into(),
+                provider: PROVIDER.into(),
                 code: None,
                 message,
             }),
@@ -151,7 +152,7 @@ pub fn dirs_in(root: &std::path::Path) -> Dirs {
 
 pub fn test_config(default: PolicyAction) -> AgentConfig {
     let mut config = AgentConfig::default();
-    config.llm.default_model = Some(format!("openai/{MODEL}"));
+    config.llm.default_model = Some(MODEL_REF.into());
     config.policy.default = default;
     config
 }

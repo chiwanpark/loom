@@ -3,7 +3,8 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    Harness, Script, calls, collect_until, next_event, outcome, run_turn, test_config, text,
+    Harness, MODEL_REF, Script, calls, collect_until, next_event, outcome, run_turn, test_config,
+    text,
 };
 use loom_agent_core::CoreError;
 use loom_config::{AgentConfig, PolicyAction, PolicyRule};
@@ -59,7 +60,7 @@ async fn text_turn_streams_and_builds_request() {
     assert!(events.iter().any(|e| matches!(
         e,
         SessionEvent::AssistantMessage { text, model, .. }
-            if text == "Hello there" && model == "openai/test-model"
+            if text == "Hello there" && model == MODEL_REF
     )));
     assert!(events.iter().any(|e| matches!(
         e,
@@ -405,10 +406,21 @@ async fn prompt_validation() {
         session.send_prompt(vec![ContentPart::text("  ")]),
         Err(CoreError::EmptyPrompt)
     ));
-    session.set_model(Some("openai/test-model")).unwrap();
+    session.set_model(Some(MODEL_REF)).unwrap();
     assert!(session.set_model(Some("bogus")).is_err());
     let mut sub = session.subscribe(None);
     let events = run_turn(&session, &mut sub, "hi").await;
     assert_eq!(outcome(&events), Some(TurnOutcome::Completed));
     assert!(h.agent.create_session(Some("nope/x")).is_err());
+}
+
+#[tokio::test]
+async fn unknown_default_model_provider_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = test_config(PolicyAction::Ask);
+    config.llm.default_model = Some("missing/model".into());
+    let options =
+        loom_agent_core::AgentOptions::new(dir.path(), config, common::dirs_in(dir.path()));
+    let err = loom_agent_core::Agent::new(options).err().unwrap();
+    assert!(err.to_string().contains("missing"), "{err}");
 }

@@ -5,11 +5,10 @@ mod load;
 mod units;
 
 pub use agent::{
-    AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, CodexAuth, CodexProviderConfig,
-    ContextConfig, InstructionsConfig, LifecycleConfig, LlmConfig, LogLevel, LoggingConfig,
-    OpenAiAuth, OpenAiProviderConfig, PolicyAction, PolicyConfig, PolicyRule, ProvidersConfig,
-    ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig, ShellToolConfig, SocketConfig,
-    StorageConfig, ToolsConfig,
+    AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, InstructionsConfig,
+    LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, PolicyAction, PolicyConfig, PolicyRule,
+    ProviderSetting, ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig,
+    ShellToolConfig, SocketConfig, StorageConfig, ToolsConfig,
 };
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;

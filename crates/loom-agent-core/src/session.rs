@@ -141,7 +141,8 @@ impl Session {
     }
 
     pub fn set_model(&self, model: Option<&str>) -> Result<()> {
-        let model = model.map(ModelRef::parse).transpose()?;
+        let runtime = self.core.runtime.current();
+        let model = model.map(|m| runtime.parse_model(m)).transpose()?;
         self.core.lock().model = model;
         Ok(())
     }
@@ -168,7 +169,7 @@ impl Session {
         }
         let runtime = self.core.runtime.current();
         let model = self.core.model(&runtime)?;
-        runtime.providers.get(model.provider)?;
+        runtime.providers.get(&model.provider)?;
         let mut state = self.core.lock();
         if state.turn.is_some() {
             return Err(CoreError::Busy);
@@ -259,7 +260,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         let model = core.model(&runtime)?;
         let provider = runtime
             .providers
-            .get(model.provider)
+            .get(&model.provider)
             .map_err(CoreError::from)?;
         let specs = runtime.tools.specs();
         let prompt = build_system_prompt(&PromptInputs {

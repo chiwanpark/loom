@@ -1,8 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::error::{LlmError, Result};
+use crate::provider::ProviderId;
 use crate::types::{
     AssistantContent, AssistantMessage, CompletionChunk, StopReason, ToolCall, Usage,
 };
@@ -32,6 +33,20 @@ pub struct ResponsesState {
     stop_reason: Option<StopReason>,
     response_id: Option<String>,
     started: bool,
+}
+
+pub(crate) fn item_ref(item: &Value) -> Option<Value> {
+    str_field(item, "id").map(|id| json!({ "id": id }))
+}
+
+pub(crate) fn message_ref(item: &Value) -> Option<Value> {
+    let mut data = serde_json::Map::new();
+    for key in ["id", "phase"] {
+        if let Some(value) = str_field(item, key) {
+            data.insert(key.into(), Value::String(value));
+        }
+    }
+    (!data.is_empty()).then_some(Value::Object(data))
 }
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
@@ -202,7 +217,7 @@ impl ResponsesState {
                 SlotKind::Reasoning,
                 AssistantContent::Reasoning {
                     summary: String::new(),
-                    item: None,
+                    provider_data: None,
                 },
                 CompletionChunk::ReasoningStart { index },
             ),
@@ -210,8 +225,7 @@ impl ResponsesState {
                 SlotKind::Text,
                 AssistantContent::Text {
                     text: String::new(),
-                    item_id: None,
-                    phase: None,
+                    provider_data: None,
                 },
                 CompletionChunk::TextStart { index },
             ),
@@ -223,9 +237,9 @@ impl ResponsesState {
                     SlotKind::ToolCall,
                     AssistantContent::ToolCall(ToolCall {
                         call_id: call_id.clone(),
-                        item_id: str_field(item, "id"),
                         name: name.clone(),
                         arguments: Value::Null,
+                        provider_data: item_ref(item),
                     }),
                     CompletionChunk::ToolCallStart {
                         index,
@@ -263,7 +277,7 @@ impl ResponsesState {
             (
                 AssistantContent::Reasoning {
                     summary,
-                    item: stored,
+                    provider_data: stored,
                 },
                 Some("reasoning"),
             ) => {
@@ -294,8 +308,7 @@ impl ResponsesState {
             (
                 AssistantContent::Text {
                     text,
-                    item_id,
-                    phase,
+                    provider_data,
                 },
                 Some("message"),
             ) => {
@@ -309,8 +322,7 @@ impl ResponsesState {
                         })
                         .collect();
                 }
-                *item_id = str_field(item, "id");
-                *phase = str_field(item, "phase");
+                *provider_data = message_ref(item);
                 out.push(CompletionChunk::TextEnd {
                     index,
                     text: text.clone(),
@@ -323,8 +335,8 @@ impl ResponsesState {
                 } else {
                     serde_json::from_str(&raw).unwrap_or(Value::String(raw))
                 };
-                if let Some(id) = str_field(item, "id") {
-                    call.item_id = Some(id);
+                if let Some(data) = item_ref(item) {
+                    call.provider_data = Some(data);
                 }
                 self.unfinished.remove(&index);
                 out.push(CompletionChunk::ToolCallEnd {
@@ -414,7 +426,7 @@ impl ResponsesState {
             });
         }
         Ok(AssistantMessage {
-            provider: self.provider,
+            provider: ProviderId::new(self.provider),
             model: self.model,
             content: self.content,
             usage: self.usage,
@@ -477,8 +489,7 @@ mod tests {
             message.content[0],
             AssistantContent::Text {
                 text: "Hello".into(),
-                item_id: Some("msg_1".into()),
-                phase: Some("final_answer".into())
+                provider_data: Some(json!({"id": "msg_1", "phase": "final_answer"}))
             }
         );
         assert!(matches!(chunks[0], CompletionChunk::Start { .. }));
@@ -510,12 +521,12 @@ mod tests {
             message.content[0],
             AssistantContent::Reasoning {
                 summary: "Plan".into(),
-                item: Some(reasoning_item)
+                provider_data: Some(reasoning_item)
             }
         );
         let call = message.tool_calls().next().unwrap();
         assert_eq!(call.call_id, "call_1");
-        assert_eq!(call.item_id.as_deref(), Some("fc_1"));
+        assert_eq!(call.provider_data, Some(json!({"id": "fc_1"})));
         assert_eq!(call.arguments, json!({"path": "a"}));
         assert!(chunks.contains(&CompletionChunk::ToolCallDelta {
             index: 1,

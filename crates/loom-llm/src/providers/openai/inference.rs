@@ -1,65 +1,54 @@
 use async_trait::async_trait;
-use loom_config::{OpenAiAuth, OpenAiProviderConfig};
 use serde_json::Value;
 
-use crate::auth::Auth;
+use super::{AuthMode, ID, Settings, chatgpt_access_token, stored_api_key};
 use crate::error::{LlmError, Result};
+use crate::kind::Shared;
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{api_error, chunk_stream, send_with_retry};
-use crate::responses::{Flavor, RetryPolicy, build_body};
+use crate::responses::{Flavor, build_body};
 use crate::types::{CompletionRequest, ModelInfo};
 
-pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-pub const DEFAULT_API_KEY_ENV: &str = "OPENAI_API_KEY";
+const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_API_KEY_ENV: &str = "OPENAI_API_KEY";
 
-pub struct OpenAiProvider {
-    http: reqwest::Client,
-    auth: Auth,
-    mode: OpenAiAuth,
+pub(crate) struct OpenAiProvider {
+    shared: Shared,
+    mode: AuthMode,
     api_key_env: String,
     base_url: String,
-    retry: RetryPolicy,
 }
 
 impl OpenAiProvider {
-    pub fn new(http: reqwest::Client, auth: Auth, config: &OpenAiProviderConfig) -> Self {
+    pub(crate) fn new(shared: Shared, settings: Settings) -> Self {
         Self {
-            http,
-            auth,
-            mode: config.auth,
-            api_key_env: config
+            shared,
+            mode: settings.auth,
+            api_key_env: settings
                 .api_key_env
-                .clone()
                 .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_owned()),
-            base_url: config
+            base_url: settings
                 .base_url
-                .clone()
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned())
                 .trim_end_matches('/')
                 .to_owned(),
-            retry: RetryPolicy::default(),
         }
-    }
-
-    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
-        self.retry = retry;
-        self
     }
 
     async fn credential(&self) -> Result<(String, Flavor)> {
         match self.mode {
-            OpenAiAuth::Chatgpt => Ok((self.auth.chatgpt_access_token().await?, Flavor::ChatGpt)),
-            OpenAiAuth::ApiKey => {
+            AuthMode::Chatgpt => Ok((chatgpt_access_token(&self.shared).await?, Flavor::ChatGpt)),
+            AuthMode::ApiKey => {
                 let env = std::env::var(&self.api_key_env)
                     .ok()
                     .filter(|k| !k.trim().is_empty());
                 let key = match env {
                     Some(key) => Some(key),
-                    None => self.auth.stored_api_key().await?,
+                    None => stored_api_key(&self.shared).await?,
                 };
                 key.map(|k| (k, Flavor::ApiKey))
                     .ok_or_else(|| LlmError::NotAuthenticated {
-                        provider: ProviderId::OpenAi.as_str().to_owned(),
+                        provider: ID.to_string(),
                         message: format!("set {} or store an API key", self.api_key_env),
                     })
             }
@@ -70,16 +59,18 @@ impl OpenAiProvider {
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     fn id(&self) -> ProviderId {
-        ProviderId::OpenAi
+        ID
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<ChunkStream> {
-        let provider = self.id().as_str();
+        let id = ID;
+        let provider = id.as_str();
         let (token, flavor) = self.credential().await?;
         let body = build_body(provider, flavor, &request);
         let url = format!("{}/responses", self.base_url);
-        let response = send_with_retry(provider, self.retry, || {
-            self.http
+        let response = send_with_retry(provider, self.shared.retry, || {
+            self.shared
+                .http
                 .post(&url)
                 .bearer_auth(&token)
                 .header("accept", "text/event-stream")
@@ -90,9 +81,11 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let provider = self.id().as_str();
+        let id = ID;
+        let provider = id.as_str();
         let (token, _) = self.credential().await?;
         let response = self
+            .shared
             .http
             .get(format!("{}/models", self.base_url))
             .bearer_auth(&token)

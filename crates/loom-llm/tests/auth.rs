@@ -2,9 +2,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::{Harness, TEST_JWKS, codex_access_token, now, sign_id_token};
-use loom_llm::auth::CallbackParams;
-use loom_llm::{LlmError, LoginInput, LoginMethod, LoginStarted, ProviderId};
+use common::{CODEX, Harness, OPENAI, TEST_JWKS, codex_access_token, id, now, sign_id_token};
+use loom_llm::{LlmError, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{body_string_contains, method, path};
@@ -30,27 +29,30 @@ async fn mount_discovery(h: &Harness) {
         .await;
 }
 
-async fn start_siwc(h: &Harness) -> (String, HashMap<String, String>) {
+fn query(url: &str) -> HashMap<String, String> {
+    url::Url::parse(url)
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect()
+}
+
+async fn start_browser(h: &Harness, provider: &str, account: Option<&str>) -> (String, String) {
     let started = h
         .auth
         .start_login(
-            ProviderId::OpenAi,
+            &id(provider),
             LoginMethod::Browser {
                 redirect_uri: Some(REDIRECT.into()),
-                account: None,
+                account: account.map(str::to_owned),
             },
         )
         .await
         .unwrap();
-    let LoginStarted::Browser { login_id, url, .. } = started else {
-        panic!("expected browser login");
+    let LoginPrompt::OpenUrl { url, .. } = started.prompt else {
+        panic!("expected a browser prompt");
     };
-    let query = url::Url::parse(&url)
-        .unwrap()
-        .query_pairs()
-        .into_owned()
-        .collect();
-    (login_id, query)
+    (started.login_id, url)
 }
 
 fn id_token(h: &Harness, client_id: &str, nonce: &str) -> String {
@@ -74,46 +76,66 @@ async fn mount_token(h: &Harness, grant: &str, body: Value) {
         .await;
 }
 
-fn callback(query: &HashMap<String, String>, client_id: Option<&str>) -> LoginInput {
-    LoginInput::Callback(CallbackParams {
-        code: Some("auth-code".into()),
-        state: Some(query["state"].clone()),
-        client_id: client_id.map(str::to_owned),
-        ..CallbackParams::default()
+fn redirect(state: &str, client_id: Option<&str>) -> LoginInput {
+    let mut url = format!("{REDIRECT}?code=auth-code&state={state}");
+    if let Some(client_id) = client_id {
+        url.push_str(&format!("&client_id={client_id}"));
+    }
+    LoginInput::Redirect { url }
+}
+
+fn grant(h: &Harness, nonce: &str, access: &str) -> Value {
+    json!({
+        "access_token": access,
+        "refresh_token": "refresh-1",
+        "id_token": id_token(h, "oaiapp_1", nonce),
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
     })
 }
 
 #[tokio::test]
-async fn chatgpt_login_registers_and_refreshes() {
+async fn status_describes_login_methods() {
+    let h = Harness::new().await;
+    let status = h.auth.status().await.unwrap();
+    let openai = status.iter().find(|s| s.provider == OPENAI).unwrap();
+    assert!(openai.login_methods.contains(&LoginMethodInfo::ApiKey));
+    assert!(openai.login_methods.iter().any(|m| matches!(
+        m,
+        LoginMethodInfo::Browser { redirect } if redirect.port.is_none() && redirect.host == "127.0.0.1"
+    )));
+    let codex = status.iter().find(|s| s.provider == CODEX).unwrap();
+    assert!(codex.login_methods.contains(&LoginMethodInfo::DeviceCode));
+    assert!(codex.login_methods.iter().any(|m| matches!(
+        m,
+        LoginMethodInfo::Browser { redirect } if redirect.uri(1455) == "http://localhost:1455/auth/callback"
+    )));
+    assert!(status.iter().all(|s| !s.signed_in()));
+}
+
+#[tokio::test]
+async fn chatgpt_login_registers_refreshes_and_reauthorizes() {
     let h = Harness::new().await;
     mount_discovery(&h).await;
-    let (login_id, query) = start_siwc(&h).await;
-    assert_eq!(query["client_id"], "dynamic_agent_client");
-    assert_eq!(query["redirect_uri"], REDIRECT);
-    let host_id = query["ext_agent_host_id"].clone();
+    let (login_id, url) = start_browser(&h, OPENAI, None).await;
+    let q = query(&url);
+    assert_eq!(q["client_id"], "dynamic_agent_client");
+    assert_eq!(q["redirect_uri"], REDIRECT);
+    let host_id = q["ext_agent_host_id"].clone();
     assert!(host_id.starts_with("urn:uuid:"));
 
-    mount_token(
-        &h,
-        "authorization_code",
-        json!({
-            "access_token": "access-1",
-            "refresh_token": "refresh-1",
-            "id_token": id_token(&h, "oaiapp_1", &query["nonce"]),
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
-        }),
-    )
-    .await;
+    mount_token(&h, "authorization_code", grant(&h, &q["nonce"], "access-1")).await;
     let info = h
         .auth
-        .complete_login(&login_id, callback(&query, Some("oaiapp_1")))
+        .complete_login(&login_id, redirect(&q["state"], Some("oaiapp_1")))
         .await
         .unwrap();
-    assert_eq!(info.email.as_deref(), Some("user@example.com"));
+    assert_eq!(info.label.as_deref(), Some("user@example.com"));
     assert_eq!(info.account_id.as_deref(), Some("oaiapp_1"));
-    assert_eq!(h.auth.chatgpt_access_token().await.unwrap(), "access-1");
+    let status = h.auth.provider_status(&id(OPENAI)).await.unwrap();
+    assert!(status.signed_in());
+    assert_eq!(status.accounts[0].id, "oaiapp_1");
 
     let requests = h.server.received_requests().await.unwrap();
     let exchange = requests
@@ -125,12 +147,9 @@ async fn chatgpt_login_registers_and_refreshes() {
     assert!(form.contains("resource=https%3A%2F%2Fapi.openai.com%2Fv1"));
     assert!(form.contains("code_verifier="));
 
-    h.store
-        .update(|c| {
-            c.openai.accounts[0].tokens.as_mut().unwrap().expires_at = 0;
-        })
-        .await
-        .unwrap();
+    let mut section = h.section(OPENAI).await;
+    section["accounts"][0]["tokens"]["expires_at"] = json!(0);
+    h.set_section(OPENAI, section).await;
     mount_token(
         &h,
         "refresh_token",
@@ -142,106 +161,98 @@ async fn chatgpt_login_registers_and_refreshes() {
         }),
     )
     .await;
-    assert_eq!(h.auth.chatgpt_access_token().await.unwrap(), "access-2");
-    let creds = h.store.load().await.unwrap();
-    let account = creds.openai.active_account().unwrap();
-    assert_eq!(account.tokens.as_ref().unwrap().refresh_token, "refresh-2");
-    assert_eq!(creds.openai.host_id.as_deref(), Some(host_id.as_str()));
-
-    let (_, reauth) = {
-        let started = h
-            .auth
-            .start_login(
-                ProviderId::OpenAi,
-                LoginMethod::Browser {
-                    redirect_uri: Some(REDIRECT.into()),
-                    account: Some("oaiapp_1".into()),
-                },
-            )
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer access-2",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(common::sse_body(&common::text_response_events("ok"))),
+        )
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(
+        OPENAI,
+        json!({"base_url": format!("{}/v1", h.server.uri())}),
+    );
+    let message = loom_llm::collect(
+        provider
+            .stream(loom_llm::CompletionRequest {
+                model: "m".into(),
+                messages: vec![loom_llm::Message::user_text("hi")],
+                ..Default::default()
+            })
             .await
-            .unwrap();
-        let LoginStarted::Browser { login_id, url, .. } = started else {
-            panic!()
-        };
-        let q: HashMap<String, String> = url::Url::parse(&url)
-            .unwrap()
-            .query_pairs()
-            .into_owned()
-            .collect();
-        (login_id, q)
-    };
-    assert_eq!(reauth["client_id"], "oaiapp_1");
-    assert_eq!(reauth["login_hint"], "user@example.com");
-    assert_eq!(reauth["ext_agent_host_id"], host_id);
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(message.text(), "ok");
+    let section = h.section(OPENAI).await;
+    assert_eq!(
+        section["accounts"][0]["tokens"]["refresh_token"],
+        "refresh-2"
+    );
+    assert_eq!(section["host_id"], host_id.as_str());
+
+    let (_, url) = start_browser(&h, OPENAI, Some("oaiapp_1")).await;
+    let q = query(&url);
+    assert_eq!(q["client_id"], "oaiapp_1");
+    assert_eq!(q["login_hint"], "user@example.com");
+    assert_eq!(q["ext_agent_host_id"], host_id);
 }
 
 #[tokio::test]
-async fn chatgpt_login_rejects_bad_nonce_and_state() {
+async fn chatgpt_login_rejects_bad_nonce_state_and_missing_client() {
     let h = Harness::new().await;
     mount_discovery(&h).await;
-    let (login_id, query) = start_siwc(&h).await;
-    mount_token(
-        &h,
-        "authorization_code",
-        json!({
-            "access_token": "a",
-            "refresh_token": "r",
-            "id_token": id_token(&h, "oaiapp_1", "wrong-nonce"),
-            "expires_in": 3600,
-            "scope": "chatgpt.tokens.use.direct",
-        }),
-    )
-    .await;
+    let (login_id, url) = start_browser(&h, OPENAI, None).await;
+    let q = query(&url);
+    mount_token(&h, "authorization_code", grant(&h, "wrong-nonce", "a")).await;
     let err = h
         .auth
-        .complete_login(&login_id, callback(&query, Some("oaiapp_1")))
+        .complete_login(&login_id, redirect(&q["state"], Some("oaiapp_1")))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("nonce"), "{err}");
-    assert!(h.store.load().await.unwrap().openai.accounts.is_empty());
+    assert_eq!(h.section(OPENAI).await["accounts"], json!([]));
 
-    let (login_id, query) = start_siwc(&h).await;
-    let mut bad = query.clone();
-    bad.insert("state".into(), "other".into());
+    let (login_id, _) = start_browser(&h, OPENAI, None).await;
     let err = h
         .auth
-        .complete_login(&login_id, callback(&bad, Some("oaiapp_1")))
+        .complete_login(&login_id, redirect("other", Some("oaiapp_1")))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("state"), "{err}");
-}
 
-#[tokio::test]
-async fn chatgpt_login_requires_issued_client_id() {
-    let h = Harness::new().await;
-    let (login_id, query) = start_siwc(&h).await;
+    let (login_id, url) = start_browser(&h, OPENAI, None).await;
     let err = h
         .auth
-        .complete_login(&login_id, callback(&query, None))
+        .complete_login(&login_id, redirect(&query(&url)["state"], None))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("client ID"), "{err}");
+
+    let err = h
+        .auth
+        .start_login(&id(OPENAI), LoginMethod::DeviceCode)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LlmError::Unsupported(_)));
 }
 
 #[tokio::test]
 async fn chatgpt_logout_revokes_and_keeps_registration() {
     let h = Harness::new().await;
     mount_discovery(&h).await;
-    let (login_id, query) = start_siwc(&h).await;
-    mount_token(
-        &h,
-        "authorization_code",
-        json!({
-            "access_token": "a",
-            "refresh_token": "r",
-            "id_token": id_token(&h, "oaiapp_1", &query["nonce"]),
-            "expires_in": 3600,
-            "scope": "chatgpt.tokens.use.direct",
-        }),
-    )
-    .await;
+    let (login_id, url) = start_browser(&h, OPENAI, None).await;
+    let q = query(&url);
+    mount_token(&h, "authorization_code", grant(&h, &q["nonce"], "a")).await;
     h.auth
-        .complete_login(&login_id, callback(&query, Some("oaiapp_1")))
+        .complete_login(&login_id, redirect(&q["state"], Some("oaiapp_1")))
         .await
         .unwrap();
     Mock::given(method("POST"))
@@ -251,14 +262,40 @@ async fn chatgpt_logout_revokes_and_keeps_registration() {
         .expect(1)
         .mount(&h.server)
         .await;
-    h.auth.logout(ProviderId::OpenAi).await.unwrap();
-    let status = h.auth.status().await.unwrap();
-    assert_eq!(status.openai_accounts.len(), 1);
-    assert!(!status.openai_accounts[0].signed_in);
+    h.auth.logout(&id(OPENAI)).await.unwrap();
+    let status = h.auth.provider_status(&id(OPENAI)).await.unwrap();
+    assert_eq!(status.accounts.len(), 1);
+    assert!(!status.signed_in());
+    assert!(h.auth.select_account(&id(OPENAI), "oaiapp_1").await.is_ok());
+    assert!(h.auth.select_account(&id(OPENAI), "missing").await.is_err());
+}
+
+#[tokio::test]
+async fn api_keys_are_stored_per_provider() {
+    let h = Harness::new().await;
+    h.auth
+        .set_api_key(&id(OPENAI), Some("sk-test".into()))
+        .await
+        .unwrap();
+    assert!(
+        h.auth
+            .provider_status(&id(OPENAI))
+            .await
+            .unwrap()
+            .signed_in()
+    );
     assert!(matches!(
-        h.auth.chatgpt_access_token().await,
-        Err(LlmError::NotAuthenticated { .. })
+        h.auth.set_api_key(&id(CODEX), Some("x".into())).await,
+        Err(LlmError::Unsupported(_))
     ));
+    h.auth.set_api_key(&id(OPENAI), None).await.unwrap();
+    assert!(
+        !h.auth
+            .provider_status(&id(OPENAI))
+            .await
+            .unwrap()
+            .signed_in()
+    );
 }
 
 #[tokio::test]
@@ -303,29 +340,29 @@ async fn codex_device_login_polls_until_approved() {
 
     let started = h
         .auth
-        .start_login(ProviderId::OpenAiCodex, LoginMethod::DeviceCode)
+        .start_login(&id(CODEX), LoginMethod::DeviceCode)
         .await
         .unwrap();
-    let LoginStarted::DeviceCode {
-        login_id,
+    let LoginPrompt::DeviceCode {
         user_code,
         verification_uri,
         ..
-    } = started
+    } = &started.prompt
     else {
-        panic!("expected device code");
+        panic!("expected a device code");
     };
     assert_eq!(user_code, "ABCD-1234");
     assert!(verification_uri.ends_with("/codex/device"));
+    assert_eq!(h.auth.login_provider(&started.login_id), Some(id(CODEX)));
     let info = h
         .auth
-        .wait_device_login(&login_id, &CancellationToken::new())
+        .wait_login(&started.login_id, &CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(info.account_id.as_deref(), Some("acct-9"));
-    let (token, account) = h.auth.codex_access_token().await.unwrap();
-    assert_eq!(account, "acct-9");
-    assert_eq!(token, codex_access_token("acct-9"));
+    let status = h.auth.provider_status(&id(CODEX)).await.unwrap();
+    assert!(status.signed_in());
+    assert_eq!(status.accounts[0].id, "acct-9");
 }
 
 #[tokio::test]
@@ -342,49 +379,24 @@ async fn codex_device_login_can_be_cancelled() {
         .await;
     let started = h
         .auth
-        .start_login(ProviderId::OpenAiCodex, LoginMethod::DeviceCode)
+        .start_login(&id(CODEX), LoginMethod::DeviceCode)
         .await
         .unwrap();
     let cancel = CancellationToken::new();
     cancel.cancel();
     let err = h
         .auth
-        .wait_device_login(started.login_id(), &cancel)
+        .wait_login(&started.login_id, &cancel)
         .await
         .unwrap_err();
     assert!(matches!(err, LlmError::Cancelled));
 }
 
 #[tokio::test]
-async fn codex_browser_login_accepts_pasted_redirect_and_refreshes() {
+async fn codex_browser_login_accepts_redirect_and_refreshes() {
     let h = Harness::new().await;
-    let started = h
-        .auth
-        .start_login(
-            ProviderId::OpenAiCodex,
-            LoginMethod::Browser {
-                redirect_uri: None,
-                account: None,
-            },
-        )
-        .await
-        .unwrap();
-    let LoginStarted::Browser {
-        login_id,
-        url,
-        redirect_uri,
-    } = started
-    else {
-        panic!()
-    };
-    assert_eq!(redirect_uri, "http://localhost:1455/auth/callback");
-    let state = url::Url::parse(&url)
-        .unwrap()
-        .query_pairs()
-        .find(|(k, _)| k == "state")
-        .unwrap()
-        .1
-        .into_owned();
+    let (login_id, url) = start_browser(&h, CODEX, None).await;
+    let state = query(&url)["state"].clone();
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
         .and(body_string_contains("grant_type=authorization_code"))
@@ -398,7 +410,7 @@ async fn codex_browser_login_accepts_pasted_redirect_and_refreshes() {
     h.auth
         .complete_login(
             &login_id,
-            LoginInput::PastedRedirect {
+            LoginInput::Redirect {
                 url: format!("http://localhost:1455/auth/callback?code=c&state={state}"),
             },
         )
@@ -415,9 +427,28 @@ async fn codex_browser_login_accepts_pasted_redirect_and_refreshes() {
         .expect(1)
         .mount(&h.server)
         .await;
-    let (_, account) = h.auth.codex_access_token().await.unwrap();
-    assert_eq!(account, "acct-1");
-    let creds = h.store.load().await.unwrap().openai_codex.unwrap();
-    assert_eq!(creds.refresh_token, "r1");
-    assert!(creds.expires_at > now() + 3000);
+    Mock::given(method("POST"))
+        .and(path("/backend-api/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(common::sse_body(&common::text_response_events("ok"))),
+        )
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(
+        CODEX,
+        json!({"base_url": format!("{}/backend-api", h.server.uri())}),
+    );
+    let stream = provider
+        .stream(loom_llm::CompletionRequest {
+            model: "m".into(),
+            messages: vec![loom_llm::Message::user_text("hi")],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    loom_llm::collect(stream).await.unwrap();
+    let section = h.section(CODEX).await;
+    assert_eq!(section["refresh_token"], "r1");
+    assert!(section["expires_at"].as_u64().unwrap() > now() + 3000);
 }
