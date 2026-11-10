@@ -102,11 +102,7 @@ impl Tool for EditTool {
         ctx.ensure_not_cancelled()?;
         let path = ctx.workspace.resolve(&path)?;
         let display = ctx.workspace.display_path(&path);
-        let _guard = ctx
-            .workspace
-            .locks()
-            .lock_file(&path, FileAccess::Write)
-            .await;
+        let _guard = ctx.lock_file(&path, FileAccess::Write).await;
 
         let stamp = current_stamp(&path)
             .map_err(|err| ToolError::io(format!("cannot inspect {display}"), err))?;

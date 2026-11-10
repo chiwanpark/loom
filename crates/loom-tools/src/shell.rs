@@ -107,7 +107,7 @@ impl Tool for ShellTool {
         }
         ctx.ensure_not_cancelled()?;
         let _guard = tokio::select! {
-            guard = ctx.workspace.locks().lock_workspace() => guard,
+            guard = ctx.lock_workspace() => guard,
             _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
         };
 

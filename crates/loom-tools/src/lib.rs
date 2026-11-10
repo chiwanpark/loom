@@ -15,8 +15,8 @@ pub use read::ReadTool;
 pub use registry::{BuiltinConfig, ToolRegistry};
 pub use shell::{ShellConfig, ShellTool};
 pub use tool::{
-    OutputChunk, OutputSink, OutputStream, Risk, Tool, ToolContext, ToolDetails, ToolOutput,
-    ToolSpec,
+    LockWaitHook, OutputChunk, OutputSink, OutputStream, Risk, Tool, ToolContext, ToolDetails,
+    ToolOutput, ToolSpec,
 };
 pub use truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, Limits};
 pub use workspace::{

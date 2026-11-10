@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Result, ToolError};
-use crate::workspace::{FileTracker, Workspace};
+use crate::workspace::{FileAccess, FileGuard, FileTracker, Workspace, WorkspaceGuard};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,12 +41,36 @@ pub struct OutputChunk {
 
 pub type OutputSink = mpsc::Sender<OutputChunk>;
 
+#[derive(Clone)]
+pub struct LockWaitHook(Arc<dyn Fn(bool) + Send + Sync>);
+
+impl LockWaitHook {
+    pub fn new(hook: impl Fn(bool) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(hook))
+    }
+}
+
+impl std::fmt::Debug for LockWaitHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LockWaitHook")
+    }
+}
+
+struct WaitNotice<'a>(&'a LockWaitHook);
+
+impl Drop for WaitNotice<'_> {
+    fn drop(&mut self) {
+        (self.0.0)(false);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace: Arc<Workspace>,
     pub files: Arc<FileTracker>,
     pub cancel: CancellationToken,
     pub output: Option<OutputSink>,
+    pub lock_wait: Option<LockWaitHook>,
 }
 
 impl ToolContext {
@@ -56,7 +80,37 @@ impl ToolContext {
             files: Arc::new(FileTracker::default()),
             cancel: CancellationToken::new(),
             output: None,
+            lock_wait: None,
         }
+    }
+
+    pub fn with_lock_wait(mut self, hook: LockWaitHook) -> Self {
+        self.lock_wait = Some(hook);
+        self
+    }
+
+    pub async fn lock_file(&self, path: &std::path::Path, access: FileAccess) -> FileGuard {
+        let locks = self.workspace.locks();
+        if let Some(guard) = locks.try_lock_file(path, access) {
+            return guard;
+        }
+        let _notice = self.notice_wait();
+        locks.lock_file(path, access).await
+    }
+
+    pub async fn lock_workspace(&self) -> WorkspaceGuard {
+        let locks = self.workspace.locks();
+        if let Some(guard) = locks.try_lock_workspace() {
+            return guard;
+        }
+        let _notice = self.notice_wait();
+        locks.lock_workspace().await
+    }
+
+    fn notice_wait(&self) -> Option<WaitNotice<'_>> {
+        let hook = self.lock_wait.as_ref()?;
+        (hook.0)(true);
+        Some(WaitNotice(hook))
     }
 
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
@@ -175,6 +229,37 @@ mod tests {
     struct Args {
         #[serde(default, deserialize_with = "lenient_opt_u64")]
         value: Option<u64>,
+    }
+
+    #[tokio::test]
+    async fn reports_lock_waits() {
+        use std::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Workspace::new(dir.path()).unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let ctx =
+            ToolContext::new(workspace.clone()).with_lock_wait(LockWaitHook::new(move |waiting| {
+                record.lock().unwrap().push(waiting)
+            }));
+        let path = dir.path().join("a");
+        drop(ctx.lock_file(&path, FileAccess::Read).await);
+        assert!(seen.lock().unwrap().is_empty());
+
+        let held = workspace.locks().lock_workspace().await;
+        let waiter = {
+            let ctx = ctx.clone();
+            let path = path.clone();
+            tokio::spawn(async move {
+                drop(ctx.lock_file(&path, FileAccess::Write).await);
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(*seen.lock().unwrap(), [true]);
+        drop(held);
+        waiter.await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), [true, false]);
     }
 
     #[test]

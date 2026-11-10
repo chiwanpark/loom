@@ -172,6 +172,25 @@ impl LockManager {
         }
     }
 
+    pub fn try_lock_file(&self, path: &Path, access: FileAccess) -> Option<FileGuard> {
+        let workspace = self.workspace.clone().try_read_owned().ok()?;
+        let lock = self.file_lock(path);
+        let file = match access {
+            FileAccess::Read => FileLockGuard::Read(lock.try_read_owned().ok()?),
+            FileAccess::Write => FileLockGuard::Write(lock.try_write_owned().ok()?),
+        };
+        Some(FileGuard {
+            _file: file,
+            _workspace: workspace,
+        })
+    }
+
+    pub fn try_lock_workspace(&self) -> Option<WorkspaceGuard> {
+        Some(WorkspaceGuard {
+            _workspace: self.workspace.clone().try_write_owned().ok()?,
+        })
+    }
+
     fn file_lock(&self, path: &Path) -> Arc<RwLock<()>> {
         let mut files = self.files.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(lock) = files.get(path).and_then(Weak::upgrade) {

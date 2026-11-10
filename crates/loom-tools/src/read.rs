@@ -77,11 +77,7 @@ impl Tool for ReadTool {
         ctx.ensure_not_cancelled()?;
         let path = ctx.workspace.resolve(&args.path)?;
         let display = ctx.workspace.display_path(&path);
-        let _guard = ctx
-            .workspace
-            .locks()
-            .lock_file(&path, FileAccess::Read)
-            .await;
+        let _guard = ctx.lock_file(&path, FileAccess::Read).await;
 
         let metadata = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata,
