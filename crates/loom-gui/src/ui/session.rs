@@ -5,7 +5,7 @@ use std::sync::Arc;
 use gpui::{
     AnyElement, App, AppContext, AsyncApp, AsyncWindowContext, ClipboardEntry, Context, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Image, InteractiveElement, IntoElement,
-    ObjectFit, ParentElement, PathPromptOptions, Render, ScrollHandle, SharedString,
+    ObjectFit, ParentElement, PathPromptOptions, Render, ScrollEvent, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, StyledImage, Subscription, Window, div, img,
     prelude::FluentBuilder, px,
 };
@@ -29,6 +29,26 @@ use crate::ui::notify;
 const OUTPUT_COLS: u16 = 120;
 const OUTPUT_ROWS: u16 = 40;
 const RESCROLL_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+/// How close to the bottom a downward scroll must end to resume following.
+const FOLLOW_SLACK: f32 = 24.;
+
+/// Whether the message list should keep following new output after a scroll
+/// event. `delta_y` is the event's movement (positive scrolls up), and
+/// `offset_y` the resulting offset, which gpui has not yet clamped to
+/// `-max_y`, so a downward scroll can overshoot past the bottom.
+fn follow_after_scroll(follow: bool, delta_y: f32, offset_y: f32, max_y: f32) -> bool {
+    if max_y <= 0. {
+        // Everything fits; there is nothing to scroll away from.
+        return true;
+    }
+    if delta_y > 0. {
+        false
+    } else if delta_y < 0. {
+        offset_y + max_y <= FOLLOW_SLACK
+    } else {
+        follow
+    }
+}
 
 struct LiveOutput {
     fed: usize,
@@ -68,7 +88,6 @@ impl SessionView {
         let subscriptions = vec![
             cx.observe(&conversation, |this, _, cx| {
                 if this.follow {
-                    this.scroll.scroll_to_bottom();
                     this.schedule_rescroll(cx);
                 }
                 cx.notify();
@@ -97,6 +116,8 @@ impl SessionView {
         }
     }
 
+    /// Renders again shortly after an update, so the list stays at the bottom
+    /// when content (images, markdown) settles to its final size a bit later.
     fn schedule_rescroll(&mut self, cx: &mut Context<Self>) {
         if self.rescroll_pending {
             return;
@@ -107,7 +128,6 @@ impl SessionView {
             let _ = this.update(cx, |this, cx| {
                 this.rescroll_pending = false;
                 if this.follow {
-                    this.scroll.scroll_to_bottom();
                     cx.notify();
                 }
             });
@@ -870,6 +890,14 @@ impl Focusable for SessionView {
 
 impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Requested on every render, not when the conversation changes: gpui
+        // applies it at the next layout, so the list also stays at the bottom
+        // when the viewport shrinks (prompt grows, attachments) or the view is
+        // opened on an already loaded conversation, and a stale request cannot
+        // pull back a user who has just scrolled up.
+        if self.follow {
+            self.scroll.scroll_to_bottom();
+        }
         let theme = cx.theme().clone();
         let conversation = self.conversation.read(cx).clone();
         let busy = conversation.is_busy();
@@ -985,10 +1013,14 @@ impl Render for SessionView {
                     .w_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .on_scroll(cx.listener(move |this, _, _, cx| {
-                        let offset = scroll.offset().y;
-                        let max = scroll.max_offset().y;
-                        this.follow = (offset + max).abs() < px(24.);
+                    .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height()).y;
+                        this.follow = follow_after_scroll(
+                            this.follow,
+                            f32::from(delta),
+                            f32::from(scroll.offset().y),
+                            f32::from(scroll.max_offset().y),
+                        );
                         cx.notify();
                     }))
                     .child(
@@ -1065,5 +1097,41 @@ impl Render for SessionView {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::follow_after_scroll;
+
+    const MAX: f32 = 1000.;
+
+    #[test]
+    fn wheel_down_past_the_bottom_keeps_following() {
+        // One notch (3 lines) at the bottom leaves the unclamped offset
+        // 60 px beyond it; the old `|offset + max| < 24` check stopped here.
+        assert!(follow_after_scroll(true, -60., -MAX - 60., MAX));
+        assert!(follow_after_scroll(false, -60., -MAX - 60., MAX));
+    }
+
+    #[test]
+    fn any_upward_scroll_stops_following() {
+        // A small trackpad step stays within the slack but must still let
+        // the user leave the bottom while output streams in.
+        assert!(!follow_after_scroll(true, 5., -MAX + 5., MAX));
+        assert!(!follow_after_scroll(true, 300., -MAX + 300., MAX));
+    }
+
+    #[test]
+    fn scrolling_down_resumes_only_near_the_bottom() {
+        assert!(!follow_after_scroll(false, -60., -MAX + 300., MAX));
+        assert!(follow_after_scroll(false, -60., -MAX + 20., MAX));
+    }
+
+    #[test]
+    fn no_movement_or_nothing_to_scroll() {
+        assert!(!follow_after_scroll(false, 0., -500., MAX));
+        assert!(follow_after_scroll(true, 0., -500., MAX));
+        assert!(follow_after_scroll(false, 10., 0., 0.));
     }
 }
