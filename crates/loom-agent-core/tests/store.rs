@@ -198,3 +198,31 @@ async fn archived_sessions_stay_archived_and_are_announced() {
     let restored = agent.set_archived(archived.id(), false).unwrap();
     assert!(!restored.archived);
 }
+
+#[tokio::test]
+async fn deleted_sessions_are_removed_from_the_store() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(config.clone(), vec![text("hello")]);
+    let kept = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let doomed = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let mut sub = doomed.subscribe(None);
+    let events = run_turn(&doomed, &mut sub, "hi").await;
+    assert_eq!(common::outcome(&events), Some(TurnOutcome::Completed));
+    let mut notices = h.agent.notices();
+    h.agent.delete_session(doomed.id()).unwrap();
+    assert!(h.agent.session(doomed.id()).is_err());
+    assert!(h.agent.delete_session(doomed.id()).is_err());
+    assert!(doomed.removed().is_cancelled());
+    assert_eq!(
+        notices.try_recv().unwrap(),
+        loom_agent_core::AgentNotice::SessionRemoved(doomed.id().clone())
+    );
+    doomed.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    let ids: Vec<_> = h.agent.list_sessions().into_iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![kept.id().clone()]);
+    h.agent.shutdown().await;
+
+    let (agent, _) = h.reopen(config, vec![]);
+    let ids: Vec<_> = agent.list_sessions().into_iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![kept.id().clone()]);
+}

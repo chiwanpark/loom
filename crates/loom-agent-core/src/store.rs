@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -66,6 +67,7 @@ enum Op {
         created_at: u64,
         state: String,
     },
+    Delete(SessionId),
     Flush(oneshot::Sender<()>),
 }
 
@@ -144,6 +146,10 @@ impl EventStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn delete_session(&self, session: &SessionId) {
+        let _ = self.tx.send(Op::Delete(session.clone()));
     }
 
     pub fn append(&self, session: &SessionId, event: &SequencedEvent) {
@@ -229,8 +235,10 @@ fn apply(
     conn: &Connection,
     op: Op,
     flushes: &mut Vec<oneshot::Sender<()>>,
+    deleted: &mut HashSet<SessionId>,
 ) -> rusqlite::Result<()> {
     match op {
+        Op::Event { session, .. } | Op::Session { session, .. } if deleted.contains(&session) => {}
         Op::Event { session, seq, data } => {
             conn.execute(
                 "INSERT OR REPLACE INTO events (session_id, seq, event) VALUES (?1, ?2, ?3)",
@@ -248,22 +256,31 @@ fn apply(
                 params![session.0, created_at as i64, now_unix() as i64, state],
             )?;
         }
+        Op::Delete(session) => {
+            conn.execute(
+                "DELETE FROM events WHERE session_id = ?1",
+                params![session.0],
+            )?;
+            conn.execute("DELETE FROM sessions WHERE id = ?1", params![session.0])?;
+            deleted.insert(session);
+        }
         Op::Flush(done) => flushes.push(done),
     }
     Ok(())
 }
 
 fn writer(mut conn: Connection, rx: std_mpsc::Receiver<Op>, path: PathBuf) {
+    let mut deleted = HashSet::new();
     while let Ok(first) = rx.recv() {
         let mut flushes = Vec::new();
         let result = (|| -> rusqlite::Result<()> {
             let tx = conn.transaction()?;
-            apply(&tx, first, &mut flushes)?;
+            apply(&tx, first, &mut flushes, &mut deleted)?;
             let deadline = std::time::Instant::now() + BATCH_WINDOW;
             while let Ok(op) =
                 rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             {
-                apply(&tx, op, &mut flushes)?;
+                apply(&tx, op, &mut flushes, &mut deleted)?;
             }
             tx.commit()
         })();

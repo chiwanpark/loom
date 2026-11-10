@@ -58,6 +58,7 @@ struct Core {
     workspace: Arc<Workspace>,
     files: Arc<FileTracker>,
     system_agents_md: PathBuf,
+    removed: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -193,6 +194,7 @@ impl Session {
                 workspace: params.workspace,
                 files: Arc::new(FileTracker::default()),
                 system_agents_md: params.system_agents_md,
+                removed: CancellationToken::new(),
             }),
         }
     }
@@ -253,6 +255,15 @@ impl Session {
     pub fn set_policy_default(&self, default: Option<PolicyAction>) {
         self.core.lock().policy.default = default;
         self.core.persist();
+    }
+
+    pub(crate) fn mark_removed(&self) {
+        self.core.removed.cancel();
+        self.interrupt();
+    }
+
+    pub fn removed(&self) -> CancellationToken {
+        self.core.removed.clone()
     }
 
     pub fn is_archived(&self) -> bool {

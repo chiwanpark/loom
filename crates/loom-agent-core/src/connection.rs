@@ -357,6 +357,11 @@ impl Connection {
                 handle.set_policy_default(default.map(convert::policy_from_proto));
                 Ok(Payload::Session(handle.info()))
             }
+            Command::DeleteSession { session: id } => self
+                .agent
+                .delete_session(&id)
+                .map(|()| Payload::Ok)
+                .map_err(|e| convert::api_error(&e)),
             Command::ArchiveSession {
                 session: id,
                 archived,
@@ -550,6 +555,7 @@ async fn forward_notices(
             Ok(AgentNotice::ConfigRejected { message }) => Notice::ConfigRejected { message },
             Ok(AgentNotice::ShuttingDown) => Notice::ShuttingDown,
             Ok(AgentNotice::SessionUpdated(info)) => Notice::SessionUpdated(*info),
+            Ok(AgentNotice::SessionRemoved(id)) => Notice::SessionRemoved(id),
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,
         };
@@ -565,6 +571,7 @@ async fn forward_events(
     out: mpsc::Sender<ServerMessage>,
 ) {
     let id = session.id().clone();
+    let removed = session.removed();
     let mut last = 0;
     loop {
         for event in std::mem::take(&mut subscription.backlog) {
@@ -578,7 +585,11 @@ async fn forward_events(
             }
         }
         loop {
-            match subscription.live.recv().await {
+            let received = tokio::select! {
+                _ = removed.cancelled() => return,
+                received = subscription.live.recv() => received,
+            };
+            match received {
                 Ok(event) if event.seq <= last => {}
                 Ok(event) => {
                     last = event.seq;

@@ -21,6 +21,7 @@ pub enum AgentNotice {
     ConfigRejected { message: String },
     ShuttingDown,
     SessionUpdated(Box<SessionInfo>),
+    SessionRemoved(SessionId),
 }
 
 pub struct AgentOptions {
@@ -207,6 +208,22 @@ impl Agent {
         self.insert(session.clone());
         self.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
         Ok(session)
+    }
+
+    pub fn delete_session(&self, id: &SessionId) -> Result<()> {
+        let session = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id)
+            .ok_or_else(|| CoreError::UnknownSession(id.0.clone()))?;
+        session.mark_removed();
+        if let Some(store) = &self.inner.store {
+            store.delete_session(id);
+        }
+        self.notify(AgentNotice::SessionRemoved(id.clone()));
+        Ok(())
     }
 
     pub fn set_archived(&self, id: &SessionId, archived: bool) -> Result<SessionInfo> {
