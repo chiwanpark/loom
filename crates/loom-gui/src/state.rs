@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::rc::Rc;
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo,
-    TerminalId,
+    AgentInfo, ApiError, Command, FileDiff, Notice, PolicyAction, ReasoningEffort, SessionId,
+    SessionInfo, TerminalId, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -27,7 +29,16 @@ pub enum ConnectionEvent {
     Closed,
 }
 
+#[derive(Default)]
+pub struct GitState {
+    pub changes: Option<Rc<WorkspaceChanges>>,
+    pub error: Option<String>,
+    pub revision: u64,
+    loading: bool,
+}
+
 pub struct AgentConnection {
+    pub git: GitState,
     pub host: HostEntry,
     pub info: AgentInfo,
     pub client: Client,
@@ -52,6 +63,7 @@ impl AgentConnection {
     ) -> Self {
         let info = client.agent().clone();
         let mut this = Self {
+            git: GitState::default(),
             host,
             info,
             client,
@@ -336,6 +348,53 @@ impl AgentConnection {
             });
         })
         .detach();
+    }
+
+    pub fn refresh_changes(&mut self, cx: &mut Context<Self>) {
+        if self.git.loading || self.status != LinkStatus::Connected {
+            return;
+        }
+        self.git.loading = true;
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.workspace_changes().await });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.git.loading = false;
+                match result {
+                    Some(Ok(changes)) => {
+                        let error = this.git.error.take();
+                        if this.git.changes.as_deref() != Some(&changes) || error.is_some() {
+                            this.git.changes = Some(Rc::new(changes));
+                            this.git.revision += 1;
+                            cx.notify();
+                        }
+                    }
+                    Some(Err(err)) => {
+                        let message = err.to_string();
+                        if this.git.error.as_ref() != Some(&message) {
+                            this.git.error = Some(message);
+                            this.git.revision += 1;
+                            cx.notify();
+                        }
+                    }
+                    None => {}
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn file_diff(
+        &self,
+        path: String,
+        old_path: Option<String>,
+    ) -> impl Future<Output = Option<loom_client::Result<FileDiff>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.file_diff(&path, old_path.as_deref()).await })
     }
 
     pub fn register_terminal(&mut self, id: TerminalId, view: &Entity<TerminalView>) {

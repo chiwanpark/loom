@@ -101,17 +101,25 @@ pub fn count_lines(diff: &str) -> (usize, usize) {
     (added, removed)
 }
 
-fn hunk_start(header: &str, marker: char) -> Option<u32> {
+fn hunk_range(header: &str, marker: char) -> Option<(u32, u32)> {
     let field = header
         .split_whitespace()
         .find(|part| part.starts_with(marker))?;
-    field[1..].split(',').next()?.parse().ok()
+    let mut parts = field[1..].split(',');
+    let start = parts.next()?.parse().ok()?;
+    let count = match parts.next() {
+        Some(count) => count.parse().ok()?,
+        None => 1,
+    };
+    Some((start, count))
 }
 
 pub fn parse_unified(diff: &str) -> Vec<DiffLine> {
     let mut lines = Vec::new();
     let mut old = 0u32;
     let mut new = 0u32;
+    let mut old_left = 0u32;
+    let mut new_left = 0u32;
     let line = |kind, old, new, text: &str| DiffLine {
         kind,
         old,
@@ -119,28 +127,66 @@ pub fn parse_unified(diff: &str) -> Vec<DiffLine> {
         text: text.to_owned(),
     };
     for raw in diff.lines() {
-        if raw.starts_with("+++") || raw.starts_with("---") {
-            lines.push(line(DiffLineKind::File, None, None, raw));
+        if old_left > 0 || new_left > 0 {
+            if let Some(text) = raw.strip_prefix('+') {
+                lines.push(line(DiffLineKind::Added, None, Some(new), text));
+                new += 1;
+                new_left = new_left.saturating_sub(1);
+            } else if let Some(text) = raw.strip_prefix('-') {
+                lines.push(line(DiffLineKind::Removed, Some(old), None, text));
+                old += 1;
+                old_left = old_left.saturating_sub(1);
+            } else if raw.starts_with('\\') {
+                lines.push(line(DiffLineKind::Note, None, None, raw));
+            } else {
+                let text = raw.strip_prefix(' ').unwrap_or(raw);
+                lines.push(line(DiffLineKind::Context, Some(old), Some(new), text));
+                old += 1;
+                new += 1;
+                old_left = old_left.saturating_sub(1);
+                new_left = new_left.saturating_sub(1);
+            }
         } else if raw.starts_with("@@") {
-            old = hunk_start(raw, '-').unwrap_or(1);
-            new = hunk_start(raw, '+').unwrap_or(1);
+            let (old_start, old_count) = hunk_range(raw, '-').unwrap_or((1, 0));
+            let (new_start, new_count) = hunk_range(raw, '+').unwrap_or((1, 0));
+            (old, old_left) = (old_start.max(1), old_count);
+            (new, new_left) = (new_start.max(1), new_count);
             lines.push(line(DiffLineKind::Hunk, None, None, raw));
-        } else if let Some(text) = raw.strip_prefix('+') {
-            lines.push(line(DiffLineKind::Added, None, Some(new), text));
-            new += 1;
-        } else if let Some(text) = raw.strip_prefix('-') {
-            lines.push(line(DiffLineKind::Removed, Some(old), None, text));
-            old += 1;
         } else if raw.starts_with('\\') {
             lines.push(line(DiffLineKind::Note, None, None, raw));
         } else {
-            let text = raw.strip_prefix(' ').unwrap_or(raw);
-            lines.push(line(DiffLineKind::Context, Some(old), Some(new), text));
-            old += 1;
-            new += 1;
+            lines.push(line(DiffLineKind::File, None, None, raw));
         }
     }
     lines
+}
+
+const MEANINGFUL_HEADERS: [&str; 9] = [
+    "new file mode",
+    "deleted file mode",
+    "old mode",
+    "new mode",
+    "rename from",
+    "rename to",
+    "copy from",
+    "copy to",
+    "Binary files",
+];
+
+pub fn diff_lines(diff: &str) -> Vec<DiffLine> {
+    parse_unified(diff)
+        .into_iter()
+        .filter_map(|mut line| {
+            if line.kind != DiffLineKind::File {
+                return Some(line);
+            }
+            if MEANINGFUL_HEADERS.iter().any(|h| line.text.starts_with(h)) {
+                line.kind = DiffLineKind::Note;
+                return Some(line);
+            }
+            None
+        })
+        .collect()
 }
 
 pub fn change_lines(change: &FileChange) -> Vec<DiffLine> {
@@ -156,11 +202,7 @@ pub fn change_lines(change: &FileChange) -> Vec<DiffLine> {
             });
         }
         match entry {
-            ChangeEntry::Diff(diff) => lines.extend(
-                parse_unified(diff)
-                    .into_iter()
-                    .filter(|l| l.kind != DiffLineKind::File),
-            ),
+            ChangeEntry::Diff(diff) => lines.extend(diff_lines(diff)),
             ChangeEntry::Opaque { bytes } => lines.push(DiffLine {
                 kind: DiffLineKind::Note,
                 old: None,
@@ -279,6 +321,28 @@ mod tests {
         assert_eq!((lines[5].old, lines[5].new), (None, Some(3)));
         assert_eq!((lines[6].old, lines[6].new), (Some(4), Some(4)));
         assert_eq!(lines[4].text, "    old();");
+    }
+
+    #[test]
+    fn tracks_hunk_lengths_in_git_diffs() {
+        let diff = "diff --git a/n.md b/n.md\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/n.md\n@@ -0,0 +1,2 @@\n+-- dashes\n+text\ndiff --git a/o.md b/o.md\nindex 2222222..3333333 100644\n--- a/o.md\n+++ b/o.md\n@@ -1,2 +1 @@\n--- removed\n keep\n\\ No newline at end of file\n";
+        let lines = diff_lines(diff);
+        let summary: Vec<_> = lines.iter().map(|l| (l.kind, l.text.as_str())).collect();
+        assert_eq!(
+            summary,
+            vec![
+                (DiffLineKind::Note, "new file mode 100644"),
+                (DiffLineKind::Hunk, "@@ -0,0 +1,2 @@"),
+                (DiffLineKind::Added, "-- dashes"),
+                (DiffLineKind::Added, "text"),
+                (DiffLineKind::Hunk, "@@ -1,2 +1 @@"),
+                (DiffLineKind::Removed, "-- removed"),
+                (DiffLineKind::Context, "keep"),
+                (DiffLineKind::Note, "\\ No newline at end of file"),
+            ]
+        );
+        assert_eq!((lines[2].old, lines[2].new), (None, Some(1)));
+        assert_eq!((lines[6].old, lines[6].new), (Some(2), Some(1)));
     }
 
     #[test]

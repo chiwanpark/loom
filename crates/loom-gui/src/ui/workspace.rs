@@ -14,7 +14,9 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, TitleBar, h_flex, h_resizable,
     resizable_panel, v_flex, v_resizable,
 };
-use loom_client::proto::{SessionId, SessionInfo, SessionState};
+use loom_client::proto::{
+    ChangeStatus, FileChange as GitChange, SessionId, SessionInfo, SessionState, WorkspaceChanges,
+};
 use loom_config::{ClientConfig, HostEntry};
 
 use crate::backend::Backend;
@@ -66,6 +68,7 @@ actions!(
 const CONTEXT: &str = "Workspace";
 const RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+const CHANGES_POLL: Duration = Duration::from_secs(2);
 const RECONNECT_ATTEMPTS: usize = 20;
 const OUTSIDE_TERMINAL: &str = "Workspace && !Terminal";
 const DROP_TARGET_SIZE: f32 = 0.2;
@@ -256,10 +259,13 @@ impl SessionGroup {
             })
     }
 
-    fn find_diff(&self, path: &PathBuf, cx: &App) -> Option<(PaneId, usize)> {
+    fn find_diff(&self, path: &PathBuf, git: bool, cx: &App) -> Option<(PaneId, usize)> {
         self.panes.iter().find_map(|pane| {
             pane.tabs
-                .find(|panel| matches!(panel, Panel::Diff(view) if view.read(cx).path() == path))
+                .find(|panel| {
+                    matches!(panel, Panel::Diff(view)
+                        if view.read(cx).path() == path && view.read(cx).is_git() == git)
+                })
                 .map(|ix| (pane.id, ix))
         })
     }
@@ -414,7 +420,44 @@ impl Workspace {
             this.refresh_host(ix, window, cx);
         }
         this.focus.focus(window, cx);
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+            loop {
+                cx.background_executor().timer(CHANGES_POLL).await;
+                if this.update(cx, |ws, cx| ws.poll_changes(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         this
+    }
+
+    fn changes_connection(&self) -> Option<Entity<AgentConnection>> {
+        self.active_group()
+            .map(|g| g.connection.clone())
+            .or_else(|| self.active_connection.clone())
+    }
+
+    fn poll_changes(&mut self, cx: &mut Context<Self>) {
+        if self.show_right
+            && let Some(conn) = self.changes_connection()
+        {
+            conn.update(cx, |conn, cx| conn.refresh_changes(cx));
+        }
+        let Some(group) = self.active_group() else {
+            return;
+        };
+        let views: Vec<Entity<DiffView>> = group
+            .panes
+            .iter()
+            .filter_map(|pane| match pane.tabs.active() {
+                Some(Panel::Diff(view)) if view.read(cx).is_git() => Some(view.clone()),
+                _ => None,
+            })
+            .collect();
+        for view in views {
+            view.update(cx, |view, cx| view.reload(cx));
+        }
     }
 
     fn save_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1291,7 +1334,7 @@ impl Workspace {
         let Some(group) = self.active_group() else {
             return;
         };
-        if let Some((pane, ix)) = group.find_diff(&path, cx) {
+        if let Some((pane, ix)) = group.find_diff(&path, false, cx) {
             self.activate_tab(pane, ix, window, cx);
             return;
         }
@@ -1301,7 +1344,41 @@ impl Workspace {
         let conversation = chat.read(cx).conversation.clone();
         let workspace = group.connection.read(cx).info.workspace.clone();
         let title = display_path(&path, &workspace);
-        let view = cx.new(|cx| DiffView::new(conversation, path, title, cx));
+        let view = cx.new(|cx| DiffView::session(conversation, path, title, cx));
+        self.add_diff_tab(view, window, cx);
+    }
+
+    fn open_git_diff(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        change: GitChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = conn.read(cx).info.workspace.join(&change.path);
+        if self.active_group().is_none() {
+            notify::info(window, cx, "Open a session to view diffs.");
+            return;
+        }
+        if let Some(group) = self.active_group()
+            && let Some((pane, ix)) = group.find_diff(&path, true, cx)
+        {
+            self.activate_tab(pane, ix, window, cx);
+            if let Some(Panel::Diff(view)) = self.active_group().and_then(|g| g.active_panel()) {
+                view.update(cx, |view, cx| view.reload(cx));
+            }
+            return;
+        }
+        let view = cx.new(|cx| DiffView::git(conn, change.path, change.old_path, cx));
+        self.add_diff_tab(view, window, cx);
+    }
+
+    fn add_diff_tab(
+        &mut self,
+        view: Entity<DiffView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.subscriptions
             .push(cx.observe(&view, |_, _, cx| cx.notify()));
         let id = self.alloc_panel();
@@ -1314,19 +1391,47 @@ impl Workspace {
 
     fn render_changes_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let changes = self.session_changes(cx);
-        let workspace = self
-            .active_group()
-            .map(|g| g.connection.read(cx).info.workspace.clone())
+        let conn = self.changes_connection();
+        let (listing, error) = conn
+            .as_ref()
+            .map(|c| {
+                let git = &c.read(cx).git;
+                (git.changes.clone(), git.error.clone())
+            })
             .unwrap_or_default();
-        let open =
-            self.active_group()
-                .and_then(|g| g.active_panel())
-                .and_then(|panel| match panel {
-                    Panel::Diff(view) => Some(view.read(cx).path().clone()),
-                    _ => None,
-                });
-        let count = changes.as_ref().map(|c| c.len()).unwrap_or(0);
+        if listing.is_none()
+            && error.is_none()
+            && let Some(conn) = conn.clone()
+        {
+            cx.defer(move |cx| conn.update(cx, |conn, cx| conn.refresh_changes(cx)));
+        }
+        let session = self.session_changes(cx);
+        let (count, branch, body) = match (&conn, &listing) {
+            (Some(conn), Some(listing)) if listing.repository => {
+                let body = self.render_git_changes(conn.clone(), listing.clone(), session, cx);
+                (listing.files.len(), listing.branch.clone(), body)
+            }
+            (_, None) if error.is_none() => (
+                0,
+                None,
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("Loading changes…")
+                    .into_any_element(),
+            ),
+            _ => {
+                let note = match &error {
+                    Some(error) => format!(
+                        "Could not list git changes ({error}). Showing this session's changes."
+                    ),
+                    None => "Not a git repository. Showing this session's changes.".into(),
+                };
+                let count = session.as_ref().map(|c| c.len()).unwrap_or(0);
+                (count, None, self.render_session_changes(session, note, cx))
+            }
+        };
         let header = h_flex()
             .w_full()
             .h(Tab::container_height())
@@ -1343,87 +1448,29 @@ impl Workspace {
                         .text_color(theme.muted_foreground)
                         .child(count.to_string()),
                 )
-            });
-        let body = match changes {
-            None => div()
-                .p_3()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("Open a session to see the files it changed.")
-                .into_any_element(),
-            Some(changes) if changes.is_empty() => div()
-                .p_3()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("No files changed in this session yet.")
-                .into_any_element(),
-            Some(changes) => v_flex()
-                .id("changes-list")
-                .flex_1()
-                .overflow_y_scroll()
-                .py_1()
-                .children(changes.iter().enumerate().map(|(ix, change)| {
-                    let display = display_path(&change.path, &workspace);
-                    let (dir, name) = match display.rsplit_once('/') {
-                        Some((dir, name)) => (dir.to_owned(), name.to_owned()),
-                        None => (String::new(), display.clone()),
-                    };
-                    let path = change.path.clone();
-                    let selected = open.as_ref() == Some(&change.path);
-                    let icon = if change.created {
-                        gpui_kit_assets::IconName::FilePlus
-                    } else {
-                        gpui_kit_assets::IconName::FilePen
-                    };
+            })
+            .child(div().flex_1())
+            .when_some(branch, |el, branch| {
+                el.child(
                     h_flex()
-                        .id(("change", ix))
-                        .w_full()
-                        .px_3()
-                        .py_1()
-                        .gap_2()
-                        .cursor_pointer()
-                        .when(selected, |el| el.bg(theme.list_active))
-                        .hover(|el| el.bg(theme.list_hover))
-                        .child(Icon::new(icon).xsmall().text_color(if change.created {
-                            theme.green
-                        } else {
-                            theme.muted_foreground
-                        }))
+                        .min_w_0()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
                         .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_1()
+                            Icon::new(gpui_kit_assets::IconName::GitBranch)
+                                .xsmall()
+                                .text_color(theme.muted_foreground),
+                        )
+                        .child(
+                            div()
                                 .overflow_hidden()
+                                .text_ellipsis()
                                 .whitespace_nowrap()
-                                .child(div().flex_none().child(name))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_ellipsis()
-                                        .overflow_hidden()
-                                        .text_color(theme.muted_foreground)
-                                        .child(dir),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.green)
-                                .child(format!("+{}", change.added)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.red)
-                                .child(format!("−{}", change.removed)),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_diff(path.clone(), window, cx)
-                        }))
-                }))
-                .into_any_element(),
-        };
+                                .child(branch),
+                        ),
+                )
+            });
         v_flex()
             .size_full()
             .border_l_1()
@@ -1431,6 +1478,164 @@ impl Workspace {
             .bg(theme.sidebar)
             .child(header)
             .child(body)
+            .into_any_element()
+    }
+
+    fn render_git_changes(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        listing: Rc<WorkspaceChanges>,
+        session: Option<Rc<Vec<FileChange>>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        if listing.files.is_empty() {
+            return div()
+                .p_3()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("No uncommitted changes.")
+                .into_any_element();
+        }
+        let workspace = conn.read(cx).info.workspace.clone();
+        let open = self.open_diff_path(true, cx);
+        let touched: HashSet<PathBuf> = session
+            .map(|changes| changes.iter().map(|c| c.path.clone()).collect())
+            .unwrap_or_default();
+        v_flex()
+            .id("changes-list")
+            .flex_1()
+            .overflow_y_scroll()
+            .py_1()
+            .children(listing.files.iter().enumerate().map(|(ix, change)| {
+                let absolute = workspace.join(&change.path);
+                let (icon, color) = match change.status {
+                    ChangeStatus::Added | ChangeStatus::Untracked => {
+                        (gpui_kit_assets::IconName::FilePlus, theme.green)
+                    }
+                    ChangeStatus::Deleted => (gpui_kit_assets::IconName::FileMinus, theme.red),
+                    ChangeStatus::Renamed | ChangeStatus::Copied => {
+                        (gpui_kit_assets::IconName::FileSymlink, theme.blue)
+                    }
+                    ChangeStatus::Conflicted => {
+                        (gpui_kit_assets::IconName::TriangleAlert, theme.yellow)
+                    }
+                    ChangeStatus::Modified | ChangeStatus::TypeChanged => {
+                        (gpui_kit_assets::IconName::FilePen, theme.muted_foreground)
+                    }
+                };
+                let detail = change.old_path.as_ref().map(|old| format!("← {old}"));
+                let row = ChangeRow {
+                    ix,
+                    path: &change.path,
+                    detail,
+                    icon,
+                    color,
+                    added: change.added as usize,
+                    removed: change.removed as usize,
+                    binary: change.binary,
+                    selected: open.as_ref() == Some(&absolute),
+                    agent: touched.contains(&absolute),
+                };
+                let conn = conn.clone();
+                let change = change.clone();
+                row.render(&theme)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_git_diff(conn.clone(), change.clone(), window, cx)
+                    }))
+            }))
+            .when(listing.truncated, |el| {
+                el.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!("Showing the first {} files.", listing.files.len())),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn open_diff_path(&self, git: bool, cx: &App) -> Option<PathBuf> {
+        self.active_group()
+            .and_then(|g| g.active_panel())
+            .and_then(|panel| match panel {
+                Panel::Diff(view) if view.read(cx).is_git() == git => {
+                    Some(view.read(cx).path().clone())
+                }
+                _ => None,
+            })
+    }
+
+    fn render_session_changes(
+        &mut self,
+        changes: Option<Rc<Vec<FileChange>>>,
+        note: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let workspace = self
+            .changes_connection()
+            .map(|c| c.read(cx).info.workspace.clone())
+            .unwrap_or_default();
+        let open = self.open_diff_path(false, cx);
+        let message = |text: &str| {
+            div()
+                .p_3()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(text.to_owned())
+        };
+        let list = match changes {
+            None => message("Open a session to see the files it changed.").into_any_element(),
+            Some(changes) if changes.is_empty() => {
+                message("No files changed in this session yet.").into_any_element()
+            }
+            Some(changes) => v_flex()
+                .id("changes-list")
+                .flex_1()
+                .overflow_y_scroll()
+                .py_1()
+                .children(changes.iter().enumerate().map(|(ix, change)| {
+                    let display = display_path(&change.path, &workspace);
+                    let (icon, color) = if change.created {
+                        (gpui_kit_assets::IconName::FilePlus, theme.green)
+                    } else {
+                        (gpui_kit_assets::IconName::FilePen, theme.muted_foreground)
+                    };
+                    let row = ChangeRow {
+                        ix,
+                        path: &display,
+                        detail: None,
+                        icon,
+                        color,
+                        added: change.added,
+                        removed: change.removed,
+                        binary: false,
+                        selected: open.as_ref() == Some(&change.path),
+                        agent: false,
+                    };
+                    let path = change.path.clone();
+                    row.render(&theme)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_diff(path.clone(), window, cx)
+                        }))
+                }))
+                .into_any_element(),
+        };
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .px_3()
+                    .pt_2()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(note),
+            )
+            .child(list)
             .into_any_element()
     }
 
@@ -2479,7 +2684,7 @@ impl Render for Workspace {
         let theme = cx.theme().clone();
         let agents = self.render_agents_panel(cx);
         let center = self.render_center(cx);
-        let show_changes = self.show_right && self.active_group.is_some();
+        let show_changes = self.show_right && self.changes_connection().is_some();
         let changes = show_changes.then(|| self.render_changes_panel(cx));
         let status = self.render_status(cx);
         v_flex()
@@ -2556,5 +2761,84 @@ impl Render for Workspace {
                 ),
             )
             .child(status)
+    }
+}
+
+struct ChangeRow<'a> {
+    ix: usize,
+    path: &'a str,
+    detail: Option<String>,
+    icon: gpui_kit_assets::IconName,
+    color: gpui::Hsla,
+    added: usize,
+    removed: usize,
+    binary: bool,
+    selected: bool,
+    agent: bool,
+}
+
+impl ChangeRow<'_> {
+    fn render(self, theme: &gpui_component::Theme) -> gpui::Stateful<gpui::Div> {
+        let (dir, name) = match self.path.rsplit_once('/') {
+            Some((dir, name)) => (dir.to_owned(), name.to_owned()),
+            None => (String::new(), self.path.to_owned()),
+        };
+        let secondary = self.detail.unwrap_or(dir);
+        h_flex()
+            .id(("change", self.ix))
+            .w_full()
+            .px_3()
+            .py_1()
+            .gap_2()
+            .cursor_pointer()
+            .when(self.selected, |el| el.bg(theme.list_active))
+            .hover(|el| el.bg(theme.list_hover))
+            .child(Icon::new(self.icon).xsmall().text_color(self.color))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(div().flex_none().child(name))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_ellipsis()
+                            .overflow_hidden()
+                            .text_color(theme.muted_foreground)
+                            .child(secondary),
+                    ),
+            )
+            .when(self.agent, |el| {
+                el.child(
+                    Icon::new(gpui_kit_assets::IconName::Bot)
+                        .xsmall()
+                        .text_color(theme.muted_foreground),
+                )
+            })
+            .when(self.binary, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("binary"),
+                )
+            })
+            .when(!self.binary, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.green)
+                        .child(format!("+{}", self.added)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.red)
+                        .child(format!("−{}", self.removed)),
+                )
+            })
     }
 }

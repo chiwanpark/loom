@@ -2,54 +2,107 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, Styled, Subscription,
+    AnyElement, App, AsyncApp, Context, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Subscription,
     UniformListScrollHandle, Window, div, prelude::FluentBuilder, px, uniform_list,
 };
 use gpui_component::{ActiveTheme, h_flex, v_flex};
 
-use crate::changes::{DiffLine, DiffLineKind, change_lines, session_changes};
+use crate::changes::{
+    DiffLine, DiffLineKind, change_lines, count_lines, diff_lines, session_changes,
+};
 use crate::conversation::Conversation;
+use crate::state::AgentConnection;
 
 const ROW_HEIGHT: f32 = 20.;
 
+enum Source {
+    Session {
+        conversation: Entity<Conversation>,
+        revision: Option<u64>,
+        _subscription: Subscription,
+    },
+    Git {
+        connection: Entity<AgentConnection>,
+        relative: String,
+        old_path: Option<String>,
+        diff: Option<String>,
+        error: Option<String>,
+        truncated: bool,
+        loading: bool,
+    },
+}
+
 pub struct DiffView {
-    conversation: Entity<Conversation>,
+    source: Source,
     path: PathBuf,
     title: String,
     lines: Rc<Vec<DiffLine>>,
     added: usize,
     removed: usize,
-    revision: Option<u64>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
-    _subscription: Subscription,
 }
 
 impl DiffView {
-    pub fn new(
+    pub fn session(
         conversation: Entity<Conversation>,
         path: PathBuf,
         title: String,
         cx: &mut Context<Self>,
     ) -> Self {
         let subscription = cx.observe(&conversation, |this, _, cx| {
-            this.refresh(cx);
+            this.refresh_session(cx);
             cx.notify();
         });
         let mut this = Self {
-            conversation,
+            source: Source::Session {
+                conversation,
+                revision: None,
+                _subscription: subscription,
+            },
             path,
             title,
             lines: Rc::new(Vec::new()),
             added: 0,
             removed: 0,
-            revision: None,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
-            _subscription: subscription,
         };
-        this.refresh(cx);
+        this.refresh_session(cx);
+        this
+    }
+
+    pub fn git(
+        connection: Entity<AgentConnection>,
+        relative: String,
+        old_path: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let path = connection.read(cx).info.workspace.join(&relative);
+        let title = match &old_path {
+            Some(old) => format!("{old} → {relative}"),
+            None => relative.clone(),
+        };
+        let mut this = Self {
+            source: Source::Git {
+                connection,
+                relative,
+                old_path,
+                diff: None,
+                error: None,
+                truncated: false,
+                loading: false,
+            },
+            path,
+            title,
+            lines: Rc::new(Vec::new()),
+            added: 0,
+            removed: 0,
+            focus: cx.focus_handle(),
+            scroll: UniformListScrollHandle::new(),
+        };
+        this.reload(cx);
         this
     }
 
@@ -61,12 +114,107 @@ impl DiffView {
         self.title.clone()
     }
 
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        let conversation = self.conversation.read(cx);
-        if self.revision == Some(conversation.revision) {
+    pub fn is_git(&self) -> bool {
+        matches!(self.source, Source::Git { .. })
+    }
+
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        let Source::Git {
+            connection,
+            relative,
+            old_path,
+            loading,
+            ..
+        } = &mut self.source
+        else {
+            return;
+        };
+        if *loading {
             return;
         }
-        self.revision = Some(conversation.revision);
+        *loading = true;
+        let task = connection
+            .read(cx)
+            .file_diff(relative.clone(), old_path.clone());
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(result) = result {
+                    this.apply_git(result, cx);
+                } else if let Source::Git { loading, .. } = &mut this.source {
+                    *loading = false;
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn apply_git(
+        &mut self,
+        result: loom_client::Result<loom_client::proto::FileDiff>,
+        cx: &mut Context<Self>,
+    ) {
+        let Source::Git {
+            diff,
+            error,
+            truncated,
+            loading,
+            ..
+        } = &mut self.source
+        else {
+            return;
+        };
+        *loading = false;
+        match result {
+            Ok(fetched) => {
+                let changed = diff.as_deref() != Some(fetched.diff.as_str())
+                    || *truncated != fetched.truncated
+                    || error.is_some();
+                if !changed {
+                    return;
+                }
+                *error = None;
+                *truncated = fetched.truncated;
+                let (added, removed) = count_lines(&fetched.diff);
+                let mut lines = diff_lines(&fetched.diff);
+                if fetched.truncated {
+                    lines.push(DiffLine {
+                        kind: DiffLineKind::Note,
+                        old: None,
+                        new: None,
+                        text: "The diff is too large and was truncated.".into(),
+                    });
+                }
+                *diff = Some(fetched.diff);
+                self.added = added;
+                self.removed = removed;
+                self.lines = Rc::new(lines);
+            }
+            Err(err) => {
+                let message = err.to_string();
+                if error.as_ref() == Some(&message) {
+                    return;
+                }
+                *error = Some(message);
+            }
+        }
+        cx.notify();
+    }
+
+    fn refresh_session(&mut self, cx: &mut Context<Self>) {
+        let Source::Session {
+            conversation,
+            revision,
+            ..
+        } = &mut self.source
+        else {
+            return;
+        };
+        let conversation = conversation.read(cx);
+        if *revision == Some(conversation.revision) {
+            return;
+        }
+        *revision = Some(conversation.revision);
         let change = session_changes(&conversation.items)
             .into_iter()
             .find(|c| c.path == self.path);
@@ -82,6 +230,20 @@ impl DiffView {
                 self.lines = Rc::new(Vec::new());
             }
         }
+    }
+
+    fn empty_message(&self) -> Option<String> {
+        if !self.lines.is_empty() {
+            return None;
+        }
+        Some(match &self.source {
+            Source::Session { .. } => "This session has not changed this file.".into(),
+            Source::Git {
+                error: Some(error), ..
+            } => format!("Could not load the diff: {error}"),
+            Source::Git { diff: None, .. } => "Loading…".into(),
+            Source::Git { .. } => "This file has no uncommitted changes.".into(),
+        })
     }
 }
 
@@ -103,6 +265,7 @@ impl Render for DiffView {
         let lines = self.lines.clone();
         let count = lines.len();
         let row_theme = theme.clone();
+        let empty = self.empty_message();
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -123,6 +286,14 @@ impl Render for DiffView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(self.title.clone()),
                     )
+                    .when(self.is_git(), |el| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("against HEAD"),
+                        )
+                    })
                     .child(
                         div()
                             .text_sm()
@@ -136,12 +307,12 @@ impl Render for DiffView {
                             .child(format!("−{}", self.removed)),
                     ),
             )
-            .when(count == 0, |el| {
+            .when_some(empty, |el, message| {
                 el.child(
                     div()
                         .p_4()
                         .text_color(theme.muted_foreground)
-                        .child("This session has not changed this file."),
+                        .child(message),
                 )
             })
             .child(
