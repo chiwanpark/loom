@@ -13,13 +13,18 @@ use tokio::process::Command;
 use tokio::time::{Instant, sleep_until};
 
 use crate::error::{Result, ToolError};
+use crate::pty::{PtyExit, PtyProcess, PtySpawn};
 use crate::tool::{
     OutputChunk, OutputStream, Risk, Tool, ToolContext, ToolDetails, ToolOutput, ToolSpec,
     lenient_opt_u64, parse_args,
 };
 use crate::truncate::{Limits, format_size, tail};
+use crate::vtext::PlainText;
 
 const READ_BUFFER_BYTES: usize = 8192;
+const PTY_COLS: u16 = 120;
+const PTY_ROWS: u16 = 40;
+const EOF_CHAR: u8 = 0x04;
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]
@@ -28,6 +33,7 @@ pub struct ShellConfig {
     pub default_timeout: Option<Duration>,
     pub spill_dir: PathBuf,
     pub limits: Limits,
+    pub pty: bool,
 }
 
 impl Default for ShellConfig {
@@ -42,6 +48,7 @@ impl Default for ShellConfig {
             default_timeout: None,
             spill_dir: std::env::temp_dir(),
             limits: Limits::default(),
+            pty: false,
         }
     }
 }
@@ -71,10 +78,15 @@ impl Tool for ShellTool {
         ToolSpec {
             name: "shell".into(),
             description: format!(
-                "Run a shell command with {} in the workspace root. Returns combined stdout and stderr. Output is limited to the last {} lines or {}; when it is cut, the full output is saved to a file. Commands do not get a terminal or stdin, so avoid interactive programs.",
+                "Run a shell command with {} in the workspace root. Returns combined stdout and stderr. Output is limited to the last {} lines or {}; when it is cut, the full output is saved to a file. {}",
                 self.config.shell.display(),
                 limits.max_lines,
-                format_size(limits.max_bytes as u64)
+                format_size(limits.max_bytes as u64),
+                if self.config.pty {
+                    "Commands run in a terminal but get no input (stdin is at end of file), so avoid interactive programs."
+                } else {
+                    "Commands do not get a terminal or stdin, so avoid interactive programs."
+                }
             ),
             parameters: json!({
                 "type": "object",
@@ -117,6 +129,9 @@ impl Tool for ShellTool {
             .map(Duration::from_secs)
             .or(self.config.default_timeout);
         let started = Instant::now();
+        if self.config.pty {
+            return self.call_pty(ctx, &args.command, timeout, started).await;
+        }
         let mut child = Command::new(&self.config.shell)
             .arg("-c")
             .arg(&args.command)
@@ -177,68 +192,164 @@ impl Tool for ShellTool {
             }
         }
 
-        let duration = started.elapsed();
         let collected = collector.finish().await?;
-        let exit_code = status.and_then(|status| status.code());
-        let signal = status.and_then(|status| status.signal());
+        Ok(build_output(Run {
+            collected,
+            exit_code: status.and_then(|status| status.code()),
+            signal: status.and_then(|status| status.signal()),
+            timed_out,
+            cancelled,
+            timeout,
+            duration: started.elapsed(),
+        }))
+    }
+}
 
-        let mut content = if collected.text.is_empty() {
-            "(no output)".to_string()
-        } else {
-            collected.text
-        };
-        let mut notices = Vec::new();
-        if collected.truncated {
-            let location = collected
-                .full_output_path
-                .as_ref()
-                .map(|path| {
-                    format!(
-                        " Full output: {} (inspect it with the shell tool)",
-                        path.display()
-                    )
-                })
-                .unwrap_or_default();
-            notices.push(format!(
-                "[Showing the last {} of {} lines.{location}]",
-                collected.shown_lines, collected.total_lines
-            ));
-        }
-        if timed_out {
-            notices.push(format!(
-                "[Command timed out after {}s]",
-                timeout.unwrap_or_default().as_secs()
-            ));
-        } else if cancelled {
-            notices.push("[Command cancelled]".to_string());
-        } else if let Some(code) = exit_code.filter(|code| *code != 0) {
-            notices.push(format!("[Exit code: {code}]"));
-        } else if let Some(signal) = signal {
-            notices.push(format!("[Killed by signal {signal}]"));
-        }
-        if !notices.is_empty() {
-            if !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push('\n');
-            content.push_str(&notices.join("\n"));
-        }
-
-        Ok(ToolOutput {
-            content,
-            is_error: timed_out || cancelled || exit_code != Some(0),
-            details: ToolDetails::Shell {
-                exit_code,
-                signal,
-                timed_out,
-                cancelled,
-                truncated: collected.truncated,
-                total_lines: collected.total_lines,
-                total_bytes: collected.total_bytes,
-                full_output_path: collected.full_output_path,
-                duration_ms: duration.as_millis() as u64,
-            },
+impl ShellTool {
+    async fn call_pty(
+        &self,
+        ctx: &ToolContext,
+        command: &str,
+        timeout: Option<Duration>,
+        started: Instant,
+    ) -> Result<ToolOutput> {
+        let (process, mut output) = PtyProcess::spawn(PtySpawn {
+            program: self.config.shell.clone(),
+            args: vec!["-c".into(), command.to_owned()],
+            cwd: ctx.workspace.root().to_path_buf(),
+            env: vec![("TERM".into(), "xterm-256color".into())],
+            cols: PTY_COLS,
+            rows: PTY_ROWS,
         })
+        .map_err(|err| {
+            ToolError::io(format!("cannot start {}", self.config.shell.display()), err)
+        })?;
+        let _ = process.write(&[EOF_CHAR]);
+        let mut text = PlainText::new();
+        let mut collector = OutputCollector::new(&self.config);
+        let deadline = timeout.map(|timeout| started + timeout);
+        let mut drain_deadline = None;
+        let mut exit: Option<PtyExit> = None;
+        let mut data_open = true;
+        let mut timed_out = false;
+        let mut cancelled = false;
+        loop {
+            if exit.is_some() && !data_open {
+                break;
+            }
+            tokio::select! {
+                _ = ctx.cancel.cancelled(), if !cancelled && !timed_out && exit.is_none() => {
+                    cancelled = true;
+                    process.kill();
+                }
+                _ = sleep_opt(deadline), if !cancelled && !timed_out && exit.is_none() => {
+                    timed_out = true;
+                    process.kill();
+                }
+                _ = sleep_opt(drain_deadline), if drain_deadline.is_some() => break,
+                chunk = output.data.recv(), if data_open => match chunk {
+                    Some(data) => {
+                        collector.emit(ctx, OutputStream::Stdout, &data).await;
+                        collector.record(text.feed(&data).as_bytes()).await?;
+                    }
+                    None => data_open = false,
+                },
+                status = &mut output.exit, if exit.is_none() => {
+                    exit = Some(status.unwrap_or(PtyExit { code: None, signal: None }));
+                    drain_deadline = Some(Instant::now() + DRAIN_GRACE);
+                }
+            }
+        }
+        collector.record(text.finish().as_bytes()).await?;
+        let collected = collector.finish().await?;
+        Ok(build_output(Run {
+            collected,
+            exit_code: exit.and_then(|e| e.code),
+            signal: exit.and_then(|e| e.signal),
+            timed_out,
+            cancelled,
+            timeout,
+            duration: started.elapsed(),
+        }))
+    }
+}
+
+struct Run {
+    collected: Collected,
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+    timed_out: bool,
+    cancelled: bool,
+    timeout: Option<Duration>,
+    duration: Duration,
+}
+
+fn build_output(run: Run) -> ToolOutput {
+    let Run {
+        collected,
+        exit_code,
+        signal,
+        timed_out,
+        cancelled,
+        timeout,
+        duration,
+    } = run;
+    let mut content = if collected.text.is_empty() {
+        "(no output)".to_string()
+    } else {
+        collected.text
+    };
+    let mut notices = Vec::new();
+    if collected.truncated {
+        let location = collected
+            .full_output_path
+            .as_ref()
+            .map(|path| {
+                format!(
+                    " Full output: {} (inspect it with the shell tool)",
+                    path.display()
+                )
+            })
+            .unwrap_or_default();
+        notices.push(format!(
+            "[Showing the last {} of {} lines.{location}]",
+            collected.shown_lines, collected.total_lines
+        ));
+    }
+    if timed_out {
+        notices.push(format!(
+            "[Command timed out after {}s]",
+            timeout.unwrap_or_default().as_secs()
+        ));
+    } else if cancelled {
+        notices.push("[Command cancelled]".to_string());
+    } else if let Some(code) = exit_code.filter(|code| *code != 0) {
+        notices.push(format!("[Exit code: {code}]"));
+    } else if let Some(signal) = signal {
+        notices.push(format!("[Killed by signal {signal}]"));
+    }
+    if !notices.is_empty() {
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push('\n');
+        content.push_str(&notices.join("\n"));
+    }
+
+    ToolOutput {
+        content,
+        is_error: timed_out || cancelled || exit_code != Some(0),
+        details: ToolDetails::Shell {
+            exit_code,
+            signal,
+            timed_out,
+            cancelled,
+            truncated: collected.truncated,
+            total_lines: collected.total_lines,
+            total_bytes: collected.total_bytes,
+            full_output_path: collected.full_output_path,
+            duration_ms: duration.as_millis() as u64,
+        },
     }
 }
 
@@ -326,6 +437,11 @@ impl OutputCollector {
     }
 
     async fn push(&mut self, ctx: &ToolContext, stream: OutputStream, data: &[u8]) -> Result<()> {
+        self.emit(ctx, stream, data).await;
+        self.record(data).await
+    }
+
+    async fn emit(&self, ctx: &ToolContext, stream: OutputStream, data: &[u8]) {
         if let Some(sink) = &ctx.output {
             let _ = sink
                 .send(OutputChunk {
@@ -333,6 +449,12 @@ impl OutputCollector {
                     data: data.to_vec(),
                 })
                 .await;
+        }
+    }
+
+    async fn record(&mut self, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
         }
         self.total_bytes += data.len() as u64;
         self.newlines += data.iter().filter(|byte| **byte == b'\n').count();
@@ -658,5 +780,80 @@ mod tests {
             .call(&ctx, json!({"command": "  "}))
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+    }
+
+    fn pty_tool(dir: &Path) -> ShellTool {
+        ShellTool::new(ShellConfig {
+            spill_dir: dir.to_path_buf(),
+            pty: true,
+            ..ShellConfig::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn pty_mode_streams_raw_bytes_and_returns_plain_text() {
+        let (dir, ctx) = context();
+        let (tx, mut rx) = mpsc::channel(64);
+        let ctx = ctx.with_output(tx);
+        let output = pty_tool(dir.path())
+            .call(
+                &ctx,
+                json!({"command": "test -t 1 && echo tty; printf '\\033[31mred\\033[0m\\n'; printf 'step 1\\rstep 2\\n'; echo $TERM"}),
+            )
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(output.content, "tty\nred\nstep 2\nxterm-256color\n");
+        let mut raw = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            raw.extend(chunk.data);
+        }
+        let raw = String::from_utf8_lossy(&raw);
+        assert!(raw.contains("\x1b[31mred"), "{raw:?}");
+    }
+
+    #[tokio::test]
+    async fn pty_mode_reports_exit_codes_and_gives_stdin_eof() {
+        let (dir, ctx) = context();
+        let tool = pty_tool(dir.path());
+        let output = tool
+            .call(&ctx, json!({"command": "echo failing; exit 4"}))
+            .await
+            .unwrap();
+        assert!(output.is_error);
+        assert_eq!(output.content, "failing\n\n[Exit code: 4]");
+        let output = tool
+            .call(&ctx, json!({"command": "cat; echo after", "timeout": 5}))
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert!(output.content.ends_with("after\n"), "{:?}", output.content);
+    }
+
+    #[tokio::test]
+    async fn pty_mode_times_out_and_cancels() {
+        let (dir, ctx) = context();
+        let tool = pty_tool(dir.path());
+        let started = std::time::Instant::now();
+        let output = tool
+            .call(&ctx, json!({"command": "sleep 30", "timeout": 1}))
+            .await
+            .unwrap();
+        assert!(output.is_error);
+        assert!(output.content.contains("timed out"), "{}", output.content);
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let cancel = CancellationToken::new();
+        let ctx = ctx.with_cancel(cancel.clone());
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            trigger.cancel();
+        });
+        let output = tool
+            .call(&ctx, json!({"command": "sleep 30"}))
+            .await
+            .unwrap();
+        assert!(output.content.contains("cancelled"), "{}", output.content);
     }
 }

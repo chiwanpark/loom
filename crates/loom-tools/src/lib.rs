@@ -1,11 +1,13 @@
 mod edit;
 mod error;
 mod fsutil;
+pub mod pty;
 mod read;
 mod registry;
 mod shell;
 mod tool;
 mod truncate;
+pub mod vtext;
 mod workspace;
 mod write;
 
