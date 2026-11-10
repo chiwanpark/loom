@@ -2,13 +2,18 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point as AlacPoint, Side as AlacSide};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color as AnsiColor, CursorShape as AnsiCursorShape, NamedColor, Processor, Rgb,
 };
 
-use crate::{Cell, CellFlags, Color, Cursor, CursorShape, Modes, Snapshot, TerminalEmulator};
+use crate::{
+    Cell, CellFlags, Color, Cursor, CursorShape, GridPoint, Modes, SelectionKind, Side, Snapshot,
+    TerminalEmulator,
+};
 
 const SCROLLBACK: usize = 10_000;
 
@@ -113,6 +118,17 @@ impl AlacrittyTerminal {
     }
 }
 
+fn alac_point(point: GridPoint) -> AlacPoint {
+    AlacPoint::new(Line(point.line), Column(point.column))
+}
+
+fn alac_side(side: Side) -> AlacSide {
+    match side {
+        Side::Left => AlacSide::Left,
+        Side::Right => AlacSide::Right,
+    }
+}
+
 fn cell_flags(flags: Flags) -> CellFlags {
     CellFlags {
         bold: flags.contains(Flags::BOLD),
@@ -124,6 +140,7 @@ fn cell_flags(flags: Flags) -> CellFlags {
         hidden: flags.contains(Flags::HIDDEN),
         wide: flags.contains(Flags::WIDE_CHAR),
         wide_spacer: flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+        selected: false,
     }
 }
 
@@ -148,6 +165,7 @@ impl TerminalEmulator for AlacrittyTerminal {
         let content = self.term.renderable_content();
         let offset = content.display_offset as i32;
         let colors = content.colors;
+        let selection = content.selection;
         let mut lines = vec![vec![Cell::default(); self.size.cols]; self.size.rows];
         for indexed in content.display_iter {
             let row = indexed.point.line.0 + offset;
@@ -161,11 +179,13 @@ impl TerminalEmulator for AlacrittyTerminal {
             if let Some(extra) = cell.zerowidth() {
                 text.extend(extra.iter());
             }
+            let mut flags = cell_flags(cell.flags);
+            flags.selected = selection.is_some_and(|range| range.contains(indexed.point));
             lines[row as usize][col] = Cell {
                 text,
                 fg: self.color(cell.fg, colors),
                 bg: self.color(cell.bg, colors),
-                flags: cell_flags(cell.flags),
+                flags,
             };
         }
         let cursor_point = content.cursor.point;
@@ -210,6 +230,11 @@ impl TerminalEmulator for AlacrittyTerminal {
             alt_screen: mode.contains(TermMode::ALT_SCREEN),
             mouse_reporting: mode.intersects(TermMode::MOUSE_MODE),
             focus_reporting: mode.contains(TermMode::FOCUS_IN_OUT),
+            mouse_motion: mode.contains(TermMode::MOUSE_MOTION),
+            mouse_drag: mode.contains(TermMode::MOUSE_DRAG),
+            sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
+            utf8_mouse: mode.contains(TermMode::UTF8_MOUSE),
+            alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),
         }
     }
 
@@ -231,6 +256,46 @@ impl TerminalEmulator for AlacrittyTerminal {
                 .unwrap_or_else(|e| e.into_inner())
                 .responses,
         )
+    }
+
+    fn start_selection(&mut self, kind: SelectionKind, point: GridPoint, side: Side) {
+        let ty = match kind {
+            SelectionKind::Simple => SelectionType::Simple,
+            SelectionKind::Semantic => SelectionType::Semantic,
+            SelectionKind::Lines => SelectionType::Lines,
+        };
+        self.term.selection = Some(Selection::new(ty, alac_point(point), alac_side(side)));
+    }
+
+    fn update_selection(&mut self, point: GridPoint, side: Side) {
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(alac_point(point), alac_side(side));
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    fn has_selection(&self) -> bool {
+        self.term
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_empty())
+    }
+
+    fn selection_text(&self) -> Option<String> {
+        self.term
+            .selection_to_string()
+            .filter(|text| !text.is_empty())
+    }
+
+    fn select_all(&mut self) {
+        let start = AlacPoint::new(self.term.topmost_line(), Column(0));
+        let end = AlacPoint::new(self.term.bottommost_line(), self.term.last_column());
+        let mut selection = Selection::new(SelectionType::Simple, start, AlacSide::Left);
+        selection.update(end, AlacSide::Right);
+        self.term.selection = Some(selection);
     }
 }
 
@@ -308,5 +373,43 @@ mod tests {
         assert_eq!(term.snapshot().lines[0].len(), 20);
         term.feed(b"\x1b[?1049h");
         assert!(term.modes().alt_screen);
+    }
+
+    #[test]
+    fn selects_copies_and_marks_cells() {
+        let mut term = AlacrittyTerminal::new(20, 3);
+        term.feed(b"hello world\r\nsecond line");
+        assert!(!term.has_selection());
+        let at = |line, column| GridPoint { line, column };
+        term.start_selection(SelectionKind::Simple, at(0, 0), Side::Left);
+        term.update_selection(at(0, 4), Side::Right);
+        assert!(term.has_selection());
+        assert_eq!(term.selection_text().as_deref(), Some("hello"));
+        let snap = term.snapshot();
+        assert!(snap.lines[0][4].flags.selected);
+        assert!(!snap.lines[0][5].flags.selected);
+
+        term.start_selection(SelectionKind::Semantic, at(0, 8), Side::Left);
+        assert_eq!(term.selection_text().as_deref(), Some("world"));
+        term.start_selection(SelectionKind::Lines, at(1, 3), Side::Left);
+        assert_eq!(term.selection_text().as_deref(), Some("second line\n"));
+
+        term.select_all();
+        assert_eq!(
+            term.selection_text().as_deref(),
+            Some("hello world\nsecond line\n")
+        );
+        term.clear_selection();
+        assert!(term.selection_text().is_none());
+    }
+
+    #[test]
+    fn reports_mouse_modes() {
+        let mut term = AlacrittyTerminal::new(20, 3);
+        assert!(!term.modes().mouse_reporting);
+        term.feed(b"\x1b[?1002h\x1b[?1006h");
+        let modes = term.modes();
+        assert!(modes.mouse_reporting && modes.mouse_drag && modes.sgr_mouse);
+        assert!(!modes.mouse_motion);
     }
 }

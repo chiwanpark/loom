@@ -1,5 +1,6 @@
 mod alacritty;
 pub mod input;
+pub mod mouse;
 
 pub use alacritty::AlacrittyTerminal;
 
@@ -22,6 +23,7 @@ pub struct CellFlags {
     pub hidden: bool,
     pub wide: bool,
     pub wide_spacer: bool,
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +68,30 @@ pub struct Modes {
     pub alt_screen: bool,
     pub mouse_reporting: bool,
     pub focus_reporting: bool,
+    pub mouse_motion: bool,
+    pub mouse_drag: bool,
+    pub sgr_mouse: bool,
+    pub utf8_mouse: bool,
+    pub alternate_scroll: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridPoint {
+    pub line: i32,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionKind {
+    Simple,
+    Semantic,
+    Lines,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,4 +139,10 @@ pub trait TerminalEmulator: Send {
     fn modes(&self) -> Modes;
     fn title(&self) -> Option<String>;
     fn take_responses(&mut self) -> Vec<u8>;
+    fn start_selection(&mut self, kind: SelectionKind, point: GridPoint, side: Side);
+    fn update_selection(&mut self, point: GridPoint, side: Side);
+    fn clear_selection(&mut self);
+    fn has_selection(&self) -> bool;
+    fn selection_text(&self) -> Option<String>;
+    fn select_all(&mut self);
 }
