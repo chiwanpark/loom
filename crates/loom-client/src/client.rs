@@ -588,6 +588,16 @@ impl Client {
         self.ok(Command::CloseTerminal { terminal }).await
     }
 
+    /// Reattaches to a terminal opened over an earlier connection to the same agent.
+    pub async fn attach_terminal(&self, terminal: TerminalId, cols: u16, rows: u16) -> Result<()> {
+        self.ok(Command::AttachTerminal {
+            terminal,
+            cols,
+            rows,
+        })
+        .await
+    }
+
     async fn ok(&self, command: Command) -> Result<()> {
         match self.request(command).await? {
             Payload::Ok => Ok(()),

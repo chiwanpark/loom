@@ -188,6 +188,13 @@ pub enum Command {
     ReadFile {
         path: String,
     },
+    /// Takes over a terminal after reconnecting: output goes to this connection,
+    /// the terminal is resized, and its foreground program is asked to redraw.
+    AttachTerminal {
+        terminal: TerminalId,
+        cols: u16,
+        rows: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

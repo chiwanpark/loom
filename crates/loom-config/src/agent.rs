@@ -68,11 +68,23 @@ pub struct CloudflareAccessConfig {
     pub client_secret_env: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<PathBuf>,
+    /// How long a terminal survives without a connected client, so a client that
+    /// reconnects can reattach to it. `0s` closes terminals on disconnect.
+    pub detached_timeout: HumanDuration,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            detached_timeout: HumanDuration::from_secs(600),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

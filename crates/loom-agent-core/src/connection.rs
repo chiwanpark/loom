@@ -16,7 +16,7 @@ use crate::events::Subscription;
 use crate::host_keys::HostKeys;
 use crate::session::Session;
 use crate::supervisor::Supervisor;
-use crate::terminals::{Terminals, interactive_shell};
+use crate::terminals::{ConnectionId, interactive_shell};
 
 pub type Reply = Result<Payload, ApiError>;
 
@@ -36,7 +36,7 @@ pub struct Connection {
     tasks: Vec<JoinHandle<()>>,
     supervisor: Option<Arc<dyn Supervisor>>,
     host_keys: Option<Arc<dyn HostKeys>>,
-    terminals: Terminals,
+    connection_id: ConnectionId,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -46,6 +46,7 @@ fn protocol_error(message: &str) -> ApiError {
 impl Connection {
     pub fn new(agent: Agent, info: AgentInfo, out: mpsc::Sender<ServerMessage>) -> Self {
         agent.metrics().connection_opened();
+        let connection_id = agent.terminals().connection_id();
         Self {
             agent,
             info,
@@ -56,7 +57,7 @@ impl Connection {
             tasks: Vec::new(),
             supervisor: None,
             host_keys: None,
-            terminals: Terminals::default(),
+            connection_id,
         }
     }
 
@@ -250,8 +251,10 @@ impl Connection {
                     .clone()
                     .unwrap_or_else(|| interactive_shell(&config.tools.shell.program));
                 let result = self
-                    .terminals
+                    .agent
+                    .terminals()
                     .open(
+                        self.connection_id,
                         shell,
                         self.agent.workspace_root(),
                         cols,
@@ -263,8 +266,9 @@ impl Connection {
             }
             Command::TerminalInput { terminal, data } => {
                 let result = self
-                    .terminals
-                    .input(terminal, data)
+                    .agent
+                    .terminals()
+                    .input(self.connection_id, terminal, data)
                     .await
                     .map(|()| Payload::Ok);
                 self.respond(id, result).await;
@@ -275,13 +279,30 @@ impl Connection {
                 rows,
             } => {
                 let result = self
-                    .terminals
-                    .resize(terminal, cols, rows)
+                    .agent
+                    .terminals()
+                    .resize(self.connection_id, terminal, cols, rows)
+                    .map(|()| Payload::Ok);
+                self.respond(id, result).await;
+            }
+            Command::AttachTerminal {
+                terminal,
+                cols,
+                rows,
+            } => {
+                let result = self
+                    .agent
+                    .terminals()
+                    .attach(self.connection_id, terminal, cols, rows, self.out.clone())
                     .map(|()| Payload::Ok);
                 self.respond(id, result).await;
             }
             Command::CloseTerminal { terminal } => {
-                let result = self.terminals.close(terminal).map(|()| Payload::Ok);
+                let result = self
+                    .agent
+                    .terminals()
+                    .close(self.connection_id, terminal)
+                    .map(|()| Payload::Ok);
                 self.respond(id, result).await;
             }
             Command::CancelLogin { login } => {
@@ -432,6 +453,7 @@ impl Connection {
             | Command::TerminalInput { .. }
             | Command::ResizeTerminal { .. }
             | Command::CloseTerminal { .. }
+            | Command::AttachTerminal { .. }
             | Command::GetHostKey
             | Command::AuthorizeClient { .. }
             | Command::ListClients
@@ -450,7 +472,10 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         self.agent.metrics().connection_closed();
-        self.terminals.close_all();
+        let timeout = self.agent.config().terminal.detached_timeout.as_duration();
+        self.agent
+            .terminals()
+            .detach_connection(self.connection_id, timeout);
         for (_, task) in self.subscriptions.drain() {
             task.abort();
         }

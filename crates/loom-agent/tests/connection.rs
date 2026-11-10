@@ -475,6 +475,46 @@ async fn interactive_terminals_run_in_the_workspace() {
 }
 
 #[tokio::test]
+async fn terminals_survive_a_reconnect() {
+    let setup = setup(vec![]);
+    let (client, mut notes) = connect(&setup).await;
+    let terminal = client.open_terminal(80, 24).await.unwrap();
+    client
+        .terminal_input(
+            terminal,
+            b"KEPT=yes; trap 'echo redraw=$((1+1))' WINCH; echo ready=$((2*2))\n".to_vec(),
+        )
+        .await
+        .unwrap();
+    let mut text = String::new();
+    terminal_text_until(&mut notes, &mut text, "ready=4").await;
+    drop(client);
+    drop(notes);
+
+    let (client, mut notes) = connect(&setup).await;
+    // A new connection cannot use the terminal until it attaches.
+    let err = client
+        .terminal_input(terminal, b"x".to_vec())
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+    client.attach_terminal(terminal, 80, 24).await.unwrap();
+    let mut text = String::new();
+    client
+        .terminal_input(terminal, b"echo kept=$KEPT; stty size\n".to_vec())
+        .await
+        .unwrap();
+    terminal_text_until(&mut notes, &mut text, "kept=yes").await;
+    terminal_text_until(&mut notes, &mut text, "24 80").await;
+    // The size did not change, so only the agent's explicit SIGWINCH runs the
+    // trap; sh runs it once its pending read returns.
+    terminal_text_until(&mut notes, &mut text, "redraw=2").await;
+    client.close_terminal(terminal).await.unwrap();
+    let err = client.attach_terminal(terminal, 80, 24).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
 async fn workspace_changes_come_from_git() {
     let setup = setup(vec![]);
     let (client, _notes) = connect(&setup).await;

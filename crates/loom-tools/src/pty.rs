@@ -180,6 +180,23 @@ impl PtyProcess {
     pub fn kill(&self) {
         self.signal(Signal::SIGKILL);
     }
+
+    /// Asks the program in the foreground of the terminal to redraw, by sending
+    /// `SIGWINCH` to the terminal's foreground process group (or the shell's group).
+    pub fn redraw(&self) {
+        if self.has_exited() {
+            return;
+        }
+        let foreground = self
+            .master
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .process_group_leader()
+            .filter(|pgid| *pgid > 0)
+            .map(Pid::from_raw)
+            .unwrap_or(self.pid);
+        let _ = killpg(foreground, Signal::SIGWINCH);
+    }
 }
 
 impl Drop for PtyProcess {

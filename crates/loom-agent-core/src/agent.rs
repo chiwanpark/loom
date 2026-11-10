@@ -14,6 +14,7 @@ use crate::metrics::Metrics;
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::session::{Session, SessionParams};
 use crate::store::{EventStore, store_path};
+use crate::terminals::Terminals;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentNotice {
@@ -59,6 +60,7 @@ struct Inner {
     notices: broadcast::Sender<AgentNotice>,
     store: Option<EventStore>,
     metrics: Arc<Metrics>,
+    terminals: Terminals,
 }
 
 #[derive(Clone)]
@@ -129,6 +131,7 @@ impl Agent {
                 notices,
                 store,
                 metrics: Arc::new(Metrics::default()),
+                terminals: Terminals::default(),
             }),
         };
         for stored in stored {
@@ -163,6 +166,10 @@ impl Agent {
 
     pub fn auth(&self) -> &Auth {
         &self.inner.auth
+    }
+
+    pub(crate) fn terminals(&self) -> &Terminals {
+        &self.inner.terminals
     }
 
     pub fn config(&self) -> Arc<AgentConfig> {

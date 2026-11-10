@@ -145,6 +145,11 @@ mod tests {
             Command::ReadFile {
                 path: "src/main.rs".into(),
             },
+            Command::AttachTerminal {
+                terminal: 3,
+                cols: 80,
+                rows: 24,
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }
