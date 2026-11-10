@@ -18,6 +18,7 @@ pub const RELAY_CONFIG_ENV: &str = "LOOM_RELAY_CONFIG";
 pub struct RelayServerConfig {
     pub version: u32,
     pub listen: String,
+    pub metrics_listen: Option<String>,
     pub tls: Option<TlsConfig>,
     pub allowed_hosts: Vec<String>,
     pub cloudflare_access: Option<AccessVerifyConfig>,
@@ -30,6 +31,7 @@ impl Default for RelayServerConfig {
         Self {
             version: crate::CONFIG_VERSION,
             listen: "127.0.0.1:8080".into(),
+            metrics_listen: None,
             tls: None,
             allowed_hosts: Vec::new(),
             cloudflare_access: None,
@@ -155,6 +157,14 @@ impl RelayServerConfig {
             return Err(invalid(
                 "listen",
                 format!("{:?} is not HOST:PORT", self.listen),
+            ));
+        }
+        if let Some(metrics) = &self.metrics_listen
+            && metrics.parse::<SocketAddr>().is_err()
+        {
+            return Err(invalid(
+                "metrics_listen",
+                format!("{metrics:?} is not HOST:PORT"),
             ));
         }
         for (index, host) in self.allowed_hosts.iter().enumerate() {

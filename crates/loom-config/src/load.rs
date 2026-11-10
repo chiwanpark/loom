@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(config.tools.read.max_bytes, ByteSize::kib(50));
         assert_eq!(config.policy.rules.len(), 3);
         assert_eq!(config.policy.rules[1].command_prefix.len(), 4);
-        assert_eq!(config.llm.providers.0.len(), 2);
+        assert_eq!(config.llm.providers.0.len(), 3);
         assert!(config.llm.default_model.is_some());
     }
 

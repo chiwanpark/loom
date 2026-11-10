@@ -232,6 +232,7 @@ pub enum PolicyAction {
 pub struct SandboxConfig {
     pub backend: SandboxBackend,
     pub network: bool,
+    pub writable: Vec<PathBuf>,
     pub max_output: ByteSize,
 }
 
@@ -240,6 +241,7 @@ impl Default for SandboxConfig {
         Self {
             backend: SandboxBackend::None,
             network: true,
+            writable: Vec::new(),
             max_output: ByteSize::mib(1),
         }
     }
@@ -258,6 +260,7 @@ pub enum SandboxBackend {
 #[serde(default, deny_unknown_fields)]
 pub struct ContextConfig {
     pub max_tool_output_tokens: u32,
+    pub window_tokens: u64,
     pub compaction_threshold: f64,
 }
 
@@ -265,6 +268,7 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             max_tool_output_tokens: 8000,
+            window_tokens: 200_000,
             compaction_threshold: 0.8,
         }
     }
@@ -309,6 +313,7 @@ impl AgentConfig {
         self.storage.data_dir.iter_mut().for_each(expand);
         self.lifecycle.default_workspace.iter_mut().for_each(expand);
         self.terminal.shell.iter_mut().for_each(expand);
+        self.sandbox.writable.iter_mut().for_each(expand);
         expand(&mut self.tools.shell.program);
     }
 
@@ -465,6 +470,12 @@ impl AgentConfig {
             return Err(invalid(
                 "context.max_tool_output_tokens",
                 "must be greater than zero".into(),
+            ));
+        }
+        if self.context.window_tokens < 1000 {
+            return Err(invalid(
+                "context.window_tokens",
+                "must be at least 1000".into(),
             ));
         }
         let threshold = self.context.compaction_threshold;

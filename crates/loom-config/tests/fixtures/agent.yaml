@@ -30,6 +30,11 @@ llm:
       auth: chatgpt
     openai-codex:
       auth: codex_oauth
+    local:
+      type: openai-compatible
+      base_url: http://127.0.0.1:11434/v1
+      api: chat
+      models: [qwen3-coder]
 
 tools:
   read:
@@ -58,10 +63,14 @@ policy:
 sandbox:
   backend: landlock
   network: false
+  writable:
+  - ~/.cargo
+  - ~/.cache
   max_output: 1MiB
 
 context:
   max_tool_output_tokens: 8000
+  window_tokens: 200000
   compaction_threshold: 0.8
 
 logging:
