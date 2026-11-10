@@ -3,10 +3,11 @@ use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
-    Focusable, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
-    Render, Rgba, ScrollEvent, ShapedLine, SharedString, Size, Styled, TextAlign, TextRun,
-    TouchPhase, UTF16Selection, UnderlineStyle, Window, canvas, div, fill, point, px, size,
+    Focusable, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction,
+    ParentElement, Pixels, Point, Render, Rgba, ScrollEvent, ShapedLine, SharedString, Size,
+    Styled, TextAlign, TextRun, TouchPhase, UTF16Selection, UnderlineStyle, Window, canvas, div,
+    fill, point, px, size,
 };
 use gpui_component::ActiveTheme;
 use loom_vt::input::{Modifiers as VtModifiers, encode_key, encode_paste, encode_text};
@@ -21,6 +22,15 @@ use super::palette::{Ansi, Rgb, ThemeColors, dim, resolve, theme_ansi};
 pub const MIN_COLS: u16 = 2;
 pub const MIN_ROWS: u16 = 1;
 const DRAG_THRESHOLD: f32 = 3.0;
+const CONTEXT: &str = "Terminal";
+
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", NoAction, Some(CONTEXT)),
+        KeyBinding::new("shift-tab", NoAction, Some(CONTEXT)),
+        KeyBinding::new("ctrl-c", NoAction, Some(CONTEXT)),
+    ]);
+}
 
 pub trait TerminalIo: 'static {
     fn write(&self, data: Vec<u8>);
@@ -775,7 +785,7 @@ impl Render for TerminalView {
         let prepaint_view = view.clone();
         div()
             .id("terminal")
-            .key_context("Terminal")
+            .key_context(CONTEXT)
             .track_focus(&self.focus)
             .size_full()
             .bg(hsla(colors.background))

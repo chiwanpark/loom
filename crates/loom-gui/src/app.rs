@@ -24,6 +24,7 @@ pub fn init(startup: Startup, cx: &mut App) -> anyhow::Result<()> {
     gpui_component::init(cx);
     crate::themes::load(startup.config_path.parent(), cx);
     apply_appearance(&startup.config, cx);
+    crate::term::view::bind_keys(cx);
     bind_keys(&startup.config.keymap, cx);
     cx.on_action(|_: &Quit, cx| cx.quit());
     let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
