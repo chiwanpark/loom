@@ -454,7 +454,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         {
             let mut state = core.lock();
             let usage = &message.usage;
-            state.context_tokens = (usage.input > 0).then_some(usage.input + usage.output);
+            state.context_tokens = Some(usage.context_tokens()).filter(|&tokens| tokens > 0);
             state.history.push(Message::Assistant(message));
         }
         core.persist();

@@ -2886,8 +2886,8 @@ impl Workspace {
             if let Some(usage) = conv.last_usage {
                 right = right.child(format!(
                     "context {} tokens · total {} in / {} out",
-                    usage.input + usage.output,
-                    conv.total_usage.input,
+                    usage.context_tokens(),
+                    conv.total_usage.prompt_tokens(),
                     conv.total_usage.output
                 ));
             }

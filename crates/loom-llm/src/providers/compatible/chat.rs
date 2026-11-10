@@ -197,10 +197,12 @@ impl ChatState {
         }
         if let Some(usage) = event.get("usage").filter(|u| u.is_object()) {
             let get = |v: Option<&Value>| v.and_then(Value::as_u64).unwrap_or(0);
+            // prompt_tokens includes the cached ones; `input` counts only uncached tokens.
+            let cached = get(usage.pointer("/prompt_tokens_details/cached_tokens"));
             self.usage = Usage {
-                input: get(usage.get("prompt_tokens")),
+                input: get(usage.get("prompt_tokens")).saturating_sub(cached),
                 output: get(usage.get("completion_tokens")),
-                cache_read: get(usage.pointer("/prompt_tokens_details/cached_tokens")),
+                cache_read: cached,
                 cache_write: 0,
                 reasoning: get(usage.pointer("/completion_tokens_details/reasoning_tokens")),
                 total: get(usage.get("total_tokens")),
@@ -521,7 +523,7 @@ mod tests {
             json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_a", "function": {"name": "read", "arguments": "{\"pa"}}]}}]}),
             json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "th\":\"x\"}"}}]}}]}),
             json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-            json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}),
+            json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "prompt_tokens_details": {"cached_tokens": 4}}}),
         ];
         let mut chunks = Vec::new();
         for event in &events {
@@ -540,7 +542,10 @@ mod tests {
         assert_eq!(text, "Hello");
         assert_eq!(message.text(), "Hello");
         assert_eq!(message.stop_reason, StopReason::ToolUse);
-        assert_eq!(message.usage.input, 10);
+        // Cached tokens are reported once, in cache_read, not also in input.
+        assert_eq!((message.usage.input, message.usage.cache_read), (6, 4));
+        assert_eq!(message.usage.prompt_tokens(), 10);
+        assert_eq!(message.usage.context_tokens(), 15);
         let call = message.tool_calls().next().unwrap();
         assert_eq!(call.call_id, "call_a");
         assert_eq!(call.arguments, json!({"path": "x"}));

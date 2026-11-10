@@ -61,7 +61,7 @@ impl Metrics {
             }
             SessionEvent::ApprovalRequired { .. } => add(&self.approvals, 1),
             SessionEvent::Usage { usage } => {
-                add(&self.input_tokens, usage.input);
+                add(&self.input_tokens, usage.prompt_tokens());
                 add(&self.output_tokens, usage.output);
             }
             SessionEvent::ContextCompacted { .. } => add(&self.compactions, 1),

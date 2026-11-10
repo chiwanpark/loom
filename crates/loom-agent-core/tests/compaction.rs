@@ -67,6 +67,42 @@ async fn summarizes_earlier_turns_when_the_context_fills_up() {
 }
 
 #[tokio::test]
+async fn cached_prompt_tokens_count_toward_compaction() {
+    let mut config = test_config(PolicyAction::Allow);
+    config.context.window_tokens = 1000;
+    config.context.compaction_threshold = 0.5;
+    // Anthropic-style usage: almost the whole prompt is a cache read.
+    let mut first = text("first answer");
+    if let Script::Reply(message) = &mut first {
+        message.usage.input = 3;
+        message.usage.cache_read = 800;
+        message.usage.output = 20;
+    }
+    let h = Harness::new(
+        config,
+        vec![
+            first,
+            text("SUMMARY: the user said hello"),
+            text("second answer"),
+        ],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "hello").await;
+    let events = run_turn(&session, &mut sub, "continue").await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            SessionEvent::ContextCompacted {
+                summarized: true,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
 async fn trims_old_tool_output_inside_one_long_turn() {
     let mut config = test_config(PolicyAction::Allow);
     config.context.window_tokens = 1000;

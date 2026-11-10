@@ -336,6 +336,36 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn usage_counts_cached_prompt_tokens_in_the_context() {
+        let mut state = State::new("m".into(), vec![]);
+        let usage = json!({
+            "input_tokens": 3,
+            "cache_read_input_tokens": 50_000,
+            "cache_creation_input_tokens": 1_200,
+            "output_tokens": 1
+        });
+        state
+            .handle(json!({"type": "message_start", "message": {"id": "m", "usage": usage}}))
+            .unwrap();
+        state.handle(json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})).unwrap();
+        state
+            .handle(json!({"type": "content_block_stop", "index": 0}))
+            .unwrap();
+        state
+            .handle(json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 437}}))
+            .unwrap();
+        let chunks = state.handle(json!({"type": "message_stop"})).unwrap();
+        let Some(CompletionChunk::Done(message)) = chunks.last() else {
+            panic!("no message: {chunks:?}");
+        };
+        let usage = message.usage;
+        assert_eq!((usage.input, usage.output), (3, 437));
+        assert_eq!((usage.cache_read, usage.cache_write), (50_000, 1_200));
+        assert_eq!(usage.prompt_tokens(), 51_203);
+        assert_eq!(usage.context_tokens(), 51_640);
+    }
+
+    #[test]
     fn rejects_invalid_event_sequences() {
         let mut state = State::new("m".into(), vec![]);
         assert!(

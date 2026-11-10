@@ -58,12 +58,26 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Uncached input tokens.
     pub input: u64,
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
     pub reasoning: u64,
     pub total: u64,
+}
+
+impl Usage {
+    /// Every prompt token of the request. `input` counts only uncached tokens;
+    /// cache reads and writes are reported separately by the providers.
+    pub fn prompt_tokens(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write
+    }
+
+    /// Tokens in the context after the response: the whole prompt plus the output.
+    pub fn context_tokens(&self) -> u64 {
+        self.prompt_tokens() + self.output
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
