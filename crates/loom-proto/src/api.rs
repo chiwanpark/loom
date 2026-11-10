@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -173,6 +173,11 @@ pub enum Command {
     DeleteSession {
         session: SessionId,
     },
+    GetWorkspaceChanges,
+    GetFileDiff {
+        path: String,
+        old_path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +196,46 @@ pub enum Payload {
     HostKey(HostKeyInfo),
     Clients(Vec<AuthorizedClient>),
     Metrics(AgentMetrics),
+    WorkspaceChanges(WorkspaceChanges),
+    FileDiff(FileDiff),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceChanges {
+    pub repository: bool,
+    pub branch: Option<String>,
+    pub files: Vec<FileChange>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChangeStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Conflicted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: ChangeStatus,
+    pub added: u32,
+    pub removed: u32,
+    pub binary: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    pub diff: String,
+    pub binary: bool,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

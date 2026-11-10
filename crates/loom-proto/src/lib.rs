@@ -132,6 +132,11 @@ mod tests {
                 session: session.clone(),
                 default: Some(PolicyAction::Deny),
             },
+            Command::GetWorkspaceChanges,
+            Command::GetFileDiff {
+                path: "src/new.rs".into(),
+                old_path: Some("src/old.rs".into()),
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }
@@ -175,6 +180,31 @@ mod tests {
         message_roundtrip(ServerMessage::Response {
             id: 2,
             result: Err(ApiError::new(ErrorCode::Busy, "busy")),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 3,
+            result: Ok(Payload::WorkspaceChanges(WorkspaceChanges {
+                repository: true,
+                branch: Some("main".into()),
+                files: vec![FileChange {
+                    path: "src/new.rs".into(),
+                    old_path: Some("src/old.rs".into()),
+                    status: ChangeStatus::Renamed,
+                    added: 3,
+                    removed: 1,
+                    binary: false,
+                }],
+                truncated: false,
+            })),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 4,
+            result: Ok(Payload::FileDiff(FileDiff {
+                path: "a.txt".into(),
+                diff: "@@ -1 +1 @@\n-a\n+b\n".into(),
+                binary: false,
+                truncated: true,
+            })),
         });
         message_roundtrip(ServerMessage::Event {
             session,
