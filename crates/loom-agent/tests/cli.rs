@@ -242,6 +242,49 @@ async fn serve_stdio_spawn_and_stop() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn log_level_follows_config_reload() {
+    let env = Env::new();
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        "allowed_roots:\n- ~/work\nlogging:\n  level: warn\n",
+    )
+    .unwrap();
+    let log_path = env.root.join("serve.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut server = env
+        .command(&["serve", "--workspace", "~/work/ws1"])
+        .env_remove("LOOM_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    env.wait_for_agents(1).await;
+    let read_log = || std::fs::read_to_string(&log_path).unwrap();
+    assert!(!read_log().contains("agent ready"), "{}", read_log());
+
+    std::fs::write(
+        env.config_path(),
+        "allowed_roots:\n- ~/work\nlogging:\n  level: debug\n",
+    )
+    .unwrap();
+    let mut changed = false;
+    for _ in 0..200 {
+        if read_log().contains("log level changed") {
+            changed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let stopped = env.run(&["stop", "--all"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    assert!(server.wait().unwrap().success());
+    assert!(changed, "{}", read_log());
+    assert!(read_log().contains("agent stopped"), "{}", read_log());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn agents_manage_siblings_over_the_protocol() {
     let env = Env::new();
     std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();

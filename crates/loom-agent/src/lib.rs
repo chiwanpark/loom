@@ -1,3 +1,4 @@
+pub mod logging;
 pub mod relay;
 pub mod serve;
 pub mod server;

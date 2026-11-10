@@ -4,18 +4,17 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
+use loom_agent::logging::{init as init_logging, level_name};
 use loom_agent::serve::{ServeOptions, serve};
 use loom_agent::stdio::{StdioTarget, bridge, find_target};
 use loom_agent::workspace::canonical_workspace;
 use loom_agent_core::data_dir;
-use loom_config::{AgentConfig, CONFIG_ENV, Dirs, LogLevel};
+use loom_config::{AgentConfig, CONFIG_ENV, Dirs};
 use loom_crypto::{AuthorizedClients, HostIdentity, PairingUri, Pairings, encode_key};
 use loom_transport::{AgentEntry, Registry};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use tracing_subscriber::EnvFilter;
 
-const LOG_ENV: &str = "LOOM_LOG";
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Parser)]
@@ -123,24 +122,6 @@ enum ConfigCommand {
     Check,
     Schema,
     Path,
-}
-
-fn init_logging(level: &str) {
-    let filter = EnvFilter::try_from_env(LOG_ENV).unwrap_or_else(|_| EnvFilter::new(level));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
-}
-
-fn level_name(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Error => "error",
-        LogLevel::Warn => "warn",
-        LogLevel::Info => "info",
-        LogLevel::Debug => "debug",
-        LogLevel::Trace => "trace",
-    }
 }
 
 struct Ctx {

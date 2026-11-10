@@ -70,6 +70,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     options.sandbox_exe = std::env::current_exe().ok();
     let agent = Agent::new(options).context("could not start the agent")?;
     let _watcher = start_watcher(&agent, &config_path, &dirs);
+    let log_follower = crate::logging::follow_config(&agent);
 
     let socket = registry.socket_path(&instance);
     let listener = UnixFrameListener::bind(&socket)
@@ -137,6 +138,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     });
     run_listener(ctx, listener, shutdown).await;
     drop(registration);
+    log_follower.abort();
     tracing::info!("agent stopped");
     Ok(0)
 }
