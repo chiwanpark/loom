@@ -4,7 +4,14 @@ use gpui::{AssetSource, Result, SharedString};
 
 gpui_kit_assets::icon_assets!(
     ExtraIcons,
-    [Archive, ArchiveRestore, Brain, ShieldCheck, Trash]
+    [
+        Archive,
+        ArchiveRestore,
+        Brain,
+        ImagePlus,
+        ShieldCheck,
+        Trash
+    ]
 );
 
 pub struct AppAssets;

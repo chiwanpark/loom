@@ -1,21 +1,26 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext, AsyncApp, AsyncWindowContext, Context, Entity, FocusHandle,
-    Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    AnyElement, App, AppContext, AsyncApp, AsyncWindowContext, ClipboardEntry, Context, Entity,
+    ExternalPaths, FocusHandle, Focusable, FontWeight, Image, InteractiveElement, IntoElement,
+    ObjectFit, ParentElement, PathPromptOptions, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, StyledImage, Subscription, Window, div, img,
     prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{InputEvent, Textarea, TextareaState};
+use gpui_component::input::{InputEvent, Paste, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::text::TextView;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{
-    Decision, PolicyAction, ReasoningEffort, Risk, SessionId, SessionState, ToolResultDetails,
+    ContentPart, Decision, PolicyAction, ReasoningEffort, Risk, SessionId, SessionState,
+    ToolResultDetails,
 };
 use loom_vt::{AlacrittyTerminal, TerminalEmulator};
 
+use crate::attachments::{self, AttachError};
 use crate::conversation::{Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_summary};
 use crate::state::AgentConnection;
 use crate::ui::dialogs;
@@ -41,6 +46,7 @@ pub struct SessionView {
     collapsed: HashSet<String>,
     show_reasoning: HashSet<usize>,
     live: HashMap<String, LiveOutput>,
+    attachments: Vec<Arc<Image>>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -85,6 +91,7 @@ impl SessionView {
             collapsed: HashSet::new(),
             show_reasoning: HashSet::new(),
             live: HashMap::new(),
+            attachments: Vec::new(),
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -120,11 +127,97 @@ impl SessionView {
         self.input.clone()
     }
 
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).value().trim().to_owned();
-        if text.is_empty() {
+    fn add_images(
+        &mut self,
+        images: Vec<Result<Arc<Image>, AttachError>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for image in images {
+            let checked = image.and_then(|image| {
+                attachments::check_total(&self.attachments, &image).map(|()| image)
+            });
+            match checked {
+                Ok(image) => self.attachments.push(image),
+                Err(err) => notify::error(window, cx, err.to_string()),
+            }
+        }
+        cx.notify();
+    }
+
+    fn add_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async move {
+            paths
+                .iter()
+                .map(|path| attachments::from_path(path))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let images = task.await;
+            let _ = this.update_in(cx, |this, window, cx| this.add_images(images, window, cx));
+        })
+        .detach();
+    }
+
+    fn pick_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn_in(
+            window,
+            async move |this, cx: &mut AsyncWindowContext| match paths.await {
+                Ok(Ok(Some(paths))) => {
+                    let _ =
+                        this.update_in(cx, |this, window, cx| this.add_paths(paths, window, cx));
+                }
+                Ok(Err(err)) => {
+                    let _ = cx.update(|window, cx| notify::error(window, cx, err.to_string()));
+                }
+                _ => {}
+            },
+        )
+        .detach();
+    }
+
+    fn on_paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        let images: Vec<_> = item
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                ClipboardEntry::Image(image) => Some(attachments::from_image(image)),
+                _ => None,
+            })
+            .collect();
+        if images.is_empty() || item.text().is_some_and(|t| !t.is_empty()) {
             return;
         }
+        cx.stop_propagation();
+        self.add_images(images, window, cx);
+    }
+
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).value().trim().to_owned();
+        if text.is_empty() && self.attachments.is_empty() {
+            return;
+        }
+        let mut content = Vec::new();
+        if !text.is_empty() {
+            content.push(ContentPart::text(text));
+        }
+        content.extend(
+            std::mem::take(&mut self.attachments)
+                .into_iter()
+                .map(|image| ContentPart::Image {
+                    mime_type: image.format.mime_type().to_owned(),
+                    data: image.bytes.clone(),
+                }),
+        );
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.follow = true;
@@ -133,7 +226,7 @@ impl SessionView {
         let session = self.session_id(cx);
         let task = conn
             .backend
-            .run(async move { client.send_text(&session, &text).await });
+            .run(async move { client.send_prompt(&session, content).await });
         cx.spawn_in(window, async move |_, cx: &mut AsyncWindowContext| {
             if let Some(Err(err)) = task.await {
                 let _ = cx.update(|window, cx| notify::error(window, cx, err.to_string()));
@@ -222,23 +315,31 @@ impl SessionView {
     ) -> AnyElement {
         let theme = cx.theme().clone();
         match item {
-            Item::User { text, images } => v_flex()
-                .w_full()
-                .p_3()
-                .rounded_md()
-                .bg(theme.secondary)
-                .border_1()
-                .border_color(theme.border)
-                .child(div().whitespace_normal().child(text.clone()))
-                .when(*images > 0, |el| {
-                    el.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(format!("{images} image(s) attached")),
-                    )
-                })
-                .into_any_element(),
+            Item::User { text, images } => {
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme.secondary)
+                    .border_1()
+                    .border_color(theme.border)
+                    .gap_2()
+                    .when(!text.is_empty(), |el| {
+                        el.child(div().whitespace_normal().child(text.clone()))
+                    })
+                    .when(!images.is_empty(), |el| {
+                        el.child(h_flex().flex_wrap().gap_2().children(images.iter().map(
+                            |image| {
+                                img(image.clone())
+                                    .max_w(px(360.))
+                                    .max_h(px(240.))
+                                    .rounded_sm()
+                                    .object_fit(ObjectFit::Contain)
+                            },
+                        )))
+                    })
+                    .into_any_element()
+            }
             Item::Assistant {
                 text,
                 reasoning,
@@ -661,6 +762,40 @@ impl SessionView {
     }
 }
 
+impl SessionView {
+    fn render_attachments(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        h_flex()
+            .flex_wrap()
+            .gap_2()
+            .children(self.attachments.iter().enumerate().map(|(ix, image)| {
+                div()
+                    .relative()
+                    .size(px(72.))
+                    .rounded_md()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
+                    .child(
+                        div().absolute().top_0().right_0().child(
+                            Button::new(("remove-attachment", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .tooltip("Remove")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if ix < this.attachments.len() {
+                                        this.attachments.remove(ix);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+            }))
+    }
+}
+
 impl Focusable for SessionView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -687,8 +822,13 @@ impl Render for SessionView {
         let empty = items.is_empty();
         let scroll = self.scroll.clone();
         v_flex()
+            .id("session")
             .size_full()
             .track_focus(&self.focus)
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.add_paths(paths.paths().to_vec(), window, cx);
+            }))
             .child(
                 h_flex()
                     .w_full()
@@ -786,11 +926,26 @@ impl Render for SessionView {
                     .gap_2()
                     .border_t_1()
                     .border_color(theme.border)
+                    .capture_action(cx.listener(Self::on_paste))
+                    .when(!self.attachments.is_empty(), |el| {
+                        el.child(self.render_attachments(cx))
+                    })
                     .child(Textarea::new(&self.input))
                     .child(
                         h_flex()
                             .gap_2()
                             .justify_end()
+                            .child(
+                                Button::new("attach")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(gpui_kit_assets::IconName::ImagePlus))
+                                    .tooltip("Attach images (or paste or drop them here)")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.pick_images(window, cx)
+                                    })),
+                            )
+                            .child(div().flex_1())
                             .child(
                                 Button::new("interrupt")
                                     .small()

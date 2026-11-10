@@ -21,6 +21,7 @@ loom-client = { version = "0.1.0", path = "../loom-client" }
 loom-config = { version = "0.1.0", path = "../loom-config" }
 loom-vt = { version = "0.1.0", path = "../loom-vt" }
 serde_json = "1.0.154"
+thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

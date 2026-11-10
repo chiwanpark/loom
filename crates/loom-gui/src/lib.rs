@@ -1,5 +1,6 @@
 pub mod app;
 pub mod assets;
+pub mod attachments;
 pub mod backend;
 pub mod connection;
 pub mod conversation;

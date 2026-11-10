@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use gpui::Image;
 
 use loom_client::proto::{
     ContentPart, Decision, SequencedEvent, SessionEvent, SessionInfo, SessionState, ToolCall,
@@ -39,7 +42,7 @@ pub struct ToolItem {
 pub enum Item {
     User {
         text: String,
-        images: usize,
+        images: Vec<Arc<Image>>,
     },
     Assistant {
         text: String,
@@ -108,11 +111,13 @@ impl Conversation {
             SessionEvent::UserMessage { content } => {
                 self.finish_streaming();
                 let mut text = Vec::new();
-                let mut images = 0;
+                let mut images = Vec::new();
                 for part in content {
                     match part {
                         ContentPart::Text { text: t } => text.push(t.as_str()),
-                        ContentPart::Image { .. } => images += 1,
+                        ContentPart::Image { mime_type, data } => {
+                            images.extend(crate::attachments::decode(mime_type, data))
+                        }
                     }
                 }
                 if self.info.title.is_none() {

@@ -4144,6 +4144,7 @@ dependencies = [
  "loom-config",
  "loom-vt",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-subscriber",
