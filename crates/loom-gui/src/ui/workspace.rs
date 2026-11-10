@@ -41,7 +41,10 @@ use crate::ui::tabs::{PanelId, TabList};
 actions!(
     loom,
     [
-        ToggleLeftDock,
+        /// Shows the Agents tab of the right panel, or hides the panel when
+        /// it is already showing. The agents list used to be a left panel.
+        #[action(deprecated_aliases = ["loom::ToggleLeftDock"])]
+        ToggleAgents,
         NewSession,
         NewTerminal,
         CloseTab,
@@ -82,7 +85,7 @@ const DROP_TARGET_SIZE: f32 = 0.2;
 
 pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("ctrl-b", ToggleLeftDock, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-b", ToggleAgents, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-b", ToggleRightDock, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-e", ShowFiles, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(CONTEXT)),
@@ -153,6 +156,7 @@ enum PanelKind {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightTab {
+    Agents,
     Changes,
     Files,
 }
@@ -213,7 +217,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: close tab", Box::new(CloseTab)),
         ("workspace: next tab", Box::new(NextTab)),
         ("workspace: previous tab", Box::new(PreviousTab)),
-        ("workspace: toggle agents panel", Box::new(ToggleLeftDock)),
+        ("workspace: toggle agents", Box::new(ToggleAgents)),
         ("workspace: toggle right panel", Box::new(ToggleRightDock)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
@@ -395,7 +399,6 @@ pub struct Workspace {
     active_group: Option<usize>,
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
-    show_left: bool,
     show_right: bool,
     changes_cache: Option<(EntityId, u64, Rc<Vec<FileChange>>)>,
     right_tab: RightTab,
@@ -438,10 +441,9 @@ impl Workspace {
             active_group: None,
             drag_split: None,
             next_panel: 0,
-            show_left: true,
             show_right: true,
             changes_cache: None,
-            right_tab: RightTab::Changes,
+            right_tab: RightTab::Agents,
             file_trees: Vec::new(),
             poll_ticks: 0,
             focus: cx.focus_handle(),
@@ -1439,8 +1441,13 @@ impl Workspace {
         }
     }
 
-    fn on_toggle_left(&mut self, _: &ToggleLeftDock, _: &mut Window, cx: &mut Context<Self>) {
-        self.show_left = !self.show_left;
+    fn on_toggle_agents(&mut self, _: &ToggleAgents, _: &mut Window, cx: &mut Context<Self>) {
+        if self.show_right && self.right_tab == RightTab::Agents {
+            self.show_right = false;
+        } else {
+            self.show_right = true;
+            self.right_tab = RightTab::Agents;
+        }
         cx.notify();
     }
 
@@ -1523,7 +1530,9 @@ impl Workspace {
         cx.notify();
     }
 
-    fn render_changes_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The right panel: tabs for the agents list, the workspace's changes, and
+    /// its files. Changes and files need a connection; agents do not.
+    fn render_right_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = self.changes_connection();
         let (listing, error) = conn
@@ -1566,7 +1575,8 @@ impl Workspace {
                 (count, None, self.render_session_changes(session, note, cx))
             }
         };
-        let files_tab = self.right_tab == RightTab::Files;
+        let tab = self.right_tab;
+        let files_tab = tab == RightTab::Files;
         let changes_label = if count > 0 {
             format!("Changes {count}")
         } else {
@@ -1588,13 +1598,20 @@ impl Workspace {
                 tree.update(cx, |tree, cx| tree.select(selected, cx));
             }
         }
-        let body = match &tree {
-            Some(tree) => div()
+        let body = match (tab, &tree) {
+            (RightTab::Agents, _) => self.render_agents_panel(cx),
+            (_, Some(tree)) => div()
                 .flex_1()
                 .min_h_0()
                 .child(tree.clone())
                 .into_any_element(),
-            None => body,
+            _ if conn.is_none() => div()
+                .p_3()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("Connect to an agent in the Agents tab to see its changes and files.")
+                .into_any_element(),
+            _ => body,
         };
         let header = h_flex()
             .w_full()
@@ -1605,11 +1622,23 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.border)
             .child(
+                Button::new("right-agents")
+                    .ghost()
+                    .small()
+                    .label("Agents")
+                    .selected(tab == RightTab::Agents)
+                    .tooltip("Agents and their sessions (ctrl-b)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_tab = RightTab::Agents;
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("right-changes")
                     .ghost()
                     .small()
                     .label(changes_label)
-                    .selected(!files_tab)
+                    .selected(tab == RightTab::Changes)
                     .tooltip("Uncommitted changes (ctrl-shift-g)")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.right_tab = RightTab::Changes;
@@ -1629,7 +1658,7 @@ impl Workspace {
                     })),
             )
             .child(div().flex_1())
-            .when_some(branch.filter(|_| !files_tab), |el, branch| {
+            .when_some(branch.filter(|_| tab == RightTab::Changes), |el, branch| {
                 el.child(
                     h_flex()
                         .min_w_0()
@@ -1671,6 +1700,26 @@ impl Workspace {
                         .on_click(cx.listener(move |_, _, _, cx| {
                             collapse.update(cx, |tree, cx| tree.collapse_all(cx))
                         })),
+                )
+            })
+            .when(tab == RightTab::Agents, |el| {
+                el.child(
+                    Button::new("add-ssh")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Globe)
+                        .tooltip("Add an SSH host")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.add_ssh_dialog(window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("pair")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Network)
+                        .tooltip("Pair through a relay")
+                        .on_click(cx.listener(|this, _, window, cx| this.pair_dialog(window, cx))),
                 )
             })
             .child(
@@ -2521,64 +2570,12 @@ impl Workspace {
                 }
             }
         }
-        v_flex()
-            .size_full()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(theme.sidebar_border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Agents"),
-                    )
-                    .child(
-                        Button::new("add-ssh")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Globe)
-                            .tooltip("Add an SSH host")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.add_ssh_dialog(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("pair")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Network)
-                            .tooltip("Pair through a relay")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.pair_dialog(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("collapse-left")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::PanelLeftClose)
-                            .tooltip("Hide the agents panel (ctrl-b)")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_left = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .id("agents-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(list),
-            )
+        div()
+            .id("agents-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(list)
             .into_any_element()
     }
 
@@ -2592,7 +2589,7 @@ impl Workspace {
                 .gap_2()
                 .text_color(theme.muted_foreground)
                 .child(div().text_xl().child("Loom"))
-                .child("Pick an agent on the left, then open or create a session.")
+                .child("Pick an agent in the Agents tab on the right, then open or create a session.")
                 .child(
                     div().text_sm().child(
                         "ctrl-shift-p commands · ctrl-p sessions · ctrl-n new session · ctrl-` terminal · ctrl-b agents",
@@ -2837,19 +2834,7 @@ impl Workspace {
 
     fn render_status(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let show_left = self.show_left;
-        let mut left = h_flex().gap_3().child(
-            Button::new("toggle-left")
-                .ghost()
-                .xsmall()
-                .icon(IconName::PanelLeft)
-                .selected(show_left)
-                .tooltip("Toggle the agents panel (ctrl-b)")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.show_left = !this.show_left;
-                    cx.notify();
-                })),
-        );
+        let mut left = h_flex().gap_3();
         let mut right = h_flex().gap_3();
         if let Some(conn) = &self.active_connection {
             let conn = conn.read(cx);
@@ -2960,10 +2945,8 @@ impl Render for Workspace {
             self.focus.focus(window, cx);
         }
         let theme = cx.theme().clone();
-        let agents = self.render_agents_panel(cx);
         let center = self.render_center(cx);
-        let show_changes = self.show_right && self.changes_connection().is_some();
-        let changes = show_changes.then(|| self.render_changes_panel(window, cx));
+        let right = self.show_right.then(|| self.render_right_panel(window, cx));
         let status = self.render_status(cx);
         v_flex()
             .id("workspace")
@@ -2972,7 +2955,7 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .on_action(cx.listener(Self::on_toggle_left))
+            .on_action(cx.listener(Self::on_toggle_agents))
             .on_action(cx.listener(Self::on_toggle_right))
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_find_session))
@@ -3016,30 +2999,22 @@ impl Render for Workspace {
                 ),
             )
             .child(
-                div().flex_1().w_full().overflow_hidden().child(
-                    h_resizable("main")
-                        .child(
-                            resizable_panel()
-                                .size(px(300.))
-                                .size_range(px(200.)..px(600.))
-                                .visible(self.show_left)
-                                .child(agents),
-                        )
-                        .child(
-                            resizable_panel().child(match changes {
-                                Some(changes) => h_resizable("center-right")
-                                    .child(resizable_panel().child(center))
-                                    .child(
-                                        resizable_panel()
-                                            .size(px(280.))
-                                            .size_range(px(180.)..px(600.))
-                                            .child(changes),
-                                    )
-                                    .into_any_element(),
-                                None => center,
-                            }),
-                        ),
-                ),
+                div()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(match right {
+                        Some(right) => h_resizable("center-right")
+                            .child(resizable_panel().child(center))
+                            .child(
+                                resizable_panel()
+                                    .size(px(300.))
+                                    .size_range(px(200.)..px(600.))
+                                    .child(right),
+                            )
+                            .into_any_element(),
+                        None => center,
+                    }),
             )
             .child(status)
     }
@@ -3121,5 +3096,18 @@ impl ChangeRow<'_> {
                         .child(format!("−{}", self.removed)),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::Action;
+
+    use super::ToggleAgents;
+
+    #[test]
+    fn keymaps_naming_the_old_left_panel_action_still_work() {
+        assert_eq!(ToggleAgents.name(), "loom::ToggleAgents");
+        assert_eq!(ToggleAgents::deprecated_aliases(), ["loom::ToggleLeftDock"]);
     }
 }
