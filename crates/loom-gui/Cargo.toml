@@ -1,0 +1,29 @@
+[package]
+name = "loom-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "loom"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+futures = "0.3.34"
+gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, features = ["font-kit", "wayland"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false, features = ["font-kit", "wayland", "runtime_shaders"] }
+gpui-component = { version = "=0.9.1", default-features = false, features = ["tree-sitter-bash", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-css", "tree-sitter-diff", "tree-sitter-go", "tree-sitter-html", "tree-sitter-javascript", "tree-sitter-python", "tree-sitter-rust", "tree-sitter-sql", "tree-sitter-toml", "tree-sitter-tsx", "tree-sitter-typescript", "tree-sitter-yaml"] }
+gpui-kit-assets = "=0.9.1"
+loom-client = { version = "0.1.0", path = "../loom-client" }
+loom-config = { version = "0.1.0", path = "../loom-config" }
+loom-vt = { version = "0.1.0", path = "../loom-vt" }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lints]
+workspace = true
