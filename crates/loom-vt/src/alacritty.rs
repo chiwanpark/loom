@@ -5,17 +5,19 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as AlacPoint, Side as AlacSide};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color as AnsiColor, CursorShape as AnsiCursorShape, NamedColor, Processor, Rgb,
 };
 
 use crate::{
-    Cell, CellFlags, Color, Cursor, CursorShape, GridPoint, Modes, SelectionKind, Side, Snapshot,
-    TerminalEmulator,
+    Cell, CellFlags, ClipboardTarget, ClipboardWrite, Color, Cursor, CursorShape, GridPoint, Modes,
+    SelectionKind, Side, Snapshot, TerminalEmulator,
 };
 
 const SCROLLBACK: usize = 10_000;
+/// Clipboard writes larger than this are dropped instead of offered to the user.
+pub const MAX_CLIPBOARD_WRITE: usize = 1 << 20;
 
 #[derive(Clone, Copy)]
 struct Size {
@@ -41,6 +43,7 @@ impl Dimensions for Size {
 struct Shared {
     responses: Vec<u8>,
     title: Option<String>,
+    clipboard: Option<ClipboardWrite>,
 }
 
 #[derive(Clone, Default)]
@@ -53,6 +56,15 @@ impl EventListener for Listener {
             Event::PtyWrite(text) => shared.responses.extend_from_slice(text.as_bytes()),
             Event::Title(title) => shared.title = Some(title),
             Event::ResetTitle => shared.title = None,
+            // OSC 52 copy. Only the latest request is kept, and the GUI asks the user
+            // before writing it, because terminal output is untrusted.
+            Event::ClipboardStore(ty, text) if text.len() <= MAX_CLIPBOARD_WRITE => {
+                let target = match ty {
+                    ClipboardType::Clipboard => ClipboardTarget::Clipboard,
+                    ClipboardType::Selection => ClipboardTarget::Primary,
+                };
+                shared.clipboard = Some(ClipboardWrite { target, text });
+            }
             _ => {}
         }
     }
@@ -74,6 +86,8 @@ impl AlacrittyTerminal {
         let listener = Listener::default();
         let config = Config {
             scrolling_history: SCROLLBACK,
+            // OSC 52 reads are never answered; writes are queued for confirmation.
+            osc52: Osc52::OnlyCopy,
             ..Config::default()
         };
         Self {
@@ -258,6 +272,31 @@ impl TerminalEmulator for AlacrittyTerminal {
         )
     }
 
+    fn take_clipboard_write(&mut self) -> Option<ClipboardWrite> {
+        self.listener
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clipboard
+            .take()
+    }
+
+    fn hyperlink_at(&self, point: GridPoint) -> Option<String> {
+        let grid = self.term.grid();
+        let line = point.line;
+        if line < -(grid.history_size() as i32)
+            || line >= self.size.rows as i32
+            || point.column >= self.size.cols
+        {
+            return None;
+        }
+        let mut cell = &grid[alac_point(point)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) && point.column > 0 {
+            cell = &grid[AlacPoint::new(Line(line), Column(point.column - 1))];
+        }
+        cell.hyperlink().map(|link| link.uri().to_owned())
+    }
+
     fn start_selection(&mut self, kind: SelectionKind, point: GridPoint, side: Side) {
         let ty = match kind {
             SelectionKind::Simple => SelectionType::Simple,
@@ -302,6 +341,44 @@ impl TerminalEmulator for AlacrittyTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queues_osc52_writes_and_ignores_reads() {
+        let mut term = AlacrittyTerminal::new(20, 5);
+        // "hi" and then "there", base64 encoded; only the latest write is kept.
+        term.feed(b"\x1b]52;c;aGk=\x07\x1b]52;c;dGhlcmU=\x07");
+        assert_eq!(
+            term.take_clipboard_write(),
+            Some(ClipboardWrite {
+                target: ClipboardTarget::Clipboard,
+                text: "there".into()
+            })
+        );
+        assert_eq!(term.take_clipboard_write(), None);
+        term.feed(b"\x1b]52;p;aGk=\x1b\\");
+        assert_eq!(
+            term.take_clipboard_write().map(|w| w.target),
+            Some(ClipboardTarget::Primary)
+        );
+        term.feed(b"\x1b]52;c;?\x07");
+        assert_eq!(term.take_clipboard_write(), None);
+        assert!(term.take_responses().is_empty());
+    }
+
+    #[test]
+    fn finds_hyperlinks_by_cell() {
+        let mut term = AlacrittyTerminal::new(20, 5);
+        term.feed("a \x1b]8;;https://example.com/\x1b\\link\x1b]8;;\x1b\\ 한\x1b]8;;file:///tmp\x07글\x1b]8;;\x07".as_bytes());
+        let at = |column| term.hyperlink_at(GridPoint { line: 0, column });
+        assert_eq!(at(0), None);
+        assert_eq!(at(2).as_deref(), Some("https://example.com/"));
+        assert_eq!(at(5).as_deref(), Some("https://example.com/"));
+        assert_eq!(at(6), None);
+        assert_eq!(at(9).as_deref(), Some("file:///tmp"));
+        assert_eq!(at(10).as_deref(), Some("file:///tmp"));
+        assert_eq!(at(99), None);
+        assert_eq!(term.hyperlink_at(GridPoint { line: 7, column: 0 }), None);
+    }
 
     #[test]
     fn renders_text_colors_and_cursor() {

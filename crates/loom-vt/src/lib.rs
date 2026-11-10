@@ -2,7 +2,21 @@ mod alacritty;
 pub mod input;
 pub mod mouse;
 
-pub use alacritty::AlacrittyTerminal;
+pub use alacritty::{AlacrittyTerminal, MAX_CLIPBOARD_WRITE};
+
+/// Which selection an OSC 52 write targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardTarget {
+    Clipboard,
+    Primary,
+}
+
+/// A clipboard write requested by the program in the terminal (OSC 52).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardWrite {
+    pub target: ClipboardTarget,
+    pub text: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
@@ -139,6 +153,10 @@ pub trait TerminalEmulator: Send {
     fn modes(&self) -> Modes;
     fn title(&self) -> Option<String>;
     fn take_responses(&mut self) -> Vec<u8>;
+    /// The latest pending OSC 52 clipboard write, if any. Nothing is written by the emulator.
+    fn take_clipboard_write(&mut self) -> Option<ClipboardWrite>;
+    /// The OSC 8 hyperlink at a grid point (lines below 0 are scrollback).
+    fn hyperlink_at(&self, point: GridPoint) -> Option<String>;
     fn start_selection(&mut self, kind: SelectionKind, point: GridPoint, side: Side);
     fn update_selection(&mut self, point: GridPoint, side: Side);
     fn clear_selection(&mut self);
