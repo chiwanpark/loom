@@ -163,6 +163,8 @@ pub enum ToolDetails {
         path: PathBuf,
         bytes: usize,
         created: bool,
+        #[serde(default)]
+        diff: Option<String>,
     },
     Shell {
         exit_code: Option<i32>,
