@@ -69,7 +69,7 @@ fn is_retryable(error: &LlmError) -> bool {
             ]
             .iter()
             .any(|k| text.contains(k));
-            !quota && matches!(status, 429 | 500 | 502 | 503 | 504)
+            !quota && matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
         }
         _ => false,
     }
