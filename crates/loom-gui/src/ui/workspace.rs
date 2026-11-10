@@ -4,14 +4,15 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, Entity, FocusHandle,
-    Focusable, FontWeight, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
-    prelude::FluentBuilder, px,
+    AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, DefiniteLength,
+    DragMoveEvent, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
+    KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, actions, div, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, TitleBar, h_flex, h_resizable, resizable_panel, v_flex,
+    v_resizable,
 };
 use loom_client::proto::{SessionId, SessionInfo, SessionState};
 use loom_config::{ClientConfig, HostEntry};
@@ -23,6 +24,7 @@ use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal}
 use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::notify;
+use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
 use crate::ui::session::SessionView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
@@ -41,7 +43,15 @@ actions!(
         ChooseModel,
         AddSshHost,
         PairRelay,
-        Quit
+        Quit,
+        SplitLeft,
+        SplitRight,
+        SplitUp,
+        SplitDown,
+        ActivatePaneLeft,
+        ActivatePaneRight,
+        ActivatePaneUp,
+        ActivatePaneDown
     ]
 );
 
@@ -50,6 +60,7 @@ const RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const RECONNECT_ATTEMPTS: usize = 20;
 const OUTSIDE_TERMINAL: &str = "Workspace && !Terminal";
+const DROP_TARGET_SIZE: f32 = 0.2;
 
 pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
@@ -60,6 +71,22 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-pagedown", NextTab, Some(CONTEXT)),
         KeyBinding::new("ctrl-pageup", PreviousTab, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-m", ChooseModel, Some(CONTEXT)),
+        KeyBinding::new("ctrl-k left", SplitLeft, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-k right", SplitRight, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-k up", SplitUp, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-k down", SplitDown, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-k ctrl-left", ActivatePaneLeft, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new(
+            "ctrl-k ctrl-right",
+            ActivatePaneRight,
+            Some(OUTSIDE_TERMINAL),
+        ),
+        KeyBinding::new("ctrl-k ctrl-up", ActivatePaneUp, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-k ctrl-down", ActivatePaneDown, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-alt-left", ActivatePaneLeft, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-right", ActivatePaneRight, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-up", ActivatePaneUp, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-down", ActivatePaneDown, Some(CONTEXT)),
         KeyBinding::new("ctrl-q", Quit, None),
     ]);
     let mut custom = Vec::new();
@@ -143,27 +170,113 @@ fn panel_icon(kind: PanelKind) -> Icon {
     }
 }
 
-struct SessionGroup {
-    connection: Entity<AgentConnection>,
-    session: SessionId,
+struct Pane {
+    id: PaneId,
     tabs: TabList<Panel>,
 }
 
+struct SessionGroup {
+    connection: Entity<AgentConnection>,
+    session: SessionId,
+    panes: Vec<Pane>,
+    layout: PaneGroup,
+    active_pane: PaneId,
+}
+
 impl SessionGroup {
+    fn new(connection: Entity<AgentConnection>, session: SessionId, pane: PaneId) -> Self {
+        Self {
+            connection,
+            session,
+            panes: vec![Pane {
+                id: pane,
+                tabs: TabList::default(),
+            }],
+            layout: PaneGroup::new(pane),
+            active_pane: pane,
+        }
+    }
+
     fn chat(&self) -> Option<Entity<SessionView>> {
-        self.tabs.iter().find_map(|(_, panel)| match panel {
-            Panel::Chat(view) => Some(view.clone()),
-            Panel::Terminal(_) => None,
-        })
+        self.panes
+            .iter()
+            .flat_map(|pane| pane.tabs.iter())
+            .find_map(|(_, panel)| match panel {
+                Panel::Chat(view) => Some(view.clone()),
+                Panel::Terminal(_) => None,
+            })
     }
 
     fn is(&self, conn: &Entity<AgentConnection>, session: &SessionId) -> bool {
         &self.connection == conn && &self.session == session
     }
+
+    fn pane(&self, id: PaneId) -> Option<&Pane> {
+        self.panes.iter().find(|pane| pane.id == id)
+    }
+
+    fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        self.panes.iter_mut().find(|pane| pane.id == id)
+    }
+
+    fn active(&self) -> Option<&Pane> {
+        self.pane(self.active_pane)
+    }
+
+    fn active_mut(&mut self) -> Option<&mut Pane> {
+        let id = self.active_pane;
+        self.pane_mut(id)
+    }
+
+    fn active_panel(&self) -> Option<&Panel> {
+        self.active().and_then(|pane| pane.tabs.active())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.panes.iter().all(|pane| pane.tabs.is_empty())
+    }
+
+    fn add_pane(&mut self, target: PaneId, new: PaneId, direction: SplitDirection) {
+        self.layout.split(target, new, direction);
+        self.panes.push(Pane {
+            id: new,
+            tabs: TabList::default(),
+        });
+        self.active_pane = new;
+    }
+
+    fn remove_pane(&mut self, id: PaneId) -> bool {
+        if self.panes.len() <= 1 || !self.layout.remove(id) {
+            return false;
+        }
+        self.panes.retain(|pane| pane.id != id);
+        if self.active_pane == id {
+            self.active_pane = self.layout.first_pane();
+        }
+        true
+    }
+
+    fn take_panel(&mut self, pane: PaneId, panel: PanelId) -> Option<Panel> {
+        let source = self.pane_mut(pane)?;
+        let ix = source.tabs.position(panel)?;
+        let item = source.tabs.remove(ix)?;
+        if source.tabs.is_empty() {
+            self.remove_pane(pane);
+        }
+        Some(item)
+    }
+
+    fn drain(&mut self) -> Vec<Panel> {
+        self.panes
+            .iter_mut()
+            .flat_map(|pane| pane.tabs.drain())
+            .collect()
+    }
 }
 
 #[derive(Clone)]
 struct DraggedTab {
+    pane: PaneId,
     panel: PanelId,
     ix: usize,
     kind: PanelKind,
@@ -192,6 +305,7 @@ pub struct Workspace {
     active_connection: Option<Entity<AgentConnection>>,
     groups: Vec<SessionGroup>,
     active_group: Option<usize>,
+    drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_left: bool,
     focus: FocusHandle,
@@ -229,6 +343,7 @@ impl Workspace {
             active_connection: None,
             groups: Vec::new(),
             active_group: None,
+            drag_split: None,
             next_panel: 0,
             show_left: true,
             focus: cx.focus_handle(),
@@ -508,18 +623,18 @@ impl Workspace {
         let ix = match self.groups.iter().position(|g| g.is(&conn, &info.id)) {
             Some(ix) => ix,
             None => {
-                self.groups.push(SessionGroup {
-                    connection: conn.clone(),
-                    session: info.id.clone(),
-                    tabs: TabList::default(),
-                });
+                let pane = self.alloc_panel();
+                self.groups
+                    .push(SessionGroup::new(conn.clone(), info.id.clone(), pane));
                 self.groups.len() - 1
             }
         };
         if self.groups[ix].chat().is_none() {
             let panel = self.chat_panel(&conn, &info, window, cx);
             let id = self.alloc_panel();
-            self.groups[ix].tabs.add(id, panel, Some(0));
+            if let Some(pane) = self.groups[ix].active_mut() {
+                pane.tabs.add(id, panel, Some(0));
+            }
         }
         self.activate_group(ix, window, cx);
     }
@@ -539,15 +654,42 @@ impl Workspace {
     }
 
     fn focus_active_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(panel) = self.active_group().and_then(|g| g.tabs.active()).cloned() {
+        if let Some(panel) = self.active_group().and_then(|g| g.active_panel()).cloned() {
             panel.focus(window, cx);
         }
     }
 
-    fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g))
-            && group.tabs.activate(ix)
+    fn active_group_mut(&mut self) -> Option<&mut SessionGroup> {
+        self.active_group.and_then(|g| self.groups.get_mut(g))
+    }
+
+    fn set_active_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        if let Some(group) = self.active_group_mut()
+            && group.active_pane != pane
+            && group.pane(pane).is_some()
         {
+            group.active_pane = pane;
+            cx.notify();
+        }
+    }
+
+    fn activate_pane(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_active_pane(pane, cx);
+        self.focus_active_panel(window, cx);
+    }
+
+    fn activate_tab(
+        &mut self,
+        pane: PaneId,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.active_group_mut()
+            && let Some(target) = group.pane_mut(pane)
+            && target.tabs.activate(ix)
+        {
+            group.active_pane = pane;
             self.focus_active_panel(window, cx);
             cx.notify();
         }
@@ -562,17 +704,23 @@ impl Workspace {
         }
     }
 
-    fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn close_tab(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(gix) = self.active_group else {
             return;
         };
         let Some(group) = self.groups.get_mut(gix) else {
             return;
         };
-        let Some(panel) = group.tabs.remove(ix) else {
+        let Some(target) = group.pane_mut(pane) else {
             return;
         };
-        let empty = group.tabs.is_empty();
+        let Some(panel) = target.tabs.remove(ix) else {
+            return;
+        };
+        if target.tabs.is_empty() {
+            group.remove_pane(pane);
+        }
+        let empty = group.is_empty();
         let group = &self.groups[gix];
         Self::release_panel(group, &panel, cx);
         if empty {
@@ -588,7 +736,7 @@ impl Workspace {
             return;
         }
         let mut group = self.groups.remove(ix);
-        for panel in group.tabs.drain() {
+        for panel in group.drain() {
             Self::release_panel(&group, &panel, cx);
         }
         self.active_group = match self.active_group {
@@ -616,14 +764,144 @@ impl Workspace {
     fn handle_tab_drop(
         &mut self,
         dragged: &DraggedTab,
+        pane: PaneId,
         ix: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g)) {
-            group.tabs.move_item(dragged.panel, ix);
-            self.focus_active_panel(window, cx);
+        self.drag_split = None;
+        let Some(group) = self.active_group_mut() else {
+            return;
+        };
+        if group.pane(pane).is_none() {
+            return;
+        }
+        if dragged.pane == pane {
+            if let Some(target) = group.pane_mut(pane) {
+                target.tabs.move_item(dragged.panel, ix);
+            }
+        } else {
+            let Some(panel) = group.take_panel(dragged.pane, dragged.panel) else {
+                return;
+            };
+            if let Some(target) = group.pane_mut(pane) {
+                target.tabs.add(dragged.panel, panel, Some(ix));
+            }
+        }
+        group.active_pane = pane;
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    fn handle_drag_move(
+        &mut self,
+        pane: PaneId,
+        event: &DragMoveEvent<DraggedTab>,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.bounds.contains(&event.event.position) {
+            return;
+        }
+        let relative = event.event.position - event.bounds.origin;
+        let direction = SplitDirection::from_drop(
+            f32::from(relative.x),
+            f32::from(relative.y),
+            f32::from(event.bounds.size.width),
+            f32::from(event.bounds.size.height),
+            DROP_TARGET_SIZE,
+        );
+        let split = Some((pane, direction));
+        if self.drag_split != split {
+            self.drag_split = split;
             cx.notify();
+        }
+    }
+
+    fn handle_split_drop(
+        &mut self,
+        dragged: &DraggedTab,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let direction = match self.drag_split.take() {
+            Some((target, direction)) if target == pane => direction,
+            _ => None,
+        };
+        let Some(direction) = direction else {
+            let len = self
+                .active_group()
+                .and_then(|g| g.pane(pane))
+                .map(|p| p.tabs.len())
+                .unwrap_or(0);
+            self.handle_tab_drop(dragged, pane, len, window, cx);
+            return;
+        };
+        self.split_with(dragged.pane, dragged.panel, pane, direction, window, cx);
+    }
+
+    fn split_with(
+        &mut self,
+        source: PaneId,
+        panel: PanelId,
+        target: PaneId,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let new_pane = self.alloc_panel();
+        let Some(group) = self.active_group_mut() else {
+            return;
+        };
+        let lone = source == target && group.pane(source).is_some_and(|p| p.tabs.len() <= 1);
+        if lone || group.pane(target).is_none() {
+            return;
+        }
+        let Some(item) = group.take_panel(source, panel) else {
+            return;
+        };
+        group.add_pane(target, new_pane, direction);
+        if let Some(pane) = group.pane_mut(new_pane) {
+            pane.tabs.add(panel, item, None);
+        }
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    fn split_active(
+        &mut self,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group) = self.active_group() else {
+            return;
+        };
+        let Some(pane) = group.active() else {
+            return;
+        };
+        let active = pane.tabs.active_index();
+        let panel = pane.tabs.iter().nth(active).map(|(id, _)| id);
+        match panel {
+            Some(panel) if pane.tabs.len() > 1 => {
+                let id = pane.id;
+                self.split_with(id, panel, id, direction, window, cx)
+            }
+            _ => self.new_terminal(Some(direction), window, cx),
+        }
+    }
+
+    fn activate_pane_in_direction(
+        &mut self,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self
+            .active_group()
+            .and_then(|g| g.layout.find_pane_in_direction(g.active_pane, direction));
+        if let Some(target) = target {
+            self.activate_pane(target, window, cx);
         }
     }
 
@@ -697,7 +975,12 @@ impl Workspace {
         .detach();
     }
 
-    fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_terminal(
+        &mut self,
+        split: Option<SplitDirection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(group) = self.active_group() else {
             notify::info(
                 window,
@@ -708,6 +991,7 @@ impl Workspace {
         };
         let conn = group.connection.clone();
         let session = group.session.clone();
+        let origin = group.active_pane;
         let read = conn.read(cx);
         let client = read.client.clone();
         let backend = read.backend.clone();
@@ -728,12 +1012,27 @@ impl Workspace {
                     this.subscriptions
                         .push(cx.observe(&view, |_, _, cx| cx.notify()));
                     let panel_id = this.alloc_panel();
+                    let new_pane = this.alloc_panel();
                     let Some(gix) = this.groups.iter().position(|g| g.is(&conn, &session)) else {
                         return;
                     };
-                    this.groups[gix]
-                        .tabs
-                        .add(panel_id, Panel::Terminal(view), None);
+                    let group = &mut this.groups[gix];
+                    let origin = if group.pane(origin).is_some() {
+                        origin
+                    } else {
+                        group.active_pane
+                    };
+                    let target = match split {
+                        Some(direction) => {
+                            group.add_pane(origin, new_pane, direction);
+                            new_pane
+                        }
+                        None => origin,
+                    };
+                    if let Some(pane) = group.pane_mut(target) {
+                        pane.tabs.add(panel_id, Panel::Terminal(view), None);
+                    }
+                    group.active_pane = target;
                     this.activate_group(gix, window, cx);
                 }
                 Some(Err(err)) => notify::error(window, cx, err.to_string()),
@@ -915,7 +1214,44 @@ impl Workspace {
     }
 
     fn on_new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_terminal(window, cx);
+        self.new_terminal(None, window, cx);
+    }
+
+    fn on_split_left(&mut self, _: &SplitLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_active(SplitDirection::Left, window, cx);
+    }
+
+    fn on_split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_active(SplitDirection::Right, window, cx);
+    }
+
+    fn on_split_up(&mut self, _: &SplitUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_active(SplitDirection::Up, window, cx);
+    }
+
+    fn on_split_down(&mut self, _: &SplitDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_active(SplitDirection::Down, window, cx);
+    }
+
+    fn on_pane_left(&mut self, _: &ActivatePaneLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_pane_in_direction(SplitDirection::Left, window, cx);
+    }
+
+    fn on_pane_right(
+        &mut self,
+        _: &ActivatePaneRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_pane_in_direction(SplitDirection::Right, window, cx);
+    }
+
+    fn on_pane_up(&mut self, _: &ActivatePaneUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_pane_in_direction(SplitDirection::Up, window, cx);
+    }
+
+    fn on_pane_down(&mut self, _: &ActivatePaneDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_pane_in_direction(SplitDirection::Down, window, cx);
     }
 
     fn on_archive_session(
@@ -931,22 +1267,26 @@ impl Workspace {
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.active_group().map(|g| g.tabs.active_index()) {
-            self.close_tab(ix, window, cx);
+        let target = self
+            .active_group()
+            .and_then(|g| g.active())
+            .map(|p| (p.id, p.tabs.active_index()));
+        if let Some((pane, ix)) = target {
+            self.close_tab(pane, ix, window, cx);
         }
     }
 
     fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g)) {
-            group.tabs.activate_next();
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
+            pane.tabs.activate_next();
             self.focus_active_panel(window, cx);
             cx.notify();
         }
     }
 
     fn on_previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g)) {
-            group.tabs.activate_previous();
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
+            pane.tabs.activate_previous();
             self.focus_active_panel(window, cx);
             cx.notify();
         }
@@ -1417,19 +1757,70 @@ impl Workspace {
                 )
                 .into_any_element();
         };
-        let len = group.tabs.len();
-        let active = group.tabs.active_index();
-        let panels: Vec<(PanelId, PanelKind, String)> = group
+        let root = group.layout.root.clone();
+        let active = group.active_pane;
+        let multiple = group.panes.len() > 1;
+        self.render_member(&root, active, multiple, cx)
+    }
+
+    fn render_member(
+        &mut self,
+        member: &Member,
+        active: PaneId,
+        multiple: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match member {
+            Member::Pane(pane) => self.render_pane(*pane, *pane == active, multiple, cx),
+            Member::Axis(axis) => {
+                let id =
+                    SharedString::from(format!("pane-axis-{}-{}", axis.id, axis.members.len()));
+                let children: Vec<AnyElement> = axis
+                    .members
+                    .iter()
+                    .map(|member| self.render_member(member, active, multiple, cx))
+                    .collect();
+                let group = match axis.axis {
+                    Axis::Horizontal => h_resizable(id),
+                    Axis::Vertical => v_resizable(id),
+                };
+                group
+                    .children(
+                        children
+                            .into_iter()
+                            .map(|child| resizable_panel().child(child)),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_pane(
+        &mut self,
+        pane_id: PaneId,
+        is_active: bool,
+        multiple: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let Some(pane) = self.active_group().and_then(|g| g.pane(pane_id)) else {
+            return div().into_any_element();
+        };
+        let len = pane.tabs.len();
+        let active = pane.tabs.active_index();
+        let panels: Vec<(PanelId, PanelKind, String)> = pane
             .tabs
             .iter()
             .map(|(id, panel)| (id, panel.kind(), panel.title(cx)))
             .collect();
-        let content = group.tabs.active().cloned();
+        let content = pane.tabs.active().cloned();
+        let dim = multiple && !is_active;
         let tabs = panels
             .into_iter()
             .enumerate()
             .map(|(ix, (id, kind, title))| {
                 let dragged = DraggedTab {
+                    pane: pane_id,
                     panel: id,
                     ix,
                     kind,
@@ -1445,6 +1836,7 @@ impl Workspace {
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
+                            .when(dim, |el| el.text_color(theme.muted_foreground))
                             .child(title),
                     )
                     .end_slot(
@@ -1454,12 +1846,12 @@ impl Workspace {
                             .icon(IconName::Close)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.close_tab(ix, window, cx)
+                                this.close_tab(pane_id, ix, window, cx)
                             })),
                     )
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)),
-                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_tab(pane_id, ix, window, cx)
+                    }))
                     .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
                     .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
                         let theme = cx.theme();
@@ -1467,7 +1859,7 @@ impl Workspace {
                             .bg(theme.drop_target)
                             .border_color(theme.drag_border)
                             .border_0();
-                        if ix < dragged.ix {
+                        if dragged.pane != pane_id || ix < dragged.ix {
                             style.border_l_2()
                         } else if ix > dragged.ix {
                             style.border_r_2()
@@ -1476,7 +1868,7 @@ impl Workspace {
                         }
                     })
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
-                        this.handle_tab_drop(dragged, ix, window, cx)
+                        this.handle_tab_drop(dragged, pane_id, ix, window, cx)
                     }))
             });
         let tab_bar = h_flex()
@@ -1486,7 +1878,7 @@ impl Workspace {
             .bg(theme.tab_bar)
             .child(
                 h_flex()
-                    .id("tabs-scroll")
+                    .id(("tabs-scroll", pane_id as usize))
                     .flex_shrink(1.)
                     .min_w_0()
                     .overflow_x_scroll()
@@ -1494,7 +1886,7 @@ impl Workspace {
             )
             .child(
                 div()
-                    .id("tab-bar-drop-target")
+                    .id(("tab-bar-drop-target", pane_id as usize))
                     .flex_1()
                     .min_w_6()
                     .h_full()
@@ -1503,45 +1895,98 @@ impl Workspace {
                     .child("")
                     .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(cx.theme().drop_target))
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
-                        this.handle_tab_drop(dragged, len, window, cx)
+                        this.handle_tab_drop(dragged, pane_id, len, window, cx)
                     })),
             )
             .child(
                 h_flex()
                     .h_full()
                     .px_1()
+                    .gap_0p5()
                     .border_b_1()
                     .border_l_1()
                     .border_color(theme.border)
                     .child(
-                        Button::new("new-terminal")
+                        Button::new(("new-terminal", pane_id as usize))
                             .ghost()
                             .xsmall()
                             .icon(IconName::SquareTerminal)
-                            .tooltip("New terminal in this session (ctrl-`)")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.new_terminal(window, cx)),
-                            ),
+                            .tooltip("New terminal in this pane (ctrl-`)")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_active_pane(pane_id, cx);
+                                this.new_terminal(None, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("split-right", pane_id as usize))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(gpui_kit_assets::IconName::Columns2))
+                            .tooltip("Split right (ctrl-k right)")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_active_pane(pane_id, cx);
+                                this.split_active(SplitDirection::Right, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("split-down", pane_id as usize))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(gpui_kit_assets::IconName::Rows2))
+                            .tooltip("Split down (ctrl-k down)")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_active_pane(pane_id, cx);
+                                this.split_active(SplitDirection::Down, window, cx)
+                            })),
                     ),
             );
-        let body = match content {
-            Some(Panel::Terminal(view)) => div()
-                .flex_1()
-                .w_full()
-                .overflow_hidden()
-                .p_1()
-                .child(view)
-                .into_any_element(),
-            Some(panel) => div()
-                .flex_1()
-                .w_full()
-                .overflow_hidden()
-                .child(panel.view())
-                .into_any_element(),
-            None => div().flex_1().into_any_element(),
+        let inner = match content {
+            Some(Panel::Terminal(view)) => div().size_full().p_1().child(view).into_any_element(),
+            Some(panel) => div().size_full().child(panel.view()).into_any_element(),
+            None => div().size_full().into_any_element(),
         };
+        let group_name = SharedString::from(format!("pane-{pane_id}"));
+        let split = match self.drag_split {
+            Some((target, direction)) if target == pane_id => direction,
+            _ => None,
+        };
+        let half = DefiniteLength::Fraction(0.5);
+        let overlay = div()
+            .id(("pane-drop", pane_id as usize))
+            .invisible()
+            .absolute()
+            .bg(theme.drop_target)
+            .group_drag_over::<DraggedTab>(group_name.clone(), |style| style.visible())
+            .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                this.handle_split_drop(dragged, pane_id, window, cx)
+            }))
+            .map(|el| match split {
+                None => el.top_0().right_0().bottom_0().left_0(),
+                Some(SplitDirection::Up) => el.top_0().left_0().right_0().h(half),
+                Some(SplitDirection::Down) => el.left_0().bottom_0().right_0().h(half),
+                Some(SplitDirection::Left) => el.top_0().left_0().bottom_0().w(half),
+                Some(SplitDirection::Right) => el.top_0().bottom_0().right_0().w(half),
+            });
+        let body = div()
+            .id(("pane-body", pane_id as usize))
+            .group(group_name)
+            .relative()
+            .flex_1()
+            .w_full()
+            .overflow_hidden()
+            .on_drag_move::<DraggedTab>(cx.listener(
+                move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                    this.handle_drag_move(pane_id, event, cx)
+                },
+            ))
+            .child(inner)
+            .child(overlay);
         v_flex()
+            .id(("pane", pane_id as usize))
             .size_full()
+            .capture_any_mouse_down(
+                cx.listener(move |this, _, _, cx| this.set_active_pane(pane_id, cx)),
+            )
             .child(tab_bar)
             .child(body)
             .into_any_element()
@@ -1662,6 +2107,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_choose_model))
             .on_action(cx.listener(Self::on_add_ssh))
             .on_action(cx.listener(Self::on_pair))
+            .on_action(cx.listener(Self::on_split_left))
+            .on_action(cx.listener(Self::on_split_right))
+            .on_action(cx.listener(Self::on_split_up))
+            .on_action(cx.listener(Self::on_split_down))
+            .on_action(cx.listener(Self::on_pane_left))
+            .on_action(cx.listener(Self::on_pane_right))
+            .on_action(cx.listener(Self::on_pane_up))
+            .on_action(cx.listener(Self::on_pane_down))
             .child(
                 TitleBar::new().child(
                     h_flex()

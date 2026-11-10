@@ -8,7 +8,9 @@ gpui_kit_assets::icon_assets!(
         Archive,
         ArchiveRestore,
         Brain,
+        Columns2,
         ImagePlus,
+        Rows2,
         ShieldCheck,
         Trash
     ]
