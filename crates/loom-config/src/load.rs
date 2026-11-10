@@ -137,6 +137,17 @@ mod tests {
     }
 
     #[test]
+    fn parses_custom_system_prompt() {
+        let config =
+            parse("instructions:\n  system_prompt: |\n    Line one.\n    Line two.\n").unwrap();
+        assert_eq!(
+            config.instructions.system_prompt.as_deref(),
+            Some("Line one.\nLine two.\n")
+        );
+        assert_eq!(parse("").unwrap().instructions.system_prompt, None);
+    }
+
+    #[test]
     fn rejects_removed_workspace_section() {
         let err = parse("workspaces:\n- path: ~/x\n").unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
@@ -161,6 +172,10 @@ mod tests {
             ("version: 2\n", "version"),
             ("relay:\n  enabled: true\n", "relay.url"),
             ("relay:\n  enabled: true\n  url: https://x\n", "relay.url"),
+            (
+                "instructions:\n  system_prompt: \"  \"\n",
+                "instructions.system_prompt",
+            ),
             ("llm:\n  default_model: gpt-5\n", "llm.default_model"),
             ("llm:\n  default_model: /model\n", "llm.default_model"),
             ("llm:\n  default_model: provider/\n", "llm.default_model"),

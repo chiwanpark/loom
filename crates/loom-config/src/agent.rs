@@ -112,12 +112,17 @@ pub struct LifecycleConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct InstructionsConfig {
     pub max_bytes: ByteSize,
+    /// Replaces Loom's built-in instructions at the start of the system prompt.
+    /// The `AGENTS.md` files and the runtime section are still appended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 impl Default for InstructionsConfig {
     fn default() -> Self {
         Self {
             max_bytes: ByteSize::kib(64),
+            system_prompt: None,
         }
     }
 }
@@ -381,6 +386,17 @@ impl AgentConfig {
             return Err(invalid(
                 "instructions.max_bytes",
                 "must be greater than zero".into(),
+            ));
+        }
+        if self
+            .instructions
+            .system_prompt
+            .as_deref()
+            .is_some_and(|text| text.trim().is_empty())
+        {
+            return Err(invalid(
+                "instructions.system_prompt",
+                "must not be empty; remove the key to use the built-in instructions".into(),
             ));
         }
 

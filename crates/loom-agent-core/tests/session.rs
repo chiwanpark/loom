@@ -94,6 +94,24 @@ async fn text_turn_streams_and_builds_request() {
 }
 
 #[tokio::test]
+async fn configured_system_prompt_replaces_builtin_instructions() {
+    let mut config = test_config(PolicyAction::Ask);
+    config.instructions.system_prompt = Some("You are a terse reviewer.".into());
+    let h = Harness::new(config, vec![text("ok")]);
+    std::fs::write(h.workspace.join("AGENTS.md"), "Always answer in haiku.").unwrap();
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "hi").await;
+
+    let request = &h.provider.requests()[0];
+    let system = request.system.as_deref().unwrap();
+    assert!(system.starts_with("You are a terse reviewer."), "{system}");
+    assert!(!system.contains("You are Loom"), "{system}");
+    assert!(system.contains("Always answer in haiku."));
+    assert!(system.contains("# Environment"));
+}
+
+#[tokio::test]
 async fn allowed_tool_calls_run_and_feed_results_back() {
     let h = Harness::new(
         test_config(PolicyAction::Allow),

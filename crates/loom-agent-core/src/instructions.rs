@@ -22,6 +22,8 @@ pub struct SystemPrompt {
 }
 
 pub struct PromptInputs<'a> {
+    /// Replaces [`BUILTIN_INSTRUCTIONS`] when set.
+    pub base: Option<&'a str>,
     pub system_agents_md: &'a Path,
     pub workspace_root: &'a Path,
     pub max_bytes: usize,
@@ -29,7 +31,8 @@ pub struct PromptInputs<'a> {
 }
 
 pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
-    let mut sections = vec![BUILTIN_INSTRUCTIONS.to_owned()];
+    let base = inputs.base.unwrap_or(BUILTIN_INSTRUCTIONS);
+    let mut sections = vec![base.trim_end().to_owned()];
     let mut warnings = Vec::new();
     let workspace_md = inputs.workspace_root.join(AGENTS_MD);
     for (label, path) in [
@@ -163,6 +166,7 @@ mod tests {
         std::fs::write(workspace.join("AGENTS.md"), "WORKSPACE RULE").unwrap();
         let tools = tools();
         let prompt = build_system_prompt(&PromptInputs {
+            base: None,
             system_agents_md: &system,
             workspace_root: &workspace,
             max_bytes: 1024,
@@ -185,6 +189,7 @@ mod tests {
         std::fs::write(dir.path().join("AGENTS.md"), "가나다라마바사").unwrap();
         let tools = tools();
         let prompt = build_system_prompt(&PromptInputs {
+            base: None,
             system_agents_md: &dir.path().join("missing.md"),
             workspace_root: dir.path(),
             max_bytes: 7,
@@ -196,5 +201,25 @@ mod tests {
         assert!(!prompt.text.contains("System-wide"));
         assert_eq!(prompt.warnings.len(), 1);
         assert!(prompt.warnings[0].contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn configured_prompt_replaces_builtin_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "WORKSPACE RULE").unwrap();
+        let tools = tools();
+        let prompt = build_system_prompt(&PromptInputs {
+            base: Some("You are a careful reviewer.\n"),
+            system_agents_md: &dir.path().join("missing.md"),
+            workspace_root: dir.path(),
+            max_bytes: 1024,
+            tools: &tools,
+        })
+        .await;
+        let text = &prompt.text;
+        assert!(text.starts_with("You are a careful reviewer.\n\n# Workspace"));
+        assert!(!text.contains("You are Loom"));
+        assert!(text.contains("WORKSPACE RULE"));
+        assert!(text.contains("# Environment"));
     }
 }

@@ -22,6 +22,10 @@ lifecycle:
 
 instructions:
   max_bytes: 64KiB
+  # Replaces Loom's built-in instructions. AGENTS.md files and the
+  # environment section are still appended.
+  # system_prompt: |
+  #   You are a careful coding agent.
 
 llm:
   default_model: openai/gpt-5

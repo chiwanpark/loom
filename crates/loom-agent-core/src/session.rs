@@ -449,6 +449,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             .map_err(CoreError::from)?;
         let specs = runtime.tools.specs();
         let prompt = build_system_prompt(&PromptInputs {
+            base: runtime.config.instructions.system_prompt.as_deref(),
             system_agents_md: &core.system_agents_md,
             workspace_root: core.workspace.root(),
             max_bytes: runtime.config.instructions.max_bytes.as_usize(),
