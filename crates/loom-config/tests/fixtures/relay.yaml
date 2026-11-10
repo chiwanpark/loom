@@ -1,0 +1,26 @@
+version: 1
+
+listen: 127.0.0.1:8080
+
+tls: null
+
+allowed_hosts:
+- 4f6c1b0d8e2a7c9f3b5d6e8a1c2b4d6f8e0a2c4b6d8f0a1c3e5b7d9f1a3c5e7b
+
+cloudflare_access:
+  team_domain: myteam.cloudflareaccess.com
+  audience: 0123456789abcdef
+
+limits:
+  max_frame: 256KiB
+  max_channels_per_agent: 64
+  max_agents_per_host: 32
+  max_connections_per_ip: 64
+  messages_per_second: 500
+  burst: 2000
+  idle_timeout: 90s
+  handshake_timeout: 10s
+  queue_frames: 256
+
+logging:
+  level: info

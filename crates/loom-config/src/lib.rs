@@ -1,7 +1,9 @@
 mod agent;
+mod client;
 mod dirs;
 mod error;
 mod load;
+mod relay_server;
 mod units;
 
 pub use agent::{
@@ -10,8 +12,13 @@ pub use agent::{
     ProviderSetting, ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig,
     ShellToolConfig, SocketConfig, StorageConfig, TerminalConfig, ToolsConfig,
 };
+pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;
+pub use relay_server::{
+    AccessVerifyConfig, RELAY_CONFIG_ENV, RELAY_CONFIG_FILE, RelayLimits, RelayServerConfig,
+    TlsConfig, relay_config_schema,
+};
 pub use units::{ByteSize, HumanDuration};
 
 pub fn agent_config_schema() -> serde_json::Value {

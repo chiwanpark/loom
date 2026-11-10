@@ -147,6 +147,16 @@ impl HumanDuration {
     }
 }
 
+impl FromStr for HumanDuration {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        humantime::parse_duration(s.trim())
+            .map(HumanDuration)
+            .map_err(|err| format!("invalid duration {s:?}: {err}"))
+    }
+}
+
 impl fmt::Display for HumanDuration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", humantime::format_duration(self.0))

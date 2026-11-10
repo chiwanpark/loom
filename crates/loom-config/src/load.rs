@@ -6,6 +6,22 @@ use crate::agent::AgentConfig;
 use crate::dirs::Dirs;
 use crate::error::ConfigError;
 
+pub(crate) fn parse_yaml<T: serde::de::DeserializeOwned + Default>(
+    text: &str,
+    origin: &str,
+) -> Result<T, ConfigError> {
+    let parse_error = |err: serde_saphyr::Error| ConfigError::Parse {
+        origin: origin.to_string(),
+        message: err.to_string(),
+    };
+    let document: Value = serde_saphyr::from_str(text).map_err(parse_error)?;
+    if document.is_null() {
+        Ok(T::default())
+    } else {
+        serde_saphyr::from_str::<T>(text).map_err(parse_error)
+    }
+}
+
 impl AgentConfig {
     pub fn load(path: &Path, dirs: &Dirs) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
@@ -23,16 +39,7 @@ impl AgentConfig {
     }
 
     pub fn parse(text: &str, origin: &str, dirs: &Dirs) -> Result<Self, ConfigError> {
-        let parse_error = |err: serde_saphyr::Error| ConfigError::Parse {
-            origin: origin.to_string(),
-            message: err.to_string(),
-        };
-        let document: Value = serde_saphyr::from_str(text).map_err(parse_error)?;
-        let mut config = if document.is_null() {
-            Self::default()
-        } else {
-            serde_saphyr::from_str::<Self>(text).map_err(parse_error)?
-        };
+        let mut config: Self = parse_yaml(text, origin)?;
         config.expand_paths(&dirs.home);
         config.validate(origin)?;
         Ok(config)
