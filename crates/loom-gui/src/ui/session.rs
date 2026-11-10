@@ -328,15 +328,32 @@ impl SessionView {
                         el.child(div().whitespace_normal().child(text.clone()))
                     })
                     .when(!images.is_empty(), |el| {
-                        el.child(h_flex().flex_wrap().gap_2().children(images.iter().map(
-                            |image| {
-                                img(image.clone())
-                                    .max_w(px(360.))
-                                    .max_h(px(240.))
+                        el.child(h_flex().flex_wrap().gap_2().children(
+                            images.iter().enumerate().map(|(image_ix, image)| {
+                                let preview = image.clone();
+                                div()
+                                    .id(SharedString::from(format!("image-{ix}-{image_ix}")))
+                                    .cursor_pointer()
                                     .rounded_sm()
-                                    .object_fit(ObjectFit::Contain)
-                            },
-                        )))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .hover(|el| el.border_color(theme.ring))
+                                    .on_click(move |_, window, cx| {
+                                        crate::ui::image_preview::open_image_preview(
+                                            preview.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                    .child(
+                                        img(image.clone())
+                                            .max_w(px(480.))
+                                            .max_h(px(320.))
+                                            .rounded_sm()
+                                            .object_fit(ObjectFit::Contain),
+                                    )
+                            }),
+                        ))
                     })
                     .into_any_element()
             }
@@ -587,6 +604,29 @@ impl SessionView {
     }
 }
 
+pub fn open_rename(
+    connection: Entity<AgentConnection>,
+    session: SessionId,
+    current: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    dialogs::open_form(
+        "Rename session",
+        Some("Leave the title empty to name the session after its first prompt.".into()),
+        vec![dialogs::FormField::new("Title", "Session title").value(current)],
+        "Rename",
+        move |values, _, cx| {
+            let title = values.into_iter().next().unwrap_or_default();
+            let title = (!title.trim().is_empty()).then_some(title);
+            let session = session.clone();
+            connection.update(cx, |conn, cx| conn.rename(session, title, cx));
+        },
+        window,
+        cx,
+    );
+}
+
 fn pretty_arguments(arguments: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(arguments) {
         Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| arguments.to_owned()),
@@ -772,13 +812,20 @@ impl SessionView {
             .flex_wrap()
             .gap_2()
             .children(self.attachments.iter().enumerate().map(|(ix, image)| {
+                let preview = image.clone();
                 div()
+                    .id(("attachment", ix))
                     .relative()
-                    .size(px(72.))
+                    .size(px(96.))
                     .rounded_md()
                     .overflow_hidden()
                     .border_1()
                     .border_color(theme.border)
+                    .cursor_pointer()
+                    .hover(|el| el.border_color(theme.ring))
+                    .on_click(move |_, window, cx| {
+                        crate::ui::image_preview::open_image_preview(preview.clone(), window, cx)
+                    })
                     .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
                     .child(
                         div().absolute().top_0().right_0().child(
@@ -788,6 +835,7 @@ impl SessionView {
                                 .icon(IconName::Close)
                                 .tooltip("Remove")
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
                                     if ix < this.attachments.len() {
                                         this.attachments.remove(ix);
                                     }
@@ -842,13 +890,26 @@ impl Render for SessionView {
                     .border_color(theme.border)
                     .child(
                         div()
-                            .flex_1()
+                            .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(conversation.title()),
                     )
+                    .child(
+                        Button::new("rename")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(gpui_kit_assets::IconName::Pencil))
+                            .tooltip("Rename session")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let session = this.session_id(cx);
+                                let current = this.conversation.read(cx).title();
+                                open_rename(this.connection.clone(), session, current, window, cx);
+                            })),
+                    )
+                    .child(div().flex_1())
                     .when(conversation.info.archived, |el| {
                         el.child(
                             Button::new("restore")

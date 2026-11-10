@@ -16,6 +16,7 @@ gpui_kit_assets::icon_assets!(
         FileSymlink,
         GitBranch,
         ImagePlus,
+        Pencil,
         Rows2,
         ShieldCheck,
         Trash

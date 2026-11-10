@@ -4,10 +4,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    Action, AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, DefiniteLength,
-    DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Window, actions, div, prelude::FluentBuilder, px,
+    Action, AnyElement, AnyView, App, AppContext, AsyncWindowContext, ClickEvent, Context,
+    DefiniteLength, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::FluentBuilder,
+    px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{
@@ -27,6 +28,8 @@ use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal}
 use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::DiffView;
+use crate::ui::file_view::FileView;
+use crate::ui::files::{FileTreeEvent, FileTreeView};
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
 use crate::ui::picker::{PickerItem, open_picker};
@@ -61,7 +64,10 @@ actions!(
         ToggleCommandPalette,
         FindSession,
         FindAgent,
-        SelectTheme
+        SelectTheme,
+        RenameSession,
+        ShowChanges,
+        ShowFiles
     ]
 );
 
@@ -77,6 +83,8 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-b", ToggleLeftDock, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-b", ToggleRightDock, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-e", ShowFiles, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-g", ShowChanges, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-p", ToggleCommandPalette, Some(CONTEXT)),
         KeyBinding::new("ctrl-p", FindSession, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-o", FindAgent, Some(CONTEXT)),
@@ -131,6 +139,7 @@ enum Panel {
     Chat(Entity<SessionView>),
     Terminal(Entity<TerminalView>),
     Diff(Entity<DiffView>),
+    File(Entity<FileView>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -138,6 +147,13 @@ enum PanelKind {
     Chat,
     Terminal,
     Diff,
+    File,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RightTab {
+    Changes,
+    Files,
 }
 
 impl Panel {
@@ -146,6 +162,7 @@ impl Panel {
             Panel::Chat(_) => PanelKind::Chat,
             Panel::Terminal(_) => PanelKind::Terminal,
             Panel::Diff(_) => PanelKind::Diff,
+            Panel::File(_) => PanelKind::File,
         }
     }
 
@@ -154,6 +171,7 @@ impl Panel {
             Panel::Chat(view) => view.clone().into(),
             Panel::Terminal(view) => view.clone().into(),
             Panel::Diff(view) => view.clone().into(),
+            Panel::File(view) => view.clone().into(),
         }
     }
 
@@ -161,6 +179,7 @@ impl Panel {
         match self {
             Panel::Chat(view) => view.read(cx).title(cx),
             Panel::Diff(view) => view.read(cx).title(),
+            Panel::File(view) => view.read(cx).title(),
             Panel::Terminal(view) => {
                 let view = view.read(cx);
                 let base = view.title().unwrap_or_else(|| "Terminal".into());
@@ -181,6 +200,7 @@ impl Panel {
             }
             Panel::Terminal(view) => view.read(cx).focus_handle(cx).focus(window, cx),
             Panel::Diff(view) => view.read(cx).focus_handle(cx).focus(window, cx),
+            Panel::File(view) => view.read(cx).editor_focus(cx).focus(window, cx),
         }
     }
 }
@@ -193,8 +213,11 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: next tab", Box::new(NextTab)),
         ("workspace: previous tab", Box::new(PreviousTab)),
         ("workspace: toggle agents panel", Box::new(ToggleLeftDock)),
-        ("workspace: toggle changes panel", Box::new(ToggleRightDock)),
+        ("workspace: toggle right panel", Box::new(ToggleRightDock)),
+        ("panel: changes", Box::new(ShowChanges)),
+        ("panel: files", Box::new(ShowFiles)),
         ("session: archive", Box::new(ArchiveSession)),
+        ("session: rename", Box::new(RenameSession)),
         ("session: choose model", Box::new(ChooseModel)),
         ("finder: sessions", Box::new(FindSession)),
         ("finder: agents", Box::new(FindAgent)),
@@ -219,6 +242,7 @@ fn panel_icon(kind: PanelKind) -> Icon {
         PanelKind::Chat => Icon::new(IconName::Bot).xsmall(),
         PanelKind::Terminal => Icon::new(IconName::SquareTerminal).xsmall(),
         PanelKind::Diff => Icon::new(gpui_kit_assets::IconName::FileDiff).xsmall(),
+        PanelKind::File => Icon::new(IconName::FileText).xsmall(),
     }
 }
 
@@ -255,7 +279,7 @@ impl SessionGroup {
             .flat_map(|pane| pane.tabs.iter())
             .find_map(|(_, panel)| match panel {
                 Panel::Chat(view) => Some(view.clone()),
-                Panel::Terminal(_) | Panel::Diff(_) => None,
+                Panel::Terminal(_) | Panel::Diff(_) | Panel::File(_) => None,
             })
     }
 
@@ -373,6 +397,9 @@ pub struct Workspace {
     show_left: bool,
     show_right: bool,
     changes_cache: Option<(EntityId, u64, Rc<Vec<FileChange>>)>,
+    right_tab: RightTab,
+    file_trees: Vec<Entity<FileTreeView>>,
+    poll_ticks: u64,
     focus: FocusHandle,
     subscriptions: Vec<Subscription>,
 }
@@ -413,6 +440,9 @@ impl Workspace {
             show_left: true,
             show_right: true,
             changes_cache: None,
+            right_tab: RightTab::Changes,
+            file_trees: Vec::new(),
+            poll_ticks: 0,
             focus: cx.focus_handle(),
             subscriptions: Vec::new(),
         };
@@ -432,6 +462,96 @@ impl Workspace {
         this
     }
 
+    fn find_file_tree(
+        &self,
+        conn: &Entity<AgentConnection>,
+        cx: &App,
+    ) -> Option<Entity<FileTreeView>> {
+        self.file_trees
+            .iter()
+            .find(|tree| tree.read(cx).connection() == conn)
+            .cloned()
+    }
+
+    fn file_tree(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<FileTreeView> {
+        if let Some(tree) = self.find_file_tree(conn, cx) {
+            return tree;
+        }
+        let tree = cx.new(|cx| FileTreeView::new(conn.clone(), cx));
+        let tree_conn = conn.clone();
+        self.subscriptions.push(cx.subscribe_in(
+            &tree,
+            window,
+            move |this, _, event: &FileTreeEvent, window, cx| match event {
+                FileTreeEvent::Open(path) => {
+                    this.open_file(tree_conn.clone(), path.clone(), window, cx)
+                }
+            },
+        ));
+        self.file_trees.push(tree.clone());
+        tree
+    }
+
+    fn open_file(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        relative: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_group().is_none() {
+            notify::info(window, cx, "Open a session to view files.");
+            return;
+        }
+        let path = conn.read(cx).info.workspace.join(&relative);
+        let found = self.active_group().and_then(|group| {
+            group.panes.iter().find_map(|pane| {
+                pane.tabs
+                    .find(
+                        |panel| matches!(panel, Panel::File(view) if view.read(cx).path() == &path),
+                    )
+                    .map(|ix| (pane.id, ix))
+            })
+        });
+        if let Some((pane, ix)) = found {
+            self.activate_tab(pane, ix, window, cx);
+            if let Some(Panel::File(view)) = self.active_group().and_then(|g| g.active_panel()) {
+                view.update(cx, |view, cx| view.reload(window, cx));
+            }
+            return;
+        }
+        let view = cx.new(|cx| FileView::new(conn, relative, window, cx));
+        self.subscriptions
+            .push(cx.observe(&view, |_, _, cx| cx.notify()));
+        let id = self.alloc_panel();
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
+            pane.tabs.add(id, Panel::File(view), None);
+        }
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    fn on_show_changes(&mut self, _: &ShowChanges, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = true;
+        self.right_tab = RightTab::Changes;
+        cx.notify();
+    }
+
+    fn on_show_files(&mut self, _: &ShowFiles, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = true;
+        self.right_tab = RightTab::Files;
+        if let Some(conn) = self.changes_connection() {
+            let tree = self.file_tree(&conn, window, cx);
+            tree.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
     fn changes_connection(&self) -> Option<Entity<AgentConnection>> {
         self.active_group()
             .map(|g| g.connection.clone())
@@ -439,10 +559,17 @@ impl Workspace {
     }
 
     fn poll_changes(&mut self, cx: &mut Context<Self>) {
+        self.poll_ticks += 1;
         if self.show_right
             && let Some(conn) = self.changes_connection()
         {
             conn.update(cx, |conn, cx| conn.refresh_changes(cx));
+            if self.right_tab == RightTab::Files
+                && self.poll_ticks.is_multiple_of(5)
+                && let Some(tree) = self.find_file_tree(&conn, cx)
+            {
+                tree.update(cx, |tree, cx| tree.refresh(cx));
+            }
         }
         let Some(group) = self.active_group() else {
             return;
@@ -1389,7 +1516,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn render_changes_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_changes_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = self.changes_connection();
         let (listing, error) = conn
@@ -1432,25 +1559,70 @@ impl Workspace {
                 (count, None, self.render_session_changes(session, note, cx))
             }
         };
+        let files_tab = self.right_tab == RightTab::Files;
+        let changes_label = if count > 0 {
+            format!("Changes {count}")
+        } else {
+            "Changes".to_string()
+        };
+        let tree = match (&conn, files_tab) {
+            (Some(conn), true) => Some(self.file_tree(conn, window, cx)),
+            _ => None,
+        };
+        if let Some(tree) = &tree {
+            let selected = self
+                .active_group()
+                .and_then(|g| g.active_panel())
+                .and_then(|panel| match panel {
+                    Panel::File(view) => Some(view.read(cx).relative().to_string()),
+                    _ => None,
+                });
+            if selected.is_some() {
+                tree.update(cx, |tree, cx| tree.select(selected, cx));
+            }
+        }
+        let body = match &tree {
+            Some(tree) => div()
+                .flex_1()
+                .min_h_0()
+                .child(tree.clone())
+                .into_any_element(),
+            None => body,
+        };
         let header = h_flex()
             .w_full()
             .h(Tab::container_height())
             .flex_none()
-            .px_3()
-            .gap_2()
+            .px_2()
+            .gap_1()
             .border_b_1()
             .border_color(theme.border)
-            .child(div().font_weight(FontWeight::SEMIBOLD).child("Changes"))
-            .when(count > 0, |el| {
-                el.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(count.to_string()),
-                )
-            })
+            .child(
+                Button::new("right-changes")
+                    .ghost()
+                    .small()
+                    .label(changes_label)
+                    .selected(!files_tab)
+                    .tooltip("Uncommitted changes (ctrl-shift-g)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_tab = RightTab::Changes;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("right-files")
+                    .ghost()
+                    .small()
+                    .label("Files")
+                    .selected(files_tab)
+                    .tooltip("Workspace files (ctrl-shift-e)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_tab = RightTab::Files;
+                        cx.notify();
+                    })),
+            )
             .child(div().flex_1())
-            .when_some(branch, |el, branch| {
+            .when_some(branch.filter(|_| !files_tab), |el, branch| {
                 el.child(
                     h_flex()
                         .min_w_0()
@@ -1470,7 +1642,41 @@ impl Workspace {
                                 .child(branch),
                         ),
                 )
-            });
+            })
+            .when_some(tree.clone(), |el, tree| {
+                let collapse = tree.clone();
+                el.child(
+                    Button::new("refresh-files")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::RefreshCw)
+                        .tooltip("Refresh")
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            tree.update(cx, |tree, cx| tree.refresh(cx))
+                        })),
+                )
+                .child(
+                    Button::new("collapse-files")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::ChevronsUpDown)
+                        .tooltip("Collapse all folders")
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            collapse.update(cx, |tree, cx| tree.collapse_all(cx))
+                        })),
+                )
+            })
+            .child(
+                Button::new("collapse-right")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::PanelRightClose)
+                    .tooltip("Hide the right panel (ctrl-alt-b)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_right = false;
+                        cx.notify();
+                    })),
+            );
         v_flex()
             .size_full()
             .border_l_1()
@@ -1697,6 +1903,23 @@ impl Workspace {
             let (conn, id) = (group.connection.clone(), group.session.clone());
             self.archive_session(conn, id, true, window, cx);
         }
+    }
+
+    fn on_rename_session(
+        &mut self,
+        _: &RenameSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat) = self.active_group().and_then(SessionGroup::chat) else {
+            notify::info(window, cx, "Open a session to rename it.");
+            return;
+        };
+        let chat = chat.read(cx);
+        let conn = chat.connection.clone();
+        let conversation = chat.conversation.read(cx);
+        let (id, title) = (conversation.info.id.clone(), conversation.title());
+        crate::ui::session::open_rename(conn, id, title, window, cx);
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -2186,15 +2409,34 @@ impl Workspace {
                                 .id(SharedString::from(format!("session-{hix}-{aix}-{six}")))
                                 .w_full()
                                 .gap_1()
-                                .pl_8()
+                                .when(is_archived, |el| el.pl_12())
+                                .when(!is_archived, |el| el.pl_8())
                                 .pr_1()
                                 .rounded_sm()
                                 .when(active, |el| el.bg(theme.list_active))
                                 .hover(|s| s.bg(theme.list_hover))
                                 .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_session(open_conn.clone(), info.clone(), window, cx)
-                                }))
+                                .on_click(cx.listener(
+                                    move |this, event: &ClickEvent, window, cx| {
+                                        if event.click_count() >= 2 {
+                                            let title = info.title.clone().unwrap_or_default();
+                                            crate::ui::session::open_rename(
+                                                open_conn.clone(),
+                                                info.id.clone(),
+                                                title,
+                                                window,
+                                                cx,
+                                            );
+                                        } else {
+                                            this.open_session(
+                                                open_conn.clone(),
+                                                info.clone(),
+                                                window,
+                                                cx,
+                                            )
+                                        }
+                                    },
+                                ))
                                 .child(
                                     div()
                                         .flex_1()
@@ -2310,6 +2552,17 @@ impl Workspace {
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.pair_dialog(window, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("collapse-left")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::PanelLeftClose)
+                            .tooltip("Hide the agents panel (ctrl-b)")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_left = false;
+                                cx.notify();
+                            })),
                     ),
             )
             .child(
@@ -2577,7 +2830,19 @@ impl Workspace {
 
     fn render_status(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let mut left = h_flex().gap_3();
+        let show_left = self.show_left;
+        let mut left = h_flex().gap_3().child(
+            Button::new("toggle-left")
+                .ghost()
+                .xsmall()
+                .icon(IconName::PanelLeft)
+                .selected(show_left)
+                .tooltip("Toggle the agents panel (ctrl-b)")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.show_left = !this.show_left;
+                    cx.notify();
+                })),
+        );
         let mut right = h_flex().gap_3();
         if let Some(conn) = &self.active_connection {
             let conn = conn.read(cx);
@@ -2631,12 +2896,12 @@ impl Workspace {
         }
         let show_right = self.show_right;
         right = right.child(
-            Button::new("toggle-changes")
+            Button::new("toggle-right")
                 .ghost()
                 .xsmall()
-                .icon(Icon::new(gpui_kit_assets::IconName::FileDiff))
+                .icon(IconName::PanelRight)
                 .selected(show_right)
-                .tooltip("Toggle the changes panel (ctrl-alt-b)")
+                .tooltip("Toggle the right panel (ctrl-alt-b)")
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.show_right = !this.show_right;
                     cx.notify();
@@ -2685,7 +2950,7 @@ impl Render for Workspace {
         let agents = self.render_agents_panel(cx);
         let center = self.render_center(cx);
         let show_changes = self.show_right && self.changes_connection().is_some();
-        let changes = show_changes.then(|| self.render_changes_panel(cx));
+        let changes = show_changes.then(|| self.render_changes_panel(window, cx));
         let status = self.render_status(cx);
         v_flex()
             .id("workspace")
@@ -2704,6 +2969,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_archive_session))
+            .on_action(cx.listener(Self::on_rename_session))
+            .on_action(cx.listener(Self::on_show_changes))
+            .on_action(cx.listener(Self::on_show_files))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))
             .on_action(cx.listener(Self::on_providers))

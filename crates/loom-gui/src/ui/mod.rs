@@ -1,5 +1,8 @@
 pub mod dialogs;
 pub mod diff;
+pub mod file_view;
+pub mod files;
+pub mod image_preview;
 pub mod notify;
 pub mod panes;
 pub mod picker;

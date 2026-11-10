@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, FileDiff, Notice, PolicyAction, ReasoningEffort, SessionId,
-    SessionInfo, TerminalId, WorkspaceChanges,
+    AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, Notice, PolicyAction,
+    ReasoningEffort, SessionId, SessionInfo, TerminalId, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -252,6 +252,9 @@ impl AgentConnection {
                 conv.info.reasoning = info.reasoning;
                 conv.info.policy_default = info.policy_default;
                 conv.info.archived = info.archived;
+                if info.title.is_some() {
+                    conv.info.title = info.title.clone();
+                }
                 cx.notify();
             });
         }
@@ -261,7 +264,7 @@ impl AgentConnection {
                 existing.reasoning = info.reasoning;
                 existing.policy_default = info.policy_default;
                 existing.archived = info.archived;
-                if existing.title.is_none() {
+                if info.title.is_some() {
                     existing.title = info.title;
                 }
             }
@@ -290,6 +293,14 @@ impl AgentConnection {
             });
         })
         .detach();
+    }
+
+    pub fn rename(&mut self, id: SessionId, title: Option<String>, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.rename_session(&id, title).await });
+        self.apply_info(task, cx);
     }
 
     pub fn set_archived(&mut self, id: SessionId, archived: bool, cx: &mut Context<Self>) {
@@ -395,6 +406,24 @@ impl AgentConnection {
         let client = self.client.clone();
         self.backend
             .run(async move { client.file_diff(&path, old_path.as_deref()).await })
+    }
+
+    pub fn list_directory(
+        &self,
+        path: String,
+    ) -> impl Future<Output = Option<loom_client::Result<DirectoryListing>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.list_directory(&path).await })
+    }
+
+    pub fn read_file(
+        &self,
+        path: String,
+    ) -> impl Future<Output = Option<loom_client::Result<FileContent>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.read_file(&path).await })
     }
 
     pub fn register_terminal(&mut self, id: TerminalId, view: &Entity<TerminalView>) {
