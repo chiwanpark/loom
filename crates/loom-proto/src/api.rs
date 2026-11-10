@@ -170,6 +170,9 @@ pub enum Command {
         session: SessionId,
         archived: bool,
     },
+    DeleteSession {
+        session: SessionId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +269,7 @@ pub enum Notice {
     ConfigRejected { message: String },
     ShuttingDown,
     SessionUpdated(SessionInfo),
+    SessionRemoved(SessionId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
