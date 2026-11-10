@@ -87,6 +87,18 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
             path,
             bytes,
             created,
+            diff: Some(diff),
+        } => ToolResultDetails::WriteWithDiff {
+            path,
+            bytes: bytes as u64,
+            created,
+            diff,
+        },
+        ToolDetails::Write {
+            path,
+            bytes,
+            created,
+            diff: None,
         } => ToolResultDetails::Write {
             path,
             bytes: bytes as u64,
@@ -322,5 +334,27 @@ mod tests {
         let capped = cap_chars("가나다라", 2);
         assert!(capped.starts_with("가나\n"));
         assert!(capped.contains("truncated"));
+    }
+
+    #[test]
+    fn write_details_carry_a_diff_when_available() {
+        let output = |diff: Option<&str>| ToolOutput {
+            content: "Wrote a.txt".into(),
+            is_error: false,
+            details: ToolDetails::Write {
+                path: "a.txt".into(),
+                bytes: 3,
+                created: false,
+                diff: diff.map(str::to_owned),
+            },
+        };
+        assert!(matches!(
+            tool_result(output(Some("-a\n+b\n"))).details,
+            Some(ToolResultDetails::WriteWithDiff { ref diff, .. }) if diff == "-a\n+b\n"
+        ));
+        assert!(matches!(
+            tool_result(output(None)).details,
+            Some(ToolResultDetails::Write { bytes: 3, .. })
+        ));
     }
 }
