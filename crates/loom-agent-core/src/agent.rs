@@ -234,6 +234,14 @@ impl Agent {
         Ok(info)
     }
 
+    pub fn rename_session(&self, id: &SessionId, title: Option<String>) -> Result<SessionInfo> {
+        let session = self.session(id)?;
+        session.set_title(title);
+        let info = session.info();
+        self.notify(AgentNotice::SessionUpdated(Box::new(info.clone())));
+        Ok(info)
+    }
+
     pub fn session(&self, id: &SessionId) -> Result<Session> {
         self.inner
             .sessions

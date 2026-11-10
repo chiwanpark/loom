@@ -95,6 +95,21 @@ impl Connection {
         }
     }
 
+    pub async fn unsupported_request(&self, id: RequestId) -> bool {
+        if !self.greeted {
+            return false;
+        }
+        self.respond(
+            id,
+            Err(ApiError::new(
+                ErrorCode::Unsupported,
+                "this agent does not support the request; update the agent",
+            )),
+        )
+        .await;
+        true
+    }
+
     pub async fn reject(&self, error: ApiError) {
         self.send(ServerMessage::Rejected(error)).await;
     }
@@ -162,7 +177,10 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
-            Command::GetWorkspaceChanges | Command::GetFileDiff { .. } => {
+            Command::GetWorkspaceChanges
+            | Command::GetFileDiff { .. }
+            | Command::ListDirectory { .. }
+            | Command::ReadFile { .. } => {
                 let root = self.agent.workspace_root().to_path_buf();
                 let out = self.out.clone();
                 self.tasks.push(tokio::spawn(async move {
@@ -172,6 +190,14 @@ impl Connection {
                                 .await
                                 .map(Payload::FileDiff)
                         }
+                        Command::ListDirectory { path } => {
+                            crate::files::list_directory(&root, &path)
+                                .await
+                                .map(Payload::Directory)
+                        }
+                        Command::ReadFile { path } => crate::files::read_file(&root, &path)
+                            .await
+                            .map(Payload::FileContent),
                         _ => crate::git::changes(&root)
                             .await
                             .map(Payload::WorkspaceChanges),
@@ -379,6 +405,11 @@ impl Connection {
                 .delete_session(&id)
                 .map(|()| Payload::Ok)
                 .map_err(|e| convert::api_error(&e)),
+            Command::RenameSession { session: id, title } => self
+                .agent
+                .rename_session(&id, title)
+                .map(Payload::Session)
+                .map_err(|e| convert::api_error(&e)),
             Command::ArchiveSession {
                 session: id,
                 archived,
@@ -406,7 +437,9 @@ impl Connection {
             | Command::ListClients
             | Command::RevokeClient { .. }
             | Command::GetWorkspaceChanges
-            | Command::GetFileDiff { .. } => Err(ApiError::new(
+            | Command::GetFileDiff { .. }
+            | Command::ListDirectory { .. }
+            | Command::ReadFile { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),

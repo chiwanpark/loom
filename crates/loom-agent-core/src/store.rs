@@ -46,6 +46,8 @@ pub struct SessionState {
     pub history: Vec<Message>,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone)]

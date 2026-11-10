@@ -45,6 +45,7 @@ struct State {
     approvals: HashMap<String, oneshot::Sender<Decision>>,
     context_tokens: Option<u64>,
     archived: bool,
+    title: Option<String>,
 }
 
 struct Core {
@@ -107,6 +108,7 @@ impl Core {
                     policy: state.policy.clone(),
                     history: state.history.clone(),
                     archived: state.archived,
+                    title: state.title.clone(),
                 },
             );
         }
@@ -189,6 +191,7 @@ impl Session {
                     approvals: HashMap::new(),
                     context_tokens: None,
                     archived: state.archived,
+                    title: state.title,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -214,7 +217,7 @@ impl Session {
                 state.model.as_ref().map(|m| m.to_string()),
                 state.reasoning,
                 state.policy.default,
-                title(&state.history),
+                state.title.clone().or_else(|| title(&state.history)),
                 state.archived,
             )
         };
@@ -275,6 +278,14 @@ impl Session {
             self.interrupt();
         }
         self.core.lock().archived = archived;
+        self.core.persist();
+    }
+
+    pub fn set_title(&self, title: Option<String>) {
+        let title = title
+            .map(|t| t.trim().chars().take(TITLE_CHARS).collect::<String>())
+            .filter(|t| !t.is_empty());
+        self.core.lock().title = title;
         self.core.persist();
     }
 

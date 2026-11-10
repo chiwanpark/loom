@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path};
 use std::process::Stdio;
 use std::time::Duration;
 
 use loom_proto::{ApiError, ChangeStatus, ErrorCode, FileChange, FileDiff, WorkspaceChanges};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -38,6 +38,15 @@ fn internal(message: impl Into<String>) -> ApiError {
 }
 
 async fn git(root: &Path, args: &[&str], cap: usize) -> Result<Output, ApiError> {
+    git_with_input(root, args, cap, None).await
+}
+
+async fn git_with_input(
+    root: &Path,
+    args: &[&str],
+    cap: usize,
+    input: Option<Vec<u8>>,
+) -> Result<Output, ApiError> {
     let mut child = Command::new("git")
         .args(PINNED_CONFIG)
         .args(args)
@@ -45,13 +54,22 @@ async fn git(root: &Path, args: &[&str], cap: usize) -> Result<Output, ApiError>
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .map_err(|err| internal(format!("cannot run git: {err}")))?;
     let mut stdout = child.stdout.take().expect("piped stdout");
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        tokio::spawn(async move {
+            let _ = stdin.write_all(&input).await;
+        });
+    }
     let run = async {
         let mut data = Vec::new();
         let mut reader = (&mut stdout).take(cap as u64 + 1);
@@ -306,6 +324,28 @@ pub async fn changes(root: &Path) -> Result<WorkspaceChanges, ApiError> {
         files,
         truncated,
     })
+}
+
+pub async fn ignored(root: &Path, paths: &[String]) -> HashSet<String> {
+    if paths.is_empty() || !is_repository(root).await {
+        return HashSet::new();
+    }
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    match git_with_input(
+        root,
+        &["check-ignore", "-z", "--stdin"],
+        MAX_LISTING,
+        Some(input),
+    )
+    .await
+    {
+        Ok(output) if output.status == 0 || output.status == 1 => fields(&output.stdout).collect(),
+        _ => HashSet::new(),
+    }
 }
 
 fn check_path(path: &str) -> Result<(), ApiError> {

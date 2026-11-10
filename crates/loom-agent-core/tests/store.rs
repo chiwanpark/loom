@@ -200,6 +200,32 @@ async fn archived_sessions_stay_archived_and_are_announced() {
 }
 
 #[tokio::test]
+async fn renamed_sessions_keep_their_title() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(config.clone(), vec![text("hello")]);
+    let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "Original prompt").await;
+    let info = h
+        .agent
+        .rename_session(session.id(), Some("  Renamed session  ".into()))
+        .unwrap();
+    assert_eq!(info.title.as_deref(), Some("Renamed session"));
+    h.agent.shutdown().await;
+    drop(session);
+
+    let (agent, _) = h.reopen(config, vec![]);
+    let sessions = agent.list_sessions();
+    assert_eq!(sessions[0].title.as_deref(), Some("Renamed session"));
+    let reset = agent
+        .rename_session(&sessions[0].id, Some("   ".into()))
+        .unwrap();
+    assert_eq!(reset.title.as_deref(), Some("Original prompt"));
+    let reset = agent.rename_session(&sessions[0].id, None).unwrap();
+    assert_eq!(reset.title.as_deref(), Some("Original prompt"));
+}
+
+#[tokio::test]
 async fn deleted_sessions_are_removed_from_the_store() {
     let config = test_config(PolicyAction::Allow);
     let h = Harness::new(config.clone(), vec![text("hello")]);
