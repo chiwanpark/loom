@@ -34,12 +34,14 @@ struct Peer {
     conn: ConnId,
     tx: mpsc::Sender<RelayFrame>,
     kill: CancellationToken,
+    stats: Arc<Stats>,
 }
 
 impl Peer {
     fn send(&self, frame: RelayFrame) {
         if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(frame) {
             tracing::info!(conn = self.conn, "disconnecting a slow consumer");
+            bump(&self.stats.slow_consumers, 1);
             self.kill.cancel();
         }
     }
@@ -63,6 +65,24 @@ struct Routes {
     watchers: HashMap<HostId, HashMap<ConnId, Peer>>,
 }
 
+#[derive(Default)]
+struct Stats {
+    connections_total: AtomicU64,
+    agents_registered_total: AtomicU64,
+    channels_opened_total: AtomicU64,
+    frames_forwarded: AtomicU64,
+    bytes_forwarded: AtomicU64,
+    rejected_access: AtomicU64,
+    rejected_hosts: AtomicU64,
+    rate_limited: AtomicU64,
+    slow_consumers: AtomicU64,
+    client_connections: AtomicU64,
+}
+
+fn bump(counter: &AtomicU64, value: u64) {
+    counter.fetch_add(value, Ordering::Relaxed);
+}
+
 pub struct Relay {
     config: RelayServerConfig,
     allowed: HashSet<HostId>,
@@ -71,6 +91,7 @@ pub struct Relay {
     routes: Mutex<Routes>,
     next_id: AtomicU64,
     shutdown: CancellationToken,
+    stats: Arc<Stats>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,6 +121,7 @@ impl Relay {
             routes: Mutex::new(Routes::default()),
             next_id: AtomicU64::new(1),
             shutdown: CancellationToken::new(),
+            stats: Arc::new(Stats::default()),
         })
     }
 
@@ -109,6 +131,103 @@ impl Relay {
             .route("/v1/agent", get(agent_upgrade))
             .route("/v1/client", get(client_upgrade))
             .with_state(self.clone())
+    }
+
+    pub fn metrics_router(self: &Arc<Self>) -> Router {
+        let relay = self.clone();
+        Router::new().route(
+            "/metrics",
+            get(move || {
+                let relay = relay.clone();
+                async move { relay.metrics_text() }
+            }),
+        )
+    }
+
+    pub fn metrics_text(&self) -> String {
+        let get = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        let s = &self.stats;
+        let rows: [(&str, &str, &str, u64); 12] = [
+            (
+                "loom_relay_agents_online",
+                "gauge",
+                "Registered agents",
+                self.online_agents() as u64,
+            ),
+            (
+                "loom_relay_clients_connected",
+                "gauge",
+                "Connected clients",
+                get(&s.client_connections),
+            ),
+            (
+                "loom_relay_channels_open",
+                "gauge",
+                "Open channels",
+                self.open_channels() as u64,
+            ),
+            (
+                "loom_relay_connections_total",
+                "counter",
+                "Accepted WebSocket connections",
+                get(&s.connections_total),
+            ),
+            (
+                "loom_relay_agents_registered_total",
+                "counter",
+                "Agent registrations",
+                get(&s.agents_registered_total),
+            ),
+            (
+                "loom_relay_channels_opened_total",
+                "counter",
+                "Opened channels",
+                get(&s.channels_opened_total),
+            ),
+            (
+                "loom_relay_frames_forwarded_total",
+                "counter",
+                "Forwarded data frames",
+                get(&s.frames_forwarded),
+            ),
+            (
+                "loom_relay_bytes_forwarded_total",
+                "counter",
+                "Forwarded payload bytes",
+                get(&s.bytes_forwarded),
+            ),
+            (
+                "loom_relay_rejected_access_total",
+                "counter",
+                "Requests without a valid Access token",
+                get(&s.rejected_access),
+            ),
+            (
+                "loom_relay_rejected_hosts_total",
+                "counter",
+                "Agents rejected by the allow-list or signature",
+                get(&s.rejected_hosts),
+            ),
+            (
+                "loom_relay_rate_limited_total",
+                "counter",
+                "Connections closed by rate limits",
+                get(&s.rate_limited),
+            ),
+            (
+                "loom_relay_slow_consumers_total",
+                "counter",
+                "Connections closed for falling behind",
+                get(&s.slow_consumers),
+            ),
+        ];
+        let mut out = String::new();
+        for (name, kind, help, value) in rows {
+            out.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"
+            ));
+        }
+        out
     }
 
     pub fn shutdown(&self) {
@@ -175,15 +294,18 @@ async fn upgrade(
     if let Some(access) = &relay.access {
         let token = headers.get(JWT_HEADER).and_then(|v| v.to_str().ok());
         let Some(token) = token else {
+            bump(&relay.stats.rejected_access, 1);
             return (StatusCode::FORBIDDEN, "missing Access token").into_response();
         };
         if let Err(err) = access.verify(token).await {
+            bump(&relay.stats.rejected_access, 1);
             tracing::info!(%addr, error = %err, "rejected a request without a valid Access token");
             return (StatusCode::FORBIDDEN, "invalid Access token").into_response();
         }
     }
     let ip = relay.client_ip(&headers, addr);
     if !relay.limits.connect(ip) {
+        bump(&relay.stats.rate_limited, 1);
         return (StatusCode::TOO_MANY_REQUESTS, "too many connections").into_response();
     }
     let max = relay.config.limits.max_frame.as_usize();
@@ -208,6 +330,10 @@ async fn run_connection(relay: Arc<Relay>, socket: WebSocket, ip: IpAddr, role: 
     let (tx, mut rx) = mpsc::channel::<RelayFrame>(relay.config.limits.queue_frames);
     let kill = relay.shutdown.child_token();
     let conn_id = relay.next_id();
+    bump(&relay.stats.connections_total, 1);
+    if matches!(role, Role::Client) {
+        bump(&relay.stats.client_connections, 1);
+    }
     let writer_kill = kill.clone();
     let writer = tokio::spawn(async move {
         let mut heartbeat = tokio::time::interval(HEARTBEAT);
@@ -245,6 +371,7 @@ async fn run_connection(relay: Arc<Relay>, socket: WebSocket, ip: IpAddr, role: 
             conn: conn_id,
             tx,
             kill: kill.clone(),
+            stats: relay.stats.clone(),
         },
         ip,
         registered: None,
@@ -263,6 +390,12 @@ async fn run_connection(relay: Arc<Relay>, socket: WebSocket, ip: IpAddr, role: 
     drop(conn);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
     kill.cancel();
+    if matches!(role, Role::Client) {
+        relay
+            .stats
+            .client_connections
+            .fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 type Failure = (RelayErrorCode, String);
@@ -298,6 +431,7 @@ impl Conn {
                 continue;
             };
             if !self.relay.limits.allow_message(self.ip) {
+                bump(&self.relay.stats.rate_limited, 1);
                 return Err((
                     RelayErrorCode::RateLimited,
                     "too many messages; slow down".into(),
@@ -335,6 +469,7 @@ impl Conn {
         }
         let host = host_id_for(&host_pubkey);
         if !self.relay.allowed.contains(&host) {
+            bump(&self.relay.stats.rejected_hosts, 1);
             tracing::info!(%host, "rejected an agent whose host is not allowed");
             return Err((
                 RelayErrorCode::Unauthorized,
@@ -352,10 +487,12 @@ impl Conn {
             &agent_auth_message(&nonce, &instance),
             &signature,
         ) {
+            bump(&self.relay.stats.rejected_hosts, 1);
             return Err((RelayErrorCode::Unauthorized, "bad signature".into()));
         }
         let agent = AgentId { host, instance };
         self.register(agent.clone())?;
+        bump(&self.relay.stats.agents_registered_total, 1);
         self.peer.send(RelayFrame::Registered { host });
         tracing::info!(%host, instance = %agent.instance, "agent registered");
         while let Some(frame) = self.read(stream, idle).await? {
@@ -482,6 +619,7 @@ impl Conn {
         };
         match result {
             Ok(agent_peer) => {
+                bump(&self.relay.stats.channels_opened_total, 1);
                 agent_peer.send(RelayFrame::Opened {
                     channel,
                     agent: agent.clone(),
@@ -502,6 +640,8 @@ impl Conn {
             })
         };
         if let Some(target) = target {
+            bump(&self.relay.stats.frames_forwarded, 1);
+            bump(&self.relay.stats.bytes_forwarded, payload.len() as u64);
             target.send(RelayFrame::Data { channel, payload });
         }
     }

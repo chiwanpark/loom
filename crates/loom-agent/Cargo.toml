@@ -19,6 +19,7 @@ loom-agent-core = { version = "0.1.0", path = "../loom-agent-core" }
 loom-config = { version = "0.1.0", path = "../loom-config" }
 loom-crypto = { version = "0.1.0", path = "../loom-crypto" }
 loom-proto = { version = "0.1.0", path = "../loom-proto" }
+loom-tools = { version = "0.1.0", path = "../loom-tools" }
 loom-transport = { version = "0.1.0", path = "../loom-transport" }
 nix = { version = "0.31.3", features = ["signal"] }
 qrcode = { version = "0.14.1", default-features = false }

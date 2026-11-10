@@ -102,7 +102,20 @@ async fn serve_main(config: RelayServerConfig) -> anyhow::Result<()> {
     if config.cloudflare_access.is_none() {
         tracing::warn!("cloudflare_access is not set, so Access tokens are not checked");
     }
+    let metrics_addr = config.metrics_listen.clone();
     let relay = Relay::new(config);
+    if let Some(addr) = metrics_addr {
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("cannot listen on {addr}"))?;
+        tracing::info!(%addr, "serving metrics");
+        let app = relay.metrics_router();
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, app).await {
+                tracing::error!(error = %err, "the metrics server stopped");
+            }
+        });
+    }
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("cannot listen on {addr}"))?;

@@ -158,7 +158,37 @@ impl Ctx {
     }
 }
 
+fn sandbox_exec(args: &[std::ffi::OsString]) -> ! {
+    use std::os::unix::process::CommandExt;
+    let (policy, command) = match loom_tools::sandbox::parse_args(args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("loom-agent: {err}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(err) = loom_tools::sandbox::enforce(&policy) {
+        eprintln!("loom-agent: cannot sandbox the command: {err}");
+        std::process::exit(126);
+    }
+    let err = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .exec();
+    eprintln!(
+        "loom-agent: cannot run {}: {err}",
+        command[0].to_string_lossy()
+    );
+    std::process::exit(127);
+}
+
 fn main() {
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if raw
+        .get(1)
+        .is_some_and(|a| a == loom_tools::sandbox::SANDBOX_SUBCOMMAND)
+    {
+        sandbox_exec(&raw[2..]);
+    }
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,

@@ -66,8 +66,9 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         HostIdentity::load_or_create(&data_dir).context("could not load the host identity")?,
     );
     let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
-    let agent = Agent::new(AgentOptions::new(&workspace, config, dirs.clone()))
-        .context("could not start the agent")?;
+    let mut options = AgentOptions::new(&workspace, config, dirs.clone());
+    options.sandbox_exe = std::env::current_exe().ok();
+    let agent = Agent::new(options).context("could not start the agent")?;
     let _watcher = start_watcher(&agent, &config_path, &dirs);
 
     let socket = registry.socket_path(&instance);

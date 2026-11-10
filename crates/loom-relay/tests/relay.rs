@@ -179,6 +179,13 @@ async fn pairs_and_relays_encrypted_frames() {
     let echoed = stream.recv().await.unwrap().unwrap();
     assert_eq!(echoed.len(), big.len() + 7);
     assert_eq!(relay.relay.open_channels(), 1);
+    let metrics = relay.relay.metrics_text();
+    assert!(metrics.contains("loom_relay_agents_online 1"), "{metrics}");
+    assert!(metrics.contains("loom_relay_channels_open 1"), "{metrics}");
+    assert!(
+        !metrics.contains("loom_relay_frames_forwarded_total 0"),
+        "{metrics}"
+    );
 
     let wrong = connect_relay(&endpoint, agent_id.clone(), &identity, &[3; 32]).await;
     assert!(wrong.is_err());

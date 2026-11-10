@@ -187,6 +187,23 @@ async fn prompt_turn_streams_events_to_subscribers() {
     other.subscribe(&session.id, Some(1)).await.unwrap();
     let (_, seq, _) = next_event(&mut other_notes).await;
     assert_eq!(seq, 2);
+
+    let metrics = client.metrics().await.unwrap();
+    assert_eq!(metrics.sessions, 1);
+    assert_eq!(metrics.busy_sessions, 0);
+    assert_eq!(metrics.turns_completed, 1);
+    assert_eq!(metrics.connections, 2);
+    drop(other);
+    drop(other_notes);
+    for _ in 0..100 {
+        if client.metrics().await.unwrap().connections == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let metrics = client.metrics().await.unwrap();
+    assert_eq!(metrics.connections, 1);
+    assert_eq!(metrics.connections_total, 2);
 }
 
 #[tokio::test]
