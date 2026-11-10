@@ -137,6 +137,166 @@ pub fn cap_chars(text: &str, max_chars: usize) -> String {
     format!("{kept}\n\n[output truncated to {max_chars} characters]")
 }
 
+pub fn reasoning_to_proto(effort: loom_llm::ReasoningEffort) -> loom_proto::ReasoningEffort {
+    use loom_llm::ReasoningEffort as L;
+    use loom_proto::ReasoningEffort as P;
+    match effort {
+        L::None => P::None,
+        L::Minimal => P::Minimal,
+        L::Low => P::Low,
+        L::Medium => P::Medium,
+        L::High => P::High,
+        L::Xhigh => P::Xhigh,
+    }
+}
+
+pub fn reasoning_from_proto(effort: loom_proto::ReasoningEffort) -> loom_llm::ReasoningEffort {
+    use loom_llm::ReasoningEffort as L;
+    use loom_proto::ReasoningEffort as P;
+    match effort {
+        P::None => L::None,
+        P::Minimal => L::Minimal,
+        P::Low => L::Low,
+        P::Medium => L::Medium,
+        P::High => L::High,
+        P::Xhigh => L::Xhigh,
+    }
+}
+
+pub fn policy_to_proto(action: loom_config::PolicyAction) -> loom_proto::PolicyAction {
+    match action {
+        loom_config::PolicyAction::Allow => loom_proto::PolicyAction::Allow,
+        loom_config::PolicyAction::Ask => loom_proto::PolicyAction::Ask,
+        loom_config::PolicyAction::Deny => loom_proto::PolicyAction::Deny,
+    }
+}
+
+pub fn policy_from_proto(action: loom_proto::PolicyAction) -> loom_config::PolicyAction {
+    match action {
+        loom_proto::PolicyAction::Allow => loom_config::PolicyAction::Allow,
+        loom_proto::PolicyAction::Ask => loom_config::PolicyAction::Ask,
+        loom_proto::PolicyAction::Deny => loom_config::PolicyAction::Deny,
+    }
+}
+
+pub fn api_error(err: &crate::CoreError) -> loom_proto::ApiError {
+    use crate::CoreError;
+    use loom_proto::ErrorCode;
+    let code = match err {
+        CoreError::Busy => ErrorCode::Busy,
+        CoreError::NoModel | CoreError::EmptyPrompt => ErrorCode::BadRequest,
+        CoreError::UnknownSession(_) | CoreError::UnknownApproval(_) => ErrorCode::NotFound,
+        CoreError::Llm(err) => return llm_error(err),
+        CoreError::Tool(_) => ErrorCode::Internal,
+    };
+    loom_proto::ApiError::new(code, err.to_string())
+}
+
+pub fn llm_error(err: &loom_llm::LlmError) -> loom_proto::ApiError {
+    use loom_llm::LlmError;
+    use loom_proto::ErrorCode;
+    let code = match err {
+        LlmError::UnknownProvider(_) | LlmError::InvalidModel(_) => ErrorCode::BadRequest,
+        LlmError::Config { .. } => ErrorCode::Config,
+        LlmError::Unsupported(_) => ErrorCode::Unsupported,
+        LlmError::NotAuthenticated { .. } | LlmError::Login(_) => ErrorCode::NotAuthenticated,
+        LlmError::Cancelled => ErrorCode::Cancelled,
+        LlmError::Http(_)
+        | LlmError::Api { .. }
+        | LlmError::Stream { .. }
+        | LlmError::Protocol { .. } => ErrorCode::Provider,
+        LlmError::Store { .. } | LlmError::Io { .. } => ErrorCode::Internal,
+    };
+    loom_proto::ApiError::new(code, err.to_string())
+}
+
+pub fn login_method(method: loom_proto::LoginMethod) -> loom_llm::LoginMethod {
+    match method {
+        loom_proto::LoginMethod::Browser {
+            redirect_uri,
+            account,
+        } => loom_llm::LoginMethod::Browser {
+            redirect_uri,
+            account,
+        },
+        loom_proto::LoginMethod::DeviceCode => loom_llm::LoginMethod::DeviceCode,
+    }
+}
+
+pub fn login_input(input: loom_proto::LoginInput) -> loom_llm::LoginInput {
+    match input {
+        loom_proto::LoginInput::Redirect { url } => loom_llm::LoginInput::Redirect { url },
+        loom_proto::LoginInput::Code { code } => loom_llm::LoginInput::Code { code },
+    }
+}
+
+pub fn login_started(started: loom_llm::LoginStarted) -> loom_proto::LoginStarted {
+    loom_proto::LoginStarted {
+        login_id: started.login_id,
+        prompt: match started.prompt {
+            loom_llm::LoginPrompt::OpenUrl { url, redirect_uri } => {
+                loom_proto::LoginPrompt::OpenUrl { url, redirect_uri }
+            }
+            loom_llm::LoginPrompt::DeviceCode {
+                user_code,
+                verification_uri,
+                expires_in_secs,
+            } => loom_proto::LoginPrompt::DeviceCode {
+                user_code,
+                verification_uri,
+                expires_in_secs,
+            },
+        },
+    }
+}
+
+pub fn account_info(info: loom_llm::AccountInfo) -> loom_proto::AccountInfo {
+    loom_proto::AccountInfo {
+        provider: info.provider.to_string(),
+        account_id: info.account_id,
+        label: info.label,
+    }
+}
+
+pub fn provider_status(
+    status: loom_llm::ProviderStatus,
+    enabled: bool,
+) -> loom_proto::ProviderStatus {
+    loom_proto::ProviderStatus {
+        provider: status.provider.to_string(),
+        display_name: status.display_name,
+        enabled,
+        login_methods: status
+            .login_methods
+            .into_iter()
+            .map(|m| match m {
+                loom_llm::LoginMethodInfo::Browser { redirect } => {
+                    loom_proto::LoginMethodInfo::Browser {
+                        redirect: loom_proto::RedirectSpec {
+                            host: redirect.host,
+                            port: redirect.port,
+                            path: redirect.path,
+                        },
+                    }
+                }
+                loom_llm::LoginMethodInfo::DeviceCode => loom_proto::LoginMethodInfo::DeviceCode,
+                loom_llm::LoginMethodInfo::ApiKey => loom_proto::LoginMethodInfo::ApiKey,
+            })
+            .collect(),
+        api_key_set: status.api_key_set,
+        accounts: status
+            .accounts
+            .into_iter()
+            .map(|a| loom_proto::AccountStatus {
+                id: a.id,
+                label: a.label,
+                active: a.active,
+                signed_in: a.signed_in,
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

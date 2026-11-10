@@ -1,4 +1,5 @@
 mod agent;
+pub mod connection;
 pub mod convert;
 mod error;
 pub mod events;
@@ -9,6 +10,7 @@ mod session;
 pub mod watcher;
 
 pub use agent::{Agent, AgentNotice, AgentOptions, data_dir};
+pub use connection::{Connection, Flow};
 pub use error::{CoreError, Result};
 pub use events::{EventHub, Subscription};
 pub use policy::SessionPolicy;

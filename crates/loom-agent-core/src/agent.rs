@@ -17,6 +17,7 @@ use crate::session::{Session, SessionParams};
 pub enum AgentNotice {
     ConfigReloaded { restart_required: Vec<String> },
     ConfigRejected { message: String },
+    ShuttingDown,
 }
 
 pub struct AgentOptions {
@@ -181,6 +182,7 @@ impl Agent {
     }
 
     pub async fn shutdown(&self) {
+        self.notify(AgentNotice::ShuttingDown);
         let sessions = self.sessions();
         for session in &sessions {
             session.interrupt();

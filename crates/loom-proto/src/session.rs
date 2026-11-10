@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::{PolicyAction, ReasoningEffort};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
@@ -199,6 +201,8 @@ pub struct SequencedEvent {
 pub struct SessionInfo {
     pub id: SessionId,
     pub model: Option<String>,
+    pub reasoning: Option<ReasoningEffort>,
+    pub policy_default: Option<PolicyAction>,
     pub state: SessionState,
     pub last_seq: u64,
 }

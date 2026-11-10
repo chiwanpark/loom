@@ -123,10 +123,19 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        let model = self.core.lock().model.as_ref().map(|m| m.to_string());
+        let (model, reasoning, policy_default) = {
+            let state = self.core.lock();
+            (
+                state.model.as_ref().map(|m| m.to_string()),
+                state.reasoning,
+                state.policy.default,
+            )
+        };
         SessionInfo {
             id: self.core.id.clone(),
             model,
+            reasoning: reasoning.map(convert::reasoning_to_proto),
+            policy_default: policy_default.map(convert::policy_to_proto),
             state: self.core.hub.state(),
             last_seq: self.core.hub.last_seq(),
         }
