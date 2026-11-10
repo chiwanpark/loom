@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -14,6 +15,7 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::error::{Result, ToolError};
 use crate::pty::{PtyExit, PtyProcess, PtySpawn};
+use crate::sandbox::SandboxLauncher;
 use crate::tool::{
     OutputChunk, OutputStream, Risk, Tool, ToolContext, ToolDetails, ToolOutput, ToolSpec,
     lenient_opt_u64, parse_args,
@@ -34,6 +36,8 @@ pub struct ShellConfig {
     pub spill_dir: PathBuf,
     pub limits: Limits,
     pub pty: bool,
+    pub sandbox: Option<SandboxLauncher>,
+    pub max_saved_output: Option<u64>,
 }
 
 impl Default for ShellConfig {
@@ -46,6 +50,8 @@ impl Default for ShellConfig {
                 PathBuf::from("/bin/sh")
             },
             default_timeout: None,
+            sandbox: None,
+            max_saved_output: None,
             spill_dir: std::env::temp_dir(),
             limits: Limits::default(),
             pty: false,
@@ -61,6 +67,22 @@ pub struct ShellTool {
 impl ShellTool {
     pub fn new(config: ShellConfig) -> Self {
         Self { config }
+    }
+
+    fn argv(&self, root: &Path, command: &str) -> (PathBuf, Vec<OsString>) {
+        let shell_argv: Vec<OsString> = vec![
+            self.config.shell.clone().into_os_string(),
+            "-c".into(),
+            command.into(),
+        ];
+        match &self.config.sandbox {
+            Some(launcher) => {
+                let mut launcher = launcher.clone();
+                launcher.policy.writable.insert(0, root.to_path_buf());
+                launcher.argv(&shell_argv)
+            }
+            None => (self.config.shell.clone(), shell_argv[1..].to_vec()),
+        }
     }
 }
 
@@ -132,9 +154,9 @@ impl Tool for ShellTool {
         if self.config.pty {
             return self.call_pty(ctx, &args.command, timeout, started).await;
         }
-        let mut child = Command::new(&self.config.shell)
-            .arg("-c")
-            .arg(&args.command)
+        let (program, argv) = self.argv(ctx.workspace.root(), &args.command);
+        let mut child = Command::new(&program)
+            .args(&argv)
             .current_dir(ctx.workspace.root())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -142,9 +164,7 @@ impl Tool for ShellTool {
             .process_group(0)
             .kill_on_drop(true)
             .spawn()
-            .map_err(|err| {
-                ToolError::io(format!("cannot start {}", self.config.shell.display()), err)
-            })?;
+            .map_err(|err| ToolError::io(format!("cannot start {}", program.display()), err))?;
         let mut group = ProcessGroup::new(child.id());
         let mut stdout = child.stdout.take();
         let mut stderr = child.stderr.take();
@@ -213,9 +233,13 @@ impl ShellTool {
         timeout: Option<Duration>,
         started: Instant,
     ) -> Result<ToolOutput> {
+        let (program, argv) = self.argv(ctx.workspace.root(), command);
         let (process, mut output) = PtyProcess::spawn(PtySpawn {
-            program: self.config.shell.clone(),
-            args: vec!["-c".into(), command.to_owned()],
+            program,
+            args: argv
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
             cwd: ctx.workspace.root().to_path_buf(),
             env: vec![("TERM".into(), "xterm-256color".into())],
             cols: PTY_COLS,
@@ -412,6 +436,8 @@ struct Collected {
 struct OutputCollector {
     limits: Limits,
     spill_dir: PathBuf,
+    max_saved: Option<u64>,
+    saved: u64,
     head: Vec<u8>,
     tail: Vec<u8>,
     tail_trimmed: bool,
@@ -426,6 +452,8 @@ impl OutputCollector {
         Self {
             limits: config.limits,
             spill_dir: config.spill_dir.clone(),
+            max_saved: config.max_saved_output,
+            saved: 0,
             head: Vec::new(),
             tail: Vec::new(),
             tail_trimmed: false,
@@ -471,9 +499,16 @@ impl OutputCollector {
             self.tail = std::mem::take(&mut self.head);
         }
         if let Some((file, _)) = &mut self.spill {
-            file.write_all(data)
-                .await
-                .map_err(|err| ToolError::io("cannot save command output", err))?;
+            let room = self
+                .max_saved
+                .map_or(data.len() as u64, |max| max.saturating_sub(self.saved));
+            let take = (data.len() as u64).min(room) as usize;
+            if take > 0 {
+                file.write_all(&data[..take])
+                    .await
+                    .map_err(|err| ToolError::io("cannot save command output", err))?;
+                self.saved += take as u64;
+            }
         }
         self.tail.extend_from_slice(data);
         let keep = self.limits.max_bytes;
@@ -494,6 +529,7 @@ impl OutputCollector {
             .keep()
             .map_err(|err| ToolError::io("cannot save command output", err.error))?;
         let mut file = tokio::fs::File::from_std(file);
+        self.saved = self.head.len() as u64;
         file.write_all(&self.head)
             .await
             .map_err(|err| ToolError::io("cannot save command output", err))?;

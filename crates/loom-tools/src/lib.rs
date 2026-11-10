@@ -4,6 +4,7 @@ mod fsutil;
 pub mod pty;
 mod read;
 mod registry;
+pub mod sandbox;
 mod shell;
 mod tool;
 mod truncate;
