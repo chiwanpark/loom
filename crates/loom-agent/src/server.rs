@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use loom_agent_core::{Agent, Connection, Flow, HostKeys, Supervisor};
-use loom_proto::{AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode};
+use loom_proto::{
+    AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode,
+    undecodable_request_id,
+};
 use loom_transport::{FrameStream, UnixFrameListener};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -68,6 +71,12 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
         let message: ClientMessage = match decode(&frame) {
             Ok(message) => message,
             Err(err) => {
+                if let Some(id) = undecodable_request_id(&frame)
+                    && connection.unsupported_request(id).await
+                {
+                    tracing::debug!(error = %err, "unsupported request");
+                    continue;
+                }
                 connection
                     .reject(ApiError::new(ErrorCode::Protocol, err.to_string()))
                     .await;

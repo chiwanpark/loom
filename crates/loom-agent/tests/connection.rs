@@ -509,3 +509,74 @@ async fn workspace_changes_come_from_git() {
     let err = client.file_diff("/etc/passwd", None).await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
 }
+
+#[tokio::test]
+async fn unknown_requests_get_an_error_and_keep_the_connection() {
+    let setup = setup(vec![]);
+    let (mut client_side, server_side) = memory_pair();
+    let server = tokio::spawn(serve_stream(
+        ServerContext::new(setup.agent.clone(), setup.info.clone()),
+        server_side,
+    ));
+    let hello = ClientMessage::Hello(ClientHello {
+        version: PROTOCOL_VERSION,
+        client: "raw".into(),
+    });
+    client_side.send(frame(&hello)).await.unwrap();
+    let unknown = encode(&(1u32, 7u64, 9999u32)).unwrap();
+    client_side.send(Bytes::from(unknown)).await.unwrap();
+    let known = ClientMessage::Request {
+        id: 8,
+        command: Command::ListSessions,
+    };
+    client_side.send(frame(&known)).await.unwrap();
+    let mut replies = Vec::new();
+    for _ in 0..3 {
+        let frame = tokio::time::timeout(Duration::from_secs(5), client_side.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        replies.push(decode::<ServerMessage>(&frame).unwrap());
+    }
+    assert!(matches!(replies[0], ServerMessage::Hello(_)));
+    assert!(matches!(
+        &replies[1],
+        ServerMessage::Response { id: 7, result: Err(err) } if err.code == ErrorCode::Unsupported
+    ));
+    assert!(matches!(
+        &replies[2],
+        ServerMessage::Response {
+            id: 8,
+            result: Ok(loom_proto::Payload::Sessions(_))
+        }
+    ));
+    server.abort();
+}
+
+#[tokio::test]
+async fn sessions_can_be_renamed_and_files_browsed() {
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap();
+    let renamed = client
+        .rename_session(&session.id, Some("My session".into()))
+        .await
+        .unwrap();
+    assert_eq!(renamed.title.as_deref(), Some("My session"));
+    let listed = client.list_sessions().await.unwrap();
+    assert_eq!(listed[0].title.as_deref(), Some("My session"));
+
+    let workspace = &setup.info.workspace;
+    std::fs::create_dir_all(workspace.join("src")).unwrap();
+    std::fs::write(workspace.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    let top = client.list_directory("").await.unwrap();
+    assert_eq!(top.entries.len(), 1);
+    assert_eq!(top.entries[0].name, "src");
+    let src = client.list_directory("src").await.unwrap();
+    assert_eq!(src.entries[0].name, "lib.rs");
+    let file = client.read_file("src/lib.rs").await.unwrap();
+    assert_eq!(file.text, "pub fn f() {}\n");
+    let err = client.read_file("../outside").await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+}
