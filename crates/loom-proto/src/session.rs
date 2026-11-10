@@ -211,4 +211,5 @@ pub struct SessionInfo {
     pub last_seq: u64,
     pub created_at: u64,
     pub title: Option<String>,
+    pub archived: bool,
 }

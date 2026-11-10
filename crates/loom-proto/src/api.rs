@@ -166,6 +166,10 @@ pub enum Command {
     },
     GetHostKey,
     GetMetrics,
+    ArchiveSession {
+        session: SessionId,
+        archived: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +265,7 @@ pub enum Notice {
     ConfigReloaded { restart_required: Vec<String> },
     ConfigRejected { message: String },
     ShuttingDown,
+    SessionUpdated(SessionInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
