@@ -11,7 +11,7 @@ use loom_llm::{
     ToolDefinition, collect,
 };
 use serde_json::{Value, json};
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{body_partial_json, header, method, path, query_param_contains};
 use wiremock::{Mock, Request, ResponseTemplate};
 
 fn fast_retry() -> RetryPolicy {
@@ -301,4 +301,44 @@ async fn codex_sends_account_headers() {
     let body: Value = requests[0].body_json().unwrap();
     assert!(body.get("max_output_tokens").is_none());
     assert_eq!(body["tools"][0]["name"], "read");
+}
+
+#[tokio::test]
+async fn codex_lists_models_from_the_backend() {
+    let h = harness().await;
+    let token = codex_access_token("acct-9");
+    h.set_section(
+        CODEX,
+        json!({
+            "account_id": "acct-9",
+            "access_token": token,
+            "refresh_token": "r",
+            "expires_at": now() + 3600,
+            "saved_at": now(),
+        }),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/backend-api/codex/models"))
+        .and(query_param_contains("client_version", "."))
+        .and(header("chatgpt-account-id", "acct-9"))
+        .and(header("originator", "loom"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "models": [
+                {"slug": "codex-second", "display_name": "Second", "visibility": "list", "priority": 2},
+                {"slug": "codex-review", "display_name": "Review", "visibility": "hide", "priority": 0},
+                {"slug": "codex-first", "display_name": "First", "visibility": "list", "priority": 1},
+            ]
+        })))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(
+        CODEX,
+        json!({"base_url": format!("{}/backend-api", h.server.uri())}),
+    );
+    let models = provider.list_models().await.unwrap();
+    let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["codex-first", "codex-second"]);
+    assert_eq!(models[0].display_name, "First");
 }

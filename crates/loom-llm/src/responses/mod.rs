@@ -1,4 +1,5 @@
 pub(crate) mod http;
+pub(crate) mod models;
 pub(crate) mod request;
 pub(crate) mod stream;
 

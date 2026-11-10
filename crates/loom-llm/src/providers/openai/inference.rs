@@ -6,6 +6,7 @@ use crate::error::{LlmError, Result};
 use crate::kind::Shared;
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{api_error, chunk_stream, send_with_retry};
+use crate::responses::models::listed_models;
 use crate::responses::{Flavor, build_body};
 use crate::types::{CompletionRequest, ModelInfo};
 
@@ -96,21 +97,7 @@ impl LlmProvider for OpenAiProvider {
         }
         let body: Value = response.json().await?;
         if let Some(models) = body.get("models").and_then(Value::as_array) {
-            return Ok(models
-                .iter()
-                .filter(|m| m.get("visibility").and_then(Value::as_str) == Some("list"))
-                .filter_map(|m| {
-                    let slug = m.get("slug").and_then(Value::as_str)?;
-                    let name = m
-                        .get("display_name")
-                        .and_then(Value::as_str)
-                        .unwrap_or(slug);
-                    Some(ModelInfo {
-                        id: slug.to_owned(),
-                        display_name: name.to_owned(),
-                    })
-                })
-                .collect());
+            return Ok(listed_models(models));
         }
         let data = body
             .get("data")
