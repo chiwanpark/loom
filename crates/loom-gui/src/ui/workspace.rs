@@ -4,16 +4,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext, AsyncWindowContext, Context, Entity, FocusHandle, Focusable,
-    FontWeight, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::FluentBuilder,
-    px,
+    AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, Entity, FocusHandle,
+    Focusable, FontWeight, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, TitleBar, h_flex, h_resizable, resizable_panel, v_flex,
-    v_resizable,
 };
 use loom_client::proto::{SessionId, SessionInfo, SessionState};
 use loom_config::{ClientConfig, HostEntry};
@@ -26,12 +24,13 @@ use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::notify;
 use crate::ui::session::SessionView;
+use crate::ui::tab::Tab;
+use crate::ui::tabs::{PanelId, TabList};
 
 actions!(
     loom,
     [
         ToggleLeftDock,
-        ToggleBottomDock,
         NewSession,
         NewTerminal,
         CloseTab,
@@ -55,7 +54,6 @@ const OUTSIDE_TERMINAL: &str = "Workspace && !Terminal";
 pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-b", ToggleLeftDock, Some(OUTSIDE_TERMINAL)),
-        KeyBinding::new("ctrl-j", ToggleBottomDock, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-n", NewSession, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-w", CloseTab, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-`", NewTerminal, Some(CONTEXT)),
@@ -85,9 +83,102 @@ struct HostNode {
     expanded: bool,
 }
 
-struct TerminalTab {
-    view: Entity<TerminalView>,
+#[derive(Clone)]
+enum Panel {
+    Chat(Entity<SessionView>),
+    Terminal(Entity<TerminalView>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelKind {
+    Chat,
+    Terminal,
+}
+
+impl Panel {
+    fn kind(&self) -> PanelKind {
+        match self {
+            Panel::Chat(_) => PanelKind::Chat,
+            Panel::Terminal(_) => PanelKind::Terminal,
+        }
+    }
+
+    fn view(&self) -> AnyView {
+        match self {
+            Panel::Chat(view) => view.clone().into(),
+            Panel::Terminal(view) => view.clone().into(),
+        }
+    }
+
+    fn title(&self, cx: &App) -> String {
+        match self {
+            Panel::Chat(view) => view.read(cx).title(cx),
+            Panel::Terminal(view) => {
+                let view = view.read(cx);
+                let base = view.title().unwrap_or_else(|| "Terminal".into());
+                if view.exited().is_some() {
+                    format!("{base} (exited)")
+                } else {
+                    base
+                }
+            }
+        }
+    }
+
+    fn focus(&self, window: &mut Window, cx: &mut App) {
+        match self {
+            Panel::Chat(view) => {
+                let prompt = view.read(cx).prompt();
+                prompt.update(cx, |input, cx| input.focus(window, cx));
+            }
+            Panel::Terminal(view) => view.read(cx).focus_handle(cx).focus(window, cx),
+        }
+    }
+}
+
+fn panel_icon(kind: PanelKind) -> Icon {
+    match kind {
+        PanelKind::Chat => Icon::new(IconName::Bot).xsmall(),
+        PanelKind::Terminal => Icon::new(IconName::SquareTerminal).xsmall(),
+    }
+}
+
+struct SessionGroup {
     connection: Entity<AgentConnection>,
+    session: SessionId,
+    tabs: TabList<Panel>,
+}
+
+impl SessionGroup {
+    fn chat(&self) -> Option<Entity<SessionView>> {
+        self.tabs.iter().find_map(|(_, panel)| match panel {
+            Panel::Chat(view) => Some(view.clone()),
+            Panel::Terminal(_) => None,
+        })
+    }
+
+    fn is(&self, conn: &Entity<AgentConnection>, session: &SessionId) -> bool {
+        &self.connection == conn && &self.session == session
+    }
+}
+
+#[derive(Clone)]
+struct DraggedTab {
+    panel: PanelId,
+    ix: usize,
+    kind: PanelKind,
+    title: SharedString,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().font_family(cx.theme().font_family.clone()).child(
+            Tab::new("dragged-tab")
+                .selected(true)
+                .start_slot(panel_icon(self.kind))
+                .child(self.title.clone()),
+        )
+    }
 }
 
 pub struct Workspace {
@@ -99,12 +190,10 @@ pub struct Workspace {
     connections: Vec<Entity<AgentConnection>>,
     connecting: HashSet<(String, String)>,
     active_connection: Option<Entity<AgentConnection>>,
-    tabs: Vec<Entity<SessionView>>,
-    active_tab: usize,
-    terminals: Vec<TerminalTab>,
-    active_terminal: usize,
+    groups: Vec<SessionGroup>,
+    active_group: Option<usize>,
+    next_panel: PanelId,
     show_left: bool,
-    show_bottom: bool,
     focus: FocusHandle,
     subscriptions: Vec<Subscription>,
 }
@@ -138,12 +227,10 @@ impl Workspace {
             connections: Vec::new(),
             connecting: HashSet::new(),
             active_connection: None,
-            tabs: Vec::new(),
-            active_tab: 0,
-            terminals: Vec::new(),
-            active_terminal: 0,
+            groups: Vec::new(),
+            active_group: None,
+            next_panel: 0,
             show_left: true,
-            show_bottom: false,
             focus: cx.focus_handle(),
             subscriptions: Vec::new(),
         };
@@ -369,6 +456,11 @@ impl Workspace {
                     }
                 }
                 ConnectionEvent::Failed(message) => notify::error(window, cx, message.clone()),
+                ConnectionEvent::SessionRemoved(id) => {
+                    let conn = conn.clone();
+                    let id = id.clone();
+                    this.remove_groups(window, cx, |g| g.is(&conn, &id));
+                }
                 ConnectionEvent::LoginFinished(_) => {}
             },
         ));
@@ -387,6 +479,25 @@ impl Workspace {
         }
     }
 
+    fn alloc_panel(&mut self) -> PanelId {
+        self.next_panel += 1;
+        self.next_panel
+    }
+
+    fn chat_panel(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        info: &SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Panel {
+        let conversation = conn.update(cx, |conn, cx| conn.conversation(info, cx));
+        let view = cx.new(|cx| SessionView::new(conn.clone(), conversation, window, cx));
+        self.subscriptions
+            .push(cx.observe(&view, |_, _, cx| cx.notify()));
+        Panel::Chat(view)
+    }
+
     fn open_session(
         &mut self,
         conn: Entity<AgentConnection>,
@@ -394,57 +505,157 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_connection = Some(conn.clone());
-        if let Some(ix) = self.tabs.iter().position(|tab| {
-            let tab = tab.read(cx);
-            tab.connection == conn && tab.session_id(cx) == info.id
-        }) {
-            self.activate_tab(ix, window, cx);
-            return;
+        let ix = match self.groups.iter().position(|g| g.is(&conn, &info.id)) {
+            Some(ix) => ix,
+            None => {
+                self.groups.push(SessionGroup {
+                    connection: conn.clone(),
+                    session: info.id.clone(),
+                    tabs: TabList::default(),
+                });
+                self.groups.len() - 1
+            }
+        };
+        if self.groups[ix].chat().is_none() {
+            let panel = self.chat_panel(&conn, &info, window, cx);
+            let id = self.alloc_panel();
+            self.groups[ix].tabs.add(id, panel, Some(0));
         }
-        let conversation = conn.update(cx, |conn, cx| conn.conversation(&info, cx));
-        let view = cx.new(|cx| SessionView::new(conn.clone(), conversation, window, cx));
-        self.subscriptions
-            .push(cx.observe(&view, |_, _, cx| cx.notify()));
-        self.tabs.push(view);
-        self.activate_tab(self.tabs.len() - 1, window, cx);
+        self.activate_group(ix, window, cx);
+    }
+
+    fn active_group(&self) -> Option<&SessionGroup> {
+        self.active_group.and_then(|ix| self.groups.get(ix))
+    }
+
+    fn activate_group(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.groups.get(ix) else {
+            return;
+        };
+        self.active_group = Some(ix);
+        self.active_connection = Some(group.connection.clone());
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    fn focus_active_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_group().and_then(|g| g.tabs.active()).cloned() {
+            panel.focus(window, cx);
+        }
     }
 
     fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
-            return;
+        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g))
+            && group.tabs.activate(ix)
+        {
+            self.focus_active_panel(window, cx);
+            cx.notify();
         }
-        self.active_tab = ix;
-        let tab = self.tabs[ix].clone();
-        self.active_connection = Some(tab.read(cx).connection.clone());
-        let prompt = tab.read(cx).prompt();
-        prompt.update(cx, |input, cx| input.focus(window, cx));
-        cx.notify();
+    }
+
+    fn release_panel(group: &SessionGroup, panel: &Panel, cx: &mut Context<Self>) {
+        if let Panel::Chat(_) = panel {
+            let id = group.session.clone();
+            group
+                .connection
+                .update(cx, |conn, _| conn.release_conversation(&id));
+        }
     }
 
     fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
+        let Some(gix) = self.active_group else {
             return;
-        }
-        let tab = self.tabs.remove(ix);
-        let (conn, id) = {
-            let view = tab.read(cx);
-            (view.connection.clone(), view.session_id(cx))
         };
-        let still_open = self.tabs.iter().any(|t| {
-            let t = t.read(cx);
-            t.connection == conn && t.session_id(cx) == id
-        });
-        if !still_open {
-            conn.update(cx, |conn, _| conn.release_conversation(&id));
-        }
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len().saturating_sub(1);
-        }
-        if !self.tabs.is_empty() {
-            self.activate_tab(self.active_tab, window, cx);
+        let Some(group) = self.groups.get_mut(gix) else {
+            return;
+        };
+        let Some(panel) = group.tabs.remove(ix) else {
+            return;
+        };
+        let empty = group.tabs.is_empty();
+        let group = &self.groups[gix];
+        Self::release_panel(group, &panel, cx);
+        if empty {
+            self.remove_group(gix, window, cx);
+        } else {
+            self.focus_active_panel(window, cx);
         }
         cx.notify();
+    }
+
+    fn remove_group(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.groups.len() {
+            return;
+        }
+        let mut group = self.groups.remove(ix);
+        for panel in group.tabs.drain() {
+            Self::release_panel(&group, &panel, cx);
+        }
+        self.active_group = match self.active_group {
+            Some(active) if active == ix => None,
+            Some(active) if active > ix => Some(active - 1),
+            other => other,
+        };
+        if self.active_group.is_none() {
+            self.focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn remove_groups(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        pred: impl Fn(&SessionGroup) -> bool,
+    ) {
+        while let Some(ix) = self.groups.iter().position(&pred) {
+            self.remove_group(ix, window, cx);
+        }
+    }
+
+    fn handle_tab_drop(
+        &mut self,
+        dragged: &DraggedTab,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g)) {
+            group.tabs.move_item(dragged.panel, ix);
+            self.focus_active_panel(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn delete_session(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        info: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity();
+        let title = info
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
+        dialogs::confirm(
+            "Delete this session?",
+            format!(
+                "\"{title}\" and its whole history will be removed from the agent. This cannot be undone."
+            ),
+            "Delete",
+            move |window, cx| {
+                let conn = conn.clone();
+                let id = info.id.clone();
+                this.update(cx, |ws, cx| {
+                    ws.remove_groups(window, cx, |g| g.is(&conn, &id));
+                    conn.update(cx, |conn, cx| conn.delete_session(id.clone(), cx));
+                });
+            },
+            window,
+            cx,
+        );
     }
 
     fn archive_session(
@@ -456,12 +667,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if archived {
-            while let Some(ix) = self.tabs.iter().position(|tab| {
-                let tab = tab.read(cx);
-                tab.connection == conn && tab.session_id(cx) == id
-            }) {
-                self.close_tab(ix, window, cx);
-            }
+            self.remove_groups(window, cx, |g| g.is(&conn, &id));
         }
         conn.update(cx, |conn, cx| conn.set_archived(id, archived, cx));
     }
@@ -491,12 +697,17 @@ impl Workspace {
         .detach();
     }
 
-    fn new_terminal(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.active_group() else {
+            notify::info(
+                window,
+                cx,
+                "Open a session first; terminals belong to a session.",
+            );
+            return;
+        };
+        let conn = group.connection.clone();
+        let session = group.session.clone();
         let read = conn.read(cx);
         let client = read.client.clone();
         let backend = read.backend.clone();
@@ -516,30 +727,20 @@ impl Workspace {
                     conn.update(cx, |conn, _| conn.register_terminal(id, &view));
                     this.subscriptions
                         .push(cx.observe(&view, |_, _, cx| cx.notify()));
-                    this.terminals.push(TerminalTab {
-                        view: view.clone(),
-                        connection: conn.clone(),
-                    });
-                    this.active_terminal = this.terminals.len() - 1;
-                    this.show_bottom = true;
-                    view.read(cx).focus_handle(cx).focus(window, cx);
-                    cx.notify();
+                    let panel_id = this.alloc_panel();
+                    let Some(gix) = this.groups.iter().position(|g| g.is(&conn, &session)) else {
+                        return;
+                    };
+                    this.groups[gix]
+                        .tabs
+                        .add(panel_id, Panel::Terminal(view), None);
+                    this.activate_group(gix, window, cx);
                 }
                 Some(Err(err)) => notify::error(window, cx, err.to_string()),
                 None => {}
             });
         })
         .detach();
-    }
-
-    fn close_terminal(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix < self.terminals.len() {
-            self.terminals.remove(ix);
-            if self.active_terminal >= self.terminals.len() {
-                self.active_terminal = self.terminals.len().saturating_sub(1);
-            }
-            cx.notify();
-        }
     }
 
     fn stop_agent(
@@ -555,14 +756,11 @@ impl Workspace {
         let task = read
             .backend
             .run(async move { client.stop_agent(&instance).await });
-        self.tabs.retain(|t| t.read(cx).connection != conn);
-        self.terminals.retain(|t| t.connection != conn);
+        self.remove_groups(window, cx, |g| g.connection == conn);
         self.connections.retain(|c| c != &conn);
         if self.active_connection.as_ref() == Some(&conn) {
             self.active_connection = self.connections.first().cloned();
         }
-        self.active_tab = 0;
-        self.active_terminal = 0;
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -704,17 +902,8 @@ impl Workspace {
         }
     }
 
-    fn active_session(&self) -> Option<&Entity<SessionView>> {
-        self.tabs.get(self.active_tab)
-    }
-
     fn on_toggle_left(&mut self, _: &ToggleLeftDock, _: &mut Window, cx: &mut Context<Self>) {
         self.show_left = !self.show_left;
-        cx.notify();
-    }
-
-    fn on_toggle_bottom(&mut self, _: &ToggleBottomDock, _: &mut Window, cx: &mut Context<Self>) {
-        self.show_bottom = !self.show_bottom;
         cx.notify();
     }
 
@@ -726,10 +915,7 @@ impl Workspace {
     }
 
     fn on_new_terminal(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        match self.active_connection.clone() {
-            Some(conn) => self.new_terminal(conn, window, cx),
-            None => notify::info(window, cx, "Connect to an agent first."),
-        }
+        self.new_terminal(window, cx);
     }
 
     fn on_archive_session(
@@ -738,29 +924,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(tab) = self.active_session().cloned() {
-            let (conn, id) = {
-                let tab = tab.read(cx);
-                (tab.connection.clone(), tab.session_id(cx))
-            };
+        if let Some(group) = self.active_group() {
+            let (conn, id) = (group.connection.clone(), group.session.clone());
             self.archive_session(conn, id, true, window, cx);
         }
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_tab(self.active_tab, window, cx);
+        if let Some(ix) = self.active_group().map(|g| g.tabs.active_index()) {
+            self.close_tab(ix, window, cx);
+        }
     }
 
     fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.tabs.is_empty() {
-            self.activate_tab((self.active_tab + 1) % self.tabs.len(), window, cx);
+        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g)) {
+            group.tabs.activate_next();
+            self.focus_active_panel(window, cx);
+            cx.notify();
         }
     }
 
     fn on_previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.tabs.is_empty() {
-            let len = self.tabs.len();
-            self.activate_tab((self.active_tab + len - 1) % len, window, cx);
+        if let Some(group) = self.active_group.and_then(|g| self.groups.get_mut(g)) {
+            group.tabs.activate_previous();
+            self.focus_active_panel(window, cx);
+            cx.notify();
         }
     }
 
@@ -771,11 +959,8 @@ impl Workspace {
     }
 
     fn on_choose_model(&mut self, _: &ChooseModel, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tab) = self.active_session().cloned() {
-            let (conn, id) = {
-                let tab = tab.read(cx);
-                (tab.connection.clone(), tab.session_id(cx))
-            };
+        if let Some(group) = self.active_group() {
+            let (conn, id) = (group.connection.clone(), group.session.clone());
             dialogs::open_model_picker(conn, Some(id), window, cx);
         }
     }
@@ -993,7 +1178,7 @@ impl Workspace {
                     );
                 }
                 if let Some(conn) = conn.clone() {
-                    let (c1, c2, c3, c4) = (conn.clone(), conn.clone(), conn.clone(), conn.clone());
+                    let (c1, c3, c4) = (conn.clone(), conn.clone(), conn.clone());
                     row = row
                         .child(
                             Button::new(SharedString::from(format!("new-session-{hix}-{aix}")))
@@ -1004,17 +1189,6 @@ impl Workspace {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.new_session(c1.clone(), window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("terminal-{hix}-{aix}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::SquareTerminal)
-                                .tooltip("New terminal")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.new_terminal(c2.clone(), window, cx)
                                 })),
                         )
                         .child(
@@ -1079,10 +1253,11 @@ impl Workspace {
                             .unwrap_or_else(|| format!("Session {}", short_id(&session.id.0)));
                         let busy = session.state != SessionState::Idle;
                         let info = session.clone();
-                        let active = self.active_session().is_some_and(|tab| {
-                            let tab = tab.read(cx);
-                            tab.connection == conn && tab.session_id(cx) == session.id
-                        });
+                        let active = self
+                            .active_group()
+                            .is_some_and(|g| g.is(&conn, &session.id));
+                        let delete_conn = conn.clone();
+                        let delete_info = session.clone();
                         list = list.child(
                             h_flex()
                                 .id(SharedString::from(format!("session-{hix}-{aix}-{six}")))
@@ -1136,6 +1311,24 @@ impl Workspace {
                                             archive_conn.clone(),
                                             archive_id.clone(),
                                             !is_archived,
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "delete-{hix}-{aix}-{six}"
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(gpui_kit_assets::IconName::Trash))
+                                    .tooltip("Delete session")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.delete_session(
+                                            delete_conn.clone(),
+                                            delete_info.clone(),
                                             window,
                                             cx,
                                         )
@@ -1208,7 +1401,7 @@ impl Workspace {
 
     fn render_center(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        if self.tabs.is_empty() {
+        let Some(group) = self.active_group() else {
             return v_flex()
                 .size_full()
                 .items_center()
@@ -1217,112 +1410,140 @@ impl Workspace {
                 .text_color(theme.muted_foreground)
                 .child(div().text_xl().child("Loom"))
                 .child("Pick an agent on the left, then open or create a session.")
-                .child(div().text_sm().child(
-                    "ctrl-n new session · ctrl-` new terminal · ctrl-b agents · ctrl-j terminals",
-                ))
+                .child(
+                    div().text_sm().child(
+                        "ctrl-n new session · ctrl-` terminal in the session · ctrl-b agents",
+                    ),
+                )
                 .into_any_element();
-        }
-        let titles: Vec<String> = self.tabs.iter().map(|t| t.read(cx).title(cx)).collect();
-        let active = self.tabs[self.active_tab].clone();
-        v_flex()
-            .size_full()
-            .child(
-                TabBar::new("session-tabs")
-                    .selected_index(self.active_tab)
-                    .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                        this.activate_tab(*ix, window, cx)
+        };
+        let len = group.tabs.len();
+        let active = group.tabs.active_index();
+        let panels: Vec<(PanelId, PanelKind, String)> = group
+            .tabs
+            .iter()
+            .map(|(id, panel)| (id, panel.kind(), panel.title(cx)))
+            .collect();
+        let content = group.tabs.active().cloned();
+        let tabs = panels
+            .into_iter()
+            .enumerate()
+            .map(|(ix, (id, kind, title))| {
+                let dragged = DraggedTab {
+                    panel: id,
+                    ix,
+                    kind,
+                    title: title.clone().into(),
+                };
+                Tab::new(("tab", id as usize))
+                    .position(Tab::position_for(ix, len, active))
+                    .selected(ix == active)
+                    .start_slot(panel_icon(kind))
+                    .child(
+                        div()
+                            .max_w(px(240.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(title),
+                    )
+                    .end_slot(
+                        Button::new(("close-tab", id as usize))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(ix, window, cx)
+                            })),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.activate_tab(ix, window, cx)),
+                    )
+                    .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                    .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
+                        let theme = cx.theme();
+                        let style = style
+                            .bg(theme.drop_target)
+                            .border_color(theme.drag_border)
+                            .border_0();
+                        if ix < dragged.ix {
+                            style.border_l_2()
+                        } else if ix > dragged.ix {
+                            style.border_r_2()
+                        } else {
+                            style
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                        this.handle_tab_drop(dragged, ix, window, cx)
                     }))
-                    .children(titles.into_iter().enumerate().map(|(ix, title)| {
-                        Tab::new().label(title).suffix(
-                            Button::new(("close-tab", ix))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_tab(ix, window, cx)
-                                })),
-                        )
+            });
+        let tab_bar = h_flex()
+            .w_full()
+            .flex_none()
+            .h(Tab::container_height())
+            .bg(theme.tab_bar)
+            .child(
+                h_flex()
+                    .id("tabs-scroll")
+                    .flex_shrink(1.)
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .children(tabs),
+            )
+            .child(
+                div()
+                    .id("tab-bar-drop-target")
+                    .flex_1()
+                    .min_w_6()
+                    .h_full()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child("")
+                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                        this.handle_tab_drop(dragged, len, window, cx)
                     })),
             )
-            .child(div().flex_1().w_full().overflow_hidden().child(active))
-            .into_any_element()
-    }
-
-    fn render_terminals(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let titles: Vec<String> = self
-            .terminals
-            .iter()
-            .enumerate()
-            .map(|(ix, t)| {
-                let view = t.view.read(cx);
-                let base = view
-                    .title()
-                    .unwrap_or_else(|| format!("Terminal {}", ix + 1));
-                if view.exited().is_some() {
-                    format!("{base} (exited)")
-                } else {
-                    base
-                }
-            })
-            .collect();
-        let active = self
-            .terminals
-            .get(self.active_terminal)
-            .map(|t| t.view.clone());
-        v_flex()
-            .size_full()
-            .border_t_1()
-            .border_color(theme.border)
             .child(
-                TabBar::new("terminal-tabs")
-                    .selected_index(self.active_terminal)
-                    .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                        this.active_terminal = *ix;
-                        if let Some(t) = this.terminals.get(*ix) {
-                            t.view.read(cx).focus_handle(cx).focus(window, cx);
-                        }
-                        cx.notify();
-                    }))
-                    .children(titles.into_iter().enumerate().map(|(ix, title)| {
-                        Tab::new().label(title).suffix(
-                            Button::new(("close-terminal", ix))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.close_terminal(ix, cx)
-                                })),
-                        )
-                    }))
-                    .suffix(
+                h_flex()
+                    .h_full()
+                    .px_1()
+                    .border_b_1()
+                    .border_l_1()
+                    .border_color(theme.border)
+                    .child(
                         Button::new("new-terminal")
                             .ghost()
                             .xsmall()
-                            .icon(IconName::Plus)
-                            .tooltip("New terminal (ctrl-`)")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_new_terminal(&NewTerminal, window, cx)
-                            })),
+                            .icon(IconName::SquareTerminal)
+                            .tooltip("New terminal in this session (ctrl-`)")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.new_terminal(window, cx)),
+                            ),
                     ),
-            )
-            .child(match active {
-                Some(view) => div()
-                    .flex_1()
-                    .w_full()
-                    .overflow_hidden()
-                    .p_1()
-                    .child(view)
-                    .into_any_element(),
-                None => div()
-                    .flex_1()
-                    .p_3()
-                    .text_color(theme.muted_foreground)
-                    .child("No terminals. Press ctrl-` to open one on the active agent.")
-                    .into_any_element(),
-            })
+            );
+        let body = match content {
+            Some(Panel::Terminal(view)) => div()
+                .flex_1()
+                .w_full()
+                .overflow_hidden()
+                .p_1()
+                .child(view)
+                .into_any_element(),
+            Some(panel) => div()
+                .flex_1()
+                .w_full()
+                .overflow_hidden()
+                .child(panel.view())
+                .into_any_element(),
+            None => div().flex_1().into_any_element(),
+        };
+        v_flex()
+            .size_full()
+            .child(tab_bar)
+            .child(body)
             .into_any_element()
     }
 
@@ -1353,7 +1574,7 @@ impl Workspace {
                     .child("not connected"),
             );
         }
-        if let Some(tab) = self.active_session() {
+        if let Some(tab) = self.active_group().and_then(SessionGroup::chat) {
             let conv = tab.read(cx).conversation.read(cx);
             if let Some(model) = conv
                 .info
@@ -1422,7 +1643,6 @@ impl Render for Workspace {
         let theme = cx.theme().clone();
         let agents = self.render_agents_panel(cx);
         let center = self.render_center(cx);
-        let terminals = self.render_terminals(cx);
         let status = self.render_status(cx);
         v_flex()
             .id("workspace")
@@ -1432,7 +1652,6 @@ impl Render for Workspace {
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(Self::on_toggle_left))
-            .on_action(cx.listener(Self::on_toggle_bottom))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
@@ -1469,19 +1688,7 @@ impl Render for Workspace {
                                 .visible(self.show_left)
                                 .child(agents),
                         )
-                        .child(
-                            resizable_panel().child(
-                                v_resizable("center")
-                                    .child(resizable_panel().child(center))
-                                    .child(
-                                        resizable_panel()
-                                            .size(px(280.))
-                                            .size_range(px(120.)..px(900.))
-                                            .visible(self.show_bottom)
-                                            .child(terminals),
-                                    ),
-                            ),
-                        ),
+                        .child(resizable_panel().child(center)),
                 ),
             )
             .child(status)

@@ -22,6 +22,7 @@ pub enum ConnectionEvent {
     Notice(Notice),
     LoginFinished(Result<String, ApiError>),
     Failed(String),
+    SessionRemoved(SessionId),
     Closed,
 }
 
@@ -145,6 +146,12 @@ impl AgentConnection {
             Notification::Notice(Notice::SessionUpdated(info)) => {
                 self.update_session_info(info, cx)
             }
+            Notification::Notice(Notice::SessionRemoved(id)) => {
+                self.sessions.retain(|s| s.id != id);
+                self.conversations.remove(&id);
+                cx.emit(ConnectionEvent::SessionRemoved(id));
+                cx.notify();
+            }
             Notification::Notice(notice) => cx.emit(ConnectionEvent::Notice(notice)),
             Notification::TerminalOutput { terminal, data } => {
                 if let Some(view) = self.terminals.get(&terminal).and_then(|v| v.upgrade()) {
@@ -248,6 +255,28 @@ impl AgentConnection {
             None => self.sessions.insert(0, info),
         }
         cx.notify();
+    }
+
+    pub fn delete_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let session = id.clone();
+        let task = self
+            .backend
+            .run(async move { client.delete_session(&session).await });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Some(Ok(())) => {
+                    this.sessions.retain(|s| s.id != id);
+                    this.conversations.remove(&id);
+                    cx.emit(ConnectionEvent::SessionRemoved(id));
+                    cx.notify();
+                }
+                Some(Err(err)) => cx.emit(ConnectionEvent::Failed(err.to_string())),
+                None => {}
+            });
+        })
+        .detach();
     }
 
     pub fn set_archived(&mut self, id: SessionId, archived: bool, cx: &mut Context<Self>) {

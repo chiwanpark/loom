@@ -6,7 +6,7 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, div, prelude::FluentBuilder, px,
 };
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use loom_client::BrowserCallback;
@@ -147,6 +147,32 @@ pub fn open_form(
         dialog.title(title).w(px(520.)).child(view.clone())
     });
     focus_later(first, window, cx);
+}
+
+pub fn confirm(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    ok_text: &'static str,
+    on_ok: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = title.into();
+    let description = description.into();
+    let on_ok = Rc::new(on_ok);
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let on_ok = on_ok.clone();
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .confirm()
+            .ok_text(ok_text)
+            .ok_variant(ButtonVariant::Danger)
+            .on_ok(move |_, window, cx| {
+                on_ok(window, cx);
+                true
+            })
+    });
 }
 
 fn focus_later(input: Option<Entity<InputState>>, window: &mut Window, cx: &mut App) {

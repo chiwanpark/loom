@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString};
 
-gpui_kit_assets::icon_assets!(ExtraIcons, [Archive, ArchiveRestore]);
+gpui_kit_assets::icon_assets!(ExtraIcons, [Archive, ArchiveRestore, Trash]);
 
 pub struct AppAssets;
 
