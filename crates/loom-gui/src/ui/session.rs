@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext, AsyncApp, AsyncWindowContext, ClipboardEntry, Context, Entity,
-    ExternalPaths, FocusHandle, Focusable, FontWeight, Image, InteractiveElement, IntoElement,
-    ObjectFit, ParentElement, PathPromptOptions, Render, ScrollEvent, ScrollHandle, SharedString,
+    ExternalPaths, FocusHandle, Focusable, Image, InteractiveElement, IntoElement, ObjectFit,
+    ParentElement, PathPromptOptions, Render, ScrollEvent, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, StyledImage, Subscription, Window, div, img,
     prelude::FluentBuilder, px,
 };
@@ -13,6 +13,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, Paste, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::text::TextView;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{
     ContentPart, Decision, PolicyAction, ReasoningEffort, Risk, SessionId, SessionState,
@@ -775,68 +776,235 @@ pub fn policy_label(policy: Option<PolicyAction>) -> &'static str {
         .unwrap_or("Default")
 }
 
-impl SessionView {
-    fn reasoning_menu(
-        &self,
-        current: Option<ReasoningEffort>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let view = cx.entity().downgrade();
-        Button::new("reasoning")
-            .ghost()
-            .small()
-            .icon(Icon::new(gpui_kit_assets::IconName::Brain))
-            .label(format!("Effort: {}", reasoning_label(current)))
-            .tooltip("Reasoning effort for this session")
-            .dropdown_menu(move |mut menu, _, _| {
-                for (value, label) in REASONING_CHOICES {
-                    let view = view.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(label)
-                            .checked(value == current)
-                            .on_click(move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    let session = this.session_id(cx);
-                                    this.connection.update(cx, |conn, cx| {
-                                        conn.set_reasoning(session, value, cx)
-                                    });
-                                });
-                            }),
-                    );
-                }
-                menu
-            })
+/// Shortens a token count for the status bar: 862, 7.5K, 75.9K, 176K, 1.2M.
+pub fn compact_count(n: u64) -> String {
+    fn scaled(n: u64, unit: f64, suffix: &str) -> String {
+        let value = n as f64 / unit;
+        if value < 99.95 {
+            let text = format!("{value:.1}");
+            format!("{}{suffix}", text.strip_suffix(".0").unwrap_or(&text))
+        } else {
+            format!("{value:.0}{suffix}")
+        }
     }
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 999_500 {
+        scaled(n, 1e3, "K")
+    } else {
+        scaled(n, 1e6, "M")
+    }
+}
 
-    fn policy_menu(
-        &self,
-        current: Option<PolicyAction>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let view = cx.entity().downgrade();
-        Button::new("policy")
-            .ghost()
-            .small()
-            .icon(Icon::new(gpui_kit_assets::IconName::ShieldCheck))
-            .label(format!("Policy: {}", policy_label(current)))
-            .tooltip("Default action for tool calls without a matching policy rule")
-            .dropdown_menu(move |mut menu, _, _| {
-                for (value, label) in POLICY_CHOICES {
-                    let view = view.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(label)
-                            .checked(value == current)
-                            .on_click(move |_, _, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    let session = this.session_id(cx);
-                                    this.connection
-                                        .update(cx, |conn, cx| conn.set_policy(session, value, cx));
-                                });
-                            }),
-                    );
-                }
-                menu
-            })
+/// Groups digits for tooltips: 75862 -> "75,862".
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (ix, ch) in digits.chars().enumerate() {
+        if ix > 0 && (digits.len() - ix).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// A status bar entry: an icon, a short label, and a tooltip that says what
+/// it means.
+fn status_item(
+    id: &'static str,
+    icon: impl Into<Icon>,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let tooltip: SharedString = tooltip.into();
+    h_flex()
+        .id(id)
+        .gap_1()
+        .child(icon.into().xsmall())
+        .child(label.into())
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+}
+
+impl SessionView {
+    /// The session's entries in the workspace status bar: state, model,
+    /// effort, policy, token usage, and pending approvals.
+    pub fn status_items(view: &Entity<Self>, cx: &App) -> Vec<AnyElement> {
+        let theme = cx.theme();
+        let this = view.read(cx);
+        let conv = this.conversation.read(cx);
+        let weak = view.downgrade();
+        let mut items = Vec::new();
+
+        let busy = conv.is_busy();
+        items.push(
+            status_item(
+                "status-state",
+                if busy {
+                    IconName::LoaderCircle
+                } else {
+                    IconName::CircleCheck
+                },
+                state_label(conv.state),
+                "Session state",
+            )
+            .when(busy, |el| el.text_color(theme.info))
+            .into_any_element(),
+        );
+
+        let model = conv
+            .info
+            .model
+            .clone()
+            .or_else(|| this.connection.read(cx).info.default_model.clone())
+            .unwrap_or_else(|| "no model".into());
+        let picker = weak.clone();
+        items.push(
+            Button::new("status-model")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Bot)
+                .label(model)
+                .tooltip("Model for this session (click to change)")
+                .on_click(move |_, window, cx| {
+                    let Some(view) = picker.upgrade() else {
+                        return;
+                    };
+                    let view = view.read(cx);
+                    let (connection, session) = (view.connection.clone(), view.session_id(cx));
+                    dialogs::open_model_picker(connection, Some(session), window, cx);
+                })
+                .into_any_element(),
+        );
+
+        let current = conv.info.reasoning;
+        let menu_view = weak.clone();
+        items.push(
+            Button::new("status-effort")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(gpui_kit_assets::IconName::Brain))
+                .label(reasoning_label(current))
+                .tooltip("Reasoning effort for this session")
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (value, label) in REASONING_CHOICES {
+                        let view = menu_view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(value == current)
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        let session = this.session_id(cx);
+                                        this.connection.update(cx, |conn, cx| {
+                                            conn.set_reasoning(session, value, cx)
+                                        });
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+                .into_any_element(),
+        );
+
+        let current = conv.info.policy_default;
+        let menu_view = weak.clone();
+        items.push(
+            Button::new("status-policy")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(gpui_kit_assets::IconName::ShieldCheck))
+                .label(policy_label(current))
+                .tooltip("Default action for tool calls without a matching policy rule")
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (value, label) in POLICY_CHOICES {
+                        let view = menu_view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(value == current)
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        let session = this.session_id(cx);
+                                        this.connection.update(cx, |conn, cx| {
+                                            conn.set_policy(session, value, cx)
+                                        });
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+                .into_any_element(),
+        );
+
+        if let Some(usage) = conv.last_usage {
+            let context = usage.context_tokens();
+            items.push(
+                status_item(
+                    "status-context",
+                    Icon::new(gpui_kit_assets::IconName::Gauge),
+                    compact_count(context),
+                    format!(
+                        "Context: {} tokens after the last response",
+                        grouped(context)
+                    ),
+                )
+                .into_any_element(),
+            );
+            let (input, output) = (conv.total_usage.prompt_tokens(), conv.total_usage.output);
+            items.push(
+                status_item(
+                    "status-usage",
+                    Icon::new(gpui_kit_assets::IconName::Coins),
+                    format!(
+                        "{} in · {} out",
+                        compact_count(input),
+                        compact_count(output)
+                    ),
+                    format!(
+                        "Tokens used by this session: {} input (cached included), {} output",
+                        grouped(input),
+                        grouped(output)
+                    ),
+                )
+                .into_any_element(),
+            );
+        }
+
+        let pending = conv.pending_approvals().count();
+        if pending > 0 {
+            items.push(
+                status_item(
+                    "status-approvals",
+                    IconName::TriangleAlert,
+                    pending.to_string(),
+                    format!("{pending} tool call(s) waiting for approval"),
+                )
+                .text_color(theme.warning)
+                .into_any_element(),
+            );
+        }
+
+        if conv.info.archived {
+            let restore = weak;
+            items.push(
+                Button::new("status-restore")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(gpui_kit_assets::IconName::ArchiveRestore))
+                    .label("Archived")
+                    .tooltip("Restore this session to the list")
+                    .on_click(move |_, _, cx| {
+                        let _ = restore.update(cx, |this, cx| {
+                            let session = this.session_id(cx);
+                            this.connection
+                                .update(cx, |conn, cx| conn.set_archived(session, false, cx));
+                        });
+                    })
+                    .into_any_element(),
+            );
+        }
+        items
     }
 }
 
@@ -901,12 +1069,6 @@ impl Render for SessionView {
         let theme = cx.theme().clone();
         let conversation = self.conversation.read(cx).clone();
         let busy = conversation.is_busy();
-        let model = conversation
-            .info
-            .model
-            .clone()
-            .or_else(|| self.connection.read(cx).info.default_model.clone())
-            .unwrap_or_else(|| "no model".into());
         let items: Vec<AnyElement> = conversation
             .items
             .iter()
@@ -917,7 +1079,7 @@ impl Render for SessionView {
         let compact_tooltip: SharedString = match conversation.last_usage {
             Some(usage) => format!(
                 "Summarize earlier turns to free context (now {} tokens)",
-                usage.context_tokens()
+                compact_count(usage.context_tokens())
             )
             .into(),
             None => "Summarize earlier turns to free context".into(),
@@ -931,81 +1093,6 @@ impl Render for SessionView {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.add_paths(paths.paths().to_vec(), window, cx);
             }))
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_1()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(conversation.title()),
-                    )
-                    .child(
-                        Button::new("rename")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(gpui_kit_assets::IconName::Pencil))
-                            .tooltip("Rename session")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let session = this.session_id(cx);
-                                let current = this.conversation.read(cx).title();
-                                open_rename(this.connection.clone(), session, current, window, cx);
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .when(conversation.info.archived, |el| {
-                        el.child(
-                            Button::new("restore")
-                                .ghost()
-                                .small()
-                                .icon(Icon::new(gpui_kit_assets::IconName::ArchiveRestore))
-                                .label("Archived")
-                                .tooltip("Restore this session to the list")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let session = this.session_id(cx);
-                                    this.connection.update(cx, |conn, cx| {
-                                        conn.set_archived(session, false, cx)
-                                    });
-                                })),
-                        )
-                    })
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(if busy {
-                                theme.info
-                            } else {
-                                theme.muted_foreground
-                            })
-                            .child(state_label(conversation.state)),
-                    )
-                    .child(self.reasoning_menu(conversation.info.reasoning, cx))
-                    .child(self.policy_menu(conversation.info.policy_default, cx))
-                    .child(
-                        Button::new("model")
-                            .ghost()
-                            .small()
-                            .label(model)
-                            .tooltip("Choose the model for this session")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let session = this.session_id(cx);
-                                dialogs::open_model_picker(
-                                    this.connection.clone(),
-                                    Some(session),
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    ),
-            )
             .child(
                 div()
                     .id("messages")
@@ -1059,6 +1146,7 @@ impl Render for SessionView {
                                     .ghost()
                                     .small()
                                     .icon(Icon::new(gpui_kit_assets::IconName::ImagePlus))
+                                    .label("Attach")
                                     .tooltip("Attach images (or paste or drop them here)")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.pick_images(window, cx)
@@ -1080,7 +1168,9 @@ impl Render for SessionView {
                             .child(
                                 Button::new("interrupt")
                                     .small()
+                                    .icon(Icon::new(gpui_kit_assets::IconName::CircleStop))
                                     .label("Interrupt")
+                                    .tooltip("Stop the current turn")
                                     .disabled(!busy)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.interrupt(window, cx)
@@ -1090,7 +1180,9 @@ impl Render for SessionView {
                                 Button::new("send")
                                     .primary()
                                     .small()
+                                    .icon(Icon::new(gpui_kit_assets::IconName::SendHorizontal))
                                     .label("Send")
+                                    .tooltip("Send the prompt (enter)")
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.submit(window, cx)),
                                     ),
@@ -1102,7 +1194,37 @@ impl Render for SessionView {
 
 #[cfg(test)]
 mod tests {
-    use super::follow_after_scroll;
+    use super::{compact_count, follow_after_scroll, grouped};
+
+    #[test]
+    fn compact_counts() {
+        let cases = [
+            (0, "0"),
+            (862, "862"),
+            (999, "999"),
+            (1_000, "1K"),
+            (7_500, "7.5K"),
+            (75_862, "75.9K"),
+            (99_949, "99.9K"),
+            (99_950, "100K"),
+            (175_862, "176K"),
+            (999_499, "999K"),
+            (999_500, "1M"),
+            (1_234_567, "1.2M"),
+            (250_000_000, "250M"),
+        ];
+        for (n, text) in cases {
+            assert_eq!(compact_count(n), text, "{n}");
+        }
+    }
+
+    #[test]
+    fn grouped_digits() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(75_862), "75,862");
+        assert_eq!(grouped(1_234_567), "1,234,567");
+    }
 
     const MAX: f32 = 1000.;
 

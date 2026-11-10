@@ -8,6 +8,8 @@ gpui_kit_assets::icon_assets!(
         Archive,
         ArchiveRestore,
         Brain,
+        CircleStop,
+        Coins,
         Columns2,
         FileDiff,
         FileMinus,
@@ -15,12 +17,16 @@ gpui_kit_assets::icon_assets!(
         FilePlus,
         FileSymlink,
         FoldVertical,
+        Gauge,
         GitBranch,
         ImagePlus,
         Pencil,
+        Plug,
         Rows2,
+        SendHorizontal,
         ShieldCheck,
-        Trash
+        Trash,
+        Unplug
     ]
 );
 

@@ -11,6 +11,7 @@ use gpui::{
     px,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, TitleBar, h_flex, h_resizable,
     resizable_panel, v_flex, v_resizable,
@@ -2852,53 +2853,59 @@ impl Workspace {
         let mut right = h_flex().gap_3();
         if let Some(conn) = &self.active_connection {
             let conn = conn.read(cx);
-            let transport = match &conn.host {
-                HostEntry::Local { .. } => "local socket",
-                HostEntry::Ssh { .. } => "ssh",
-                HostEntry::Relay { .. } => "relay (end-to-end encrypted)",
+            let (transport, transport_icon) = match &conn.host {
+                HostEntry::Local { .. } => ("local socket", IconName::HardDrive),
+                HostEntry::Ssh { .. } => ("ssh", IconName::Network),
+                HostEntry::Relay { .. } => ("relay (end-to-end encrypted)", IconName::Globe),
             };
-            let status = match &conn.status {
-                LinkStatus::Connected => "connected".to_owned(),
-                LinkStatus::Disconnected(reason) => format!("disconnected: {reason}"),
+            let agent_tooltip: SharedString =
+                format!("Agent {} over {transport}", conn.title()).into();
+            left = left.child(
+                h_flex()
+                    .id("status-agent")
+                    .gap_1()
+                    .child(Icon::new(transport_icon).xsmall())
+                    .child(conn.title())
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(agent_tooltip.clone()).build(window, cx)
+                    }),
+            );
+            let (status_icon, status, status_tooltip, color) = match &conn.status {
+                LinkStatus::Connected => (
+                    Icon::new(gpui_kit_assets::IconName::Plug),
+                    "connected".to_owned(),
+                    format!("Connected over {transport}"),
+                    theme.muted_foreground,
+                ),
+                LinkStatus::Disconnected(reason) => (
+                    Icon::new(gpui_kit_assets::IconName::Unplug),
+                    format!("disconnected: {reason}"),
+                    format!("Disconnected from the agent ({transport}): {reason}"),
+                    theme.danger,
+                ),
             };
-            left = left.child(conn.title()).child(
-                div()
-                    .text_color(theme.muted_foreground)
-                    .child(format!("{transport} · {status}")),
+            left = left.child(
+                h_flex()
+                    .id("status-link")
+                    .gap_1()
+                    .text_color(color)
+                    .child(status_icon.xsmall())
+                    .child(status)
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(status_tooltip.clone()).build(window, cx)
+                    }),
             );
         } else {
             left = left.child(
-                div()
+                h_flex()
+                    .gap_1()
                     .text_color(theme.muted_foreground)
+                    .child(Icon::new(gpui_kit_assets::IconName::Unplug).xsmall())
                     .child("not connected"),
             );
         }
         if let Some(tab) = self.active_group().and_then(SessionGroup::chat) {
-            let conv = tab.read(cx).conversation.read(cx);
-            if let Some(model) = conv
-                .info
-                .model
-                .clone()
-                .or_else(|| tab.read(cx).connection.read(cx).info.default_model.clone())
-            {
-                right = right.child(model);
-            }
-            if let Some(usage) = conv.last_usage {
-                right = right.child(format!(
-                    "context {} tokens · total {} in / {} out",
-                    usage.context_tokens(),
-                    conv.total_usage.prompt_tokens(),
-                    conv.total_usage.output
-                ));
-            }
-            let pending = conv.pending_approvals().count();
-            if pending > 0 {
-                right = right.child(
-                    div()
-                        .text_color(theme.warning)
-                        .child(format!("{pending} approval(s) pending")),
-                );
-            }
+            right = right.children(SessionView::status_items(&tab, cx));
         }
         let show_right = self.show_right;
         right = right.child(
