@@ -396,6 +396,18 @@ impl Client {
         .await
     }
 
+    pub async fn archive_session(
+        &self,
+        session: &SessionId,
+        archived: bool,
+    ) -> Result<SessionInfo> {
+        self.session(Command::ArchiveSession {
+            session: session.clone(),
+            archived,
+        })
+        .await
+    }
+
     pub async fn set_reasoning(
         &self,
         session: &SessionId,
