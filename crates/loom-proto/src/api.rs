@@ -7,6 +7,7 @@ use crate::auth::{
     AccountInfo, LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo, ProviderId,
     ProviderStatus,
 };
+use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -155,6 +156,15 @@ pub enum Command {
     CloseTerminal {
         terminal: TerminalId,
     },
+    AuthorizeClient {
+        pubkey: [u8; 32],
+        label: String,
+    },
+    ListClients,
+    RevokeClient {
+        label: String,
+    },
+    GetHostKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +180,22 @@ pub enum Payload {
     Interrupted(bool),
     Agents(Vec<AgentInfo>),
     Terminal(TerminalId),
+    HostKey(HostKeyInfo),
+    Clients(Vec<AuthorizedClient>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostKeyInfo {
+    pub host: HostId,
+    pub static_pubkey: [u8; 32],
+    pub relay_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizedClient {
+    pub label: String,
+    pub pubkey: [u8; 32],
+    pub added_at: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

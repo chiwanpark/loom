@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod codec;
+pub mod relay;
 pub mod session;
 
 pub use api::*;
