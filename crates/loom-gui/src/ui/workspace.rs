@@ -5,24 +5,26 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, DefiniteLength,
-    DragMoveEvent, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
-    KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, actions, div, prelude::FluentBuilder, px,
+    DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    IntoElement, KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Window, actions, div, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, TitleBar, h_flex, h_resizable, resizable_panel, v_flex,
-    v_resizable,
+    ActiveTheme, Icon, IconName, Selectable, Sizable, TitleBar, h_flex, h_resizable,
+    resizable_panel, v_flex, v_resizable,
 };
 use loom_client::proto::{SessionId, SessionInfo, SessionState};
 use loom_config::{ClientConfig, HostEntry};
 
 use crate::backend::Backend;
+use crate::changes::{FileChange, display_path, session_changes};
 use crate::connection::{self, AgentSummary, Env, Target};
 use crate::conversation::short_id;
 use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal};
 use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
+use crate::ui::diff::DiffView;
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
 use crate::ui::session::SessionView;
@@ -51,7 +53,8 @@ actions!(
         ActivatePaneLeft,
         ActivatePaneRight,
         ActivatePaneUp,
-        ActivatePaneDown
+        ActivatePaneDown,
+        ToggleRightDock
     ]
 );
 
@@ -65,6 +68,7 @@ const DROP_TARGET_SIZE: f32 = 0.2;
 pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-b", ToggleLeftDock, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-alt-b", ToggleRightDock, Some(CONTEXT)),
         KeyBinding::new("ctrl-n", NewSession, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-w", CloseTab, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-`", NewTerminal, Some(CONTEXT)),
@@ -114,12 +118,14 @@ struct HostNode {
 enum Panel {
     Chat(Entity<SessionView>),
     Terminal(Entity<TerminalView>),
+    Diff(Entity<DiffView>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanelKind {
     Chat,
     Terminal,
+    Diff,
 }
 
 impl Panel {
@@ -127,6 +133,7 @@ impl Panel {
         match self {
             Panel::Chat(_) => PanelKind::Chat,
             Panel::Terminal(_) => PanelKind::Terminal,
+            Panel::Diff(_) => PanelKind::Diff,
         }
     }
 
@@ -134,12 +141,14 @@ impl Panel {
         match self {
             Panel::Chat(view) => view.clone().into(),
             Panel::Terminal(view) => view.clone().into(),
+            Panel::Diff(view) => view.clone().into(),
         }
     }
 
     fn title(&self, cx: &App) -> String {
         match self {
             Panel::Chat(view) => view.read(cx).title(cx),
+            Panel::Diff(view) => view.read(cx).title(),
             Panel::Terminal(view) => {
                 let view = view.read(cx);
                 let base = view.title().unwrap_or_else(|| "Terminal".into());
@@ -159,6 +168,7 @@ impl Panel {
                 prompt.update(cx, |input, cx| input.focus(window, cx));
             }
             Panel::Terminal(view) => view.read(cx).focus_handle(cx).focus(window, cx),
+            Panel::Diff(view) => view.read(cx).focus_handle(cx).focus(window, cx),
         }
     }
 }
@@ -167,6 +177,7 @@ fn panel_icon(kind: PanelKind) -> Icon {
     match kind {
         PanelKind::Chat => Icon::new(IconName::Bot).xsmall(),
         PanelKind::Terminal => Icon::new(IconName::SquareTerminal).xsmall(),
+        PanelKind::Diff => Icon::new(gpui_kit_assets::IconName::FileDiff).xsmall(),
     }
 }
 
@@ -203,8 +214,16 @@ impl SessionGroup {
             .flat_map(|pane| pane.tabs.iter())
             .find_map(|(_, panel)| match panel {
                 Panel::Chat(view) => Some(view.clone()),
-                Panel::Terminal(_) => None,
+                Panel::Terminal(_) | Panel::Diff(_) => None,
             })
+    }
+
+    fn find_diff(&self, path: &PathBuf, cx: &App) -> Option<(PaneId, usize)> {
+        self.panes.iter().find_map(|pane| {
+            pane.tabs
+                .find(|panel| matches!(panel, Panel::Diff(view) if view.read(cx).path() == path))
+                .map(|ix| (pane.id, ix))
+        })
     }
 
     fn is(&self, conn: &Entity<AgentConnection>, session: &SessionId) -> bool {
@@ -308,6 +327,8 @@ pub struct Workspace {
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_left: bool,
+    show_right: bool,
+    changes_cache: Option<(EntityId, u64, Rc<Vec<FileChange>>)>,
     focus: FocusHandle,
     subscriptions: Vec<Subscription>,
 }
@@ -346,6 +367,8 @@ impl Workspace {
             drag_split: None,
             next_panel: 0,
             show_left: true,
+            show_right: true,
+            changes_cache: None,
             focus: cx.focus_handle(),
             subscriptions: Vec::new(),
         };
@@ -1206,6 +1229,173 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_toggle_right(&mut self, _: &ToggleRightDock, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = !self.show_right;
+        cx.notify();
+    }
+
+    fn session_changes(&mut self, cx: &App) -> Option<Rc<Vec<FileChange>>> {
+        let chat = self.active_group().and_then(SessionGroup::chat)?;
+        let conversation = chat.read(cx).conversation.clone();
+        let revision = conversation.read(cx).revision;
+        if let Some((id, cached, changes)) = &self.changes_cache
+            && *id == conversation.entity_id()
+            && *cached == revision
+        {
+            return Some(changes.clone());
+        }
+        let changes = Rc::new(session_changes(&conversation.read(cx).items));
+        self.changes_cache = Some((conversation.entity_id(), revision, changes.clone()));
+        Some(changes)
+    }
+
+    fn open_diff(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.active_group() else {
+            return;
+        };
+        if let Some((pane, ix)) = group.find_diff(&path, cx) {
+            self.activate_tab(pane, ix, window, cx);
+            return;
+        }
+        let Some(chat) = group.chat() else {
+            return;
+        };
+        let conversation = chat.read(cx).conversation.clone();
+        let workspace = group.connection.read(cx).info.workspace.clone();
+        let title = display_path(&path, &workspace);
+        let view = cx.new(|cx| DiffView::new(conversation, path, title, cx));
+        self.subscriptions
+            .push(cx.observe(&view, |_, _, cx| cx.notify()));
+        let id = self.alloc_panel();
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
+            pane.tabs.add(id, Panel::Diff(view), None);
+        }
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    fn render_changes_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let changes = self.session_changes(cx);
+        let workspace = self
+            .active_group()
+            .map(|g| g.connection.read(cx).info.workspace.clone())
+            .unwrap_or_default();
+        let open =
+            self.active_group()
+                .and_then(|g| g.active_panel())
+                .and_then(|panel| match panel {
+                    Panel::Diff(view) => Some(view.read(cx).path().clone()),
+                    _ => None,
+                });
+        let count = changes.as_ref().map(|c| c.len()).unwrap_or(0);
+        let header = h_flex()
+            .w_full()
+            .h(Tab::container_height())
+            .flex_none()
+            .px_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Changes"))
+            .when(count > 0, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(count.to_string()),
+                )
+            });
+        let body = match changes {
+            None => div()
+                .p_3()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("Open a session to see the files it changed.")
+                .into_any_element(),
+            Some(changes) if changes.is_empty() => div()
+                .p_3()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("No files changed in this session yet.")
+                .into_any_element(),
+            Some(changes) => v_flex()
+                .id("changes-list")
+                .flex_1()
+                .overflow_y_scroll()
+                .py_1()
+                .children(changes.iter().enumerate().map(|(ix, change)| {
+                    let display = display_path(&change.path, &workspace);
+                    let (dir, name) = match display.rsplit_once('/') {
+                        Some((dir, name)) => (dir.to_owned(), name.to_owned()),
+                        None => (String::new(), display.clone()),
+                    };
+                    let path = change.path.clone();
+                    let selected = open.as_ref() == Some(&change.path);
+                    let icon = if change.created {
+                        gpui_kit_assets::IconName::FilePlus
+                    } else {
+                        gpui_kit_assets::IconName::FilePen
+                    };
+                    h_flex()
+                        .id(("change", ix))
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .gap_2()
+                        .cursor_pointer()
+                        .when(selected, |el| el.bg(theme.list_active))
+                        .hover(|el| el.bg(theme.list_hover))
+                        .child(Icon::new(icon).xsmall().text_color(if change.created {
+                            theme.green
+                        } else {
+                            theme.muted_foreground
+                        }))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(div().flex_none().child(name))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_ellipsis()
+                                        .overflow_hidden()
+                                        .text_color(theme.muted_foreground)
+                                        .child(dir),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.green)
+                                .child(format!("+{}", change.added)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.red)
+                                .child(format!("−{}", change.removed)),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_diff(path.clone(), window, cx)
+                        }))
+                }))
+                .into_any_element(),
+        };
+        v_flex()
+            .size_full()
+            .border_l_1()
+            .border_color(theme.border)
+            .bg(theme.sidebar)
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
     fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_connection.clone() {
             Some(conn) => self.new_session(conn, window, cx),
@@ -2046,6 +2236,19 @@ impl Workspace {
                 );
             }
         }
+        let show_right = self.show_right;
+        right = right.child(
+            Button::new("toggle-changes")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(gpui_kit_assets::IconName::FileDiff))
+                .selected(show_right)
+                .tooltip("Toggle the changes panel (ctrl-alt-b)")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.show_right = !this.show_right;
+                    cx.notify();
+                })),
+        );
         h_flex()
             .w_full()
             .px_3()
@@ -2088,6 +2291,8 @@ impl Render for Workspace {
         let theme = cx.theme().clone();
         let agents = self.render_agents_panel(cx);
         let center = self.render_center(cx);
+        let show_changes = self.show_right && self.active_group.is_some();
+        let changes = show_changes.then(|| self.render_changes_panel(cx));
         let status = self.render_status(cx);
         v_flex()
             .id("workspace")
@@ -2097,6 +2302,7 @@ impl Render for Workspace {
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(Self::on_toggle_left))
+            .on_action(cx.listener(Self::on_toggle_right))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
@@ -2141,7 +2347,20 @@ impl Render for Workspace {
                                 .visible(self.show_left)
                                 .child(agents),
                         )
-                        .child(resizable_panel().child(center)),
+                        .child(
+                            resizable_panel().child(match changes {
+                                Some(changes) => h_resizable("center-right")
+                                    .child(resizable_panel().child(center))
+                                    .child(
+                                        resizable_panel()
+                                            .size(px(280.))
+                                            .size_range(px(180.)..px(600.))
+                                            .child(changes),
+                                    )
+                                    .into_any_element(),
+                                None => center,
+                            }),
+                        ),
                 ),
             )
             .child(status)

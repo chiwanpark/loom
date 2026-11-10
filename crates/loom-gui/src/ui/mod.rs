@@ -1,4 +1,5 @@
 pub mod dialogs;
+pub mod diff;
 pub mod notify;
 pub mod panes;
 pub mod session;

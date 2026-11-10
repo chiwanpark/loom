@@ -302,7 +302,7 @@ impl SessionView {
             ToolStatus::WaitingApproval | ToolStatus::Running | ToolStatus::Failed
         ) || matches!(
             tool.result.as_ref().and_then(|r| r.details.as_ref()),
-            Some(ToolResultDetails::Edit { .. })
+            Some(ToolResultDetails::Edit { .. } | ToolResultDetails::WriteWithDiff { .. })
         )
     }
 
@@ -522,7 +522,10 @@ impl SessionView {
                 body = body.child(code_block(pretty_arguments(&tool.call.arguments), &theme));
             }
             let diff = match tool.result.as_ref().and_then(|r| r.details.as_ref()) {
-                Some(ToolResultDetails::Edit { diff, .. }) => Some(diff.clone()),
+                Some(
+                    ToolResultDetails::Edit { diff, .. }
+                    | ToolResultDetails::WriteWithDiff { diff, .. },
+                ) => Some(diff.clone()),
                 _ => None,
             };
             if let Some(diff) = diff {
