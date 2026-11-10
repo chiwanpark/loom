@@ -319,6 +319,7 @@ fn render(note: Notification, streamed: &mut bool) -> Option<Approval> {
         Notification::Notice(notice) => {
             let _ = writeln!(out, "[notice] {notice:?}");
         }
+        Notification::TerminalOutput { .. } | Notification::TerminalExited { .. } => {}
     }
     let _ = out.flush();
     None

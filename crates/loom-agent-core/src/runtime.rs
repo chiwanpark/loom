@@ -59,6 +59,7 @@ pub fn builtin_tools(config: &AgentConfig) -> BuiltinConfig {
                 max_lines: shell.max_lines,
                 max_bytes: shell.max_bytes.as_usize(),
             },
+            pty: shell.pty,
             ..ShellConfig::default()
         },
     }

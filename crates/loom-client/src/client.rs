@@ -8,7 +8,7 @@ use loom_proto::{
     AccountInfo, AgentInfo, ApiError, ClientHello, ClientMessage, Command, ContentPart, Decision,
     LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo, Notice, PROTOCOL_VERSION, Payload,
     PolicyAction, ProviderStatus, ReasoningEffort, RequestId, SequencedEvent, ServerMessage,
-    SessionId, SessionInfo, decode, encode,
+    SessionId, SessionInfo, TerminalId, decode, encode,
 };
 use loom_transport::{Diagnostics, FrameReceiver, FrameSender, FrameStream};
 use tokio::sync::{mpsc, oneshot};
@@ -28,6 +28,14 @@ pub enum Notification {
         result: std::result::Result<AccountInfo, ApiError>,
     },
     Notice(Notice),
+    TerminalOutput {
+        terminal: TerminalId,
+        data: Vec<u8>,
+    },
+    TerminalExited {
+        terminal: TerminalId,
+        status: i32,
+    },
 }
 
 type Pending = Arc<Mutex<Option<HashMap<RequestId, oneshot::Sender<Result<Payload>>>>>>;
@@ -152,6 +160,12 @@ impl Client {
                         Notification::LoginFinished { login, result }
                     }
                     ServerMessage::Notice(notice) => Notification::Notice(notice),
+                    ServerMessage::TerminalOutput { terminal, data } => {
+                        Notification::TerminalOutput { terminal, data }
+                    }
+                    ServerMessage::TerminalExited { terminal, status } => {
+                        Notification::TerminalExited { terminal, status }
+                    }
                     ServerMessage::Rejected(err) => {
                         tracing::warn!(error = %err, "agent closed the connection");
                         break;
@@ -423,6 +437,30 @@ impl Client {
             instance: instance.clone(),
         })
         .await
+    }
+
+    pub async fn open_terminal(&self, cols: u16, rows: u16) -> Result<TerminalId> {
+        match self.request(Command::OpenTerminal { cols, rows }).await? {
+            Payload::Terminal(id) => Ok(id),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn terminal_input(&self, terminal: TerminalId, data: Vec<u8>) -> Result<()> {
+        self.ok(Command::TerminalInput { terminal, data }).await
+    }
+
+    pub async fn resize_terminal(&self, terminal: TerminalId, cols: u16, rows: u16) -> Result<()> {
+        self.ok(Command::ResizeTerminal {
+            terminal,
+            cols,
+            rows,
+        })
+        .await
+    }
+
+    pub async fn close_terminal(&self, terminal: TerminalId) -> Result<()> {
+        self.ok(Command::CloseTerminal { terminal }).await
     }
 
     async fn ok(&self, command: Command) -> Result<()> {

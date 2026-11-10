@@ -12,6 +12,7 @@ use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionIn
 pub const PROTOCOL_VERSION: u16 = 1;
 
 pub type RequestId = u64;
+pub type TerminalId = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InstanceId(pub String);
@@ -138,6 +139,22 @@ pub enum Command {
     StopAgent {
         instance: InstanceId,
     },
+    OpenTerminal {
+        cols: u16,
+        rows: u16,
+    },
+    TerminalInput {
+        terminal: TerminalId,
+        data: Vec<u8>,
+    },
+    ResizeTerminal {
+        terminal: TerminalId,
+        cols: u16,
+        rows: u16,
+    },
+    CloseTerminal {
+        terminal: TerminalId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +169,7 @@ pub enum Payload {
     Session(SessionInfo),
     Interrupted(bool),
     Agents(Vec<AgentInfo>),
+    Terminal(TerminalId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,4 +234,12 @@ pub enum ServerMessage {
         result: Result<AccountInfo, ApiError>,
     },
     Notice(Notice),
+    TerminalOutput {
+        terminal: TerminalId,
+        data: Vec<u8>,
+    },
+    TerminalExited {
+        terminal: TerminalId,
+        status: i32,
+    },
 }

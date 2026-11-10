@@ -105,6 +105,7 @@ fn setup(replies: Vec<AssistantMessage>) -> Setup {
     };
     let mut config = AgentConfig::default();
     config.llm.default_model = Some(format!("{PROVIDER}/m"));
+    config.terminal.shell = Some("/bin/sh".into());
     let mut options = AgentOptions::new(&workspace, config, dirs);
     options.providers.push(Arc::new(Scripted {
         replies: Mutex::new(replies.into()),
@@ -389,4 +390,69 @@ async fn dropped_connection_fails_pending_requests() {
     let err = client.list_sessions().await.unwrap_err();
     assert!(matches!(err, ClientError::Closed), "{err:?}");
     assert!(client.is_closed());
+}
+
+async fn terminal_text_until(notes: &mut Notifications, seen: &mut String, needle: &str) {
+    while !seen.contains(needle) {
+        let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}; saw {seen:?}"))
+            .expect("connection closed");
+        if let Notification::TerminalOutput { data, .. } = note {
+            seen.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+}
+
+#[tokio::test]
+async fn interactive_terminals_run_in_the_workspace() {
+    let setup = setup(vec![]);
+    let (client, mut notes) = connect(&setup).await;
+    let err = client.open_terminal(0, 24).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+    let terminal = client.open_terminal(80, 24).await.unwrap();
+    client
+        .terminal_input(terminal, b"echo answer=$((6*7)); pwd\n".to_vec())
+        .await
+        .unwrap();
+    let mut text = String::new();
+    terminal_text_until(&mut notes, &mut text, "answer=42").await;
+    let workspace = setup.info.workspace.display().to_string();
+    terminal_text_until(&mut notes, &mut text, &workspace).await;
+    text.clear();
+    client.resize_terminal(terminal, 100, 30).await.unwrap();
+    client
+        .terminal_input(terminal, b"stty size\n".to_vec())
+        .await
+        .unwrap();
+    terminal_text_until(&mut notes, &mut text, "30 100").await;
+    client
+        .terminal_input(terminal, b"exit 7\n".to_vec())
+        .await
+        .unwrap();
+    let status = loop {
+        match tokio::time::timeout(Duration::from_secs(10), notes.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Notification::TerminalExited {
+                terminal: id,
+                status,
+            } if id == terminal => break status,
+            _ => {}
+        }
+    };
+    assert_eq!(status, 7);
+    let err = client.close_terminal(terminal).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+
+    let second = client.open_terminal(80, 24).await.unwrap();
+    assert_ne!(second, terminal);
+    client.close_terminal(second).await.unwrap();
+    let err = client
+        .terminal_input(second, b"x".to_vec())
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
 }

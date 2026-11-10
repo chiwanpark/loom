@@ -15,6 +15,7 @@ use crate::convert;
 use crate::events::Subscription;
 use crate::session::Session;
 use crate::supervisor::Supervisor;
+use crate::terminals::{Terminals, interactive_shell};
 
 pub type Reply = Result<Payload, ApiError>;
 
@@ -33,6 +34,7 @@ pub struct Connection {
     logins: Arc<Mutex<HashMap<String, CancellationToken>>>,
     tasks: Vec<JoinHandle<()>>,
     supervisor: Option<Arc<dyn Supervisor>>,
+    terminals: Terminals,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -50,6 +52,7 @@ impl Connection {
             logins: Arc::default(),
             tasks: Vec::new(),
             supervisor: None,
+            terminals: Terminals::default(),
         }
     }
 
@@ -176,6 +179,48 @@ impl Connection {
                 };
                 self.respond(id, result).await;
             }
+            Command::OpenTerminal { cols, rows } => {
+                let config = self.agent.config();
+                let shell = config
+                    .terminal
+                    .shell
+                    .clone()
+                    .unwrap_or_else(|| interactive_shell(&config.tools.shell.program));
+                let result = self
+                    .terminals
+                    .open(
+                        shell,
+                        self.agent.workspace_root(),
+                        cols,
+                        rows,
+                        self.out.clone(),
+                    )
+                    .map(Payload::Terminal);
+                self.respond(id, result).await;
+            }
+            Command::TerminalInput { terminal, data } => {
+                let result = self
+                    .terminals
+                    .input(terminal, data)
+                    .await
+                    .map(|()| Payload::Ok);
+                self.respond(id, result).await;
+            }
+            Command::ResizeTerminal {
+                terminal,
+                cols,
+                rows,
+            } => {
+                let result = self
+                    .terminals
+                    .resize(terminal, cols, rows)
+                    .map(|()| Payload::Ok);
+                self.respond(id, result).await;
+            }
+            Command::CloseTerminal { terminal } => {
+                let result = self.terminals.close(terminal).map(|()| Payload::Ok);
+                self.respond(id, result).await;
+            }
             Command::CancelLogin { login } => {
                 let waiting = self
                     .logins
@@ -300,7 +345,11 @@ impl Connection {
             | Command::Unsubscribe { .. }
             | Command::ListAgents
             | Command::SpawnAgent { .. }
-            | Command::StopAgent { .. } => Err(ApiError::new(
+            | Command::StopAgent { .. }
+            | Command::OpenTerminal { .. }
+            | Command::TerminalInput { .. }
+            | Command::ResizeTerminal { .. }
+            | Command::CloseTerminal { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),
@@ -310,6 +359,7 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        self.terminals.close_all();
         for (_, task) in self.subscriptions.drain() {
             task.abort();
         }

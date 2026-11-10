@@ -8,6 +8,7 @@ pub mod policy;
 pub mod runtime;
 mod session;
 pub mod supervisor;
+pub mod terminals;
 pub mod watcher;
 
 pub use agent::{Agent, AgentNotice, AgentOptions, data_dir};
