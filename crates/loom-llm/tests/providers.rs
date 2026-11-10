@@ -342,3 +342,59 @@ async fn codex_lists_models_from_the_backend() {
     assert_eq!(ids, vec!["codex-first", "codex-second"]);
     assert_eq!(models[0].display_name, "First");
 }
+
+#[tokio::test]
+async fn codex_usage_limits_come_from_the_chatgpt_backend() {
+    let h = harness().await;
+    let token = codex_access_token("acct-3");
+    h.set_section(
+        CODEX,
+        json!({
+            "account_id": "acct-3",
+            "access_token": token,
+            "refresh_token": "r",
+            "expires_at": now() + 3600,
+            "saved_at": now(),
+        }),
+    )
+    .await;
+    let auth_header = format!("Bearer {token}");
+    Mock::given(method("GET"))
+        .and(path("/backend-api/wham/usage"))
+        .and(header("authorization", auth_header.as_str()))
+        .and(header("chatgpt-account-id", "acct-3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "rate_limit": {
+                "primary_window": {"used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1_794_330_000},
+                "secondary_window": {"used_percent": 3, "limit_window_seconds": 604800, "reset_at": 1_794_441_600},
+            },
+        })))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(
+        CODEX,
+        json!({"base_url": format!("{}/backend-api", h.server.uri())}),
+    );
+    let limits = provider.usage_limits().await.unwrap().unwrap().limits;
+    let summary: Vec<_> = limits
+        .iter()
+        .map(|l| (l.label.as_str(), l.used_percent, l.resets_at))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            ("5h", Some(12), Some(1_794_330_000)),
+            ("weekly", Some(3), Some(1_794_441_600))
+        ]
+    );
+}
+
+#[tokio::test]
+async fn api_key_providers_report_no_usage_limits() {
+    let h = harness().await;
+    set_api_key(&h).await;
+    let provider = h.provider(OPENAI, json!({"auth": "api_key"}));
+    assert_eq!(provider.usage_limits().await.unwrap(), None);
+    assert!(h.server.received_requests().await.unwrap().is_empty());
+}

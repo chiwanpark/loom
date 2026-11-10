@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{LlmError, Result};
 use crate::types::{AssistantMessage, CompletionChunk, CompletionRequest, ModelInfo};
+use crate::usage::UsageLimits;
 
 pub type ChunkStream = BoxStream<'static, Result<CompletionChunk>>;
 
@@ -67,6 +68,12 @@ pub trait LlmProvider: Send + Sync {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         Ok(Vec::new())
+    }
+
+    /// The subscription's usage limits, or `None` when the provider has no
+    /// way to report them (API keys, local servers).
+    async fn usage_limits(&self) -> Result<Option<UsageLimits>> {
+        Ok(None)
     }
 }
 

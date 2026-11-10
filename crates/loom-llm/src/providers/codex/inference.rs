@@ -9,7 +9,9 @@ use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{api_error, chunk_stream, send_with_retry};
 use crate::responses::models::listed_models;
 use crate::responses::{Flavor, build_body};
+use crate::store::now_unix;
 use crate::types::{CompletionRequest, ModelInfo};
+use crate::usage::{USAGE_TIMEOUT, UsageLimits, parse_codex};
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const CLIENT_VERSION: &str = "1.0.0";
@@ -18,6 +20,7 @@ pub(crate) struct CodexProvider {
     shared: Shared,
     url: String,
     models_url: String,
+    usage_url: String,
 }
 
 fn codex_base(base_url: &str) -> String {
@@ -43,6 +46,13 @@ fn models_url(base_url: &str) -> String {
     format!("{}/models", codex_base(base_url))
 }
 
+/// The ChatGPT backend reports the plan's limits next to, not under, `/codex`.
+fn usage_url(base_url: &str) -> String {
+    let base = codex_base(base_url);
+    let root = base.strip_suffix("/codex").unwrap_or(&base);
+    format!("{root}/wham/usage")
+}
+
 impl CodexProvider {
     pub(crate) fn new(shared: Shared, settings: Settings) -> Self {
         let base = settings.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
@@ -50,6 +60,7 @@ impl CodexProvider {
             shared,
             url: responses_url(base),
             models_url: models_url(base),
+            usage_url: usage_url(base),
         }
     }
 }
@@ -85,6 +96,25 @@ impl LlmProvider for CodexProvider {
         })
         .await?;
         Ok(chunk_stream(provider, &request.model, response))
+    }
+
+    async fn usage_limits(&self) -> Result<Option<UsageLimits>> {
+        let (token, account_id) = access_token(&self.shared).await?;
+        let response = self
+            .shared
+            .http
+            .get(&self.usage_url)
+            .bearer_auth(&token)
+            .header("chatgpt-account-id", &account_id)
+            .header("originator", ORIGINATOR)
+            .header("accept", "application/json")
+            .timeout(USAGE_TIMEOUT)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(api_error(ID.as_str(), response).await);
+        }
+        Ok(Some(parse_codex(&response.json().await?, now_unix())))
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
@@ -139,5 +169,10 @@ mod tests {
             models_url("http://x/codex/responses"),
             "http://x/codex/models"
         );
+        assert_eq!(
+            usage_url("https://chatgpt.com/backend-api"),
+            "https://chatgpt.com/backend-api/wham/usage"
+        );
+        assert_eq!(usage_url("http://x/codex/responses"), "http://x/wham/usage");
     }
 }

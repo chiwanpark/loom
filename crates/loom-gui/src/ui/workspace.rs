@@ -574,6 +574,12 @@ impl Workspace {
                 tree.update(cx, |tree, cx| tree.refresh(cx));
             }
         }
+        if let Some(chat) = self.active_group().and_then(SessionGroup::chat)
+            && let Some((provider, marker)) = chat.read(cx).usage_source(cx)
+        {
+            let conn = chat.read(cx).connection.clone();
+            conn.update(cx, |conn, cx| conn.refresh_usage(&provider, marker, cx));
+        }
         let Some(group) = self.active_group() else {
             return;
         };

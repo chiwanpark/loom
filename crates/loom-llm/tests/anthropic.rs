@@ -564,3 +564,51 @@ async fn invalid_token_responses_are_not_saved() {
         assert_eq!(h.section(ID).await, before);
     }
 }
+
+#[tokio::test]
+async fn usage_limits_come_from_the_oauth_usage_endpoint() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/usage"))
+        .and(header("authorization", "Bearer sk-ant-oat-access"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "five_hour": {"utilization": 23.0, "resets_at": "2026-11-10T17:00:00Z"},
+            "seven_day": {"utilization": 41.0, "resets_at": null},
+        })))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    // A base URL that names the API version still finds the usage endpoint.
+    let provider = h.provider(ID, json!({"base_url": format!("{}/v1", h.server.uri())}));
+    let limits = provider.usage_limits().await.unwrap().unwrap().limits;
+    let requests = h.server.received_requests().await.unwrap();
+    let beta = requests[0].headers["anthropic-beta"].to_str().unwrap();
+    assert!(beta.split(',').any(|b| b == "oauth-2025-04-20"), "{beta}");
+    let summary: Vec<_> = limits
+        .iter()
+        .map(|l| (l.label.as_str(), l.used_percent, l.resets_at, l.headline))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            ("5h", Some(23), Some(1_794_330_000), true),
+            ("weekly", Some(41), None, true)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn usage_limit_errors_are_reported() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/api/oauth/usage"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(
+            json!({"error": {"type": "permission_error", "message": "no usage for you"}}),
+        ))
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(ID, json!({"base_url": h.server.uri()}));
+    let error = provider.usage_limits().await.unwrap_err();
+    assert!(error.to_string().contains("no usage for you"), "{error}");
+}

@@ -10,6 +10,7 @@ mod retry;
 mod sse;
 mod store;
 mod types;
+mod usage;
 
 pub use auth::{
     AccountInfo, AccountStatus, Auth, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
@@ -22,3 +23,4 @@ pub use reqwest::Client as HttpClient;
 pub use retry::RetryPolicy;
 pub use store::{CREDENTIALS_FILE, CredentialStore, Credentials, StoreGuard, now_unix};
 pub use types::*;
+pub use usage::{UsageLimit, UsageLimits};

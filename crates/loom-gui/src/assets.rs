@@ -19,6 +19,7 @@ gpui_kit_assets::icon_assets!(
         FoldVertical,
         Gauge,
         GitBranch,
+        Hourglass,
         ImagePlus,
         Pencil,
         Plug,

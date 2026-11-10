@@ -18,7 +18,7 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{
     ContentPart, Decision, PolicyAction, ReasoningEffort, SessionId, SessionState, ToolCall,
-    ToolResultDetails,
+    ToolResultDetails, UsageLimit,
 };
 use loom_vt::{AlacrittyTerminal, TerminalEmulator};
 
@@ -26,7 +26,7 @@ use crate::attachments::{self, AttachError};
 use crate::conversation::{
     Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label, tool_summary,
 };
-use crate::state::AgentConnection;
+use crate::state::{AgentConnection, UsageState};
 use crate::ui::code::{self, Highlighted};
 use crate::ui::dialogs;
 use crate::ui::file_view::language;
@@ -1005,6 +1005,73 @@ pub fn policy_label(policy: Option<PolicyAction>) -> &'static str {
         .unwrap_or("Default")
 }
 
+/// How close a plan limit is to running out, as in pi-enhanced's status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LimitLevel {
+    Low,
+    High,
+    Critical,
+}
+
+fn limit_level(used_percent: u8) -> LimitLevel {
+    match used_percent {
+        90.. => LimitLevel::Critical,
+        70.. => LimitLevel::High,
+        _ => LimitLevel::Low,
+    }
+}
+
+/// Time left until a reset, in its two largest units: 3d 4h, 2h 13m, 45m.
+fn format_until(seconds: u64) -> String {
+    let (d, h, m) = (
+        seconds / 86_400,
+        seconds % 86_400 / 3600,
+        seconds % 3600 / 60,
+    );
+    match (d, h, m) {
+        (0, 0, 0) => "under a minute".into(),
+        (0, 0, m) => format!("{m}m"),
+        (0, h, 0) => format!("{h}h"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, 0, _) => format!("{d}d"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
+/// The value shown for a limit: its percentage, or the detail of an uncapped
+/// credit balance.
+fn limit_value(limit: &UsageLimit) -> String {
+    match (limit.used_percent, &limit.detail) {
+        (Some(used), _) => format!("{used}%"),
+        (None, Some(detail)) => detail.clone(),
+        (None, None) => "?".into(),
+    }
+}
+
+fn limits_tooltip(provider: &str, state: &UsageState, now: u64) -> String {
+    let mut lines = vec![format!("Plan usage limits for {provider}")];
+    for limit in state.limits.iter().flat_map(|l| &l.limits) {
+        let mut line = format!("{}: ", limit.label);
+        match (limit.used_percent, &limit.detail) {
+            (Some(used), Some(detail)) => line.push_str(&format!("{used}% used ({detail})")),
+            (Some(used), None) => line.push_str(&format!("{used}% used")),
+            (None, Some(detail)) => line.push_str(detail),
+            (None, None) => line.push_str("unknown"),
+        }
+        if let Some(at) = limit.resets_at {
+            line.push_str(&format!(
+                ", resets in {}",
+                format_until(at.saturating_sub(now))
+            ));
+        }
+        lines.push(line);
+    }
+    if let Some(error) = &state.error {
+        lines.push(format!("Could not refresh: {error}"));
+    }
+    lines.join("\n")
+}
+
 /// Shortens a token count for the status bar: 862, 7.5K, 75.9K, 176K, 1.2M.
 pub fn compact_count(n: u64) -> String {
     fn scaled(n: u64, unit: f64, suffix: &str) -> String {
@@ -1055,9 +1122,75 @@ fn status_item(
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
 }
 
+fn limits_item(
+    provider: &str,
+    state: &UsageState,
+    theme: &gpui_component::Theme,
+) -> Option<AnyElement> {
+    let headline: Vec<&UsageLimit> = match &state.limits {
+        Some(limits) => limits.limits.iter().filter(|l| l.headline).collect(),
+        None => Vec::new(),
+    };
+    if headline.is_empty() && state.error.is_none() {
+        // Not fetched yet, or the provider has no plan limits.
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let tooltip: SharedString = limits_tooltip(provider, state, now).into();
+    let mut item = h_flex()
+        .id("status-limits")
+        .gap_1()
+        .child(Icon::new(gpui_kit_assets::IconName::Hourglass).xsmall())
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx));
+    if headline.is_empty() {
+        return Some(
+            item.text_color(theme.warning)
+                .child("limits unavailable")
+                .into_any_element(),
+        );
+    }
+    for (ix, limit) in headline.into_iter().enumerate() {
+        if ix > 0 {
+            item = item.child(div().text_color(theme.muted_foreground).child("·"));
+        }
+        let color = match limit.used_percent.map(limit_level) {
+            Some(LimitLevel::Critical) => theme.danger,
+            Some(LimitLevel::High) => theme.warning,
+            Some(LimitLevel::Low) => theme.success,
+            None => theme.muted_foreground,
+        };
+        item = item
+            .child(
+                div()
+                    .text_color(theme.muted_foreground)
+                    .child(limit.label.clone()),
+            )
+            .child(div().text_color(color).child(limit_value(limit)));
+    }
+    Some(item.into_any_element())
+}
+
 impl SessionView {
+    /// The provider whose plan limits belong in the status bar, and a marker
+    /// that changes when a turn settles (`None` while one runs).
+    pub fn usage_source(&self, cx: &App) -> Option<(String, Option<u64>)> {
+        let conv = self.conversation.read(cx);
+        let model = conv
+            .info
+            .model
+            .clone()
+            .or_else(|| self.connection.read(cx).info.default_model.clone())?;
+        let (provider, _) = model.split_once('/')?;
+        let total = conv.total_usage;
+        let marker = (!conv.is_busy()).then(|| total.prompt_tokens() + total.output);
+        Some((provider.to_owned(), marker))
+    }
+
     /// The session's entries in the workspace status bar: state, model,
-    /// effort, policy, token usage, and pending approvals.
+    /// effort, policy, token usage, plan limits, and pending approvals.
     pub fn status_items(view: &Entity<Self>, cx: &App) -> Vec<AnyElement> {
         let theme = cx.theme();
         let this = view.read(cx);
@@ -1198,6 +1331,13 @@ impl SessionView {
                 )
                 .into_any_element(),
             );
+        }
+
+        if let Some((provider, _)) = this.usage_source(cx)
+            && let Some(state) = this.connection.read(cx).usage.get(&provider)
+            && let Some(item) = limits_item(&provider, state, theme)
+        {
+            items.push(item);
         }
 
         let pending = conv.pending_approvals().count();
@@ -1425,11 +1565,14 @@ impl Render for SessionView {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use super::{
-        CallDetails, call_details, compact_count, edit_preview, follow_after_scroll, grouped, head,
+        CallDetails, LimitLevel, UsageState, call_details, compact_count, edit_preview,
+        follow_after_scroll, format_until, grouped, head, limit_level, limit_value, limits_tooltip,
         split_read_note,
     };
-    use loom_client::proto::ToolCall;
+    use loom_client::proto::{ToolCall, UsageLimit};
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
@@ -1524,6 +1667,60 @@ mod tests {
     fn head_keeps_the_first_lines() {
         assert_eq!(head("a\nb\nc\n", 2), ("a\nb", 1));
         assert_eq!(head("a\nb", 2), ("a\nb", 0));
+    }
+
+    #[test]
+    fn limit_levels_follow_the_reference_thresholds() {
+        assert_eq!(limit_level(0), LimitLevel::Low);
+        assert_eq!(limit_level(69), LimitLevel::Low);
+        assert_eq!(limit_level(70), LimitLevel::High);
+        assert_eq!(limit_level(89), LimitLevel::High);
+        assert_eq!(limit_level(90), LimitLevel::Critical);
+        assert_eq!(limit_level(100), LimitLevel::Critical);
+    }
+
+    #[test]
+    fn reset_countdowns_use_two_units() {
+        assert_eq!(format_until(30), "under a minute");
+        assert_eq!(format_until(45 * 60), "45m");
+        assert_eq!(format_until(2 * 3600), "2h");
+        assert_eq!(format_until(2 * 3600 + 13 * 60 + 5), "2h 13m");
+        assert_eq!(format_until(86_400 + 30 * 60), "1d");
+        assert_eq!(format_until(3 * 86_400 + 4 * 3600 + 59 * 60), "3d 4h");
+    }
+
+    #[test]
+    fn limits_tooltip_lists_every_limit_and_the_error() {
+        let limit = |label: &str, used, detail: Option<&str>, resets_at| UsageLimit {
+            label: label.into(),
+            used_percent: used,
+            detail: detail.map(str::to_owned),
+            resets_at,
+            headline: true,
+        };
+        let mut state = UsageState::default();
+        state.limits = Some(Rc::new(loom_client::proto::UsageLimits {
+            limits: vec![
+                limit("5h", Some(23), None, Some(1000 + 2 * 3600 + 13 * 60)),
+                limit("weekly", Some(41), None, None),
+                limit("extra usage", Some(12), Some("$12.34 / $100.00"), None),
+                limit("credits", None, Some("1,234 left"), None),
+            ],
+        }));
+        state.error = Some("HTTP 429".into());
+        assert_eq!(
+            limits_tooltip("anthropic", &state, 1000),
+            "Plan usage limits for anthropic\n\
+             5h: 23% used, resets in 2h 13m\n\
+             weekly: 41% used\n\
+             extra usage: 12% used ($12.34 / $100.00)\n\
+             credits: 1,234 left\n\
+             Could not refresh: HTTP 429"
+        );
+        assert_eq!(
+            limit_value(&state.limits.as_ref().unwrap().limits[3]),
+            "1,234 left"
+        );
     }
 
     #[test]

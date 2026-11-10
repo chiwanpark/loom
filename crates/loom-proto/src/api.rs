@@ -200,6 +200,12 @@ pub enum Command {
     CompactSession {
         session: SessionId,
     },
+    /// The provider's subscription limits (5-hour and weekly windows, credit
+    /// balances). Answered with `Payload::UsageLimits(None)` for providers that
+    /// cannot report them.
+    GetUsageLimits {
+        provider: ProviderId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +228,27 @@ pub enum Payload {
     FileDiff(FileDiff),
     Directory(DirectoryListing),
     FileContent(FileContent),
+    UsageLimits(Option<UsageLimits>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageLimits {
+    /// Headline limits first.
+    pub limits: Vec<UsageLimit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageLimit {
+    /// Short name such as "5h", "weekly", "weekly (Opus)", or "extra usage".
+    pub label: String,
+    /// Share used, 0 to 100; `None` when the limit is uncapped.
+    pub used_percent: Option<u8>,
+    /// Amounts for credit limits, e.g. "$12.34 / $100.00".
+    pub detail: Option<String>,
+    /// Seconds since the Unix epoch.
+    pub resets_at: Option<u64>,
+    /// Shown in compact views; the rest are details.
+    pub headline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -272,6 +272,22 @@ pub fn account_info(info: loom_llm::AccountInfo) -> loom_proto::AccountInfo {
     }
 }
 
+pub fn usage_limits(limits: loom_llm::UsageLimits) -> loom_proto::UsageLimits {
+    loom_proto::UsageLimits {
+        limits: limits
+            .limits
+            .into_iter()
+            .map(|l| loom_proto::UsageLimit {
+                label: l.label,
+                used_percent: l.used_percent,
+                detail: l.detail,
+                resets_at: l.resets_at,
+                headline: l.headline,
+            })
+            .collect(),
+    }
+}
+
 pub fn provider_status(
     status: loom_llm::ProviderStatus,
     enabled: bool,

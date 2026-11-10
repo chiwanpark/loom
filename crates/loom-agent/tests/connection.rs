@@ -83,6 +83,17 @@ impl LlmProvider for Scripted {
         chunks.push(Ok(CompletionChunk::Done(message)));
         Ok(futures::stream::iter(chunks).boxed())
     }
+    async fn usage_limits(&self) -> loom_llm::Result<Option<loom_llm::UsageLimits>> {
+        Ok(Some(loom_llm::UsageLimits {
+            limits: vec![loom_llm::UsageLimit {
+                label: "5h".into(),
+                used_percent: Some(42),
+                detail: None,
+                resets_at: Some(1_794_330_000),
+                headline: true,
+            }],
+        }))
+    }
 }
 
 struct Setup {
@@ -282,6 +293,25 @@ async fn session_settings_and_errors() {
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
     let err = client.list_agents().await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::Unsupported);
+}
+
+#[tokio::test]
+async fn usage_limits_reach_the_client() {
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    let limits = client.usage_limits(PROVIDER).await.unwrap().unwrap();
+    assert_eq!(
+        limits.limits,
+        vec![loom_proto::UsageLimit {
+            label: "5h".into(),
+            used_percent: Some(42),
+            detail: None,
+            resets_at: Some(1_794_330_000),
+            headline: true,
+        }]
+    );
+    let err = client.usage_limits("unknown-provider").await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
 }
 
 #[tokio::test]

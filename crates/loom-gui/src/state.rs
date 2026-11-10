@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
     AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, Notice, PolicyAction,
-    ReasoningEffort, SessionId, SessionInfo, TerminalId, WorkspaceChanges,
+    ReasoningEffort, SessionId, SessionInfo, TerminalId, UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -37,8 +38,40 @@ pub struct GitState {
     loading: bool,
 }
 
+/// How often a provider's subscription limits are fetched while nothing
+/// else prompts a refresh.
+const USAGE_REFRESH: Duration = Duration::from_secs(120);
+
+/// The last answer to `GetUsageLimits` for one provider.
+#[derive(Default)]
+pub struct UsageState {
+    /// `None` until fetched, and when the provider cannot report limits.
+    pub limits: Option<Rc<UsageLimits>>,
+    /// Why the last fetch failed; older `limits` are kept meanwhile.
+    pub error: Option<String>,
+    fetched: Option<Instant>,
+    /// The caller's marker at the last fetch, so a change (such as a finished
+    /// turn) refreshes before the interval runs out.
+    marker: u64,
+    loading: bool,
+}
+
+impl UsageState {
+    fn due(&self, marker: Option<u64>, now: Instant) -> bool {
+        !self.loading
+            && match self.fetched {
+                None => true,
+                Some(at) => {
+                    marker.is_some_and(|m| m != self.marker)
+                        || now.duration_since(at) >= USAGE_REFRESH
+                }
+            }
+    }
+}
+
 pub struct AgentConnection {
     pub git: GitState,
+    pub usage: HashMap<String, UsageState>,
     pub host: HostEntry,
     pub info: AgentInfo,
     pub client: Client,
@@ -69,6 +102,7 @@ impl AgentConnection {
         let info = client.agent().clone();
         let mut this = Self {
             git: GitState::default(),
+            usage: HashMap::new(),
             host,
             info,
             client,
@@ -409,6 +443,49 @@ impl AgentConnection {
         .detach();
     }
 
+    /// Fetches `provider`'s usage limits when they are stale or `marker`
+    /// changed since the last fetch. A `None` marker (a turn in progress)
+    /// leaves only the interval.
+    pub fn refresh_usage(&mut self, provider: &str, marker: Option<u64>, cx: &mut Context<Self>) {
+        if self.status != LinkStatus::Connected {
+            return;
+        }
+        let state = self.usage.entry(provider.to_owned()).or_default();
+        if !state.due(marker, Instant::now()) {
+            return;
+        }
+        state.loading = true;
+        if let Some(marker) = marker {
+            state.marker = marker;
+        }
+        let client = self.client.clone();
+        let name = provider.to_owned();
+        let task = self
+            .backend
+            .run(async move { client.usage_limits(&name).await });
+        let provider = provider.to_owned();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(state) = this.usage.get_mut(&provider) else {
+                    return;
+                };
+                state.loading = false;
+                state.fetched = Some(Instant::now());
+                match result {
+                    Some(Ok(limits)) => {
+                        state.limits = limits.map(Rc::new);
+                        state.error = None;
+                    }
+                    Some(Err(err)) => state.error = Some(err.to_string()),
+                    None => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn file_diff(
         &self,
         path: String,
@@ -591,5 +668,34 @@ impl TerminalIo for RemoteTerminal {
 
     fn resize(&self, cols: u16, rows: u16) {
         let _ = self.tx.send(TerminalRequest::Resize(cols, rows));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_is_refetched_when_stale_or_the_marker_changes() {
+        let now = Instant::now();
+        let mut state = UsageState::default();
+        assert!(state.due(None, now), "never fetched");
+        state.fetched = Some(now);
+        state.marker = 7;
+        assert!(!state.due(Some(7), now + Duration::from_secs(60)));
+        assert!(
+            !state.due(None, now + Duration::from_secs(60)),
+            "turn running"
+        );
+        assert!(
+            state.due(Some(8), now + Duration::from_secs(1)),
+            "turn finished"
+        );
+        assert!(state.due(None, now + USAGE_REFRESH), "interval elapsed");
+        state.loading = true;
+        assert!(
+            !state.due(Some(8), now + USAGE_REFRESH),
+            "already in flight"
+        );
     }
 }

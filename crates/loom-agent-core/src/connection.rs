@@ -207,6 +207,7 @@ impl Connection {
                 }));
             }
             Command::ListModels { .. }
+            | Command::GetUsageLimits { .. }
             | Command::StartLogin { .. }
             | Command::CompleteLogin { .. }
             | Command::Logout { .. } => {
@@ -446,6 +447,7 @@ impl Connection {
                 .map(Payload::Session)
                 .map_err(|e| convert::api_error(&e)),
             Command::ListModels { .. }
+            | Command::GetUsageLimits { .. }
             | Command::StartLogin { .. }
             | Command::CompleteLogin { .. }
             | Command::CancelLogin { .. }
@@ -569,6 +571,17 @@ async fn slow_command(
                     })
                     .collect(),
             ))
+        }
+        Command::GetUsageLimits { provider } => {
+            let limits = agent
+                .runtime()
+                .providers
+                .get(&ProviderId::new(provider))
+                .map_err(llm)?
+                .usage_limits()
+                .await
+                .map_err(llm)?;
+            Ok(Payload::UsageLimits(limits.map(convert::usage_limits)))
         }
         Command::StartLogin { provider, method } => {
             let started = agent

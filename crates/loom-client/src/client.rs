@@ -8,7 +8,7 @@ use loom_proto::{
     AccountInfo, AgentInfo, ApiError, ClientHello, ClientMessage, Command, ContentPart, Decision,
     LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo, Notice, PROTOCOL_VERSION, Payload,
     PolicyAction, ProviderStatus, ReasoningEffort, RequestId, SequencedEvent, ServerMessage,
-    SessionId, SessionInfo, TerminalId, decode, encode,
+    SessionId, SessionInfo, TerminalId, UsageLimits, decode, encode,
 };
 use loom_transport::{Diagnostics, FrameReceiver, FrameSender, FrameStream};
 use tokio::sync::{mpsc, oneshot};
@@ -244,6 +244,18 @@ impl Client {
     pub async fn list_providers(&self) -> Result<Vec<ProviderStatus>> {
         match self.request(Command::ListProviders).await? {
             Payload::Providers(list) => Ok(list),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn usage_limits(&self, provider: &str) -> Result<Option<UsageLimits>> {
+        match self
+            .request(Command::GetUsageLimits {
+                provider: provider.to_owned(),
+            })
+            .await?
+        {
+            Payload::UsageLimits(limits) => Ok(limits),
             other => Err(unexpected(other)),
         }
     }
