@@ -8,9 +8,12 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::text::TextView;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
-use loom_client::proto::{Decision, Risk, SessionId, SessionState, ToolResultDetails};
+use loom_client::proto::{
+    Decision, PolicyAction, ReasoningEffort, Risk, SessionId, SessionState, ToolResultDetails,
+};
 use loom_vt::{AlacrittyTerminal, TerminalEmulator};
 
 use crate::conversation::{Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_summary};
@@ -560,6 +563,104 @@ fn state_label(state: SessionState) -> &'static str {
     }
 }
 
+pub const REASONING_CHOICES: [(Option<ReasoningEffort>, &str); 7] = [
+    (None, "Default"),
+    (Some(ReasoningEffort::None), "None"),
+    (Some(ReasoningEffort::Minimal), "Minimal"),
+    (Some(ReasoningEffort::Low), "Low"),
+    (Some(ReasoningEffort::Medium), "Medium"),
+    (Some(ReasoningEffort::High), "High"),
+    (Some(ReasoningEffort::Xhigh), "Extra high"),
+];
+
+pub const POLICY_CHOICES: [(Option<PolicyAction>, &str); 4] = [
+    (None, "Default"),
+    (Some(PolicyAction::Ask), "Ask"),
+    (Some(PolicyAction::Allow), "Allow"),
+    (Some(PolicyAction::Deny), "Deny"),
+];
+
+pub fn reasoning_label(effort: Option<ReasoningEffort>) -> &'static str {
+    REASONING_CHOICES
+        .iter()
+        .find(|(value, _)| *value == effort)
+        .map(|(_, label)| *label)
+        .unwrap_or("Default")
+}
+
+pub fn policy_label(policy: Option<PolicyAction>) -> &'static str {
+    POLICY_CHOICES
+        .iter()
+        .find(|(value, _)| *value == policy)
+        .map(|(_, label)| *label)
+        .unwrap_or("Default")
+}
+
+impl SessionView {
+    fn reasoning_menu(
+        &self,
+        current: Option<ReasoningEffort>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        Button::new("reasoning")
+            .ghost()
+            .small()
+            .icon(Icon::new(gpui_kit_assets::IconName::Brain))
+            .label(format!("Effort: {}", reasoning_label(current)))
+            .tooltip("Reasoning effort for this session")
+            .dropdown_menu(move |mut menu, _, _| {
+                for (value, label) in REASONING_CHOICES {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(value == current)
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    let session = this.session_id(cx);
+                                    this.connection.update(cx, |conn, cx| {
+                                        conn.set_reasoning(session, value, cx)
+                                    });
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
+    fn policy_menu(
+        &self,
+        current: Option<PolicyAction>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        Button::new("policy")
+            .ghost()
+            .small()
+            .icon(Icon::new(gpui_kit_assets::IconName::ShieldCheck))
+            .label(format!("Policy: {}", policy_label(current)))
+            .tooltip("Default action for tool calls without a matching policy rule")
+            .dropdown_menu(move |mut menu, _, _| {
+                for (value, label) in POLICY_CHOICES {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(value == current)
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    let session = this.session_id(cx);
+                                    this.connection
+                                        .update(cx, |conn, cx| conn.set_policy(session, value, cx));
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+}
+
 impl Focusable for SessionView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -631,6 +732,8 @@ impl Render for SessionView {
                             })
                             .child(state_label(conversation.state)),
                     )
+                    .child(self.reasoning_menu(conversation.info.reasoning, cx))
+                    .child(self.policy_menu(conversation.info.policy_default, cx))
                     .child(
                         Button::new("model")
                             .ghost()

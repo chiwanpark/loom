@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, Notice, SessionId, SessionInfo, TerminalId,
+    AgentInfo, ApiError, Command, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo,
+    TerminalId,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -284,6 +285,48 @@ impl AgentConnection {
         let task = self
             .backend
             .run(async move { client.archive_session(&id, archived).await });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Some(Ok(info)) => this.update_session_info(info, cx),
+                Some(Err(err)) => cx.emit(ConnectionEvent::Failed(err.to_string())),
+                None => {}
+            });
+        })
+        .detach();
+    }
+
+    pub fn set_reasoning(
+        &mut self,
+        id: SessionId,
+        effort: Option<ReasoningEffort>,
+        cx: &mut Context<Self>,
+    ) {
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.set_reasoning(&id, effort).await });
+        self.apply_info(task, cx);
+    }
+
+    pub fn set_policy(
+        &mut self,
+        id: SessionId,
+        default: Option<PolicyAction>,
+        cx: &mut Context<Self>,
+    ) {
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.set_policy(&id, default).await });
+        self.apply_info(task, cx);
+    }
+
+    fn apply_info(
+        &mut self,
+        task: impl Future<Output = Option<loom_client::Result<SessionInfo>>> + 'static,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| match result {
