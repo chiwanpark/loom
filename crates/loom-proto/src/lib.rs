@@ -61,6 +61,19 @@ mod tests {
                 }),
             },
         });
+        roundtrip(SessionEvent::ToolCallFinished {
+            call_id: "c2".into(),
+            result: ToolResult {
+                content: "Wrote a.txt".into(),
+                is_error: false,
+                details: Some(ToolResultDetails::WriteWithDiff {
+                    path: "a.txt".into(),
+                    bytes: 3,
+                    created: false,
+                    diff: "-old\n+new\n".into(),
+                }),
+            },
+        });
         roundtrip(SessionEvent::StateChanged {
             state: SessionState::WaitingLock,
         });

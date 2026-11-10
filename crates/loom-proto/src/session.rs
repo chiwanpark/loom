@@ -92,6 +92,12 @@ pub enum ToolResultDetails {
         full_output_path: Option<PathBuf>,
         duration_ms: u64,
     },
+    WriteWithDiff {
+        path: PathBuf,
+        bytes: u64,
+        created: bool,
+        diff: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
