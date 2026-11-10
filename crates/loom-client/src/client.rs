@@ -205,6 +205,13 @@ impl Client {
     }
 
     pub async fn request(&self, command: Command) -> Result<Payload> {
+        self.submit(command).await?.await
+    }
+
+    pub async fn submit(
+        &self,
+        command: Command,
+    ) -> Result<impl std::future::Future<Output = Result<Payload>> + Send + 'static> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         match self
@@ -224,7 +231,7 @@ impl Client {
         {
             return Err(ClientError::Closed);
         }
-        rx.await.unwrap_or(Err(ClientError::Closed))
+        Ok(async move { rx.await.unwrap_or(Err(ClientError::Closed)) })
     }
 
     pub async fn agent_info(&self) -> Result<AgentInfo> {
