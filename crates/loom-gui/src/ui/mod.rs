@@ -1,3 +1,4 @@
+pub mod code;
 pub mod dialogs;
 pub mod diff;
 pub mod file_view;

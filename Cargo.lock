@@ -4214,6 +4214,7 @@ dependencies = [
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
  "loom-client",
  "loom-config",
  "loom-vt",

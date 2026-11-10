@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext, AsyncApp, AsyncWindowContext, ClipboardEntry, Context, Entity,
-    ExternalPaths, FocusHandle, Focusable, Image, InteractiveElement, IntoElement, ObjectFit,
-    ParentElement, PathPromptOptions, Render, ScrollEvent, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, Subscription, Window, div, img,
+    ExternalPaths, FocusHandle, Focusable, HighlightStyle, Image, InteractiveElement, IntoElement,
+    ObjectFit, ParentElement, PathPromptOptions, Render, ScrollEvent, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, StyledImage, StyledText, Subscription, Window, div, img,
     prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
@@ -16,15 +17,19 @@ use gpui_component::text::TextView;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{
-    ContentPart, Decision, PolicyAction, ReasoningEffort, Risk, SessionId, SessionState,
+    ContentPart, Decision, PolicyAction, ReasoningEffort, SessionId, SessionState, ToolCall,
     ToolResultDetails,
 };
 use loom_vt::{AlacrittyTerminal, TerminalEmulator};
 
 use crate::attachments::{self, AttachError};
-use crate::conversation::{Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_summary};
+use crate::conversation::{
+    Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label, tool_summary,
+};
 use crate::state::AgentConnection;
+use crate::ui::code::{self, Highlighted};
 use crate::ui::dialogs;
+use crate::ui::file_view::language;
 use crate::ui::notify;
 
 const OUTPUT_COLS: u16 = 120;
@@ -67,6 +72,9 @@ pub struct SessionView {
     collapsed: HashSet<String>,
     show_reasoning: HashSet<usize>,
     live: HashMap<String, LiveOutput>,
+    /// Highlighted tool arguments and results, by call id, part, and theme.
+    /// Both are fixed once they arrive, so they are highlighted only once.
+    highlights: HashMap<String, Rc<Highlighted>>,
     attachments: Vec<Arc<Image>>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -111,6 +119,7 @@ impl SessionView {
             collapsed: HashSet::new(),
             show_reasoning: HashSet::new(),
             live: HashMap::new(),
+            highlights: HashMap::new(),
             attachments: Vec::new(),
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -325,6 +334,21 @@ impl SessionView {
         text.trim_end().to_owned()
     }
 
+    fn highlighted(
+        &mut self,
+        key: String,
+        text: &str,
+        language: &str,
+        theme: &gpui_component::Theme,
+    ) -> Rc<Highlighted> {
+        // The theme pointer changes when the theme does, which drops stale colors.
+        let key = format!("{key}/{:p}", Arc::as_ptr(&theme.highlight_theme));
+        self.highlights
+            .entry(key)
+            .or_insert_with(|| Rc::new(code::highlight(text, language, &theme.highlight_theme)))
+            .clone()
+    }
+
     fn is_expanded(&self, tool: &ToolItem) -> bool {
         let id = &tool.call.call_id;
         if self.expanded.contains(id) {
@@ -382,11 +406,24 @@ impl SessionView {
                                         )
                                     })
                                     .child(
-                                        img(image.clone())
-                                            .max_w(px(480.))
-                                            .max_h(px(320.))
-                                            .rounded_sm()
-                                            .object_fit(ObjectFit::Contain),
+                                        // `img` sizes itself to the image and clamps
+                                        // width and height separately, so a wide image
+                                        // under max_w/max_h got letterboxed. Give it
+                                        // the scaled size instead.
+                                        match attachments::dimensions(image) {
+                                            Some(size) => {
+                                                let (w, h) = attachments::fit_within(
+                                                    size,
+                                                    (IMAGE_MAX_W, IMAGE_MAX_H),
+                                                );
+                                                img(image.clone()).w(px(w)).h(px(h))
+                                            }
+                                            None => img(image.clone())
+                                                .max_w(px(IMAGE_MAX_W))
+                                                .max_h(px(IMAGE_MAX_H)),
+                                        }
+                                        .rounded_sm()
+                                        .object_fit(ObjectFit::Contain),
                                     )
                             }),
                         ))
@@ -498,12 +535,6 @@ impl SessionView {
             ToolStatus::Failed => (IconName::CircleX, theme.danger, "failed"),
             ToolStatus::Denied => (IconName::Ban, theme.danger, "denied"),
         };
-        let risk = match tool.call.risk {
-            Some(Risk::ReadOnly) => Some("read"),
-            Some(Risk::Write) => Some("write"),
-            Some(Risk::Exec) => Some("exec"),
-            None => None,
-        };
         let toggle_id = id.clone();
         let header = h_flex()
             .id(SharedString::from(format!("tool-{id}")))
@@ -542,20 +573,8 @@ impl SessionView {
                     .whitespace_nowrap()
                     .font_family(theme.mono_font_family.clone())
                     .text_sm()
-                    .child(tool_summary(&tool.call)),
+                    .child(header_text(&tool.call, &theme)),
             )
-            .when_some(risk, |el, risk| {
-                el.child(
-                    div()
-                        .text_xs()
-                        .px_1()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(theme.border)
-                        .text_color(theme.muted_foreground)
-                        .child(risk),
-                )
-            })
             .child(div().text_xs().text_color(color).child(status));
 
         // Collapsed rows have no body; an empty one would still add its bottom
@@ -575,10 +594,6 @@ impl SessionView {
                         .child(reason.clone()),
                 );
             }
-            if tool.result.is_none() || tool.call.name != "shell" {
-                has_body = true;
-                body = body.child(code_block(pretty_arguments(&tool.call.arguments), &theme));
-            }
             let diff = match tool.result.as_ref().and_then(|r| r.details.as_ref()) {
                 Some(
                     ToolResultDetails::Edit { diff, .. }
@@ -586,11 +601,48 @@ impl SessionView {
                 ) => Some(diff.clone()),
                 _ => None,
             };
+            match call_details(&tool.call, diff.is_some()) {
+                CallDetails::None => {}
+                CallDetails::Diff(text) => {
+                    has_body = true;
+                    body = body.child(diff_block(&text, &theme));
+                }
+                CallDetails::Code { text, language } => {
+                    let code = self.highlighted(format!("{id}/call"), &text, &language, &theme);
+                    has_body = true;
+                    body = body.child(code::code_view(&code, None, &theme));
+                }
+            }
             if let Some(diff) = diff {
                 has_body = true;
                 body = body.child(diff_block(&diff, &theme));
             } else if let Some(result) = &tool.result {
-                if !result.content.trim().is_empty() {
+                if let (
+                    Some(ToolResultDetails::Read {
+                        path, start_line, ..
+                    }),
+                    false,
+                ) = (&result.details, result.is_error)
+                {
+                    let (text, note) = split_read_note(&result.content);
+                    if !text.is_empty() {
+                        let (shown, hidden) = head(text, MAX_BLOCK_LINES);
+                        let lang = language(&path.to_string_lossy());
+                        let code = self.highlighted(format!("{id}/read"), shown, &lang, &theme);
+                        has_body = true;
+                        body = body.child(code::code_view(&code, Some(*start_line), &theme));
+                        if hidden > 0 {
+                            body = body.child(muted_note(
+                                format!("… {hidden} more lines not shown"),
+                                &theme,
+                            ));
+                        }
+                    }
+                    if let Some(note) = note {
+                        has_body = true;
+                        body = body.child(muted_note(note.to_owned(), &theme));
+                    }
+                } else if !result.content.trim().is_empty() {
                     has_body = true;
                     body = body.child(code_block(result.content.clone(), &theme));
                 }
@@ -679,7 +731,175 @@ fn pretty_arguments(arguments: &str) -> String {
     }
 }
 
+/// The color of a tool's name in its header, so each kind of call is easy to
+/// pick out.
+fn tool_color(name: &str, theme: &gpui_component::Theme) -> gpui::Hsla {
+    match name {
+        "shell" => theme.magenta,
+        "read" => theme.blue,
+        "edit" => theme.yellow,
+        "write" => theme.cyan,
+        _ => theme.foreground,
+    }
+}
+
+/// The tool summary with the name in the tool's color and the rest of the
+/// label (the shell timeout) muted.
+fn header_text(call: &ToolCall, theme: &gpui_component::Theme) -> StyledText {
+    let (summary, label) = (tool_summary(call), tool_label(call));
+    let color = |color| HighlightStyle {
+        color: Some(color),
+        ..Default::default()
+    };
+    StyledText::new(summary).with_highlights([
+        (0..call.name.len(), color(tool_color(&call.name, theme))),
+        (call.name.len()..label.len(), color(theme.muted_foreground)),
+    ])
+}
+
+/// What to show for a tool call's arguments.
+#[derive(Debug, PartialEq, Eq)]
+enum CallDetails {
+    None,
+    Code { text: String, language: String },
+    Diff(String),
+}
+
+/// Shows each tool's arguments in the form that says the most: the shell
+/// command, the content to write, or the edits as a diff. The path is already
+/// in the header, and the result's diff replaces the arguments of edits and
+/// overwrites once it arrives.
+fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
+    let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok();
+    let field = |name: &str| {
+        args.as_ref()
+            .and_then(|args| args.get(name))
+            .and_then(|value| value.as_str())
+    };
+    let code = |text: &str, language: &str| CallDetails::Code {
+        text: text.to_owned(),
+        language: language.to_owned(),
+    };
+    match call.name.as_str() {
+        "shell" => {
+            if let Some(command) = field("command") {
+                return code(command, "bash");
+            }
+        }
+        "read" if field("path").is_some() => return CallDetails::None,
+        "edit" if has_result_diff => return CallDetails::None,
+        "edit" => {
+            if let Some(diff) = args.as_ref().and_then(edit_preview) {
+                return CallDetails::Diff(diff);
+            }
+        }
+        "write" if has_result_diff => return CallDetails::None,
+        "write" => {
+            if let (Some(path), Some(content)) = (field("path"), field("content")) {
+                let (shown, hidden) = head(content, MAX_BLOCK_LINES);
+                let mut text = shown.to_owned();
+                if hidden > 0 {
+                    text.push_str(&format!("\n… {hidden} more lines not shown"));
+                }
+                return code(&text, &language(path));
+            }
+        }
+        _ => {}
+    }
+    if args.is_some() {
+        code(&pretty_arguments(&call.arguments), "json")
+    } else {
+        code(&call.arguments, "text")
+    }
+}
+
+/// The replacements of an edit call as a diff: removed lines, then added.
+fn edit_preview(args: &serde_json::Value) -> Option<String> {
+    let text = |value: &serde_json::Value, snake: &str, camel: &str| {
+        value
+            .get(snake)
+            .or_else(|| value.get(camel))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    let mut pairs: Vec<(String, String)> = args
+        .get("edits")
+        .and_then(|edits| edits.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|edit| {
+            Some((
+                text(edit, "old_text", "oldText")?,
+                text(edit, "new_text", "newText")?,
+            ))
+        })
+        .collect();
+    if let (Some(old), Some(new)) = (
+        text(args, "old_text", "oldText"),
+        text(args, "new_text", "newText"),
+    ) {
+        pairs.push((old, new));
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    let count = pairs.len();
+    let mut out = Vec::new();
+    for (ix, (old, new)) in pairs.iter().enumerate() {
+        if count > 1 {
+            out.push(format!("@@ edit {} of {count} @@", ix + 1));
+        }
+        out.extend(old.lines().map(|line| format!("-{line}")));
+        out.extend(new.lines().map(|line| format!("+{line}")));
+    }
+    Some(out.join("\n"))
+}
+
+/// Splits the read tool's trailing note ("[Showing lines …]", "[File is
+/// empty]", "[Line N is …]") from the file content.
+fn split_read_note(content: &str) -> (&str, Option<&str>) {
+    let content = content.trim_end_matches('\n');
+    let (text, last) = match content.rsplit_once('\n') {
+        Some((text, last)) => (text, last),
+        None => ("", content),
+    };
+    let is_note = last.ends_with(']')
+        && ["[Showing lines ", "[File is empty]", "[Line "]
+            .iter()
+            .any(|prefix| last.starts_with(prefix));
+    if is_note {
+        (text.trim_end_matches('\n'), Some(last))
+    } else {
+        (content, None)
+    }
+}
+
+/// The first `max` lines of `text`, and how many lines were left out.
+fn head(text: &str, max: usize) -> (&str, usize) {
+    let total = text.lines().count();
+    if total <= max {
+        return (text, 0);
+    }
+    let end = text
+        .match_indices('\n')
+        .nth(max - 1)
+        .map_or(text.len(), |(ix, _)| ix);
+    (&text[..end], total - max)
+}
+
+fn muted_note(text: String, theme: &gpui_component::Theme) -> AnyElement {
+    div()
+        .text_xs()
+        .text_color(theme.muted_foreground)
+        .child(text)
+        .into_any_element()
+}
+
 const MAX_BLOCK_LINES: usize = 400;
+
+/// The largest size of an image in a prompt.
+const IMAGE_MAX_W: f32 = 480.;
+const IMAGE_MAX_H: f32 = 320.;
 
 fn clip(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -1205,7 +1425,106 @@ impl Render for SessionView {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_count, follow_after_scroll, grouped};
+    use super::{
+        CallDetails, call_details, compact_count, edit_preview, follow_after_scroll, grouped, head,
+        split_read_note,
+    };
+    use loom_client::proto::ToolCall;
+
+    fn call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            call_id: "c1".into(),
+            name: name.into(),
+            arguments: args.to_string(),
+            risk: None,
+        }
+    }
+
+    fn code(text: &str, language: &str) -> CallDetails {
+        CallDetails::Code {
+            text: text.into(),
+            language: language.into(),
+        }
+    }
+
+    #[test]
+    fn shell_shows_the_command() {
+        let shell = call(
+            "shell",
+            serde_json::json!({"command": "cd /x && ls\necho hi", "timeout": 5}),
+        );
+        assert_eq!(
+            call_details(&shell, false),
+            code("cd /x && ls\necho hi", "bash")
+        );
+    }
+
+    #[test]
+    fn edit_shows_a_diff_until_the_result_has_one() {
+        let edit = call(
+            "edit",
+            serde_json::json!({"path": "a.rs", "edits": [
+                {"old_text": "a\nb", "new_text": "c"},
+                {"oldText": "x", "newText": "y\nz"},
+            ]}),
+        );
+        assert_eq!(call_details(&edit, true), CallDetails::None);
+        assert_eq!(
+            call_details(&edit, false),
+            CallDetails::Diff(
+                "@@ edit 1 of 2 @@\n-a\n-b\n+c\n@@ edit 2 of 2 @@\n-x\n+y\n+z".into()
+            )
+        );
+        let single = serde_json::json!({"path": "a.rs", "old_text": "a", "new_text": "b"});
+        assert_eq!(edit_preview(&single).as_deref(), Some("-a\n+b"));
+    }
+
+    #[test]
+    fn write_shows_highlighted_content_unless_there_is_a_diff() {
+        let write = call(
+            "write",
+            serde_json::json!({"path": "src/main.rs", "content": "fn main() {}\n"}),
+        );
+        assert_eq!(call_details(&write, false), code("fn main() {}\n", "rs"));
+        assert_eq!(call_details(&write, true), CallDetails::None);
+    }
+
+    #[test]
+    fn read_has_no_argument_block_and_unknown_tools_show_json() {
+        let read = call("read", serde_json::json!({"path": "a.rs", "offset": 3}));
+        assert_eq!(call_details(&read, false), CallDetails::None);
+        let other = call("search", serde_json::json!({"q": "x"}));
+        assert_eq!(
+            call_details(&other, false),
+            code("{\n  \"q\": \"x\"\n}", "json")
+        );
+    }
+
+    #[test]
+    fn read_notes_are_split_from_the_content() {
+        assert_eq!(
+            split_read_note("a\nb\n\n[Showing lines 1-2 of 9. Use offset=3 to continue.]"),
+            (
+                "a\nb",
+                Some("[Showing lines 1-2 of 9. Use offset=3 to continue.]")
+            )
+        );
+        assert_eq!(
+            split_read_note("[File is empty]"),
+            ("", Some("[File is empty]"))
+        );
+        // A TOML file can end with a table header; it is content, not a note.
+        assert_eq!(
+            split_read_note("a = 1\n[workspace]\n"),
+            ("a = 1\n[workspace]", None)
+        );
+    }
+
+    #[test]
+    fn head_keeps_the_first_lines() {
+        assert_eq!(head("a\nb\nc\n", 2), ("a\nb", 1));
+        assert_eq!(head("a\nb", 2), ("a\nb", 0));
+    }
 
     #[test]
     fn compact_counts() {

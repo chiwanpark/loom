@@ -330,13 +330,65 @@ pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// The timeout a shell call asks for, in seconds. Like the shell tool, this
+/// takes numbers, numeric strings, and whole floats; zero means none.
+pub fn shell_timeout(call: &ToolCall) -> Option<u64> {
+    if call.name != "shell" {
+        return None;
+    }
+    let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;
+    let value = args.get("timeout")?;
+    value
+        .as_u64()
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|v| *v >= 0. && v.fract() == 0.)
+                .map(|v| v as u64)
+        })
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+        .filter(|seconds| *seconds > 0)
+}
+
+/// 45 -> "45s", 90 -> "1m 30s", 600 -> "10m", 3600 -> "1h", 5400 -> "1h 30m".
+fn format_seconds(seconds: u64) -> String {
+    let (h, m, s) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    let text: Vec<String> = [(h, "h"), (m, "m"), (s, "s")]
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, unit)| format!("{n}{unit}"))
+        .collect();
+    if text.is_empty() {
+        "0s".into()
+    } else {
+        text.join(" ")
+    }
+}
+
 pub fn tool_summary(call: &ToolCall) -> String {
     let args: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let field = |name: &str| args.get(name).and_then(|v| v.as_str()).map(str::to_owned);
     let detail = match call.name.as_str() {
         "shell" => field("command"),
-        "read" | "write" | "edit" => field("path"),
+        "read" => field("path").map(|path| {
+            // The read tool takes numbers or numeric strings.
+            let number = |name: &str| {
+                args.get(name).and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                })
+            };
+            match (number("offset"), number("limit")) {
+                (Some(offset), Some(limit)) if limit > 0 => {
+                    format!("{path} (lines {offset}-{})", offset + limit - 1)
+                }
+                (None, Some(limit)) if limit > 0 => format!("{path} (lines 1-{limit})"),
+                (Some(offset), _) => format!("{path} (from line {offset})"),
+                _ => path,
+            }
+        }),
+        "write" | "edit" => field("path"),
         _ => None,
     };
     let detail = detail.unwrap_or_else(|| {
@@ -347,7 +399,15 @@ pub fn tool_summary(call: &ToolCall) -> String {
         text
     });
     let first = detail.lines().next().unwrap_or_default();
-    format!("{} {}", call.name, first)
+    format!("{} {first}", tool_label(call))
+}
+
+/// The start of a tool's summary: its name, and the timeout of a shell call.
+pub fn tool_label(call: &ToolCall) -> String {
+    match shell_timeout(call) {
+        Some(seconds) => format!("{} (timeout: {})", call.name, format_seconds(seconds)),
+        None => call.name.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +443,77 @@ mod tests {
             arguments: args.into(),
             risk: None,
         }
+    }
+
+    #[test]
+    fn shell_timeout_accepts_what_the_tool_accepts() {
+        let timeout =
+            |args: serde_json::Value| shell_timeout(&call("c", "shell", &args.to_string()));
+        assert_eq!(timeout(serde_json::json!({"command": "ls"})), None);
+        assert_eq!(
+            timeout(serde_json::json!({"command": "ls", "timeout": 30})),
+            Some(30)
+        );
+        assert_eq!(
+            timeout(serde_json::json!({"command": "ls", "timeout": "90"})),
+            Some(90)
+        );
+        assert_eq!(
+            timeout(serde_json::json!({"command": "ls", "timeout": 60.0})),
+            Some(60)
+        );
+        assert_eq!(
+            timeout(serde_json::json!({"command": "ls", "timeout": 0})),
+            None
+        );
+        assert_eq!(
+            timeout(serde_json::json!({"command": "ls", "timeout": 1.5})),
+            None
+        );
+        let read = call("c", "read", r#"{"path": "a", "timeout": 5}"#);
+        assert_eq!(shell_timeout(&read), None);
+    }
+
+    #[test]
+    fn seconds_are_formatted_in_units() {
+        assert_eq!(format_seconds(45), "45s");
+        assert_eq!(format_seconds(90), "1m 30s");
+        assert_eq!(format_seconds(600), "10m");
+        assert_eq!(format_seconds(3600), "1h");
+        assert_eq!(format_seconds(5400), "1h 30m");
+        assert_eq!(format_seconds(3661), "1h 1m 1s");
+    }
+
+    #[test]
+    fn shell_summary_shows_the_timeout() {
+        let summary = |args: &str| tool_summary(&call("c", "shell", args));
+        assert_eq!(summary(r#"{"command":"ls -la"}"#), "shell ls -la");
+        assert_eq!(
+            summary(r#"{"command":"cargo build\nls","timeout":1800}"#),
+            "shell (timeout: 30m) cargo build"
+        );
+    }
+
+    #[test]
+    fn read_summary_shows_the_line_range() {
+        let summary = |args: &str| tool_summary(&call("c", "read", args));
+        assert_eq!(summary(r#"{"path":"a.rs"}"#), "read a.rs");
+        assert_eq!(
+            summary(r#"{"path":"a.rs","offset":776,"limit":12}"#),
+            "read a.rs (lines 776-787)"
+        );
+        assert_eq!(
+            summary(r#"{"path":"a.rs","offset":"10","limit":"5"}"#),
+            "read a.rs (lines 10-14)"
+        );
+        assert_eq!(
+            summary(r#"{"path":"a.rs","limit":40}"#),
+            "read a.rs (lines 1-40)"
+        );
+        assert_eq!(
+            summary(r#"{"path":"a.rs","offset":2937}"#),
+            "read a.rs (from line 2937)"
+        );
     }
 
     #[test]

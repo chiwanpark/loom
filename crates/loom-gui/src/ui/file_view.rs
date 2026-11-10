@@ -28,7 +28,7 @@ pub struct FileView {
     focus: FocusHandle,
 }
 
-fn language(path: &str) -> String {
+pub(crate) fn language(path: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     let lower = name.to_lowercase();
     match lower.as_str() {

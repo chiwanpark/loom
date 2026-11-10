@@ -17,6 +17,7 @@ gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, fe
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false, features = ["font-kit", "wayland", "runtime_shaders"] }
 gpui-component = { version = "=0.9.1", default-features = false, features = ["tree-sitter-bash", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-css", "tree-sitter-diff", "tree-sitter-go", "tree-sitter-html", "tree-sitter-javascript", "tree-sitter-python", "tree-sitter-rust", "tree-sitter-sql", "tree-sitter-toml", "tree-sitter-tsx", "tree-sitter-typescript", "tree-sitter-yaml"] }
 gpui-kit-assets = "=0.9.1"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 loom-client = { version = "0.1.0", path = "../loom-client" }
 loom-config = { version = "0.1.0", path = "../loom-config" }
 loom-vt = { version = "0.1.0", path = "../loom-vt" }

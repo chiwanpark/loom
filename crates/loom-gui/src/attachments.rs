@@ -95,9 +95,60 @@ pub fn decode(mime_type: &str, data: &[u8]) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, data.to_vec())))
 }
 
+/// The image's size in pixels, read from its header.
+pub fn dimensions(image: &Image) -> Option<(u32, u32)> {
+    let format = match image.format {
+        ImageFormat::Png => image::ImageFormat::Png,
+        ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+        ImageFormat::Webp => image::ImageFormat::WebP,
+        ImageFormat::Gif => image::ImageFormat::Gif,
+        _ => return None,
+    };
+    image::ImageReader::with_format(std::io::Cursor::new(&image.bytes), format)
+        .into_dimensions()
+        .ok()
+        .filter(|&(width, height)| width > 0 && height > 0)
+}
+
+/// Scales `size` down to fit in `max`, keeping its aspect ratio. Smaller
+/// images keep their size.
+pub fn fit_within(size: (u32, u32), max: (f32, f32)) -> (f32, f32) {
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let scale = (max.0 / width).min(max.1 / height).min(1.);
+    (width * scale, height * scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png(width: u32, height: u32) -> Image {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        Image::from_bytes(ImageFormat::Png, bytes.into_inner())
+    }
+
+    #[test]
+    fn reads_dimensions_from_the_header() {
+        assert_eq!(dimensions(&png(300, 40)), Some((300, 40)));
+        assert_eq!(
+            dimensions(&Image::from_bytes(ImageFormat::Png, b"nope".to_vec())),
+            None
+        );
+    }
+
+    #[test]
+    fn fits_keeping_the_aspect_ratio() {
+        // A wide screenshot is limited by the width, not stretched to the
+        // height limit.
+        let (w, h) = fit_within((1850, 595), (480., 320.));
+        assert_eq!(w, 480.);
+        assert!((h - 154.378).abs() < 0.01, "{h}");
+        assert_eq!(fit_within((400, 1600), (480., 320.)), (80., 320.));
+        assert_eq!(fit_within((100, 50), (480., 320.)), (100., 50.));
+    }
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
 
