@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -178,6 +178,16 @@ pub enum Command {
         path: String,
         old_path: Option<String>,
     },
+    RenameSession {
+        session: SessionId,
+        title: Option<String>,
+    },
+    ListDirectory {
+        path: String,
+    },
+    ReadFile {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +208,40 @@ pub enum Payload {
     Metrics(AgentMetrics),
     WorkspaceChanges(WorkspaceChanges),
     FileDiff(FileDiff),
+    Directory(DirectoryListing),
+    FileContent(FileContent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryKind {
+    File,
+    Directory,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub kind: EntryKind,
+    pub symlink: bool,
+    pub size: u64,
+    pub ignored: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryListing {
+    pub path: String,
+    pub entries: Vec<DirEntry>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileContent {
+    pub path: String,
+    pub text: String,
+    pub size: u64,
+    pub binary: bool,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

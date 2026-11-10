@@ -6,7 +6,7 @@ pub mod session;
 
 pub use api::*;
 pub use auth::*;
-pub use codec::{CodecError, MAX_FRAME_LEN, decode, encode};
+pub use codec::{CodecError, MAX_FRAME_LEN, decode, encode, undecodable_request_id};
 pub use session::*;
 
 #[cfg(test)]
@@ -137,6 +137,14 @@ mod tests {
                 path: "src/new.rs".into(),
                 old_path: Some("src/old.rs".into()),
             },
+            Command::RenameSession {
+                session: session.clone(),
+                title: Some("Renamed".into()),
+            },
+            Command::ListDirectory { path: "src".into() },
+            Command::ReadFile {
+                path: "src/main.rs".into(),
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }
@@ -194,6 +202,30 @@ mod tests {
                     removed: 1,
                     binary: false,
                 }],
+                truncated: false,
+            })),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 5,
+            result: Ok(Payload::Directory(DirectoryListing {
+                path: "src".into(),
+                entries: vec![DirEntry {
+                    name: "main.rs".into(),
+                    kind: EntryKind::File,
+                    symlink: false,
+                    size: 12,
+                    ignored: false,
+                }],
+                truncated: false,
+            })),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 6,
+            result: Ok(Payload::FileContent(FileContent {
+                path: "src/main.rs".into(),
+                text: "fn main() {}\n".into(),
+                size: 13,
+                binary: false,
                 truncated: false,
             })),
         });
