@@ -2,13 +2,15 @@ use std::fs::{DirBuilder, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const AGENTS_DIR: &str = "agents";
 const WORKSPACES_DIR: &str = "workspaces";
+const CLAIM_GRACE: Duration = Duration::from_millis(250);
+const LOCK_RETRY: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEntry {
@@ -59,6 +61,19 @@ fn try_lock(file: &File) -> io::Result<bool> {
         Ok(()) => Ok(true),
         Err(TryLockError::WouldBlock) => Ok(false),
         Err(TryLockError::Error(err)) => Err(err),
+    }
+}
+
+fn lock_within(file: &File, grace: Duration) -> io::Result<bool> {
+    let deadline = Instant::now() + grace;
+    loop {
+        if try_lock(file)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(LOCK_RETRY);
     }
 }
 
@@ -116,11 +131,11 @@ impl Registry {
                 .join(WORKSPACES_DIR)
                 .join(format!("{}.lock", workspace_key(workspace))),
         )?;
-        if !try_lock(&workspace_lock)? {
+        if !lock_within(&workspace_lock, CLAIM_GRACE)? {
             return Err(RegistryError::AlreadyRunning(workspace.to_path_buf()));
         }
         let instance_lock = open_lock(&self.lock_path(instance))?;
-        if !try_lock(&instance_lock)? {
+        if !lock_within(&instance_lock, CLAIM_GRACE)? {
             return Err(RegistryError::Io(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("instance {instance} is already registered"),
