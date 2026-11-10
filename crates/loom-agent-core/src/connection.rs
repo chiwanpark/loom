@@ -388,6 +388,12 @@ impl Connection {
             Command::Interrupt { session: id } => {
                 Ok(Payload::Interrupted(session(&id)?.interrupt()))
             }
+            Command::CompactSession { session: id } => {
+                session(&id)?
+                    .compact()
+                    .map_err(|e| convert::api_error(&e))?;
+                Ok(Payload::Ok)
+            }
             Command::ResolveApproval {
                 session: id,
                 call_id,

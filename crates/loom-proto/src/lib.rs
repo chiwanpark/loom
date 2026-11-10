@@ -150,6 +150,9 @@ mod tests {
                 cols: 80,
                 rows: 24,
             },
+            Command::CompactSession {
+                session: session.clone(),
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }

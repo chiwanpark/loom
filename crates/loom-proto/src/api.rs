@@ -195,6 +195,11 @@ pub enum Command {
         cols: u16,
         rows: u16,
     },
+    /// Compacts the session's context now instead of waiting for the threshold.
+    /// Runs in the background like a turn; the result arrives as events.
+    CompactSession {
+        session: SessionId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

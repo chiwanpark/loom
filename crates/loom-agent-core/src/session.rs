@@ -322,6 +322,28 @@ impl Session {
         Ok(())
     }
 
+    /// Compacts the context now, whatever its size. Like a turn it runs in the
+    /// background, makes the session busy, and stops on `interrupt`.
+    pub fn compact(&self) -> Result<()> {
+        let runtime = self.core.runtime.current();
+        let model = self.core.model(&runtime)?;
+        runtime.providers.get(&model.provider)?;
+        let mut state = self.core.lock();
+        if state.turn.is_some() {
+            return Err(CoreError::Busy);
+        }
+        if compaction::plan(&state.history) == compaction::Plan::Nothing {
+            return Err(CoreError::NothingToCompact);
+        }
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(run_compaction(self.core.clone(), cancel.clone()));
+        state.turn = Some(Turn {
+            cancel,
+            task: Some(task),
+        });
+        Ok(())
+    }
+
     pub fn interrupt(&self) -> bool {
         match &self.core.lock().turn {
             Some(turn) => {
@@ -384,6 +406,33 @@ async fn run_turn(core: Arc<Core>, cancel: CancellationToken) {
     state.approvals.clear();
     core.persist_state(&state);
     core.emit(SessionEvent::TurnFinished { outcome });
+    core.hub.set_state(SessionState::Idle);
+}
+
+async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
+    let result = async {
+        let runtime = core.runtime.current();
+        let model = core.model(&runtime)?;
+        let provider = runtime
+            .providers
+            .get(&model.provider)
+            .map_err(CoreError::from)?;
+        compact(&core, &model, provider.as_ref(), &cancel).await
+    }
+    .await;
+    match result {
+        Ok(()) => {}
+        Err(TurnError::Interrupted) => core.emit(SessionEvent::Warning {
+            message: "compaction was interrupted".into(),
+        }),
+        Err(TurnError::Failed(message)) => core.emit(SessionEvent::Warning {
+            message: format!("could not compact the context: {message}"),
+        }),
+    }
+    let mut state = core.lock();
+    state.turn = None;
+    core.persist_state(&state);
+    drop(state);
     core.hub.set_state(SessionState::Idle);
 }
 
@@ -500,16 +549,27 @@ async fn maybe_compact(
 ) -> Result<(), TurnError> {
     let context = &runtime.config.context;
     let limit = context.window_tokens as f64 * context.compaction_threshold;
-    let (used, history) = {
+    let used = {
         let state = core.lock();
-        let used = state
+        state
             .context_tokens
-            .unwrap_or_else(|| compaction::estimate_tokens(&state.history));
-        (used, state.history.clone())
+            .unwrap_or_else(|| compaction::estimate_tokens(&state.history))
     };
     if (used as f64) < limit {
         return Ok(());
     }
+    compact(core, model, provider, cancel).await
+}
+
+/// Summarizes the earlier turns, or trims old tool output when there is nothing
+/// to summarize. A failed summary is reported as a warning.
+async fn compact(
+    core: &Arc<Core>,
+    model: &ModelRef,
+    provider: &dyn loom_llm::LlmProvider,
+    cancel: &CancellationToken,
+) -> Result<(), TurnError> {
+    let history = core.lock().history.clone();
     match compaction::plan(&history) {
         compaction::Plan::Nothing => Ok(()),
         compaction::Plan::Elide => {

@@ -271,6 +271,11 @@ async fn session_settings_and_errors() {
     let err = client.unsubscribe(&session.id).await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
     assert!(!client.interrupt(&session.id).await.unwrap());
+    let err = client.compact_session(&session.id).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+    assert!(err.to_string().contains("nothing to compact"), "{err}");
+    let err = client.compact_session(&missing).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
     let err = client.list_models("unknown-provider").await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
     let err = client.cancel_login("nope").await.unwrap_err();

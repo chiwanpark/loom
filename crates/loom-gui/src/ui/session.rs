@@ -235,6 +235,21 @@ impl SessionView {
         .detach();
     }
 
+    fn compact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.connection.read(cx);
+        let client = conn.client.clone();
+        let session = self.session_id(cx);
+        let task = conn
+            .backend
+            .run(async move { client.compact_session(&session).await });
+        cx.spawn_in(window, async move |_, cx: &mut AsyncWindowContext| {
+            if let Some(Err(err)) = task.await {
+                let _ = cx.update(|window, cx| notify::error(window, cx, err.to_string()));
+            }
+        })
+        .detach();
+    }
+
     fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let conn = self.connection.read(cx);
         let client = conn.client.clone();
@@ -871,6 +886,14 @@ impl Render for SessionView {
             .map(|(ix, item)| self.render_item(ix, item, window, cx))
             .collect();
         let empty = items.is_empty();
+        let compact_tooltip: SharedString = match conversation.last_usage {
+            Some(usage) => format!(
+                "Summarize earlier turns to free context (now {} tokens)",
+                usage.context_tokens()
+            )
+            .into(),
+            None => "Summarize earlier turns to free context".into(),
+        };
         let scroll = self.scroll.clone();
         v_flex()
             .id("session")
@@ -1008,6 +1031,18 @@ impl Render for SessionView {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.pick_images(window, cx)
                                     })),
+                            )
+                            .child(
+                                Button::new("compact")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(gpui_kit_assets::IconName::FoldVertical))
+                                    .label("Compact")
+                                    .tooltip(compact_tooltip)
+                                    .disabled(busy || empty)
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.compact(window, cx)),
+                                    ),
                             )
                             .child(div().flex_1())
                             .child(

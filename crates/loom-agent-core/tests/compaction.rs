@@ -148,3 +148,91 @@ async fn trims_old_tool_output_inside_one_long_turn() {
         .count();
     assert!(elided >= 1, "{elided}");
 }
+
+#[tokio::test]
+async fn compacts_on_request_below_the_threshold() {
+    let h = Harness::new(
+        test_config(PolicyAction::Allow),
+        vec![
+            text("first answer"),
+            text("second answer"),
+            text("SUMMARY: hello then continue"),
+        ],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let err = session.compact().unwrap_err();
+    assert!(err.to_string().contains("nothing to compact"), "{err}");
+
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "hello").await;
+    run_turn(&session, &mut sub, "continue").await;
+    session.compact().unwrap();
+    let mut events = collect_until(&mut sub, |e| {
+        matches!(e, SessionEvent::ContextCompacted { .. })
+    })
+    .await;
+    events.extend(
+        collect_until(&mut sub, |e| {
+            matches!(
+                e,
+                SessionEvent::StateChanged {
+                    state: loom_proto::SessionState::Idle
+                }
+            )
+        })
+        .await,
+    );
+    session.wait_idle().await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            SessionEvent::ContextCompacted {
+                removed_messages: 2,
+                summarized: true
+            }
+        )),
+        "{events:?}"
+    );
+    // Manual compaction is not a turn.
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::TurnFinished { .. }))
+    );
+    let history = session.history();
+    assert!(first_text(&history[0]).contains("SUMMARY: hello then continue"));
+    assert_eq!(first_text(&history[1]), "continue");
+    assert!(!session.is_busy());
+    let requests = h.provider.requests();
+    assert!(requests[2].system.as_deref().unwrap().contains("summarize"));
+}
+
+#[tokio::test]
+async fn manual_compaction_can_be_interrupted() {
+    let h = Harness::new(
+        test_config(PolicyAction::Allow),
+        vec![text("first"), text("second"), common::Script::Hang],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "one").await;
+    run_turn(&session, &mut sub, "two").await;
+    let before = session.history();
+    session.compact().unwrap();
+    assert!(session.is_busy());
+    assert!(
+        session
+            .send_prompt(vec![loom_proto::ContentPart::text("x")])
+            .is_err()
+    );
+    assert!(session.compact().is_err());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(session.interrupt());
+    session.wait_idle().await;
+    assert!(!session.is_busy());
+    assert_eq!(session.history(), before);
+    let events = collect_until(&mut sub, |e| matches!(e, SessionEvent::Warning { .. })).await;
+    assert!(events.iter().any(
+        |e| matches!(e, SessionEvent::Warning { message } if message.contains("interrupted"))
+    ));
+}

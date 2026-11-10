@@ -270,6 +270,9 @@ impl Conversation {
                 removed_messages,
                 summarized,
             } => {
+                // The last reported size predates the compaction; the next response
+                // reports the new one.
+                self.last_usage = None;
                 let how = if *summarized { "summarized" } else { "trimmed" };
                 self.notice(
                     NoticeKind::Info,
@@ -380,6 +383,30 @@ mod tests {
             arguments: args.into(),
             risk: None,
         }
+    }
+
+    #[test]
+    fn context_size_counts_cached_tokens_and_resets_on_compaction() {
+        let mut conv = Conversation::new(info());
+        let usage = Usage {
+            input: 3,
+            output: 437,
+            cache_read: 50_000,
+            cache_write: 1_200,
+            reasoning: 0,
+            total: 51_640,
+        };
+        feed(&mut conv, vec![SessionEvent::Usage { usage }]);
+        assert_eq!(conv.last_usage.map(|u| u.context_tokens()), Some(51_640));
+        assert_eq!(conv.total_usage.prompt_tokens(), 51_203);
+        feed(
+            &mut conv,
+            vec![SessionEvent::ContextCompacted {
+                removed_messages: 4,
+                summarized: true,
+            }],
+        );
+        assert_eq!(conv.last_usage, None);
     }
 
     #[test]

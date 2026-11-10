@@ -14,6 +14,8 @@ pub enum CoreError {
     UnknownApproval(String),
     #[error("prompt must not be empty")]
     EmptyPrompt,
+    #[error("there is nothing to compact in this session yet")]
+    NothingToCompact,
     #[error(transparent)]
     Llm(#[from] loom_llm::LlmError),
     #[error(transparent)]
