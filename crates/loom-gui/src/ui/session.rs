@@ -558,11 +558,15 @@ impl SessionView {
             })
             .child(div().text_xs().text_color(color).child(status));
 
+        // Collapsed rows have no body; an empty one would still add its bottom
+        // padding under the header.
+        let mut has_body = false;
         let mut body = v_flex().w_full().gap_2().px_2().pb_2();
         if expanded {
             if let Some(reason) = &tool.approval_reason
                 && tool.status == ToolStatus::WaitingApproval
             {
+                has_body = true;
                 body = body.child(
                     div()
                         .text_sm()
@@ -572,6 +576,7 @@ impl SessionView {
                 );
             }
             if tool.result.is_none() || tool.call.name != "shell" {
+                has_body = true;
                 body = body.child(code_block(pretty_arguments(&tool.call.arguments), &theme));
             }
             let diff = match tool.result.as_ref().and_then(|r| r.details.as_ref()) {
@@ -582,18 +587,22 @@ impl SessionView {
                 _ => None,
             };
             if let Some(diff) = diff {
+                has_body = true;
                 body = body.child(diff_block(&diff, &theme));
             } else if let Some(result) = &tool.result {
                 if !result.content.trim().is_empty() {
+                    has_body = true;
                     body = body.child(code_block(result.content.clone(), &theme));
                 }
             } else if !tool.output.is_empty() {
                 let text = self.live_text(tool);
+                has_body = true;
                 body = body.child(code_block(text, &theme));
             }
         }
         if tool.status == ToolStatus::WaitingApproval {
             let (a, b, c) = (id.clone(), id.clone(), id.clone());
+            has_body = true;
             body = body.child(
                 h_flex()
                     .gap_2()
@@ -635,7 +644,7 @@ impl SessionView {
                 theme.border
             })
             .child(header)
-            .child(body)
+            .when(has_body, |el| el.child(body))
             .into_any_element()
     }
 }
@@ -1136,7 +1145,9 @@ impl Render for SessionView {
                     .when(!self.attachments.is_empty(), |el| {
                         el.child(self.render_attachments(cx))
                     })
-                    .child(Textarea::new(&self.input))
+                    // Large is the size whose text matches the chat text (1 rem);
+                    // the default size uses the smaller `text_sm`.
+                    .child(Textarea::new(&self.input).large())
                     .child(
                         h_flex()
                             .gap_2()
