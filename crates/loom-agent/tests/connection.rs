@@ -473,3 +473,39 @@ async fn interactive_terminals_run_in_the_workspace() {
         .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
 }
+
+#[tokio::test]
+async fn workspace_changes_come_from_git() {
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    let plain = client.workspace_changes().await.unwrap();
+    assert!(!plain.repository);
+
+    let workspace = &setup.info.workspace;
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(workspace)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    std::fs::write(workspace.join("tracked.txt"), "a\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "tracked.txt"]);
+    git(&["commit", "-q", "-m", "init"]);
+    std::fs::write(workspace.join("tracked.txt"), "b\n").unwrap();
+
+    let changes = client.workspace_changes().await.unwrap();
+    assert!(changes.repository);
+    assert_eq!(changes.files.len(), 1);
+    assert_eq!(changes.files[0].path, "tracked.txt");
+    assert_eq!((changes.files[0].added, changes.files[0].removed), (1, 1));
+    let diff = client.file_diff("tracked.txt", None).await.unwrap();
+    assert!(diff.diff.contains("-a\n+b\n"), "{}", diff.diff);
+    let err = client.file_diff("/etc/passwd", None).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+}
