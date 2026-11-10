@@ -7,6 +7,7 @@ pub mod instructions;
 pub mod policy;
 pub mod runtime;
 mod session;
+pub mod store;
 pub mod supervisor;
 pub mod terminals;
 pub mod watcher;

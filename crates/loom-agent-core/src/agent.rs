@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use loom_config::{AgentConfig, Dirs};
-use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, http_client};
+use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
 use loom_proto::{SessionId, SessionInfo};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ use tokio::sync::broadcast;
 use crate::error::{CoreError, Result};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::session::{Session, SessionParams};
+use crate::store::{EventStore, store_path};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentNotice {
@@ -26,6 +27,7 @@ pub struct AgentOptions {
     pub dirs: Dirs,
     pub http: Option<HttpClient>,
     pub providers: Vec<Arc<dyn LlmProvider>>,
+    pub persist: bool,
 }
 
 impl AgentOptions {
@@ -36,6 +38,7 @@ impl AgentOptions {
             dirs,
             http: None,
             providers: Vec::new(),
+            persist: true,
         }
     }
 }
@@ -48,6 +51,7 @@ struct Inner {
     runtime: RuntimeCell,
     sessions: Mutex<BTreeMap<SessionId, Session>>,
     notices: broadcast::Sender<AgentNotice>,
+    store: Option<EventStore>,
 }
 
 #[derive(Clone)]
@@ -86,9 +90,22 @@ impl Agent {
         let http = options.http.unwrap_or_else(http_client);
         let store = CredentialStore::in_dir(&data_dir(&options.config, &options.dirs));
         let auth = Auth::new(store, http);
+        let data = data_dir(&options.config, &options.dirs);
         let runtime = Runtime::build(options.config, &auth, &options.providers)?;
         let (notices, _) = broadcast::channel(64);
-        Ok(Self {
+        let (store, stored) = if options.persist {
+            let path = store_path(&data, workspace.root());
+            match EventStore::open(&path, workspace.root()) {
+                Ok((store, stored)) => (Some(store), stored),
+                Err(err) => {
+                    tracing::error!(error = %err, "sessions will not be saved");
+                    (None, Vec::new())
+                }
+            }
+        } else {
+            (None, Vec::new())
+        };
+        let agent = Self {
             inner: Arc::new(Inner {
                 workspace,
                 dirs: options.dirs,
@@ -97,8 +114,32 @@ impl Agent {
                 runtime: RuntimeCell::new(runtime),
                 sessions: Mutex::new(BTreeMap::new()),
                 notices,
+                store,
             }),
-        })
+        };
+        for stored in stored {
+            let session = Session::restore(agent.session_params(None), stored);
+            agent.insert(session);
+        }
+        Ok(agent)
+    }
+
+    fn session_params(&self, model: Option<ModelRef>) -> SessionParams {
+        SessionParams {
+            runtime: self.inner.runtime.clone(),
+            workspace: self.inner.workspace.clone(),
+            system_agents_md: self.inner.dirs.system_agents_md(),
+            model,
+            store: self.inner.store.clone(),
+        }
+    }
+
+    fn insert(&self, session: Session) {
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.id().clone(), session);
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -143,17 +184,8 @@ impl Agent {
     pub fn create_session(&self, model: Option<&str>) -> Result<Session> {
         let runtime = self.inner.runtime.current();
         let model = model.map(|m| runtime.parse_model(m)).transpose()?;
-        let session = Session::new(SessionParams {
-            runtime: self.inner.runtime.clone(),
-            workspace: self.inner.workspace.clone(),
-            system_agents_md: self.inner.dirs.system_agents_md(),
-            model,
-        });
-        self.inner
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session.id().clone(), session.clone());
+        let session = Session::new(self.session_params(model));
+        self.insert(session.clone());
         Ok(session)
     }
 
@@ -168,7 +200,9 @@ impl Agent {
     }
 
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
-        self.sessions().iter().map(Session::info).collect()
+        let mut sessions: Vec<SessionInfo> = self.sessions().iter().map(Session::info).collect();
+        sessions.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        sessions
     }
 
     fn sessions(&self) -> Vec<Session> {
@@ -189,6 +223,13 @@ impl Agent {
         }
         for session in &sessions {
             session.wait_idle().await;
+        }
+        self.flush().await;
+    }
+
+    pub async fn flush(&self) {
+        if let Some(store) = &self.inner.store {
+            store.flush().await;
         }
     }
 }

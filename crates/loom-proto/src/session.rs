@@ -205,4 +205,6 @@ pub struct SessionInfo {
     pub policy_default: Option<PolicyAction>,
     pub state: SessionState,
     pub last_seq: u64,
+    pub created_at: u64,
+    pub title: Option<String>,
 }

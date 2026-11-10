@@ -8,8 +8,8 @@ use loom_llm::{
     StopReason, ToolCall as LlmToolCall, ToolDefinition,
 };
 use loom_proto::{
-    ContentPart, Decision, SessionEvent, SessionId, SessionInfo, SessionState, ToolCall,
-    ToolResult, TurnOutcome,
+    ContentPart, Decision, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
+    ToolCall, ToolResult, TurnOutcome,
 };
 use loom_tools::{FileTracker, LockWaitHook, ToolContext, ToolError, Workspace};
 use tokio::sync::{mpsc, oneshot};
@@ -22,6 +22,7 @@ use crate::events::{EventHub, Subscription};
 use crate::instructions::{PromptInputs, build_system_prompt};
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
+use crate::store::{EventStore, SessionState as StoredState, StoredSession, now_unix};
 use loom_config::PolicyAction;
 
 pub const MAX_ROUNDS_PER_TURN: usize = 200;
@@ -44,6 +45,8 @@ struct State {
 
 struct Core {
     id: SessionId,
+    created_at: u64,
+    store: Option<EventStore>,
     hub: EventHub,
     state: Mutex<State>,
     runtime: RuntimeCell,
@@ -62,6 +65,7 @@ pub(crate) struct SessionParams {
     pub workspace: Arc<Workspace>,
     pub system_agents_md: PathBuf,
     pub model: Option<ModelRef>,
+    pub store: Option<EventStore>,
 }
 
 enum TurnError {
@@ -84,6 +88,26 @@ impl Core {
         self.hub.emit(event);
     }
 
+    fn persist_state(&self, state: &State) {
+        if let Some(store) = &self.store {
+            store.save_session(
+                &self.id,
+                self.created_at,
+                &StoredState {
+                    model: state.model.as_ref().map(|m| m.to_string()),
+                    reasoning: state.reasoning,
+                    policy: state.policy.clone(),
+                    history: state.history.clone(),
+                },
+            );
+        }
+    }
+
+    fn persist(&self) {
+        let state = self.lock();
+        self.persist_state(&state);
+    }
+
     fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
         if let Some(model) = &self.lock().model {
             return Ok(model.clone());
@@ -98,15 +122,59 @@ impl Core {
 impl Session {
     pub(crate) fn new(params: SessionParams) -> Self {
         let id = SessionId(uuid::Uuid::new_v4().to_string());
+        let session = Self::build(params, id, now_unix(), StoredState::default(), Vec::new());
+        session.core.persist();
+        session
+    }
+
+    pub(crate) fn restore(params: SessionParams, stored: StoredSession) -> Self {
+        let StoredSession {
+            id,
+            created_at,
+            mut state,
+            events,
+        } = stored;
+        let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
+        let unfinished = turn_unfinished(&events);
+        let repaired = repair_history(&mut state.history);
+        let session = Self::build(params, id, created_at, state, events);
+        if let Some(model) = model {
+            session.core.lock().model = Some(model);
+        }
+        if unfinished || repaired {
+            session.core.emit(SessionEvent::Warning {
+                message: "the agent stopped during this turn".into(),
+            });
+            session.core.emit(SessionEvent::TurnFinished {
+                outcome: TurnOutcome::Interrupted,
+            });
+            session.core.emit(SessionEvent::StateChanged {
+                state: SessionState::Idle,
+            });
+            session.core.persist();
+        }
+        session
+    }
+
+    fn build(
+        params: SessionParams,
+        id: SessionId,
+        created_at: u64,
+        state: StoredState,
+        events: Vec<SequencedEvent>,
+    ) -> Self {
+        let hub = EventHub::restore(params.store.clone().map(|s| (s, id.clone())), events);
         Self {
             core: Arc::new(Core {
                 id,
-                hub: EventHub::new(),
+                created_at,
+                store: params.store,
+                hub,
                 state: Mutex::new(State {
                     model: params.model,
-                    reasoning: None,
-                    history: Vec::new(),
-                    policy: SessionPolicy::default(),
+                    reasoning: state.reasoning,
+                    history: state.history,
+                    policy: state.policy,
                     turn: None,
                     approvals: HashMap::new(),
                 }),
@@ -118,17 +186,22 @@ impl Session {
         }
     }
 
+    pub fn created_at(&self) -> u64 {
+        self.core.created_at
+    }
+
     pub fn id(&self) -> &SessionId {
         &self.core.id
     }
 
     pub fn info(&self) -> SessionInfo {
-        let (model, reasoning, policy_default) = {
+        let (model, reasoning, policy_default, title) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
                 state.reasoning,
                 state.policy.default,
+                title(&state.history),
             )
         };
         SessionInfo {
@@ -136,6 +209,8 @@ impl Session {
             model,
             reasoning: reasoning.map(convert::reasoning_to_proto),
             policy_default: policy_default.map(convert::policy_to_proto),
+            created_at: self.core.created_at,
+            title,
             state: self.core.hub.state(),
             last_seq: self.core.hub.last_seq(),
         }
@@ -153,15 +228,18 @@ impl Session {
         let runtime = self.core.runtime.current();
         let model = model.map(|m| runtime.parse_model(m)).transpose()?;
         self.core.lock().model = model;
+        self.core.persist();
         Ok(())
     }
 
     pub fn set_reasoning(&self, effort: Option<ReasoningEffort>) {
         self.core.lock().reasoning = effort;
+        self.core.persist();
     }
 
     pub fn set_policy_default(&self, default: Option<PolicyAction>) {
         self.core.lock().policy.default = default;
+        self.core.persist();
     }
 
     pub fn is_busy(&self) -> bool {
@@ -186,6 +264,7 @@ impl Session {
         state.history.push(Message::User {
             content: content.iter().map(convert::input_content).collect(),
         });
+        self.core.persist_state(&state);
         self.core.emit(SessionEvent::UserMessage { content });
         let cancel = CancellationToken::new();
         let task = tokio::spawn(run_turn(self.core.clone(), cancel.clone()));
@@ -256,6 +335,7 @@ async fn run_turn(core: Arc<Core>, cancel: CancellationToken) {
     let mut state = core.lock();
     state.turn = None;
     state.approvals.clear();
+    core.persist_state(&state);
     core.emit(SessionEvent::TurnFinished { outcome });
     core.hub.set_state(SessionState::Idle);
 }
@@ -324,6 +404,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         }
         let calls: Vec<LlmToolCall> = message.tool_calls().cloned().collect();
         core.lock().history.push(Message::Assistant(message));
+        core.persist();
         if calls.is_empty() {
             return Ok(());
         }
@@ -347,6 +428,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
                 is_error: result.is_error,
             });
         }
+        core.persist();
         if interrupted {
             return Err(TurnError::Interrupted);
         }
@@ -468,10 +550,11 @@ async fn run_tool_call(
                         false,
                     );
                 }
-                Decision::AllowForSession => core
-                    .lock()
-                    .policy
-                    .allow_for_session(&call.name, &call.arguments),
+                Decision::AllowForSession => {
+                    let mut state = core.lock();
+                    state.policy.allow_for_session(&call.name, &call.arguments);
+                    core.persist_state(&state);
+                }
                 Decision::Allow => {}
             }
         }
@@ -527,4 +610,69 @@ async fn run_tool_call(
         ),
         Err(err) => finish(convert::error_result(err.to_string()), false),
     }
+}
+
+const TITLE_CHARS: usize = 80;
+
+fn title(history: &[Message]) -> Option<String> {
+    history.iter().find_map(|message| match message {
+        Message::User { content } => content.iter().find_map(|part| match part {
+            loom_llm::InputContent::Text { text } => {
+                let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+                Some(line.chars().take(TITLE_CHARS).collect())
+            }
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+fn turn_unfinished(events: &[SequencedEvent]) -> bool {
+    let last_user = events
+        .iter()
+        .rposition(|e| matches!(e.event, SessionEvent::UserMessage { .. }));
+    let last_finish = events
+        .iter()
+        .rposition(|e| matches!(e.event, SessionEvent::TurnFinished { .. }));
+    match (last_user, last_finish) {
+        (Some(user), Some(finish)) => user > finish,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn repair_history(history: &mut Vec<Message>) -> bool {
+    let Some(index) = history
+        .iter()
+        .rposition(|m| matches!(m, Message::Assistant(_)))
+    else {
+        return false;
+    };
+    let Message::Assistant(message) = &history[index] else {
+        return false;
+    };
+    let answered: std::collections::HashSet<String> = history[index + 1..]
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolResult { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let missing: Vec<(String, String)> = message
+        .tool_calls()
+        .filter(|c| !answered.contains(&c.call_id))
+        .map(|c| (c.call_id.clone(), c.name.clone()))
+        .collect();
+    let repaired = !missing.is_empty();
+    for (call_id, tool_name) in missing {
+        history.push(Message::ToolResult {
+            call_id,
+            tool_name,
+            content: vec![loom_llm::InputContent::text(
+                "not run: the agent stopped during this turn",
+            )],
+            is_error: true,
+        });
+    }
+    repaired
 }

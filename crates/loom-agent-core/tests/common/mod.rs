@@ -158,6 +158,17 @@ pub fn test_config(default: PolicyAction) -> AgentConfig {
 }
 
 impl Harness {
+    pub fn reopen(
+        &self,
+        config: AgentConfig,
+        scripts: Vec<Script>,
+    ) -> (Agent, Arc<ScriptedProvider>) {
+        let provider = ScriptedProvider::new(scripts);
+        let mut options = AgentOptions::new(&self.workspace, config, self.dirs.clone());
+        options.providers.push(provider.clone());
+        (Agent::new(options).unwrap(), provider)
+    }
+
     pub fn new(config: AgentConfig, scripts: Vec<Script>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("ws");

@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 
-use loom_proto::{SequencedEvent, SessionEvent, SessionState};
+use loom_proto::{SequencedEvent, SessionEvent, SessionId, SessionState};
+
+use crate::store::EventStore;
 use tokio::sync::broadcast;
 
 const CHANNEL_CAPACITY: usize = 4096;
@@ -12,10 +14,16 @@ struct Log {
     state: SessionState,
 }
 
-#[derive(Debug)]
 pub struct EventHub {
     log: Mutex<Log>,
     tx: broadcast::Sender<SequencedEvent>,
+    store: Option<(EventStore, SessionId)>,
+}
+
+impl std::fmt::Debug for EventHub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventHub").field("log", &self.log).finish()
+    }
 }
 
 #[derive(Debug)]
@@ -32,15 +40,25 @@ impl Default for EventHub {
 
 impl EventHub {
     pub fn new() -> Self {
+        Self::restore(None, Vec::new())
+    }
+
+    pub fn restore(store: Option<(EventStore, SessionId)>, events: Vec<SequencedEvent>) -> Self {
         let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
+        let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(1);
         Self {
             log: Mutex::new(Log {
-                next_seq: 1,
-                events: Vec::new(),
+                next_seq,
+                events,
                 state: SessionState::Idle,
             }),
             tx,
+            store,
         }
+    }
+
+    pub fn events(&self) -> Vec<SequencedEvent> {
+        self.lock().events.clone()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Log> {
@@ -65,6 +83,11 @@ impl EventHub {
             _ => {}
         }
         let record = SequencedEvent { seq, event };
+        if let Some((store, session)) = &self.store
+            && !record.event.is_ephemeral()
+        {
+            store.append(session, &record);
+        }
         log.events.push(record.clone());
         let _ = self.tx.send(record);
         seq

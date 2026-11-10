@@ -4,7 +4,7 @@ use serde_json::Value;
 const SHELL_TOOL: &str = "shell";
 const SHELL_METACHARACTERS: &[char] = &[';', '&', '|', '`', '$', '<', '>', '(', ')', '\n', '\r'];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionPolicy {
     pub default: Option<PolicyAction>,
     pub rules: Vec<PolicyRule>,

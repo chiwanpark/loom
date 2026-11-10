@@ -203,11 +203,22 @@ async fn serve_stdio_spawn_and_stop() {
     let table = String::from_utf8_lossy(&ps.stdout);
     assert!(table.contains("INSTANCE") && table.contains(&path_arg(&env.ws("ws2"))));
 
+    let kept = spawned.create_session(None).await.unwrap();
     let stopped = env.run(&["stop", "--workspace", &path_arg(&env.ws("ws2"))]);
     assert!(stopped.status.success(), "{stopped:?}");
     assert_eq!(env.wait_for_agents(1).await.len(), 1);
     let err = spawned.list_sessions().await.unwrap_err();
     assert!(matches!(err, ClientError::Closed), "{err:?}");
+
+    let respawned = connect_command(env.tokio_command(&spawn.stdio_args())).unwrap();
+    let (respawned, _notes) = Client::connect(respawned, "test-respawn").await.unwrap();
+    assert_ne!(respawned.agent().instance, spawned.agent().instance);
+    let restored = respawned.list_sessions().await.unwrap();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].id, kept.id);
+    let stopped = env.run(&["stop", "--workspace", &path_arg(&env.ws("ws2"))]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    assert_eq!(env.wait_for_agents(1).await.len(), 1);
 
     let stopped = env.run(&["stop", "--all"]);
     assert!(stopped.status.success(), "{stopped:?}");
