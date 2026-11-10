@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, DefiniteLength,
+    Action, AnyElement, AnyView, App, AppContext, AsyncWindowContext, Context, DefiniteLength,
     DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, KeyBinding, ParentElement, Render, SharedString, StatefulInteractiveElement,
     Styled, Subscription, Window, actions, div, prelude::FluentBuilder, px,
@@ -27,6 +27,7 @@ use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::DiffView;
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
+use crate::ui::picker::{PickerItem, open_picker};
 use crate::ui::session::SessionView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
@@ -54,7 +55,10 @@ actions!(
         ActivatePaneRight,
         ActivatePaneUp,
         ActivatePaneDown,
-        ToggleRightDock
+        ToggleRightDock,
+        ToggleCommandPalette,
+        FindSession,
+        FindAgent
     ]
 );
 
@@ -69,6 +73,9 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-b", ToggleLeftDock, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-b", ToggleRightDock, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-p", ToggleCommandPalette, Some(CONTEXT)),
+        KeyBinding::new("ctrl-p", FindSession, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-alt-o", FindAgent, Some(CONTEXT)),
         KeyBinding::new("ctrl-n", NewSession, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-w", CloseTab, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-`", NewTerminal, Some(CONTEXT)),
@@ -171,6 +178,34 @@ impl Panel {
             Panel::Diff(view) => view.read(cx).focus_handle(cx).focus(window, cx),
         }
     }
+}
+
+fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
+    vec![
+        ("workspace: new session", Box::new(NewSession)),
+        ("workspace: new terminal", Box::new(NewTerminal)),
+        ("workspace: close tab", Box::new(CloseTab)),
+        ("workspace: next tab", Box::new(NextTab)),
+        ("workspace: previous tab", Box::new(PreviousTab)),
+        ("workspace: toggle agents panel", Box::new(ToggleLeftDock)),
+        ("workspace: toggle changes panel", Box::new(ToggleRightDock)),
+        ("session: archive", Box::new(ArchiveSession)),
+        ("session: choose model", Box::new(ChooseModel)),
+        ("finder: sessions", Box::new(FindSession)),
+        ("finder: agents", Box::new(FindAgent)),
+        ("pane: split left", Box::new(SplitLeft)),
+        ("pane: split right", Box::new(SplitRight)),
+        ("pane: split up", Box::new(SplitUp)),
+        ("pane: split down", Box::new(SplitDown)),
+        ("pane: activate left", Box::new(ActivatePaneLeft)),
+        ("pane: activate right", Box::new(ActivatePaneRight)),
+        ("pane: activate up", Box::new(ActivatePaneUp)),
+        ("pane: activate down", Box::new(ActivatePaneDown)),
+        ("agent: providers and sign-in", Box::new(ShowProviders)),
+        ("hosts: add ssh host", Box::new(AddSshHost)),
+        ("hosts: pair with a relay", Box::new(PairRelay)),
+        ("app: quit", Box::new(Quit)),
+    ]
 }
 
 fn panel_icon(kind: PanelKind) -> Icon {
@@ -1495,6 +1530,110 @@ impl Workspace {
         }
     }
 
+    fn binding_hint(&self, action: &dyn Action, window: &Window, cx: &App) -> Option<String> {
+        let binding = window
+            .bindings_for_action_in(action, &self.focus)
+            .into_iter()
+            .next_back()?;
+        Some(
+            binding
+                .keystrokes()
+                .iter()
+                .map(|k| k.display(cx.platform_info().os).to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+
+    fn on_command_palette(
+        &mut self,
+        _: &ToggleCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = window.focused(cx).unwrap_or_else(|| self.focus.clone());
+        let items = palette_commands()
+            .into_iter()
+            .map(|(label, action)| {
+                let hint = self.binding_hint(action.as_ref(), window, cx);
+                let previous = previous.clone();
+                PickerItem::new(label, move |window, cx| {
+                    previous.focus(window, cx);
+                    window.dispatch_action(action.boxed_clone(), cx);
+                })
+                .hint(hint)
+            })
+            .collect();
+        open_picker("Command palette", "Run a command…", items, window, cx);
+    }
+
+    fn on_find_session(&mut self, _: &FindSession, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.entity().downgrade();
+        let mut items = Vec::new();
+        let mut archived = Vec::new();
+        for conn in &self.connections {
+            let agent = conn.read(cx).title();
+            for info in &conn.read(cx).sessions {
+                let title = info
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
+                let (conn, info2, workspace) = (conn.clone(), info.clone(), workspace.clone());
+                let item = PickerItem::new(title, move |window, cx| {
+                    let (conn, info) = (conn.clone(), info2.clone());
+                    let _ = workspace.update(cx, |ws, cx| ws.open_session(conn, info, window, cx));
+                });
+                if info.archived {
+                    archived.push(item.detail(format!("{agent} · archived")));
+                } else {
+                    items.push(item.detail(agent.clone()));
+                }
+            }
+        }
+        items.extend(archived);
+        open_picker("Sessions", "Find a session…", items, window, cx);
+    }
+
+    fn on_find_agent(&mut self, _: &FindAgent, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.entity().downgrade();
+        let mut items = Vec::new();
+        for (hix, host) in self.hosts.iter().enumerate() {
+            for agent in &host.agents {
+                let conn = self.find_connection(host.entry.name(), &agent.instance, cx);
+                let label = agent
+                    .workspace
+                    .as_ref()
+                    .map(|w| w.display().to_string())
+                    .unwrap_or_else(|| agent.instance.clone());
+                let status = match conn.as_ref().map(|c| c.read(cx).status.clone()) {
+                    Some(LinkStatus::Connected) => "connected",
+                    Some(LinkStatus::Disconnected(_)) => "disconnected",
+                    None => "not connected",
+                };
+                let instance = agent.instance.clone();
+                let workspace = workspace.clone();
+                items.push(
+                    PickerItem::new(label, move |window, cx| {
+                        let (conn, instance) = (conn.clone(), instance.clone());
+                        let _ = workspace.update(cx, |ws, cx| match conn {
+                            Some(conn) => {
+                                if matches!(conn.read(cx).status, LinkStatus::Disconnected(_)) {
+                                    ws.reconnect(&conn, window, cx);
+                                } else {
+                                    ws.active_connection = Some(conn);
+                                    cx.notify();
+                                }
+                            }
+                            None => ws.connect(hix, Target::Instance(instance), window, cx),
+                        });
+                    })
+                    .detail(format!("{} · {status}", host.entry.name())),
+                );
+            }
+        }
+        open_picker("Agents", "Find an agent…", items, window, cx);
+    }
+
     fn on_add_ssh(&mut self, _: &AddSshHost, window: &mut Window, cx: &mut Context<Self>) {
         self.add_ssh_dialog(window, cx);
     }
@@ -1942,7 +2081,7 @@ impl Workspace {
                 .child("Pick an agent on the left, then open or create a session.")
                 .child(
                     div().text_sm().child(
-                        "ctrl-n new session · ctrl-` terminal in the session · ctrl-b agents",
+                        "ctrl-shift-p commands · ctrl-p sessions · ctrl-n new session · ctrl-` terminal · ctrl-b agents",
                     ),
                 )
                 .into_any_element();
@@ -2303,6 +2442,9 @@ impl Render for Workspace {
             .text_color(theme.foreground)
             .on_action(cx.listener(Self::on_toggle_left))
             .on_action(cx.listener(Self::on_toggle_right))
+            .on_action(cx.listener(Self::on_command_palette))
+            .on_action(cx.listener(Self::on_find_session))
+            .on_action(cx.listener(Self::on_find_agent))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))

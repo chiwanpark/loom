@@ -2,6 +2,7 @@ pub mod dialogs;
 pub mod diff;
 pub mod notify;
 pub mod panes;
+pub mod picker;
 pub mod session;
 pub mod tab;
 pub mod tabs;
