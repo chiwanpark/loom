@@ -229,3 +229,76 @@ async fn serve_stdio_spawn_and_stop() {
         "{unknown:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_manage_siblings_over_the_protocol() {
+    let env = Env::new();
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(env.config_path(), "allowed_roots:\n- ~/work\n").unwrap();
+    let mut server = env
+        .command(&["serve", "--workspace", "~/work/ws1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    env.wait_for_agents(1).await;
+    let target = AgentTarget::Workspace {
+        path: env.ws("ws1"),
+        spawn: false,
+    };
+    let stream = connect_local(&env.registry(), &target, Path::new(BIN))
+        .await
+        .unwrap();
+    let (client, mut notes) = Client::connect(stream, "test").await.unwrap();
+
+    let spawned = client.spawn_agent(env.ws("ws2")).await.unwrap();
+    assert_eq!(spawned.workspace, env.ws("ws2"));
+    let again = client.spawn_agent("~/work/ws2").await.unwrap();
+    assert_eq!(again.instance, spawned.instance);
+    let err = client
+        .spawn_agent(env.home().join("outside"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.api().unwrap().code,
+        loom_client::proto::ErrorCode::BadRequest
+    );
+    let err = client
+        .spawn_agent(env.home().join("missing"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.api().unwrap().code,
+        loom_client::proto::ErrorCode::NotFound
+    );
+
+    let agents = client.list_agents().await.unwrap();
+    assert_eq!(agents.len(), 2);
+    let sibling = AgentTarget::Instance(spawned.instance.0.clone());
+    let stream = connect_local(&env.registry(), &sibling, Path::new(BIN))
+        .await
+        .unwrap();
+    let (sibling_client, _n) = Client::connect(stream, "test").await.unwrap();
+    assert_eq!(sibling_client.agent().workspace, env.ws("ws2"));
+
+    client.stop_agent(&spawned.instance).await.unwrap();
+    assert_eq!(client.list_agents().await.unwrap().len(), 1);
+    let err = client.stop_agent(&spawned.instance).await.unwrap_err();
+    assert_eq!(
+        err.api().unwrap().code,
+        loom_client::proto::ErrorCode::NotFound
+    );
+
+    let own = client.agent().instance.clone();
+    client.stop_agent(&own).await.unwrap();
+    let mut saw_shutdown = false;
+    while let Ok(Some(note)) = tokio::time::timeout(Duration::from_secs(10), notes.recv()).await {
+        if note == loom_client::Notification::Notice(loom_client::proto::Notice::ShuttingDown) {
+            saw_shutdown = true;
+        }
+    }
+    assert!(saw_shutdown);
+    assert!(server.wait().unwrap().success());
+    assert!(env.ps().is_empty());
+}

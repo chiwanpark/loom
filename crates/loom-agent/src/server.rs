@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use loom_agent_core::{Agent, Connection, Flow};
+use loom_agent_core::{Agent, Connection, Flow, Supervisor};
 use loom_proto::{AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode};
 use loom_transport::{FrameStream, UnixFrameListener};
 use tokio::sync::mpsc;
@@ -11,7 +12,24 @@ use tokio_util::sync::CancellationToken;
 const OUTGOING_QUEUE: usize = 1024;
 const FLUSH_GRACE: Duration = Duration::from_millis(500);
 
-pub async fn serve_stream(agent: Agent, info: AgentInfo, stream: FrameStream) {
+#[derive(Clone)]
+pub struct ServerContext {
+    pub agent: Agent,
+    pub info: AgentInfo,
+    pub supervisor: Option<Arc<dyn Supervisor>>,
+}
+
+impl ServerContext {
+    pub fn new(agent: Agent, info: AgentInfo) -> Self {
+        Self {
+            agent,
+            info,
+            supervisor: None,
+        }
+    }
+}
+
+pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
     let peer = stream.peer().clone();
     let (mut sender, mut receiver, _) = stream.split();
     let (out, mut outgoing) = mpsc::channel::<ServerMessage>(OUTGOING_QUEUE);
@@ -32,7 +50,7 @@ pub async fn serve_stream(agent: Agent, info: AgentInfo, stream: FrameStream) {
         let _ = sender.close().await;
     });
 
-    let mut connection = Connection::new(agent, info, out);
+    let mut connection = Connection::new(ctx.agent, ctx.info, out).with_supervisor(ctx.supervisor);
     tracing::debug!(?peer, "connection opened");
     loop {
         let frame = match receiver.recv().await {
@@ -62,8 +80,7 @@ pub async fn serve_stream(agent: Agent, info: AgentInfo, stream: FrameStream) {
 }
 
 pub async fn run_listener(
-    agent: Agent,
-    info: AgentInfo,
+    ctx: ServerContext,
     listener: UnixFrameListener,
     shutdown: CancellationToken,
 ) {
@@ -73,7 +90,7 @@ pub async fn run_listener(
             _ = shutdown.cancelled() => break,
             accepted = listener.accept() => match accepted {
                 Ok(stream) => {
-                    connections.spawn(serve_stream(agent.clone(), info.clone(), stream));
+                    connections.spawn(serve_stream(ctx.clone(), stream));
                 }
                 Err(err) => {
                     tracing::error!(error = %err, "accept failed");
@@ -84,7 +101,7 @@ pub async fn run_listener(
         }
     }
     drop(listener);
-    agent.shutdown().await;
+    ctx.agent.shutdown().await;
     let _ = tokio::time::timeout(FLUSH_GRACE, async {
         while connections.join_next().await.is_some() {}
     })

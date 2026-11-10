@@ -131,6 +131,13 @@ pub enum Command {
         session: SessionId,
         default: Option<PolicyAction>,
     },
+    ListAgents,
+    SpawnAgent {
+        workspace: PathBuf,
+    },
+    StopAgent {
+        instance: InstanceId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +151,7 @@ pub enum Payload {
     Sessions(Vec<SessionInfo>),
     Session(SessionInfo),
     Interrupted(bool),
+    Agents(Vec<AgentInfo>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

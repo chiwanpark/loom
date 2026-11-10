@@ -7,6 +7,7 @@ pub mod instructions;
 pub mod policy;
 pub mod runtime;
 mod session;
+pub mod supervisor;
 pub mod watcher;
 
 pub use agent::{Agent, AgentNotice, AgentOptions, data_dir};
@@ -16,4 +17,5 @@ pub use events::{EventHub, Subscription};
 pub use policy::SessionPolicy;
 pub use runtime::Runtime;
 pub use session::{MAX_ROUNDS_PER_TURN, Session};
+pub use supervisor::Supervisor;
 pub use watcher::{ConfigWatcher, watch_config};

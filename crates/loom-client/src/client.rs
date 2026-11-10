@@ -399,6 +399,32 @@ impl Client {
         .await
     }
 
+    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
+        match self.request(Command::ListAgents).await? {
+            Payload::Agents(list) => Ok(list),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn spawn_agent(&self, workspace: impl Into<std::path::PathBuf>) -> Result<AgentInfo> {
+        match self
+            .request(Command::SpawnAgent {
+                workspace: workspace.into(),
+            })
+            .await?
+        {
+            Payload::AgentInfo(info) => Ok(info),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn stop_agent(&self, instance: &loom_proto::InstanceId) -> Result<()> {
+        self.ok(Command::StopAgent {
+            instance: instance.clone(),
+        })
+        .await
+    }
+
     async fn ok(&self, command: Command) -> Result<()> {
         match self.request(command).await? {
             Payload::Ok => Ok(()),

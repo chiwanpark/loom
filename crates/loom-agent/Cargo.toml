@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
+async-trait = "0.1.92"
 bytes = "1.12.1"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 loom-agent-core = { version = "0.1.0", path = "../loom-agent-core" }

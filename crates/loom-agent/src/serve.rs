@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -9,8 +10,9 @@ use loom_transport::{AgentEntry, Registry, RegistryError, UnixFrameListener};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
-use crate::server::run_listener;
+use crate::server::{ServerContext, run_listener};
 use crate::spawn::EXIT_ALREADY_RUNNING;
+use crate::supervisor::LocalSupervisor;
 use crate::workspace::resolve_workspace;
 
 pub struct ServeOptions {
@@ -79,6 +81,20 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         default_model: None,
     };
     let shutdown = CancellationToken::new();
+    let supervisor = LocalSupervisor {
+        agent: agent.clone(),
+        registry: registry.clone(),
+        exe: std::env::current_exe().context("cannot locate the loom-agent binary")?,
+        config_path,
+        dirs,
+        instance: info.instance.clone(),
+        shutdown: shutdown.clone(),
+    };
+    let ctx = ServerContext {
+        agent,
+        info,
+        supervisor: Some(Arc::new(supervisor)),
+    };
     let signals = shutdown.clone();
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
@@ -89,7 +105,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         }
         signals.cancel();
     });
-    run_listener(agent, info, listener, shutdown).await;
+    run_listener(ctx, listener, shutdown).await;
     drop(registration);
     tracing::info!("agent stopped");
     Ok(0)

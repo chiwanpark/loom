@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
-use loom_agent::server::serve_stream;
+use loom_agent::server::{ServerContext, serve_stream};
 use loom_agent_core::{Agent, AgentOptions};
 use loom_client::proto::{
     AgentInfo, ClientHello, ClientMessage, Command, Decision, ErrorCode, InstanceId, Notice,
@@ -124,8 +124,7 @@ fn setup(replies: Vec<AssistantMessage>) -> Setup {
 async fn connect(setup: &Setup) -> (Client, Notifications) {
     let (client_side, server_side) = memory_pair();
     tokio::spawn(serve_stream(
-        setup.agent.clone(),
-        setup.info.clone(),
+        ServerContext::new(setup.agent.clone(), setup.info.clone()),
         server_side,
     ));
     Client::connect(client_side, "test").await.unwrap()
@@ -258,6 +257,8 @@ async fn session_settings_and_errors() {
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
     let err = client.cancel_login("nope").await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+    let err = client.list_agents().await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Unsupported);
 }
 
 #[tokio::test]
@@ -316,8 +317,7 @@ async fn notices_reach_connected_clients() {
 async fn raw_exchange(setup: &Setup, messages: Vec<Bytes>) -> Vec<ServerMessage> {
     let (mut client_side, server_side) = memory_pair();
     let server = tokio::spawn(serve_stream(
-        setup.agent.clone(),
-        setup.info.clone(),
+        ServerContext::new(setup.agent.clone(), setup.info.clone()),
         server_side,
     ));
     for message in messages {
@@ -380,8 +380,7 @@ async fn dropped_connection_fails_pending_requests() {
     let setup = setup(vec![]);
     let (client_side, server_side) = memory_pair();
     let server = tokio::spawn(serve_stream(
-        setup.agent.clone(),
-        setup.info.clone(),
+        ServerContext::new(setup.agent.clone(), setup.info.clone()),
         server_side,
     ));
     let (client, _notes) = Client::connect(client_side, "test").await.unwrap();

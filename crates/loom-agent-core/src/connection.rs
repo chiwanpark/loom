@@ -14,6 +14,7 @@ use crate::agent::{Agent, AgentNotice};
 use crate::convert;
 use crate::events::Subscription;
 use crate::session::Session;
+use crate::supervisor::Supervisor;
 
 pub type Reply = Result<Payload, ApiError>;
 
@@ -31,6 +32,7 @@ pub struct Connection {
     subscriptions: HashMap<SessionId, JoinHandle<()>>,
     logins: Arc<Mutex<HashMap<String, CancellationToken>>>,
     tasks: Vec<JoinHandle<()>>,
+    supervisor: Option<Arc<dyn Supervisor>>,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -47,7 +49,13 @@ impl Connection {
             subscriptions: HashMap::new(),
             logins: Arc::default(),
             tasks: Vec::new(),
+            supervisor: None,
         }
+    }
+
+    pub fn with_supervisor(mut self, supervisor: Option<Arc<dyn Supervisor>>) -> Self {
+        self.supervisor = supervisor;
+        self
     }
 
     pub fn agent_info(&self) -> AgentInfo {
@@ -123,6 +131,14 @@ impl Connection {
 
     async fn request(&mut self, id: RequestId, command: Command) {
         match command {
+            Command::ListAgents | Command::SpawnAgent { .. } | Command::StopAgent { .. } => {
+                let supervisor = self.supervisor.clone();
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = supervise(supervisor.as_deref(), command).await;
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
             Command::ListModels { .. }
             | Command::StartLogin { .. }
             | Command::CompleteLogin { .. }
@@ -281,7 +297,10 @@ impl Connection {
             | Command::CancelLogin { .. }
             | Command::Logout { .. }
             | Command::Subscribe { .. }
-            | Command::Unsubscribe { .. } => Err(ApiError::new(
+            | Command::Unsubscribe { .. }
+            | Command::ListAgents
+            | Command::SpawnAgent { .. }
+            | Command::StopAgent { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),
@@ -305,6 +324,26 @@ impl Drop for Connection {
         {
             token.cancel();
         }
+    }
+}
+
+async fn supervise(supervisor: Option<&dyn Supervisor>, command: Command) -> Reply {
+    let Some(supervisor) = supervisor else {
+        return Err(ApiError::new(
+            ErrorCode::Unsupported,
+            "this agent cannot manage other agents",
+        ));
+    };
+    match command {
+        Command::ListAgents => supervisor.list().await.map(Payload::Agents),
+        Command::SpawnAgent { workspace } => {
+            supervisor.spawn(workspace).await.map(Payload::AgentInfo)
+        }
+        Command::StopAgent { instance } => supervisor.stop(&instance).await.map(|()| Payload::Ok),
+        _ => Err(ApiError::new(
+            ErrorCode::Internal,
+            "command routed to the wrong handler",
+        )),
     }
 }
 
