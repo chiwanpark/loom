@@ -6,12 +6,13 @@ use loom_client::proto::{
     Decision, LoginMethod, LoginMethodInfo, LoginPrompt, SessionEvent, SessionId, TurnOutcome,
 };
 use loom_client::{
-    AgentTarget, Client, Notification, SshTarget, connect_local, connect_ssh, local_registry,
+    AgentTarget, Client, Notification, RelayHost, SshTarget, connect_local, connect_ssh,
+    load_client_identity, local_registry, pair_with_uri,
 };
 use loom_config::{AgentConfig, Dirs};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-const USAGE: &str = "usage: client [--ssh DEST [--remote-bin BIN]] [--agent-bin BIN] (--workspace PATH [--spawn] | --instance ID) [--model PROVIDER/MODEL] [--session ID]";
+const USAGE: &str = "usage: client [--ssh DEST [--remote-bin BIN]] [--agent-bin BIN] (--workspace PATH [--spawn] | --instance ID) [--model PROVIDER/MODEL] [--session ID]\n       client --pair URI [--label NAME] [--model ...]\n       client --relay URL --host-id ID --host-key KEY [--instance ID] [--model ...]";
 const HELP: &str = "commands: /sessions /providers /models PROVIDER /model REF /login PROVIDER /key PROVIDER KEY /interrupt /quit";
 
 type AnyResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -41,10 +42,39 @@ async fn main() -> AnyResult<()> {
     let spawn = take_flag(&mut args, "--spawn");
     let model = take_opt(&mut args, "--model");
     let session_id = take_opt(&mut args, "--session");
+    let pair = take_opt(&mut args, "--pair");
+    let label = take_opt(&mut args, "--label").unwrap_or_else(|| "example".into());
+    let relay = take_opt(&mut args, "--relay");
+    let host_id = take_opt(&mut args, "--host-id");
+    let host_key = take_opt(&mut args, "--host-key");
     if !args.is_empty() {
         return Err(USAGE.into());
     }
+    let relay_stream = if let Some(uri) = pair {
+        let dirs = Dirs::from_env()?;
+        let identity = load_client_identity(&dirs)?;
+        let (host, instance) = pair_with_uri(&uri, &identity, &label, None).await?;
+        println!(
+            "paired; reconnect with --relay {} --host-id {} --host-key {}",
+            host.url,
+            host.host,
+            host.host_key_text()
+        );
+        Some(host.connect(Some(&instance), &identity).await?)
+    } else if let Some(url) = relay {
+        let (Some(host_id), Some(host_key)) = (host_id, host_key) else {
+            return Err(USAGE.into());
+        };
+        let dirs = Dirs::from_env()?;
+        let identity = load_client_identity(&dirs)?;
+        let host = RelayHost::from_parts(&url, &host_id, &host_key, None)?;
+        let instance = instance.clone().map(loom_client::proto::InstanceId);
+        Some(host.connect(instance.as_ref(), &identity).await?)
+    } else {
+        None
+    };
     let target = match (workspace, instance) {
+        _ if relay_stream.is_some() => AgentTarget::Instance(String::new()),
         (Some(path), None) => AgentTarget::Workspace {
             path: PathBuf::from(path),
             spawn,
@@ -53,8 +83,9 @@ async fn main() -> AnyResult<()> {
         _ => return Err(USAGE.into()),
     };
 
-    let stream = match ssh {
-        Some(destination) => {
+    let stream = match (relay_stream, ssh) {
+        (Some(stream), _) => stream,
+        (None, Some(destination)) => {
             let mut ssh = SshTarget::new(destination);
             if let Some(bin) = remote_bin {
                 ssh.remote_bin = bin;
@@ -65,7 +96,7 @@ async fn main() -> AnyResult<()> {
             ssh.control_dir = Some(control);
             connect_ssh(&ssh, &target)?
         }
-        None => {
+        (None, None) => {
             let dirs = Dirs::from_env()?;
             let config_path = dirs.agent_config_path(None, std::env::var_os("LOOM_CONFIG"));
             let config = AgentConfig::load(&config_path, &dirs)?;

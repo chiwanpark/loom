@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{Agent, AgentNotice};
 use crate::convert;
 use crate::events::Subscription;
+use crate::host_keys::HostKeys;
 use crate::session::Session;
 use crate::supervisor::Supervisor;
 use crate::terminals::{Terminals, interactive_shell};
@@ -34,6 +35,7 @@ pub struct Connection {
     logins: Arc<Mutex<HashMap<String, CancellationToken>>>,
     tasks: Vec<JoinHandle<()>>,
     supervisor: Option<Arc<dyn Supervisor>>,
+    host_keys: Option<Arc<dyn HostKeys>>,
     terminals: Terminals,
 }
 
@@ -52,8 +54,14 @@ impl Connection {
             logins: Arc::default(),
             tasks: Vec::new(),
             supervisor: None,
+            host_keys: None,
             terminals: Terminals::default(),
         }
+    }
+
+    pub fn with_host_keys(mut self, host_keys: Option<Arc<dyn HostKeys>>) -> Self {
+        self.host_keys = host_keys;
+        self
     }
 
     pub fn with_supervisor(mut self, supervisor: Option<Arc<dyn Supervisor>>) -> Self {
@@ -139,6 +147,17 @@ impl Connection {
                 let out = self.out.clone();
                 self.tasks.push(tokio::spawn(async move {
                     let result = supervise(supervisor.as_deref(), command).await;
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
+            Command::GetHostKey
+            | Command::AuthorizeClient { .. }
+            | Command::ListClients
+            | Command::RevokeClient { .. } => {
+                let host_keys = self.host_keys.clone();
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = manage_keys(host_keys.as_deref(), command).await;
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
@@ -349,7 +368,11 @@ impl Connection {
             | Command::OpenTerminal { .. }
             | Command::TerminalInput { .. }
             | Command::ResizeTerminal { .. }
-            | Command::CloseTerminal { .. } => Err(ApiError::new(
+            | Command::CloseTerminal { .. }
+            | Command::GetHostKey
+            | Command::AuthorizeClient { .. }
+            | Command::ListClients
+            | Command::RevokeClient { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),
@@ -374,6 +397,28 @@ impl Drop for Connection {
         {
             token.cancel();
         }
+    }
+}
+
+async fn manage_keys(host_keys: Option<&dyn HostKeys>, command: Command) -> Reply {
+    let Some(host_keys) = host_keys else {
+        return Err(ApiError::new(
+            ErrorCode::Unsupported,
+            "this agent does not manage relay clients",
+        ));
+    };
+    match command {
+        Command::GetHostKey => host_keys.host_key().await.map(Payload::HostKey),
+        Command::AuthorizeClient { pubkey, label } => host_keys
+            .authorize(pubkey, label)
+            .await
+            .map(Payload::HostKey),
+        Command::ListClients => host_keys.list().await.map(Payload::Clients),
+        Command::RevokeClient { label } => host_keys.revoke(label).await.map(|()| Payload::Ok),
+        _ => Err(ApiError::new(
+            ErrorCode::Internal,
+            "command routed to the wrong handler",
+        )),
     }
 }
 

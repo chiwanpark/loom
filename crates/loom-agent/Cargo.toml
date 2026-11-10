@@ -17,9 +17,11 @@ bytes = "1.12.1"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 loom-agent-core = { version = "0.1.0", path = "../loom-agent-core" }
 loom-config = { version = "0.1.0", path = "../loom-config" }
+loom-crypto = { version = "0.1.0", path = "../loom-crypto" }
 loom-proto = { version = "0.1.0", path = "../loom-proto" }
 loom-transport = { version = "0.1.0", path = "../loom-transport" }
 nix = { version = "0.31.3", features = ["signal"] }
+qrcode = { version = "0.14.1", default-features = false }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
@@ -35,6 +37,9 @@ workspace = true
 async-trait = "0.1.92"
 futures = "0.3.34"
 loom-client = { version = "0.1.0", path = "../loom-client" }
+loom-crypto = { path = "../loom-crypto" }
 loom-llm = { version = "0.1.0", path = "../loom-llm" }
+loom-relay = { path = "../loom-relay" }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
+tokio-util = "0.7.20"

@@ -439,6 +439,44 @@ impl Client {
         .await
     }
 
+    pub async fn host_key(&self) -> Result<loom_proto::HostKeyInfo> {
+        match self.request(Command::GetHostKey).await? {
+            Payload::HostKey(info) => Ok(info),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn authorize_client(
+        &self,
+        pubkey: [u8; 32],
+        label: impl Into<String>,
+    ) -> Result<loom_proto::HostKeyInfo> {
+        match self
+            .request(Command::AuthorizeClient {
+                pubkey,
+                label: label.into(),
+            })
+            .await?
+        {
+            Payload::HostKey(info) => Ok(info),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn list_clients(&self) -> Result<Vec<loom_proto::AuthorizedClient>> {
+        match self.request(Command::ListClients).await? {
+            Payload::Clients(list) => Ok(list),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn revoke_client(&self, label: impl Into<String>) -> Result<()> {
+        self.ok(Command::RevokeClient {
+            label: label.into(),
+        })
+        .await
+    }
+
     pub async fn open_terminal(&self, cols: u16, rows: u16) -> Result<TerminalId> {
         match self.request(Command::OpenTerminal { cols, rows }).await? {
             Payload::Terminal(id) => Ok(id),

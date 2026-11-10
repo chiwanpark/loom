@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use loom_agent_core::{Agent, Connection, Flow, Supervisor};
+use loom_agent_core::{Agent, Connection, Flow, HostKeys, Supervisor};
 use loom_proto::{AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode};
 use loom_transport::{FrameStream, UnixFrameListener};
 use tokio::sync::mpsc;
@@ -17,6 +17,7 @@ pub struct ServerContext {
     pub agent: Agent,
     pub info: AgentInfo,
     pub supervisor: Option<Arc<dyn Supervisor>>,
+    pub host_keys: Option<Arc<dyn HostKeys>>,
 }
 
 impl ServerContext {
@@ -25,6 +26,7 @@ impl ServerContext {
             agent,
             info,
             supervisor: None,
+            host_keys: None,
         }
     }
 }
@@ -50,7 +52,9 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
         let _ = sender.close().await;
     });
 
-    let mut connection = Connection::new(ctx.agent, ctx.info, out).with_supervisor(ctx.supervisor);
+    let mut connection = Connection::new(ctx.agent, ctx.info, out)
+        .with_supervisor(ctx.supervisor)
+        .with_host_keys(ctx.host_keys);
     tracing::debug!(?peer, "connection opened");
     loop {
         let frame = match receiver.recv().await {

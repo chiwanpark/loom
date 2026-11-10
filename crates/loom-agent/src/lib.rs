@@ -1,3 +1,4 @@
+pub mod relay;
 pub mod serve;
 pub mod server;
 pub mod spawn;

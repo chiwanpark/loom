@@ -5,11 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use loom_agent_core::{Agent, AgentOptions, watch_config};
 use loom_config::{AgentConfig, Dirs};
+use loom_crypto::HostIdentity;
 use loom_proto::{AgentInfo, InstanceId};
 use loom_transport::{AgentEntry, Registry, RegistryError, UnixFrameListener};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
+use crate::relay::{LocalHostKeys, relay_endpoint, start_relay, wait_registered};
 use crate::server::{ServerContext, run_listener};
 use crate::spawn::EXIT_ALREADY_RUNNING;
 use crate::supervisor::LocalSupervisor;
@@ -52,6 +54,18 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         Err(err) => return Err(err).context("could not register the agent"),
     };
 
+    let data_dir = loom_agent_core::data_dir(&config, &dirs);
+    let relay_endpoint = match relay_endpoint(&config) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            tracing::error!(error = %err, "the relay is disabled");
+            None
+        }
+    };
+    let identity = Arc::new(
+        HostIdentity::load_or_create(&data_dir).context("could not load the host identity")?,
+    );
+    let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
     let agent = Agent::new(AgentOptions::new(&workspace, config, dirs.clone()))
         .context("could not start the agent")?;
     let _watcher = start_watcher(&agent, &config_path, &dirs);
@@ -62,19 +76,18 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     let started_at = now_unix();
     let pid = std::process::id();
     let version = env!("CARGO_PKG_VERSION").to_owned();
-    registration.publish(AgentEntry {
+    let entry = AgentEntry {
         instance: instance.clone(),
         pid,
         workspace: workspace.clone(),
         socket: socket.clone(),
         started_at,
         version: version.clone(),
-    })?;
-    tracing::info!(%instance, workspace = %workspace.display(), socket = %socket.display(), "agent ready");
+    };
 
     let info = AgentInfo {
-        instance: InstanceId(instance),
-        workspace,
+        instance: InstanceId(instance.clone()),
+        workspace: workspace.clone(),
         pid,
         started_at,
         version,
@@ -94,7 +107,23 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         agent,
         info,
         supervisor: Some(Arc::new(supervisor)),
+        host_keys: Some(host_keys.clone()),
     };
+    if let Some(endpoint) = relay_endpoint {
+        let url = endpoint.url.clone();
+        let mut handle = start_relay(
+            ctx.clone(),
+            endpoint,
+            host_keys,
+            &data_dir,
+            shutdown.clone(),
+        );
+        if !wait_registered(&mut handle).await {
+            tracing::warn!(relay = %url, "not registered with the relay yet; continuing in the background");
+        }
+    }
+    registration.publish(entry)?;
+    tracing::info!(%instance, workspace = %workspace.display(), socket = %socket.display(), "agent ready");
     let signals = shutdown.clone();
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;

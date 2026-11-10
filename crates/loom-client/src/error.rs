@@ -20,6 +20,10 @@ pub enum ClientError {
     #[error("no agent is running for {0}")]
     NoAgent(String),
     #[error(transparent)]
+    Relay(#[from] loom_transport::RelayError),
+    #[error(transparent)]
+    Crypto(#[from] loom_crypto::CryptoError),
+    #[error(transparent)]
     Codec(#[from] CodecError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
