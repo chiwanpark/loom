@@ -162,6 +162,23 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
+            Command::GetWorkspaceChanges | Command::GetFileDiff { .. } => {
+                let root = self.agent.workspace_root().to_path_buf();
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = match command {
+                        Command::GetFileDiff { path, old_path } => {
+                            crate::git::file_diff(&root, &path, old_path.as_deref())
+                                .await
+                                .map(Payload::FileDiff)
+                        }
+                        _ => crate::git::changes(&root)
+                            .await
+                            .map(Payload::WorkspaceChanges),
+                    };
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
             Command::ListModels { .. }
             | Command::StartLogin { .. }
             | Command::CompleteLogin { .. }
@@ -387,7 +404,9 @@ impl Connection {
             | Command::GetHostKey
             | Command::AuthorizeClient { .. }
             | Command::ListClients
-            | Command::RevokeClient { .. } => Err(ApiError::new(
+            | Command::RevokeClient { .. }
+            | Command::GetWorkspaceChanges
+            | Command::GetFileDiff { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),

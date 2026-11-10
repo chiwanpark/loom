@@ -4,6 +4,7 @@ pub mod connection;
 pub mod convert;
 mod error;
 pub mod events;
+pub mod git;
 pub mod host_keys;
 pub mod instructions;
 pub mod metrics;
