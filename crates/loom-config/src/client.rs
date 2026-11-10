@@ -85,6 +85,10 @@ pub struct AppearanceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mono_font: Option<String>,
     pub mono_font_size: f32,
+    /// Families tried in order for glyphs the monospace font lacks, for example
+    /// `D2Coding` or `Noto Sans Mono CJK KR` for Hangul in terminals.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mono_font_fallbacks: Vec<String>,
 }
 
 impl Default for AppearanceConfig {
@@ -96,6 +100,7 @@ impl Default for AppearanceConfig {
             ui_font_size: 15.0,
             mono_font: None,
             mono_font_size: 14.0,
+            mono_font_fallbacks: Vec::new(),
         }
     }
 }
@@ -174,6 +179,14 @@ impl ClientConfig {
                 return Err(invalid(field.into(), "must be between 6 and 72"));
             }
         }
+        for (index, family) in self.appearance.mono_font_fallbacks.iter().enumerate() {
+            if family.trim().is_empty() {
+                return Err(invalid(
+                    format!("appearance.mono_font_fallbacks[{index}]"),
+                    "must not be empty",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -223,6 +236,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_mono_font_fallbacks() {
+        let text = "appearance:\n  mono_font_fallbacks:\n  - D2Coding\n  - Noto Sans Mono CJK KR\n";
+        let config = ClientConfig::parse(text, "client.yaml").unwrap();
+        assert_eq!(
+            config.appearance.mono_font_fallbacks,
+            ["D2Coding", "Noto Sans Mono CJK KR"]
+        );
+        let again = ClientConfig::parse(&config.to_yaml(), "client.yaml").unwrap();
+        assert_eq!(again, config);
+        assert!(
+            !ClientConfig::default()
+                .to_yaml()
+                .contains("mono_font_fallbacks")
+        );
+    }
+
+    #[test]
     fn rejects_bad_hosts() {
         for text in [
             "hosts:\n- kind: local\n  name: a\n- kind: local\n  name: a\n",
@@ -230,6 +260,7 @@ mod tests {
             "hosts:\n- kind: relay\n  name: a\n  url: https://x\n  host_id: x\n  host_key: y\n",
             "hosts:\n- kind: telnet\n  name: a\n",
             "appearance:\n  ui_font_size: 2\n",
+            "appearance:\n  mono_font_fallbacks: [\" \"]\n",
         ] {
             assert!(ClientConfig::parse(text, "client.yaml").is_err(), "{text}");
         }

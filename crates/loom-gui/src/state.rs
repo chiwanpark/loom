@@ -47,11 +47,16 @@ pub struct AgentConnection {
     pub sessions: Vec<SessionInfo>,
     pub show_archived: bool,
     conversations: HashMap<SessionId, Entity<Conversation>>,
-    terminals: HashMap<TerminalId, WeakEntity<TerminalView>>,
+    terminals: HashMap<TerminalId, TerminalEntry>,
     _pump: Option<Task<()>>,
 }
 
 impl EventEmitter<ConnectionEvent> for AgentConnection {}
+
+struct TerminalEntry {
+    view: WeakEntity<TerminalView>,
+    io: TerminalRebind,
+}
 
 impl AgentConnection {
     pub fn new(
@@ -111,10 +116,12 @@ impl AgentConnection {
         notifications: Notifications,
         cx: &mut Context<Self>,
     ) {
+        let same_agent = client.agent().instance == self.info.instance;
         self.client = client;
         self.info = self.client.agent().clone();
         self.status = LinkStatus::Connected;
         self.attach(notifications, cx);
+        self.reattach_terminals(same_agent, cx);
         self.refresh_sessions(cx);
         let subscriptions: Vec<(SessionId, u64)> = self
             .conversations
@@ -167,12 +174,16 @@ impl AgentConnection {
             }
             Notification::Notice(notice) => cx.emit(ConnectionEvent::Notice(notice)),
             Notification::TerminalOutput { terminal, data } => {
-                if let Some(view) = self.terminals.get(&terminal).and_then(|v| v.upgrade()) {
+                if let Some(view) = self.terminals.get(&terminal).and_then(|t| t.view.upgrade()) {
                     view.update(cx, |view, cx| view.feed(&data, cx));
                 }
             }
             Notification::TerminalExited { terminal, status } => {
-                if let Some(view) = self.terminals.remove(&terminal).and_then(|v| v.upgrade()) {
+                if let Some(view) = self
+                    .terminals
+                    .remove(&terminal)
+                    .and_then(|t| t.view.upgrade())
+                {
                     view.update(cx, |view, cx| view.set_exited(status, cx));
                 }
             }
@@ -426,14 +437,98 @@ impl AgentConnection {
             .run(async move { client.read_file(&path).await })
     }
 
-    pub fn register_terminal(&mut self, id: TerminalId, view: &Entity<TerminalView>) {
-        self.terminals.insert(id, view.downgrade());
+    pub fn register_terminal(
+        &mut self,
+        id: TerminalId,
+        view: &Entity<TerminalView>,
+        io: TerminalRebind,
+    ) {
+        self.terminals.insert(
+            id,
+            TerminalEntry {
+                view: view.downgrade(),
+                io,
+            },
+        );
+    }
+
+    /// After a reconnect, points every open terminal at the new client and takes it
+    /// over with `AttachTerminal`. Terminals of a restarted agent (a new instance)
+    /// are gone, so they are ended instead; the new agent may reuse their IDs.
+    fn reattach_terminals(&mut self, same_agent: bool, cx: &mut Context<Self>) {
+        self.terminals.retain(|_, t| t.view.upgrade().is_some());
+        if !same_agent {
+            for (_, terminal) in self.terminals.drain() {
+                terminal.io.forget();
+                if let Some(view) = terminal.view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        view.set_lost("the agent restarted; this terminal is gone", cx)
+                    });
+                }
+            }
+            return;
+        }
+        for (&id, terminal) in &self.terminals {
+            let Some(view) = terminal.view.upgrade() else {
+                continue;
+            };
+            terminal.io.rebind(self.client.clone());
+            let (cols, rows) = view.read(cx).grid_size();
+            let client = self.client.clone();
+            let task = self
+                .backend
+                .run(async move { client.attach_terminal(id, cols, rows).await });
+            cx.spawn(async move |this, cx: &mut AsyncApp| {
+                let failed = match task.await {
+                    Some(Ok(())) => return,
+                    Some(Err(err)) => err.to_string(),
+                    None => "the connection closed".into(),
+                };
+                tracing::debug!(terminal = id, "cannot reattach the terminal: {failed}");
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(terminal) = this.terminals.remove(&id) {
+                        terminal.io.forget();
+                        if let Some(view) = terminal.view.upgrade() {
+                            view.update(cx, |view, cx| {
+                                view.set_lost("the terminal closed while disconnected", cx)
+                            });
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
     }
 }
 
 enum TerminalRequest {
     Write(Vec<u8>),
     Resize(u16, u16),
+    /// Use this client from now on (after a reconnect), or none if the terminal is gone.
+    Rebind(Option<Client>),
+}
+
+/// Lets the connection retarget a [`RemoteTerminal`] after a reconnect. It holds a
+/// weak sender, so dropping the view still ends the I/O task and closes the terminal.
+#[derive(Clone)]
+pub struct TerminalRebind {
+    tx: mpsc::WeakUnboundedSender<TerminalRequest>,
+}
+
+impl TerminalRebind {
+    fn send(&self, client: Option<Client>) {
+        if let Some(tx) = self.tx.upgrade() {
+            let _ = tx.send(TerminalRequest::Rebind(client));
+        }
+    }
+
+    fn rebind(&self, client: Client) {
+        self.send(Some(client));
+    }
+
+    fn forget(&self) {
+        self.send(None);
+    }
 }
 
 pub struct RemoteTerminal {
@@ -444,6 +539,7 @@ impl RemoteTerminal {
     pub fn new(backend: &Backend, client: Client, id: TerminalId) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<TerminalRequest>();
         drop(backend.run(async move {
+            let mut client = Some(client);
             while let Some(request) = rx.recv().await {
                 let command = match request {
                     TerminalRequest::Write(data) => Command::TerminalInput { terminal: id, data },
@@ -452,8 +548,17 @@ impl RemoteTerminal {
                         cols,
                         rows,
                     },
+                    TerminalRequest::Rebind(next) => {
+                        client = next;
+                        continue;
+                    }
                 };
-                match client.submit(command).await {
+                // While disconnected, keystrokes and resizes are dropped; the size is
+                // sent again when the terminal is reattached.
+                let Some(current) = client.as_ref().filter(|c| !c.is_closed()) else {
+                    continue;
+                };
+                match current.submit(command).await {
                     Ok(reply) => {
                         tokio::spawn(async move {
                             if let Err(err) = reply.await {
@@ -461,12 +566,21 @@ impl RemoteTerminal {
                             }
                         });
                     }
-                    Err(_) => break,
+                    Err(err) => tracing::debug!("terminal request not sent: {err}"),
                 }
             }
-            let _ = client.close_terminal(id).await;
+            // The view is gone: close the terminal on the agent.
+            if let Some(client) = client.filter(|c| !c.is_closed()) {
+                let _ = client.close_terminal(id).await;
+            }
         }));
         Self { tx }
+    }
+
+    pub fn rebinder(&self) -> TerminalRebind {
+        TerminalRebind {
+            tx: self.tx.downgrade(),
+        }
     }
 }
 

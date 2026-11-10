@@ -9,11 +9,13 @@ use gpui::{
     Styled, TextAlign, TextRun, TouchPhase, UTF16Selection, UnderlineStyle, Window, canvas, div,
     fill, point, px, size,
 };
-use gpui_component::ActiveTheme;
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::{ActiveTheme, Sizable, h_flex};
 use loom_vt::input::{Modifiers as VtModifiers, encode_key, encode_paste, encode_text};
 use loom_vt::mouse::{self, CellMetrics, MouseButton as VtButton};
 use loom_vt::{
-    AlacrittyTerminal, CursorShape, GridPoint, SelectionKind, Side, Snapshot, TerminalEmulator,
+    AlacrittyTerminal, ClipboardTarget, ClipboardWrite, CursorShape, GridPoint, SelectionKind,
+    Side, Snapshot, TerminalEmulator,
 };
 
 use super::keys::map_key;
@@ -23,6 +25,37 @@ pub const MIN_COLS: u16 = 2;
 pub const MIN_ROWS: u16 = 1;
 const DRAG_THRESHOLD: f32 = 3.0;
 const CONTEXT: &str = "Terminal";
+/// Characters of a requested clipboard write shown in the confirmation banner.
+const CLIPBOARD_PREVIEW: usize = 80;
+/// Link schemes that may be opened from terminal output, after confirmation.
+const LINK_SCHEMES: &[&str] = &["http://", "https://", "mailto:"];
+
+/// Whether a hyperlink from terminal output may be offered for opening.
+pub fn openable_link(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    LINK_SCHEMES.iter().any(|scheme| lower.starts_with(scheme))
+        && !uri.chars().any(char::is_control)
+}
+
+/// One-line preview of clipboard text for the confirmation banner.
+pub fn clipboard_preview(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut preview: String = flat.chars().take(CLIPBOARD_PREVIEW).collect();
+    if flat.chars().count() > CLIPBOARD_PREVIEW {
+        preview.push('…');
+    }
+    preview
+}
+
+/// How OSC 52 clipboard writes from the program are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardPolicy {
+    Ask,
+    Allow,
+}
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -58,13 +91,19 @@ pub struct TerminalView {
     selecting: bool,
     reported_button: Option<VtButton>,
     scroll_px: Pixels,
+    clipboard_policy: ClipboardPolicy,
+    pending_clipboard: Option<ClipboardWrite>,
 }
 
-pub fn mono_font(family: Option<&str>, cx: &App) -> Font {
+pub fn mono_font(family: Option<&str>, fallbacks: &[String], cx: &App) -> Font {
     let family: SharedString = family
         .map(|f| SharedString::from(f.to_owned()))
         .unwrap_or_else(|| cx.theme().mono_font_family.clone());
-    gpui::font(family)
+    let mut font = gpui::font(family);
+    if !fallbacks.is_empty() {
+        font.fallbacks = Some(gpui::FontFallbacks::from_fonts(fallbacks.to_vec()));
+    }
+    font
 }
 
 impl TerminalView {
@@ -88,6 +127,8 @@ impl TerminalView {
             mouse_down_at: None,
             selecting: false,
             reported_button: None,
+            clipboard_policy: ClipboardPolicy::Ask,
+            pending_clipboard: None,
             scroll_px: px(0.),
         }
     }
@@ -105,12 +146,126 @@ impl TerminalView {
         {
             io.write(responses);
         }
+        if let Some(write) = self.emulator.take_clipboard_write()
+            && !self.read_only
+        {
+            match self.clipboard_policy {
+                ClipboardPolicy::Allow => write_clipboard(write, cx),
+                ClipboardPolicy::Ask => self.pending_clipboard = Some(write),
+            }
+        }
         cx.notify();
+    }
+
+    fn resolve_clipboard(&mut self, allow: bool, always: bool, cx: &mut Context<Self>) {
+        if let Some(write) = self.pending_clipboard.take()
+            && allow
+        {
+            write_clipboard(write, cx);
+        }
+        if always {
+            self.clipboard_policy = ClipboardPolicy::Allow;
+        }
+        cx.notify();
+    }
+
+    fn clipboard_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let write = self.pending_clipboard.as_ref()?;
+        let theme = cx.theme();
+        let target = match write.target {
+            ClipboardTarget::Clipboard => "clipboard",
+            ClipboardTarget::Primary => "primary selection",
+        };
+        let count = write.text.chars().count();
+        Some(
+            h_flex()
+                .id("terminal-clipboard-request")
+                .occlude()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .bg(theme.popover)
+                .border_b_1()
+                .border_color(theme.border)
+                .text_sm()
+                .text_color(theme.popover_foreground)
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(format!(
+                            "The program wants to copy {count} characters to the {target}: {}",
+                            clipboard_preview(&write.text)
+                        )),
+                )
+                .child(
+                    Button::new("terminal-clipboard-allow")
+                        .small()
+                        .primary()
+                        .label("Allow")
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_clipboard(true, false, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("terminal-clipboard-always")
+                        .small()
+                        .label("Always allow here")
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_clipboard(true, true, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("terminal-clipboard-deny")
+                        .small()
+                        .label("Deny")
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.resolve_clipboard(false, false, cx)),
+                        ),
+                ),
+        )
+    }
+
+    /// Ctrl+click on an OSC 8 hyperlink asks before opening it.
+    fn open_link_at(&self, point: GridPoint, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(uri) = self.emulator.hyperlink_at(point) else {
+            return false;
+        };
+        if !openable_link(&uri) {
+            return false;
+        }
+        crate::ui::dialogs::confirm(
+            "Open this link?",
+            format!(
+                "A program in the terminal links to\n{uri}\nOpen it only if you trust where it leads."
+            ),
+            "Open",
+            move |_, cx| cx.open_url(&uri),
+            window,
+            cx,
+        );
+        true
     }
 
     pub fn set_exited(&mut self, status: i32, cx: &mut Context<Self>) {
         self.exited = Some(status);
         let message = format!("\r\n[process exited with status {status}]\r\n");
+        self.emulator.feed(message.as_bytes());
+        cx.notify();
+    }
+
+    /// Ends a terminal whose process can no longer be reached, for example because
+    /// the agent restarted while the client was disconnected.
+    pub fn set_lost(&mut self, reason: &str, cx: &mut Context<Self>) {
+        self.exited = Some(-1);
+        self.pending_clipboard = None;
+        let message = format!("\r\n[{reason}]\r\n");
         self.emulator.feed(message.as_bytes());
         cx.notify();
     }
@@ -199,6 +354,13 @@ impl TerminalView {
         let Some((point, side)) = self.grid_point(event.position) else {
             return;
         };
+        if event.button == MouseButton::Left
+            && event.modifiers.control
+            && event.click_count == 1
+            && self.open_link_at(point, window, cx)
+        {
+            return;
+        }
         let button = vt_button(event.button);
         if self.reports_mouse(event.modifiers.shift) {
             if let Some(button) = button
@@ -783,8 +945,10 @@ impl Render for TerminalView {
         let font_size = self.font_size;
         let focus = self.focus.clone();
         let prepaint_view = view.clone();
+        let banner = self.clipboard_banner(cx);
         div()
             .id("terminal")
+            .relative()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .size_full()
@@ -938,5 +1102,45 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             )
+            .children(banner)
+    }
+}
+
+fn write_clipboard(write: ClipboardWrite, cx: &mut App) {
+    let item = ClipboardItem::new_string(write.text);
+    match write.target {
+        ClipboardTarget::Clipboard => cx.write_to_clipboard(item),
+        ClipboardTarget::Primary => cx.write_to_primary(item),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_web_and_mail_links_open() {
+        assert!(openable_link("https://example.com/a?b=c"));
+        assert!(openable_link("HTTP://example.com"));
+        assert!(openable_link("mailto:me@example.com"));
+        for uri in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "vscode://open",
+            "ssh://host",
+            "https://example.com/\nhttps://evil",
+            "",
+        ] {
+            assert!(!openable_link(uri), "{uri}");
+        }
+    }
+
+    #[test]
+    fn previews_clipboard_text_on_one_line() {
+        assert_eq!(clipboard_preview("a\nb\tc"), "a b c");
+        let long = "한".repeat(CLIPBOARD_PREVIEW + 5);
+        let preview = clipboard_preview(&long);
+        assert_eq!(preview.chars().count(), CLIPBOARD_PREVIEW + 1);
+        assert!(preview.ends_with('…'));
     }
 }

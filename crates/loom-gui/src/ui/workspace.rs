@@ -1235,11 +1235,17 @@ impl Workspace {
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Some(Ok(id)) => {
                     let client = conn.read(cx).client.clone();
-                    let io: Rc<dyn TerminalIo> = Rc::new(RemoteTerminal::new(&backend, client, id));
-                    let font = mono_font(appearance.mono_font.as_deref(), cx);
+                    let remote = RemoteTerminal::new(&backend, client, id);
+                    let rebind = remote.rebinder();
+                    let io: Rc<dyn TerminalIo> = Rc::new(remote);
+                    let font = mono_font(
+                        appearance.mono_font.as_deref(),
+                        &appearance.mono_font_fallbacks,
+                        cx,
+                    );
                     let size = px(appearance.mono_font_size);
                     let view = cx.new(|cx| TerminalView::new(Some(io), font, size, cx));
-                    conn.update(cx, |conn, _| conn.register_terminal(id, &view));
+                    conn.update(cx, |conn, _| conn.register_terminal(id, &view, rebind));
                     this.subscriptions
                         .push(cx.observe(&view, |_, _, cx| cx.notify()));
                     let panel_id = this.alloc_panel();
