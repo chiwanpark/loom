@@ -357,6 +357,7 @@ mod tests {
             last_seq: 0,
             created_at: 0,
             title: None,
+            archived: false,
         }
     }
 

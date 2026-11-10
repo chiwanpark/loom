@@ -21,6 +21,7 @@ pub enum LinkStatus {
 pub enum ConnectionEvent {
     Notice(Notice),
     LoginFinished(Result<String, ApiError>),
+    Failed(String),
     Closed,
 }
 
@@ -31,6 +32,7 @@ pub struct AgentConnection {
     pub backend: Backend,
     pub status: LinkStatus,
     pub sessions: Vec<SessionInfo>,
+    pub show_archived: bool,
     conversations: HashMap<SessionId, Entity<Conversation>>,
     terminals: HashMap<TerminalId, WeakEntity<TerminalView>>,
     _pump: Option<Task<()>>,
@@ -54,6 +56,7 @@ impl AgentConnection {
             backend,
             status: LinkStatus::Connected,
             sessions: Vec::new(),
+            show_archived: false,
             conversations: HashMap::new(),
             terminals: HashMap::new(),
             _pump: None,
@@ -138,6 +141,9 @@ impl AgentConnection {
                         .unwrap_or_else(|| account.provider.to_string())
                 });
                 cx.emit(ConnectionEvent::LoginFinished(result));
+            }
+            Notification::Notice(Notice::SessionUpdated(info)) => {
+                self.update_session_info(info, cx)
             }
             Notification::Notice(notice) => cx.emit(ConnectionEvent::Notice(notice)),
             Notification::TerminalOutput { terminal, data } => {
@@ -225,6 +231,7 @@ impl AgentConnection {
                 conv.info.model = info.model.clone();
                 conv.info.reasoning = info.reasoning;
                 conv.info.policy_default = info.policy_default;
+                conv.info.archived = info.archived;
                 cx.notify();
             });
         }
@@ -233,10 +240,30 @@ impl AgentConnection {
                 existing.model = info.model;
                 existing.reasoning = info.reasoning;
                 existing.policy_default = info.policy_default;
+                existing.archived = info.archived;
+                if existing.title.is_none() {
+                    existing.title = info.title;
+                }
             }
             None => self.sessions.insert(0, info),
         }
         cx.notify();
+    }
+
+    pub fn set_archived(&mut self, id: SessionId, archived: bool, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.archive_session(&id, archived).await });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Some(Ok(info)) => this.update_session_info(info, cx),
+                Some(Err(err)) => cx.emit(ConnectionEvent::Failed(err.to_string())),
+                None => {}
+            });
+        })
+        .detach();
     }
 
     pub fn register_terminal(&mut self, id: TerminalId, view: &Entity<TerminalView>) {

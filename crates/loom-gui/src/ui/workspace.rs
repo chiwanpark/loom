@@ -15,7 +15,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, TitleBar, h_flex, h_resizable, resizable_panel, v_flex,
     v_resizable,
 };
-use loom_client::proto::{SessionInfo, SessionState};
+use loom_client::proto::{SessionId, SessionInfo, SessionState};
 use loom_config::{ClientConfig, HostEntry};
 
 use crate::backend::Backend;
@@ -35,6 +35,7 @@ actions!(
         NewSession,
         NewTerminal,
         CloseTab,
+        ArchiveSession,
         NextTab,
         PreviousTab,
         ShowProviders,
@@ -367,6 +368,7 @@ impl Workspace {
                         this.schedule_reconnect(conn.clone(), window, cx);
                     }
                 }
+                ConnectionEvent::Failed(message) => notify::error(window, cx, message.clone()),
                 ConnectionEvent::LoginFinished(_) => {}
             },
         ));
@@ -443,6 +445,25 @@ impl Workspace {
             self.activate_tab(self.active_tab, window, cx);
         }
         cx.notify();
+    }
+
+    fn archive_session(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        id: SessionId,
+        archived: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if archived {
+            while let Some(ix) = self.tabs.iter().position(|tab| {
+                let tab = tab.read(cx);
+                tab.connection == conn && tab.session_id(cx) == id
+            }) {
+                self.close_tab(ix, window, cx);
+            }
+        }
+        conn.update(cx, |conn, cx| conn.set_archived(id, archived, cx));
     }
 
     fn new_session(
@@ -711,6 +732,21 @@ impl Workspace {
         }
     }
 
+    fn on_archive_session(
+        &mut self,
+        _: &ArchiveSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.active_session().cloned() {
+            let (conn, id) = {
+                let tab = tab.read(cx);
+                (tab.connection.clone(), tab.session_id(cx))
+            };
+            self.archive_session(conn, id, true, window, cx);
+        }
+    }
+
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         self.close_tab(self.active_tab, window, cx);
     }
@@ -750,6 +786,46 @@ impl Workspace {
 
     fn on_pair(&mut self, _: &PairRelay, window: &mut Window, cx: &mut Context<Self>) {
         self.pair_dialog(window, cx);
+    }
+
+    fn render_archived_toggle(
+        &self,
+        conn: &Entity<AgentConnection>,
+        hix: usize,
+        aix: usize,
+        count: usize,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let conn = conn.clone();
+        h_flex()
+            .id(SharedString::from(format!("archived-{hix}-{aix}")))
+            .w_full()
+            .gap_1()
+            .pl_8()
+            .pr_1()
+            .rounded_sm()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .hover(|s| s.bg(theme.list_hover))
+            .cursor_pointer()
+            .on_click(cx.listener(move |_, _, _, cx| {
+                conn.update(cx, |conn, cx| {
+                    conn.show_archived = !conn.show_archived;
+                    cx.notify();
+                });
+            }))
+            .child(
+                Icon::new(if shown {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .xsmall(),
+            )
+            .child(format!("Archived ({count})"))
+            .into_any_element()
     }
 
     fn render_agents_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -966,9 +1042,37 @@ impl Workspace {
                 }
                 list = list.child(row);
                 if let Some(conn) = conn {
-                    let sessions = conn.read(cx).sessions.clone();
-                    for (six, session) in sessions.into_iter().enumerate() {
+                    let (sessions, show_archived) = {
+                        let conn = conn.read(cx);
+                        (conn.sessions.clone(), conn.show_archived)
+                    };
+                    let archived_count = sessions.iter().filter(|s| s.archived).count();
+                    let (archived, live): (Vec<_>, Vec<_>) =
+                        sessions.into_iter().partition(|s| s.archived);
+                    let mut visible = live;
+                    if show_archived {
+                        visible.extend(archived);
+                    }
+                    let mut toggle_at = visible.iter().position(|s| s.archived);
+                    if archived_count > 0 && toggle_at.is_none() {
+                        toggle_at = Some(visible.len());
+                    }
+                    let visible_len = visible.len();
+                    for (six, session) in visible.into_iter().enumerate() {
+                        if toggle_at == Some(six) {
+                            list = list.child(self.render_archived_toggle(
+                                &conn,
+                                hix,
+                                aix,
+                                archived_count,
+                                show_archived,
+                                cx,
+                            ));
+                        }
                         let open_conn = conn.clone();
+                        let archive_conn = conn.clone();
+                        let is_archived = session.archived;
+                        let archive_id = session.id.clone();
                         let title = session
                             .title
                             .clone()
@@ -1002,14 +1106,52 @@ impl Workspace {
                                         .text_sm()
                                         .child(title),
                                 )
+                                .when(is_archived, |el| el.text_color(theme.muted_foreground))
                                 .when(busy, |el| {
                                     el.child(
                                         Icon::new(IconName::LoaderCircle)
                                             .xsmall()
                                             .text_color(theme.info),
                                     )
-                                }),
+                                })
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "archive-{hix}-{aix}-{six}"
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(if is_archived {
+                                        Icon::new(gpui_kit_assets::IconName::ArchiveRestore)
+                                    } else {
+                                        Icon::new(gpui_kit_assets::IconName::Archive)
+                                    })
+                                    .tooltip(if is_archived {
+                                        "Restore session"
+                                    } else {
+                                        "Archive session"
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.archive_session(
+                                            archive_conn.clone(),
+                                            archive_id.clone(),
+                                            !is_archived,
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                                ),
                         );
+                    }
+                    if toggle_at == Some(visible_len) {
+                        list = list.child(self.render_archived_toggle(
+                            &conn,
+                            hix,
+                            aix,
+                            archived_count,
+                            show_archived,
+                            cx,
+                        ));
                     }
                 }
             }
@@ -1294,6 +1436,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_archive_session))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))
             .on_action(cx.listener(Self::on_providers))

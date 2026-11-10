@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         config,
         config_path,
     };
-    let application = gpui_platform::application().with_assets(gpui_kit_assets::Assets);
+    let application = gpui_platform::application().with_assets(loom_gui::assets::AppAssets);
     let failed = Rc::new(Cell::new(false));
     let flag = failed.clone();
     application.run(move |cx| {

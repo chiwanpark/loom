@@ -605,6 +605,22 @@ impl Render for SessionView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(conversation.title()),
                     )
+                    .when(conversation.info.archived, |el| {
+                        el.child(
+                            Button::new("restore")
+                                .ghost()
+                                .small()
+                                .icon(Icon::new(gpui_kit_assets::IconName::ArchiveRestore))
+                                .label("Archived")
+                                .tooltip("Restore this session to the list")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let session = this.session_id(cx);
+                                    this.connection.update(cx, |conn, cx| {
+                                        conn.set_archived(session, false, cx)
+                                    });
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .text_sm()
