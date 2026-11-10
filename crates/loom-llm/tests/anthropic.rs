@@ -420,13 +420,14 @@ async fn signed_thinking_tools_images_and_history_round_trip() {
     );
     assert_eq!(
         body["thinking"],
-        json!({"type": "enabled", "budget_tokens": 4096})
+        json!({"type": "enabled", "budget_tokens": 4096, "display": "summarized"})
     );
     req.model = "claude-opus-4-6".into();
     collect(provider.stream(req).await.unwrap()).await.unwrap();
     let requests = h.server.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[2].body).unwrap();
     assert_eq!(body["thinking"]["type"], "adaptive");
+    assert_eq!(body["thinking"]["display"], "summarized");
     assert_eq!(body["output_config"]["effort"], "medium");
     assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
 }

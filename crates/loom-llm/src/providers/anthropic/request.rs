@@ -5,6 +5,10 @@ use super::{CLAUDE_CODE_VERSION, ID};
 use crate::error::{LlmError, Result};
 use crate::types::{AssistantContent, CompletionRequest, InputContent, Message, ReasoningEffort};
 
+/// Ask for the summarized thinking text. Newer models default to `omitted`,
+/// which returns only a signature and leaves nothing to show in the chat.
+const THINKING_DISPLAY: &str = "summarized";
+
 pub(super) fn tool_name(name: &str) -> String {
     const NAMES: &[&str] = &[
         "Read",
@@ -163,7 +167,7 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
             || request.model.contains("4.6")
             || request.model.contains("4.7")
         {
-            body["thinking"] = json!({"type": "adaptive"});
+            body["thinking"] = json!({"type": "adaptive", "display": THINKING_DISPLAY});
             let effort = match effort {
                 ReasoningEffort::Minimal | ReasoningEffort::Low => "low",
                 ReasoningEffort::Medium => "medium",
@@ -187,7 +191,11 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
                 ));
             }
             body["max_tokens"] = max.into();
-            body["thinking"] = json!({"type": "enabled", "budget_tokens": budget.min(max - 1)});
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget.min(max - 1),
+                "display": THINKING_DISPLAY,
+            });
         }
     }
     Ok(body)
@@ -221,5 +229,20 @@ mod tests {
         );
         request.reasoning = None;
         assert!(build_body(&request).unwrap().get("thinking").is_none());
+    }
+
+    /// Newer models omit the thinking text by default and return only a
+    /// signature, which leaves nothing to show in the chat.
+    #[test]
+    fn thinking_asks_for_summarized_text() {
+        for model in ["claude-sonnet-4-5", "claude-opus-4-7", "claude-opus-5-5"] {
+            let request = CompletionRequest {
+                model: model.into(),
+                reasoning: Some(ReasoningEffort::High),
+                ..Default::default()
+            };
+            let body = build_body(&request).unwrap();
+            assert_eq!(body["thinking"]["display"], "summarized", "{model}");
+        }
     }
 }
