@@ -192,6 +192,11 @@ impl TerminalEmulator for AlacrittyTerminal {
             text.push(cell.c);
             if let Some(extra) = cell.zerowidth() {
                 text.extend(extra.iter());
+                // Decomposed Hangul arrives as a wide leading jamo with the
+                // rest of the syllable as zero-width characters.
+                if let Some(composed) = crate::hangul::compose(&text) {
+                    text = composed;
+                }
             }
             let mut flags = cell_flags(cell.flags);
             flags.selected = selection.is_some_and(|range| range.contains(indexed.point));
@@ -416,10 +421,23 @@ mod tests {
         assert_eq!(snap.cursor.unwrap().col, 5);
         assert_eq!(snap.line_text(0), "한글a");
 
+        // Decomposed Hangul (as in macOS file names) shows as syllables in
+        // the same wide cells.
         let mut term = AlacrittyTerminal::new(10, 2);
-        term.feed("\u{1112}\u{1161}\u{11ab}".as_bytes());
+        term.feed("\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}.txt".as_bytes());
         let snap = term.snapshot();
-        assert!(snap.line_text(0).starts_with('\u{1112}'));
+        assert_eq!(snap.lines[0][0].text, "한");
+        assert!(snap.lines[0][0].flags.wide);
+        assert!(snap.lines[0][1].flags.wide_spacer);
+        assert_eq!(snap.lines[0][2].text, "글");
+        assert_eq!(snap.line_text(0), "한글.txt");
+        assert_eq!(snap.cursor.unwrap().col, 8);
+        // Copying keeps the original bytes, so a pasted name still matches the file.
+        term.select_all();
+        assert_eq!(
+            term.selection_text().unwrap().trim_end(),
+            "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}.txt"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod alacritty;
+pub mod hangul;
 pub mod input;
 pub mod mouse;
 
