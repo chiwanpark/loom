@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" alt="Loom logo" width="128" height="128"></p>
+
 # Loom
 
 Loom is a coding agent split into two parts. An **agent** runs on the machine that holds the code and does the work there: it talks to the model, reads and edits files, and runs shell commands. A **client** (the `loom` desktop app) connects to any number of agents on your own machine, over SSH, or through a relay, and shows their sessions, terminals, file changes, and diffs.

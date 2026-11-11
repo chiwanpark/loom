@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="512" height="512" viewBox="0 0 512 512">
+  <title>Loom</title>
+  <defs>
+    <!-- Background, also used for the gaps that separate crossing threads. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16212b"/>
+      <stop offset="1" stop-color="#0c1014"/>
+    </linearGradient>
+    <!-- Warp threads (vertical). -->
+    <linearGradient id="warp" x1="0" y1="112" x2="0" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2aa889"/>
+      <stop offset="1" stop-color="#33859e"/>
+    </linearGradient>
+    <!-- Weft threads (horizontal). -->
+    <linearGradient id="weft" x1="112" y1="0" x2="400" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#99d1ce"/>
+      <stop offset="1" stop-color="#d3ebe9"/>
+    </linearGradient>
+    <!-- Accent weft: the agent's thread. -->
+    <linearGradient id="accent" x1="112" y1="0" x2="400" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#edb443"/>
+      <stop offset="1" stop-color="#d26937"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App-icon tile -->
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#bg)"/>
+  <rect x="9" y="9" width="494" height="494" rx="111" fill="none" stroke="#0a3749" stroke-width="2"/>
+
+  <g fill="none" stroke-linecap="round">
+    <!-- Warp threads, full length -->
+    <g>
+      <path d="M176 112V400M256 112V400M336 112V400" stroke="url(#bg)" stroke-width="60"/>
+      <path d="M176 112V400M256 112V400M336 112V400" stroke="url(#warp)" stroke-width="44"/>
+    </g>
+    <!-- Weft threads, full length (pass over the warp everywhere for now) -->
+    <g>
+      <path d="M112 176H400M112 256H400M112 336H400" stroke="url(#bg)" stroke-width="60"/>
+      <path d="M112 176H400M112 336H400" stroke="url(#weft)" stroke-width="44"/>
+      <path d="M112 256H400" stroke="url(#accent)" stroke-width="44"/>
+    </g>
+  </g>
+
+  <!-- Plain weave: lift the warp back over the weft at alternating crossings -->
+  <g fill="none" stroke-linecap="butt">
+    <path d="M256 138V214M176 218V294M336 218V294M256 298V374" stroke="url(#bg)" stroke-width="60"/>
+    <path d="M256 138V214M176 218V294M336 218V294M256 298V374" stroke="url(#warp)" stroke-width="44"/>
+  </g>
+</svg>
