@@ -221,10 +221,14 @@ impl MessageList {
             Some(item) => self.render_item(ix, item, cx),
             None => match conversation.activity() {
                 // Once reasoning streams in, its own row says so.
-                Some(Activity::Thinking) if !reasoning_streams(conversation) => {
-                    reasoning_row("Thinking…", "thinking-icon".into(), true, cx.theme())
-                        .into_any_element()
-                }
+                Some(Activity::Thinking) if !reasoning_streams(conversation) => card(cx.theme())
+                    .child(reasoning_row(
+                        "Thinking…",
+                        "thinking-icon".into(),
+                        true,
+                        cx.theme(),
+                    ))
+                    .into_any_element(),
                 Some(Activity::WaitingLock) => lock_block(cx.theme()),
                 // Everything else shows on the items themselves: the answer as
                 // it streams, running tool calls, and calls awaiting approval.
@@ -353,62 +357,66 @@ impl MessageList {
                 streaming,
             } => {
                 let show = self.show_reasoning.contains(&ix);
-                let hover_color = theme.foreground;
                 let thinking = *streaming && text.is_empty();
                 v_flex()
                     .w_full()
                     .gap_2()
                     .when(!reasoning.is_empty(), |el| {
                         el.child(
-                            reasoning_row(
-                                if thinking {
-                                    "Thinking…"
-                                } else if show {
-                                    "Hide reasoning"
-                                } else {
-                                    "Show reasoning"
-                                },
-                                format!("reasoning-icon-{ix}"),
-                                thinking,
-                                &theme,
-                            )
-                            .id(("reasoning", ix))
-                            .cursor_pointer()
-                            .hover(move |el| el.text_color(hover_color))
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    if !this.show_reasoning.remove(&ix) {
-                                        this.show_reasoning.insert(ix);
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                        .when(show, |el| {
-                            // The bar lines up with the edges of the cards and the
-                            // text with the text of every other item.
-                            el.child(
-                                div()
-                                    .border_l_2()
-                                    .border_color(theme.border)
-                                    .pl(TEXT_INSET - px(2.))
-                                    .pr(TEXT_INSET)
-                                    .text_sm()
-                                    .text_color(theme.muted_foreground)
-                                    .when_some(
-                                        self.markdown.get(&(ix, Part::Reasoning)),
-                                        |el, (_, state)| {
-                                            el.child(
-                                                div()
-                                                    .debug_selector(move || {
-                                                        format!("reasoning-text-{ix}")
-                                                    })
-                                                    .child(TextView::new(state).selectable(true)),
-                                            )
+                            card(&theme)
+                                .id(("reasoning-card", ix))
+                                .debug_selector(move || format!("reasoning-card-{ix}"))
+                                .hover(|el| el.border_color(theme.ring))
+                                .child(
+                                    reasoning_row(
+                                        if thinking {
+                                            "Thinking…"
+                                        } else if show {
+                                            "Hide reasoning"
+                                        } else {
+                                            "Show reasoning"
                                         },
-                                    ),
-                            )
-                        })
+                                        format!("reasoning-icon-{ix}"),
+                                        thinking,
+                                        &theme,
+                                    )
+                                    .id(("reasoning", ix))
+                                    .debug_selector(move || format!("reasoning-row-{ix}"))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            if !this.show_reasoning.remove(&ix) {
+                                                this.show_reasoning.insert(ix);
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                                .when(show, |el| {
+                                    // Laid out like the body of a tool call.
+                                    el.child(
+                                        div()
+                                            .px(CARD_PADDING)
+                                            .pb_2()
+                                            .text_color(theme.muted_foreground)
+                                            .when_some(
+                                                self.markdown.get(&(ix, Part::Reasoning)),
+                                                |el, (_, state)| {
+                                                    el.child(
+                                                        div()
+                                                            .debug_selector(move || {
+                                                                format!("reasoning-text-{ix}")
+                                                            })
+                                                            .child(
+                                                                TextView::new(state)
+                                                                    .selectable(true),
+                                                            ),
+                                                    )
+                                                },
+                                            ),
+                                    )
+                                }),
+                        )
                     })
                     .when_some(
                         self.markdown
@@ -644,14 +652,16 @@ impl MessageList {
                     ),
             );
         }
-        v_flex()
-            .w_full()
-            .rounded_md()
-            .border_1()
-            .border_color(if tool.status == ToolStatus::WaitingApproval {
-                theme.warning
-            } else {
-                theme.border
+        card(&theme)
+            .id(SharedString::from(format!("tool-card-{id}")))
+            .debug_selector(move || format!("tool-card-{id}"))
+            // A call that needs approval keeps its warning border.
+            .map(|el| {
+                if tool.status == ToolStatus::WaitingApproval {
+                    el.border_color(theme.warning)
+                } else {
+                    el.hover(|el| el.border_color(theme.ring))
+                }
             })
             .child(header)
             .when(has_body, |el| el.child(body))
@@ -971,14 +981,27 @@ fn reasoning_streams(conversation: &Conversation) -> bool {
     )
 }
 
-/// The row that toggles the reasoning of an answer. While the model thinks
-/// before any reasoning arrives, the status row shows the same row, so the
-/// reasoning takes its place without a jump. A `busy` label shimmers.
+/// The frame of a card: a tool call, or the reasoning of an answer. The
+/// cards that can be clicked darken their border while the cursor is over
+/// them, which needs an id on the card to keep the hover state.
+fn card(theme: &Theme) -> Div {
+    v_flex()
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.border)
+}
+
+/// The header of the card that toggles the reasoning of an answer, laid out
+/// like a tool call's header. While the model thinks before any reasoning
+/// arrives, the status row shows the same card, so the reasoning takes its
+/// place without a jump. A `busy` label shimmers.
 fn reasoning_row(label: &'static str, icon_selector: String, busy: bool, theme: &Theme) -> Div {
     h_flex()
-        .pl(TEXT_INSET)
+        .w_full()
         .gap_2()
-        .text_sm()
+        .px(CARD_PADDING)
+        .py_1()
         .text_color(theme.muted_foreground)
         .child(
             div()
@@ -1454,6 +1477,104 @@ mod view_tests {
             "notice-3",
         ] {
             assert_eq!(left(selector), edge, "{selector}");
+        }
+        // The reasoning row and its text are as large as the reply: one line
+        // of the text is as tall.
+        let mut height = |selector: &'static str| cx.debug_bounds(selector).unwrap().size.height;
+        let line = height("assistant-text-2");
+        // The row is padded like a tool call's header.
+        assert_eq!(height("reasoning-row-2"), line + px(8.));
+        assert_eq!(height("reasoning-text-2"), line);
+        // The reasoning sits in a card just like a tool call's.
+        let mut card = |selector: &'static str| {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            (bounds.left(), bounds.right())
+        };
+        assert_eq!(card("reasoning-card-2"), card("tool-card-c1"));
+    }
+
+    /// The border color painted around the element with `selector`.
+    fn border_of(selector: &'static str, cx: &mut VisualTestContext) -> gpui::Hsla {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.update(|window, _| {
+            let bounds = bounds.scale(window.scale_factor());
+            window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| quad.bounds == bounds && quad.border_widths.left.0 > 0.)
+                .expect(selector)
+                .border_color
+        })
+    }
+
+    #[gpui::test]
+    fn the_border_of_a_card_darkens_under_the_cursor(cx: &mut TestAppContext) {
+        let (conversation, _, _, cx) = open(0, cx);
+        let call = |id: &str| ToolCall {
+            call_id: id.into(),
+            name: "shell".into(),
+            arguments: r#"{"command":"ls"}"#.into(),
+            risk: None,
+        };
+        feed(
+            &conversation,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("a prompt")],
+                },
+                SessionEvent::ToolCallRequested { call: call("c1") },
+                SessionEvent::ToolCallFinished {
+                    call_id: "c1".into(),
+                    result: ToolResult {
+                        content: "a.rs".into(),
+                        is_error: false,
+                        details: None,
+                    },
+                },
+                SessionEvent::AssistantMessage {
+                    text: "a reply".into(),
+                    reasoning: Some("some reasoning".into()),
+                    model: "test/model".into(),
+                },
+                SessionEvent::ToolCallRequested { call: call("c2") },
+                SessionEvent::ApprovalRequired {
+                    call_id: "c2".into(),
+                    reason: "exec".into(),
+                },
+            ],
+            cx,
+        );
+        let (border, ring, warning) = cx.update(|_, cx| {
+            let theme = gpui_component::ActiveTheme::theme(cx);
+            (theme.border, theme.ring, theme.warning)
+        });
+        assert_ne!(border, ring);
+        let cards = ["tool-card-c1", "reasoning-card-2"];
+        let hover = |selector: &'static str, cx: &mut VisualTestContext| {
+            let center = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_move(center, None, Modifiers::default());
+            cx.run_until_parked();
+        };
+
+        for card in cards {
+            assert_eq!(border_of(card, cx), border, "{card}");
+        }
+        for card in cards {
+            hover(card, cx);
+            for other in cards {
+                let expected = if other == card { ring } else { border };
+                assert_eq!(
+                    border_of(other, cx),
+                    expected,
+                    "{other} with {card} hovered"
+                );
+            }
+        }
+        // A call that needs approval keeps its warning border.
+        hover("tool-card-c2", cx);
+        assert_eq!(border_of("tool-card-c2", cx), warning);
+        for card in cards {
+            assert_eq!(border_of(card, cx), border, "{card}");
         }
     }
 
