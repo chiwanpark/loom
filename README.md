@@ -4,7 +4,7 @@ Loom is a coding agent split into two parts. An **agent** runs on the machine th
 
 Agents keep running when the client disconnects, so you can close the app, reopen it later or on another machine, and pick up the same sessions.
 
-Loom is early software (version 0.1.0). Configuration formats and the protocol may still change.
+Loom is early software. Configuration formats and the protocol may still change between 0.x versions; [CHANGELOG.md](CHANGELOG.md) lists what changed in each release.
 
 ## Components
 
@@ -15,6 +15,15 @@ Loom is early software (version 0.1.0). Configuration formats and the protocol m
 | `loom-relay` | `crates/loom-relay` | An optional WebSocket relay so clients can reach agents behind NAT without SSH. |
 
 The other crates are libraries: the agent core (`loom-agent-core`), model providers (`loom-llm`), tools and sandboxing (`loom-tools`), the wire protocol (`loom-proto`), transports (`loom-transport`), the client library (`loom-client`), configuration (`loom-config`), key handling (`loom-crypto`), terminal emulation (`loom-vt`), and OpenTelemetry export (`loom-telemetry`).
+
+## Downloading
+
+The [releases page](https://github.com/chiwanpark/loom/releases) has prebuilt archives for x86-64 Linux:
+
+- `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` holds the desktop client `loom` together with `loom-agent`. It needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, a Wayland session, and a Vulkan driver.
+- `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` and `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` are statically linked and run on any x86-64 Linux, such as the remote hosts you reach over SSH.
+
+Unpack an archive and put its binaries on your `PATH`, for example in `~/.local/bin`. `SHA256SUMS` on the release page lists the archive checksums. Every binary prints its version and the commit it was built from with `--version`. [RELEASING.md](RELEASING.md) describes how releases are made.
 
 ## Building
 

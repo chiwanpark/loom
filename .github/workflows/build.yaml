@@ -1,0 +1,86 @@
+name: Build
+
+# Builds the release archives. CI runs it on every change, and the Release
+# workflow attaches its archives to a draft GitHub release.
+
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        description: Days to keep the uploaded archives
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    # Pinned rather than ubuntu-latest: the GUI links against this release's
+    # glibc, which sets the oldest distribution it runs on.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        # Static binaries, so the agent and relay run on any Linux host.
+        - name: loom-agent and loom-relay
+          target: x86_64-unknown-linux-musl
+          packages: musl-tools
+          binaries: loom-agent loom-relay
+          archives: loom-agent=loom-agent loom-relay=loom-relay
+        # The GUI loads Wayland and Vulkan from the system. Its archive also
+        # holds loom-agent, which it starts for the local host.
+        - name: loom
+          target: x86_64-unknown-linux-gnu
+          packages: pkg-config libfontconfig-dev libfreetype-dev libxkbcommon-dev libwayland-dev
+          binaries: loom loom-agent
+          archives: loom=loom,loom-agent
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install system packages
+      env:
+        PACKAGES: ${{ matrix.packages }}
+      run: |
+        read -ra packages <<<"$PACKAGES"
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y "${packages[@]}"
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+    - name: Build
+      env:
+        TARGET: ${{ matrix.target }}
+        BINARIES: ${{ matrix.binaries }}
+      run: |
+        args=()
+        for binary in $BINARIES; do
+          case $binary in
+            loom) args+=(-p loom-gui) ;;
+            *) args+=(-p "$binary") ;;
+          esac
+        done
+        cargo build --release --locked --target "$TARGET" "${args[@]}"
+        for binary in $BINARIES; do
+          "target/$TARGET/release/$binary" --version
+        done
+    - name: Package
+      env:
+        TARGET: ${{ matrix.target }}
+        ARCHIVES: ${{ matrix.archives }}
+      run: |
+        for archive in $ARCHIVES; do
+          name=${archive%%=*}
+          IFS=, read -ra binaries <<<"${archive#*=}"
+          scripts/package-release.sh "$TARGET" "$name" "${binaries[@]}"
+        done
+    - uses: actions/upload-artifact@v7
+      with:
+        name: dist-${{ matrix.target }}
+        path: dist/*.tar.gz
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

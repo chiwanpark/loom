@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version pull request
+    if: github.repository == 'chiwanpark/loom'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: git-cliff
+    - name: Prepare the next version
+      id: next
+      run: |
+        version=$(scripts/release-version.sh)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        if [ -n "$version" ]; then
+          {
+            echo "Merging this pull request releases v$version. The Release workflow then builds the binaries into a draft GitHub release; publish the draft to create the tag."
+            echo
+            awk -v version="$version" '
+              $0 == "## " version { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md
+          } > "$RUNNER_TEMP/pr-body.md"
+        fi
+    - name: Open or update version pull request
+      if: steps.next.outputs.version != ''
+      uses: peter-evans/create-pull-request@v8
+      with:
+        branch: release-next
+        delete-branch: true
+        commit-message: 'chore(release): v${{ steps.next.outputs.version }}'
+        title: 'chore(release): v${{ steps.next.outputs.version }}'
+        body-path: ${{ runner.temp }}/pr-body.md
+
+  state:
+    name: Resolve release state
+    needs: version
+    if: github.repository == 'chiwanpark/loom'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.state.outputs.version }}
+      action: ${{ steps.state.outputs.action }}
+    steps:
+    - uses: actions/checkout@v7
+    - id: state
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+        release=$(gh release view "v$version" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo missing)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        if [ "$release" = missing ]; then
+          echo "Version $version has no release yet, building a draft."
+          echo "action=draft" >> "$GITHUB_OUTPUT"
+        else
+          echo "Nothing to do for version $version (GitHub release: $release)."
+          echo "action=none" >> "$GITHUB_OUTPUT"
+        fi
+
+  build:
+    name: Build
+    needs: state
+    if: needs.state.outputs.action == 'draft'
+    uses: ./.github/workflows/build.yaml
+    with:
+      retention-days: 1
+
+  draft:
+    name: Draft GitHub release
+    needs: [state, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: dist-*
+        path: dist
+        merge-multiple: true
+    - name: Create draft GitHub release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        VERSION: ${{ needs.state.outputs.version }}
+      run: |
+        (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
+        awk -v version="$VERSION" '
+          $0 == "## " version { found = 1; next }
+          found && /^## / { exit }
+          found { print }
+        ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+        if [ -s "$RUNNER_TEMP/release-notes.md" ]; then
+          notes=(--notes-file "$RUNNER_TEMP/release-notes.md")
+        else
+          notes=(--generate-notes)
+        fi
+        gh release create "v$VERSION" --draft --target "$GITHUB_SHA" --title "v$VERSION" "${notes[@]}" dist/*
+        {
+          echo "Version $VERSION is drafted with its binaries. Check them, then publish the release to create the v$VERSION tag:"
+          echo
+          echo '```sh'
+          echo "gh release download v$VERSION --dir /tmp/loom-v$VERSION"
+          echo "gh release edit v$VERSION --draft=false --latest"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

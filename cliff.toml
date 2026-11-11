@@ -1,0 +1,41 @@
+# git-cliff configuration: https://git-cliff.org/docs/configuration
+#
+# scripts/release-version.sh uses it to pick the next version from the commits
+# since the last release tag and to write that version's CHANGELOG.md section.
+# Only feat, fix, and perf commits, and breaking changes of any type, are
+# listed; the rest (docs, tests, refactors, CI, chores) ship silently.
+
+[changelog]
+body = """
+## {{ version | trim_start_matches(pat="v") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{% if commit.breaking %}**Breaking:** {% endif %}\
+{{ commit.message | split(pat="\n") | first | trim | upper_first }} \
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/chiwanpark/loom/commit/{{ commit.id }}))\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+protect_breaking_commits = true
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->Added" },
+    { message = "^fix", group = "<!-- 1 -->Fixed" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { field = "breaking", pattern = "true", group = "<!-- 3 -->Changed" },
+    { message = ".*", skip = true },
+]
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
+
+# While Loom is on 0.x: fixes bump the patch version, and features and
+# breaking changes bump the minor version.
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = false
