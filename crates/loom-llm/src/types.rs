@@ -144,7 +144,8 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Ordered from no reasoning to the most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
@@ -177,6 +178,9 @@ pub struct CompletionRequest {
     pub reasoning: Option<ReasoningEffort>,
     pub max_output_tokens: Option<u32>,
     pub session_id: Option<String>,
+    /// What the provider reported about the model, when known. Providers
+    /// use it to pick request settings the model accepts.
+    pub capabilities: ModelCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,4 +230,59 @@ pub enum CompletionChunk {
 pub struct ModelInfo {
     pub id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub capabilities: ModelCapabilities,
+}
+
+impl ModelInfo {
+    /// A model the provider says nothing more about.
+    pub fn named(id: impl Into<String>) -> Self {
+        let id = id.into();
+        Self {
+            display_name: id.clone(),
+            id,
+            capabilities: ModelCapabilities::default(),
+        }
+    }
+}
+
+/// What a provider reports about a model. Every field is `None` when the
+/// provider does not say.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelCapabilities {
+    /// The most input tokens the model takes: its context window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// The most output tokens one response may have.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    /// Whether the model takes adaptive thinking (it decides how much to
+    /// think, guided by an effort) rather than a fixed token budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_thinking: Option<bool>,
+    /// Whether the model takes budget-based thinking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_thinking: Option<bool>,
+    /// Whether thinking can be turned off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_off: Option<bool>,
+    /// The reasoning efforts the model accepts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub efforts: Option<Vec<ReasoningEffort>>,
+}
+
+impl ModelCapabilities {
+    /// The nearest effort the model accepts: the requested one, else the
+    /// closest lower one, else the lowest it has. `None` when the model
+    /// does not list its efforts.
+    pub fn nearest_effort(&self, wanted: ReasoningEffort) -> Option<ReasoningEffort> {
+        let efforts = self.efforts.as_ref().filter(|e| !e.is_empty())?;
+        efforts
+            .iter()
+            .copied()
+            .filter(|e| *e <= wanted)
+            .max()
+            .or_else(|| efforts.iter().copied().min())
+    }
 }

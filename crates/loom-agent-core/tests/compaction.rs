@@ -32,7 +32,7 @@ fn first_text(message: &Message) -> String {
 #[tokio::test]
 async fn summarizes_earlier_turns_when_the_context_fills_up() {
     let mut config = test_config(PolicyAction::Allow);
-    config.context.window_tokens = 1000;
+    config.context.window_tokens = Some(1000);
     config.context.compaction_threshold = 0.5;
     let h = Harness::new(
         config,
@@ -66,10 +66,74 @@ async fn summarizes_earlier_turns_when_the_context_fills_up() {
     assert_eq!(session.history().len(), 3);
 }
 
+/// Without a configured window, the one the provider reports for the model
+/// decides when to compact, and the model's capabilities reach the provider.
+#[tokio::test]
+async fn compacts_against_the_window_the_provider_reports() {
+    let mut config = test_config(PolicyAction::Allow);
+    config.context.window_tokens = None;
+    config.context.compaction_threshold = 0.5;
+    let h = Harness::new(
+        config,
+        vec![
+            with_usage(text("first answer"), 900),
+            text("SUMMARY: the user said hello"),
+            text("second answer"),
+        ],
+    );
+    let mut model = loom_llm::ModelInfo::named(common::MODEL);
+    model.capabilities.context_window = Some(1000);
+    model.capabilities.max_output_tokens = Some(4096);
+    *h.provider.models.lock().unwrap() = vec![model.clone()];
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "hello").await;
+    let events = run_turn(&session, &mut sub, "continue").await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            SessionEvent::ContextCompacted {
+                summarized: true,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert_eq!(request.capabilities, model.capabilities);
+    }
+}
+
+/// The default window is far larger than this conversation, so nothing is
+/// compacted when the provider reports no window.
+#[tokio::test]
+async fn an_unreported_window_falls_back_to_the_default() {
+    let mut config = test_config(PolicyAction::Allow);
+    config.context.window_tokens = None;
+    config.context.compaction_threshold = 0.5;
+    let h = Harness::new(
+        config,
+        vec![with_usage(text("first answer"), 900), text("second answer")],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "hello").await;
+    let events = run_turn(&session, &mut sub, "continue").await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ContextCompacted { .. })),
+        "{events:?}"
+    );
+    assert_eq!(h.provider.requests().len(), 2);
+}
+
 #[tokio::test]
 async fn cached_prompt_tokens_count_toward_compaction() {
     let mut config = test_config(PolicyAction::Allow);
-    config.context.window_tokens = 1000;
+    config.context.window_tokens = Some(1000);
     config.context.compaction_threshold = 0.5;
     // Anthropic-style usage: almost the whole prompt is a cache read.
     let mut first = text("first answer");
@@ -105,7 +169,7 @@ async fn cached_prompt_tokens_count_toward_compaction() {
 #[tokio::test]
 async fn trims_old_tool_output_inside_one_long_turn() {
     let mut config = test_config(PolicyAction::Allow);
-    config.context.window_tokens = 1000;
+    config.context.window_tokens = Some(1000);
     config.context.compaction_threshold = 0.5;
     let workspace_file = "big.txt";
     let h = Harness::new(config, vec![]);

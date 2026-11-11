@@ -275,11 +275,17 @@ pub enum SandboxBackend {
     Bubblewrap,
 }
 
+/// The context window when neither the config nor the provider gives one.
+pub const DEFAULT_WINDOW_TOKENS: u64 = 200_000;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContextConfig {
     pub max_tool_output_tokens: u32,
-    pub window_tokens: u64,
+    /// The context window to compact against. Unset, it is the window the
+    /// provider reports for the model, or [`DEFAULT_WINDOW_TOKENS`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_tokens: Option<u64>,
     pub compaction_threshold: f64,
 }
 
@@ -287,7 +293,7 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             max_tool_output_tokens: 8000,
-            window_tokens: 200_000,
+            window_tokens: None,
             compaction_threshold: 0.8,
         }
     }
@@ -635,7 +641,7 @@ impl AgentConfig {
                 "must be greater than zero".into(),
             ));
         }
-        if self.context.window_tokens < 1000 {
+        if self.context.window_tokens.is_some_and(|n| n < 1000) {
             return Err(invalid(
                 "context.window_tokens",
                 "must be at least 1000".into(),

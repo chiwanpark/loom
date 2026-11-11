@@ -69,7 +69,12 @@ pub fn build_body(provider: &str, flavor: Flavor, request: &CompletionRequest) -
     {
         body.insert("max_output_tokens".into(), json!(max.max(16)));
     }
-    if let Some(effort) = request.reasoning {
+    if let Some(wanted) = request.reasoning {
+        // Ask only for an effort the model lists, when it lists them.
+        let effort = request
+            .capabilities
+            .nearest_effort(wanted)
+            .unwrap_or(wanted);
         let mut reasoning = json!({ "effort": effort.as_str() });
         if effort != crate::types::ReasoningEffort::None {
             reasoning["summary"] = json!("auto");
@@ -261,6 +266,7 @@ mod tests {
             reasoning: Some(ReasoningEffort::High),
             max_output_tokens: Some(1000),
             session_id: Some("s".repeat(100)),
+            capabilities: Default::default(),
         }
     }
 
@@ -327,5 +333,21 @@ mod tests {
         let body = build_body("openai", Flavor::ApiKey, &req);
         assert_eq!(body["reasoning"], json!({"effort": "none"}));
         assert!(body.get("include").is_none());
+    }
+
+    #[test]
+    fn reasoning_keeps_to_listed_efforts() {
+        let mut req = request();
+        req.reasoning = Some(ReasoningEffort::Minimal);
+        req.capabilities.efforts = Some(vec![
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+        ]);
+        let body = build_body("openai-codex", Flavor::Codex, &req);
+        assert_eq!(body["reasoning"]["effort"], "low");
+        req.reasoning = Some(ReasoningEffort::Xhigh);
+        let body = build_body("openai-codex", Flavor::Codex, &req);
+        assert_eq!(body["reasoning"]["effort"], "high");
     }
 }

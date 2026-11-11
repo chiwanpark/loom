@@ -7,7 +7,7 @@ use crate::error::{LlmError, Result};
 use crate::kind::Shared;
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{api_error, send_with_retry};
-use crate::types::{CompletionRequest, ModelInfo};
+use crate::types::{CompletionRequest, ModelCapabilities, ModelInfo, ReasoningEffort};
 use crate::usage::{USAGE_TIMEOUT, UsageLimits, parse_anthropic};
 
 pub(super) struct AnthropicProvider {
@@ -149,6 +149,7 @@ impl LlmProvider for AnthropicProvider {
                 models.push(ModelInfo {
                     id: id.into(),
                     display_name: model["display_name"].as_str().unwrap_or(id).into(),
+                    capabilities: capabilities(model),
                 });
             }
             if body["has_more"].as_bool() != Some(true) {
@@ -170,5 +171,35 @@ impl LlmProvider for AnthropicProvider {
         }
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
+    }
+}
+/// The limits and thinking modes the model list reports for a model.
+fn capabilities(model: &Value) -> ModelCapabilities {
+    let supported = |v: &Value| v["supported"].as_bool();
+    let caps = &model["capabilities"];
+    let thinking = &caps["thinking"]["types"];
+    let effort = &caps["effort"];
+    let efforts = (supported(effort) == Some(true)).then(|| {
+        [
+            ("low", ReasoningEffort::Low),
+            ("medium", ReasoningEffort::Medium),
+            ("high", ReasoningEffort::High),
+            ("xhigh", ReasoningEffort::Xhigh),
+        ]
+        .into_iter()
+        .filter(|(name, _)| supported(&effort[*name]) == Some(true))
+        .map(|(_, effort)| effort)
+        .collect()
+    });
+    ModelCapabilities {
+        context_window: model["max_input_tokens"].as_u64().filter(|n| *n > 0),
+        max_output_tokens: model["max_tokens"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+        adaptive_thinking: supported(&thinking["adaptive"]),
+        budget_thinking: supported(&thinking["enabled"]),
+        thinking_off: supported(&thinking["disabled"]),
+        efforts,
     }
 }

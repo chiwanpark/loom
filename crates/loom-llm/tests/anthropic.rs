@@ -484,7 +484,19 @@ async fn lists_models_with_pagination() {
         .and(path("/v1/models"))
         .and(query_param("after_id", "z"))
         .respond_with(ResponseTemplate::new(200).set_body_json(
-            json!({"data": [{"id": "a", "display_name": "Alpha"}], "has_more": false}),
+            // Trimmed from a real claude-opus-5 entry.
+            json!({"data": [{
+                "id": "a", "display_name": "Alpha",
+                "max_input_tokens": 1000000, "max_tokens": 128000,
+                "capabilities": {
+                    "effort": {"supported": true, "low": {"supported": true},
+                        "medium": {"supported": true}, "high": {"supported": true},
+                        "xhigh": {"supported": true}, "max": {"supported": true}},
+                    "thinking": {"supported": true, "types": {
+                        "enabled": {"supported": false}, "adaptive": {"supported": true},
+                        "disabled": {"supported": true}}}
+                }
+            }], "has_more": false}),
         ))
         .with_priority(1)
         .expect(1)
@@ -495,6 +507,27 @@ async fn lists_models_with_pagination() {
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].id, "a");
     assert_eq!(models[1].display_name, "Zed");
+    let caps = &models[0].capabilities;
+    assert_eq!(caps.context_window, Some(1_000_000));
+    assert_eq!(caps.max_output_tokens, Some(128_000));
+    assert_eq!(caps.adaptive_thinking, Some(true));
+    assert_eq!(caps.budget_thinking, Some(false));
+    assert_eq!(caps.thinking_off, Some(true));
+    assert_eq!(
+        caps.efforts.as_deref(),
+        Some(
+            &[
+                loom_llm::ReasoningEffort::Low,
+                loom_llm::ReasoningEffort::Medium,
+                loom_llm::ReasoningEffort::High,
+                loom_llm::ReasoningEffort::Xhigh,
+            ][..]
+        )
+    );
+    assert_eq!(
+        models[1].capabilities,
+        loom_llm::ModelCapabilities::default()
+    );
 }
 
 #[tokio::test]

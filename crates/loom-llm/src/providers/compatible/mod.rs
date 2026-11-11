@@ -12,7 +12,7 @@ use crate::kind::{ProviderKind, Shared, StartedLogin, check_http_url};
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{api_error, chunk_stream, send_with_retry};
 use crate::responses::{Flavor, build_body};
-use crate::types::{CompletionRequest, ModelInfo};
+use crate::types::{CompletionRequest, ModelCapabilities, ModelInfo};
 
 pub(crate) const TYPE: &str = "openai-compatible";
 
@@ -35,9 +35,68 @@ pub(crate) struct Settings {
     #[serde(default)]
     api: Api,
     #[serde(default)]
-    models: Vec<String>,
+    models: Vec<ModelEntry>,
     #[serde(default)]
     display_name: Option<String>,
+}
+
+/// A configured model: a name, or a name with the limits the server does
+/// not report.
+#[derive(Debug, Clone)]
+pub(crate) enum ModelEntry {
+    Name(String),
+    Detailed(ModelDetails),
+}
+
+// By hand rather than untagged, so a mistyped field is named in the error.
+impl<'de> Deserialize<'de> for ModelEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Value::deserialize(deserializer)? {
+            Value::String(id) => Ok(Self::Name(id)),
+            other => ModelDetails::deserialize(other)
+                .map(Self::Detailed)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelDetails {
+    id: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    context_window: Option<u64>,
+    #[serde(default)]
+    max_output_tokens: Option<u32>,
+}
+
+impl ModelEntry {
+    fn id(&self) -> &str {
+        match self {
+            Self::Name(id) => id,
+            Self::Detailed(details) => &details.id,
+        }
+    }
+
+    fn info(&self) -> ModelInfo {
+        match self {
+            Self::Name(id) => ModelInfo::named(id.clone()),
+            Self::Detailed(details) => ModelInfo {
+                id: details.id.clone(),
+                display_name: details
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| details.id.clone()),
+                capabilities: ModelCapabilities {
+                    context_window: details.context_window,
+                    max_output_tokens: details.max_output_tokens,
+                    ..ModelCapabilities::default()
+                },
+            },
+        }
+    }
 }
 
 impl Settings {
@@ -47,7 +106,7 @@ impl Settings {
             return Err(format!("type must be {TYPE}"));
         }
         check_http_url(&settings.base_url)?;
-        if settings.models.iter().any(|m| m.trim().is_empty()) {
+        if settings.models.iter().any(|m| m.id().trim().is_empty()) {
             return Err("models must not contain empty names".into());
         }
         Ok(settings)
@@ -193,8 +252,12 @@ impl LlmProvider for CompatibleProvider {
         self.id.clone()
     }
 
-    async fn stream(&self, request: CompletionRequest) -> Result<ChunkStream> {
+    async fn stream(&self, mut request: CompletionRequest) -> Result<ChunkStream> {
         let provider = self.id.as_str();
+        // A configured output limit is what the server should be told.
+        if request.max_output_tokens.is_none() {
+            request.max_output_tokens = request.capabilities.max_output_tokens;
+        }
         let key = self.key().await?;
         match self.settings.api {
             Api::Responses => {
@@ -224,15 +287,7 @@ impl LlmProvider for CompatibleProvider {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         if !self.settings.models.is_empty() {
-            return Ok(self
-                .settings
-                .models
-                .iter()
-                .map(|m| ModelInfo {
-                    id: m.clone(),
-                    display_name: m.clone(),
-                })
-                .collect());
+            return Ok(self.settings.models.iter().map(ModelEntry::info).collect());
         }
         let provider = self.id.as_str();
         let key = self.key().await?;
@@ -253,10 +308,7 @@ impl LlmProvider for CompatibleProvider {
             .ok_or_else(|| LlmError::protocol(provider, "the model list has no data"))?
             .iter()
             .filter_map(|m| m.get("id").and_then(Value::as_str))
-            .map(|id| ModelInfo {
-                id: id.to_owned(),
-                display_name: id.to_owned(),
-            })
+            .map(ModelInfo::named)
             .collect();
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)

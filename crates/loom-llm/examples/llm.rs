@@ -208,6 +208,7 @@ async fn ask(
             reasoning,
             max_output_tokens: None,
             session_id: Some(session_id.clone()),
+            ..Default::default()
         };
         let mut stream = provider.stream(request).await?;
         let mut done = None;

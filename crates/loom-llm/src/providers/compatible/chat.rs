@@ -496,6 +496,7 @@ mod tests {
             reasoning: Some(ReasoningEffort::Xhigh),
             max_output_tokens: None,
             session_id: None,
+            capabilities: Default::default(),
         };
         let body = build_body(&request);
         let messages = body["messages"].as_array().unwrap();

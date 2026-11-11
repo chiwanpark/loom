@@ -70,6 +70,8 @@ pub fn calls(calls: &[(&str, &str, Value)]) -> Script {
 pub struct ScriptedProvider {
     scripts: Mutex<VecDeque<Script>>,
     pub requests: Mutex<Vec<CompletionRequest>>,
+    /// What `list_models` returns.
+    pub models: Mutex<Vec<loom_llm::ModelInfo>>,
 }
 
 impl ScriptedProvider {
@@ -77,6 +79,7 @@ impl ScriptedProvider {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
             requests: Mutex::new(Vec::new()),
+            models: Mutex::new(Vec::new()),
         })
     }
 
@@ -93,6 +96,10 @@ impl ScriptedProvider {
 impl LlmProvider for ScriptedProvider {
     fn id(&self) -> ProviderId {
         ProviderId::from_static(PROVIDER)
+    }
+
+    async fn list_models(&self) -> loom_llm::Result<Vec<loom_llm::ModelInfo>> {
+        Ok(self.models.lock().unwrap().clone())
     }
 
     async fn stream(&self, request: CompletionRequest) -> loom_llm::Result<ChunkStream> {

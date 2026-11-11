@@ -37,7 +37,6 @@ sandbox:
   max_output: 1MiB
 context:
   max_tool_output_tokens: 8000
-  window_tokens: 200000
   compaction_threshold: 0.8
 logging:
   level: info

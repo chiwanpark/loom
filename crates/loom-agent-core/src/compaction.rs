@@ -89,6 +89,7 @@ pub(crate) fn summary_request(model: &str, prefix: &[Message]) -> CompletionRequ
         reasoning: None,
         max_output_tokens: None,
         session_id: None,
+        capabilities: Default::default(),
     }
 }
 

@@ -3,11 +3,34 @@ use sha2::{Digest, Sha256};
 
 use super::{CLAUDE_CODE_VERSION, ID};
 use crate::error::{LlmError, Result};
-use crate::types::{AssistantContent, CompletionRequest, InputContent, Message, ReasoningEffort};
+use crate::types::{
+    AssistantContent, CompletionRequest, InputContent, Message, ModelCapabilities, ReasoningEffort,
+};
 
 /// Ask for the summarized thinking text. Newer models default to `omitted`,
 /// which returns only a signature and leaves nothing to show in the chat.
 const THINKING_DISPLAY: &str = "summarized";
+/// The output limit when the model's own limit is unknown.
+const FALLBACK_MAX_TOKENS: u32 = 16384;
+/// The most output tokens asked for by default, as Claude Code does. A model
+/// may allow more, but the account's output rate limit counts what is asked
+/// for, not what is used.
+const DEFAULT_MAX_TOKENS: u32 = 32000;
+
+fn default_max_tokens(caps: &ModelCapabilities) -> u32 {
+    caps.max_output_tokens
+        .map_or(FALLBACK_MAX_TOKENS, |limit| limit.min(DEFAULT_MAX_TOKENS))
+}
+
+/// Whether to ask for adaptive thinking: as the model list says, or by name
+/// for the models known to take it when the list is not available.
+fn adaptive_thinking(model: &str, caps: &ModelCapabilities) -> bool {
+    caps.adaptive_thinking.unwrap_or_else(|| {
+        ["4-6", "4-7", "4.6", "4.7"]
+            .iter()
+            .any(|version| model.contains(version))
+    })
+}
 
 pub(super) fn tool_name(name: &str) -> String {
     const NAMES: &[&str] = &[
@@ -149,7 +172,7 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
         "model": request.model,
         "messages": messages,
         "system": system,
-        "max_tokens": request.max_output_tokens.unwrap_or(16384),
+        "max_tokens": request.max_output_tokens.unwrap_or(default_max_tokens(&request.capabilities)),
         "stream": true,
     });
     if !request.tools.is_empty() {
@@ -159,32 +182,36 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
         tools.last_mut().unwrap()["cache_control"] = json!({"type": "ephemeral"});
         body["tools"] = tools.into();
     }
+    let caps = &request.capabilities;
     if let Some(effort) = request.reasoning {
-        if effort == ReasoningEffort::None {
+        // A model that cannot turn thinking off thinks as little as it can.
+        let off = effort == ReasoningEffort::None;
+        if off && caps.thinking_off != Some(false) {
             body["thinking"] = json!({"type": "disabled"});
-        } else if request.model.contains("4-6")
-            || request.model.contains("4-7")
-            || request.model.contains("4.6")
-            || request.model.contains("4.7")
-        {
+        } else if adaptive_thinking(&request.model, caps) {
             body["thinking"] = json!({"type": "adaptive", "display": THINKING_DISPLAY});
-            let effort = match effort {
-                ReasoningEffort::Minimal | ReasoningEffort::Low => "low",
-                ReasoningEffort::Medium => "medium",
-                _ => "high",
+            let wanted = match effort {
+                ReasoningEffort::None | ReasoningEffort::Minimal => ReasoningEffort::Low,
+                other => other,
             };
-            body["output_config"] = json!({"effort": effort});
+            let effort = match caps.nearest_effort(wanted) {
+                Some(effort) => effort,
+                // Without a list, stay with the efforts every adaptive model takes.
+                None => wanted.min(ReasoningEffort::High),
+            };
+            body["output_config"] = json!({"effort": effort.as_str()});
         } else {
             let budget = match effort {
-                ReasoningEffort::Minimal | ReasoningEffort::Low => 1024,
+                ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low => 1024,
                 ReasoningEffort::Medium => 4096,
                 ReasoningEffort::High => 8192,
                 ReasoningEffort::Xhigh => 16384,
-                ReasoningEffort::None => unreachable!(),
             };
-            let max = request
-                .max_output_tokens
-                .unwrap_or(16384.max(budget + 4096));
+            let max = request.max_output_tokens.unwrap_or_else(|| {
+                let wanted = default_max_tokens(caps).max(budget + 4096);
+                caps.max_output_tokens
+                    .map_or(wanted, |limit| wanted.min(limit))
+            });
             if max <= 1024 {
                 return Err(LlmError::Unsupported(
                     "Anthropic thinking requires max_output_tokens greater than 1024".into(),
@@ -229,6 +256,87 @@ mod tests {
         );
         request.reasoning = None;
         assert!(build_body(&request).unwrap().get("thinking").is_none());
+    }
+
+    fn reported(adaptive: bool, budget: bool, off: bool) -> ModelCapabilities {
+        ModelCapabilities {
+            context_window: Some(1_000_000),
+            max_output_tokens: Some(128_000),
+            adaptive_thinking: Some(adaptive),
+            budget_thinking: Some(budget),
+            thinking_off: Some(off),
+            efforts: Some(vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+            ]),
+        }
+    }
+
+    #[test]
+    fn reported_capabilities_pick_the_thinking_mode() {
+        // A model the name check does not know, which takes only adaptive
+        // thinking (as claude-opus-5 reports).
+        let mut request = CompletionRequest {
+            model: "claude-opus-5".into(),
+            reasoning: Some(ReasoningEffort::Xhigh),
+            capabilities: reported(true, false, true),
+            ..Default::default()
+        };
+        let body = build_body(&request).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "xhigh");
+        assert_eq!(body["max_tokens"], 32000);
+
+        // One that cannot turn thinking off thinks as little as it can.
+        request.reasoning = Some(ReasoningEffort::None);
+        request.capabilities = reported(true, false, false);
+        let body = build_body(&request).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "low");
+
+        // A model with "4-6" in its name that reports no adaptive thinking
+        // gets a budget, within its own output limit.
+        request.model = "claude-x-4-6".into();
+        request.reasoning = Some(ReasoningEffort::Xhigh);
+        request.capabilities = ModelCapabilities {
+            max_output_tokens: Some(8192),
+            ..reported(false, true, true)
+        };
+        let body = build_body(&request).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["max_tokens"], 8192);
+        assert_eq!(body["thinking"]["budget_tokens"], 8191);
+    }
+
+    #[test]
+    fn efforts_fall_back_to_ones_the_model_takes() {
+        let mut caps = reported(true, false, true);
+        caps.efforts = Some(vec![ReasoningEffort::Low, ReasoningEffort::High]);
+        let mut request = CompletionRequest {
+            model: "claude-opus-5".into(),
+            reasoning: Some(ReasoningEffort::Medium),
+            capabilities: caps,
+            ..Default::default()
+        };
+        assert_eq!(
+            build_body(&request).unwrap()["output_config"]["effort"],
+            "low"
+        );
+        request.reasoning = Some(ReasoningEffort::Xhigh);
+        assert_eq!(
+            build_body(&request).unwrap()["output_config"]["effort"],
+            "high"
+        );
+        // Without a reported list, xhigh stays at high as before.
+        request.capabilities = ModelCapabilities::default();
+        request.model = "claude-opus-4-7".into();
+        assert_eq!(
+            build_body(&request).unwrap()["output_config"]["effort"],
+            "high"
+        );
+        assert_eq!(build_body(&request).unwrap()["max_tokens"], 16384);
     }
 
     /// Newer models omit the thinking text by default and return only a

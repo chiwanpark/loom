@@ -8,11 +8,11 @@ mod relay_server;
 mod units;
 
 pub use agent::{
-    AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, InstructionsConfig,
-    LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, OtlpProtocol, PolicyAction, PolicyConfig,
-    PolicyRule, ProviderSetting, ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend,
-    SandboxConfig, ShellToolConfig, SocketConfig, StorageConfig, TelemetryConfig, Temporality,
-    TerminalConfig, ToolsConfig,
+    AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, DEFAULT_WINDOW_TOKENS,
+    InstructionsConfig, LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, OtlpProtocol,
+    PolicyAction, PolicyConfig, PolicyRule, ProviderSetting, ProvidersConfig, ReadToolConfig,
+    RelayConfig, SandboxBackend, SandboxConfig, ShellToolConfig, SocketConfig, StorageConfig,
+    TelemetryConfig, Temporality, TerminalConfig, ToolsConfig,
 };
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};

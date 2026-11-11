@@ -101,6 +101,62 @@ async fn custom_entries_stream_chat_completions() {
     assert!(h.auth.provider_status(&id("local")).await.is_err());
 }
 
+/// A configured model may carry the limits a local server does not report;
+/// its output limit is sent with each request.
+#[tokio::test]
+async fn configured_model_limits_reach_requests() {
+    let h = Harness::new().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!(
+                    "{}data: [DONE]\n\n",
+                    sse_body(&[
+                        json!({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}),
+                    ])
+                )),
+        )
+        .mount(&h.server)
+        .await;
+    let settings = json!({
+        "type": "openai-compatible",
+        "base_url": format!("{}/v1", h.server.uri()),
+        "models": [
+            "plain",
+            {"id": "qwen", "display_name": "Qwen", "context_window": 32768, "max_output_tokens": 4096},
+        ],
+    });
+    let llm = config(vec![("local", Some(settings))]);
+    validate_config(&llm).unwrap();
+    let set = ProviderSet::from_config(&llm, &h.auth).unwrap();
+    set.activate(&h.auth);
+    let provider = set.get(&id("local")).unwrap();
+    let models = provider.list_models().await.unwrap();
+    assert_eq!(models[0], loom_llm::ModelInfo::named("plain"));
+    assert_eq!(models[1].display_name, "Qwen");
+    assert_eq!(models[1].capabilities.context_window, Some(32768));
+    assert_eq!(models[1].capabilities.max_output_tokens, Some(4096));
+
+    collect(
+        provider
+            .stream(loom_llm::CompletionRequest {
+                model: "qwen".into(),
+                messages: vec![Message::user_text("hello")],
+                capabilities: models[1].capabilities.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let requests = h.server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["max_tokens"], 4096);
+}
+
 #[test]
 fn rejects_unknown_and_malformed_entries() {
     for (entries, needle) in [
@@ -123,6 +179,24 @@ fn rejects_unknown_and_malformed_entries() {
                 Some(json!({"type": "openai-compatible", "base_url": "http://x", "extra": 1})),
             )],
             "extra",
+        ),
+        (
+            vec![(
+                "x",
+                Some(
+                    json!({"type": "openai-compatible", "base_url": "http://x", "models": [{"id": " "}]}),
+                ),
+            )],
+            "empty",
+        ),
+        (
+            vec![(
+                "x",
+                Some(
+                    json!({"type": "openai-compatible", "base_url": "http://x", "models": [{"id": "m", "window": 1}]}),
+                ),
+            )],
+            "unknown field `window`",
         ),
     ] {
         let err = validate_config(&config(entries)).unwrap_err().to_string();

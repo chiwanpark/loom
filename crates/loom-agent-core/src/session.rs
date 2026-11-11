@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use futures::StreamExt;
 use loom_llm::{
-    AssistantMessage, CompletionChunk, CompletionRequest, Message, ModelRef, ReasoningEffort,
-    StopReason, ToolCall as LlmToolCall, ToolDefinition,
+    AssistantMessage, CompletionChunk, CompletionRequest, Message, ModelCapabilities, ModelRef,
+    ReasoningEffort, StopReason, ToolCall as LlmToolCall, ToolDefinition,
 };
 use loom_proto::{
     ContentPart, Decision, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
@@ -433,7 +433,11 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
             .providers
             .get(&model.provider)
             .map_err(CoreError::from)?;
-        compact(&core, &model, provider.as_ref(), &cancel).await
+        let capabilities = runtime
+            .models
+            .capabilities(provider.as_ref(), &model.model)
+            .await;
+        compact(&core, &model, &capabilities, provider.as_ref(), &cancel).await
     }
     .await;
     match result {
@@ -477,7 +481,19 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
                 core.emit(SessionEvent::Warning { message });
             }
         }
-        maybe_compact(core, &runtime, &model, provider.as_ref(), cancel).await?;
+        let capabilities = runtime
+            .models
+            .capabilities(provider.as_ref(), &model.model)
+            .await;
+        maybe_compact(
+            core,
+            &runtime,
+            &model,
+            &capabilities,
+            provider.as_ref(),
+            cancel,
+        )
+        .await?;
         let (messages, reasoning) = {
             let state = core.lock();
             (state.history.clone(), state.reasoning)
@@ -497,6 +513,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             reasoning,
             max_output_tokens: None,
             session_id: Some(core.id.0.clone()),
+            capabilities,
         };
         core.hub.set_state(SessionState::Thinking);
         let message = tokio::select! {
@@ -561,11 +578,13 @@ async fn maybe_compact(
     core: &Arc<Core>,
     runtime: &Runtime,
     model: &ModelRef,
+    capabilities: &ModelCapabilities,
     provider: &dyn loom_llm::LlmProvider,
     cancel: &CancellationToken,
 ) -> Result<(), TurnError> {
     let context = &runtime.config.context;
-    let limit = context.window_tokens as f64 * context.compaction_threshold;
+    let window = window_tokens(context, capabilities);
+    let limit = window as f64 * context.compaction_threshold;
     let used = {
         let state = core.lock();
         state
@@ -575,7 +594,16 @@ async fn maybe_compact(
     if (used as f64) < limit {
         return Ok(());
     }
-    compact(core, model, provider, cancel).await
+    compact(core, model, capabilities, provider, cancel).await
+}
+
+/// The context window to compact against: the configured one, else the one
+/// the provider reports for the model, else a default.
+fn window_tokens(context: &loom_config::ContextConfig, capabilities: &ModelCapabilities) -> u64 {
+    context
+        .window_tokens
+        .or(capabilities.context_window)
+        .unwrap_or(loom_config::DEFAULT_WINDOW_TOKENS)
 }
 
 /// Summarizes the earlier turns, or trims old tool output when there is nothing
@@ -583,6 +611,7 @@ async fn maybe_compact(
 async fn compact(
     core: &Arc<Core>,
     model: &ModelRef,
+    capabilities: &ModelCapabilities,
     provider: &dyn loom_llm::LlmProvider,
     cancel: &CancellationToken,
 ) -> Result<(), TurnError> {
@@ -605,7 +634,8 @@ async fn compact(
         }
         compaction::Plan::Summarize { split } => {
             core.hub.set_state(SessionState::Thinking);
-            let request = compaction::summary_request(&model.model, &history[..split]);
+            let mut request = compaction::summary_request(&model.model, &history[..split]);
+            request.capabilities = capabilities.clone();
             let summary = tokio::select! {
                 result = async {
                     let stream = provider.stream(request).await?;

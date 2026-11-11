@@ -9,6 +9,7 @@ pub mod git;
 pub mod host_keys;
 pub mod instructions;
 pub mod metrics;
+pub mod models;
 pub mod observer;
 pub mod policy;
 pub mod runtime;

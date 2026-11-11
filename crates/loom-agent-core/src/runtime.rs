@@ -7,11 +7,15 @@ use loom_llm::{Auth, LlmError, LlmProvider, ModelRef, ProviderSet};
 use loom_tools::sandbox::{LauncherKind, SandboxLauncher, SandboxPolicy, find_bwrap};
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
+use crate::models::ModelCatalog;
+
 #[derive(Clone)]
 pub struct Runtime {
     pub config: Arc<AgentConfig>,
     pub providers: ProviderSet,
     pub tools: ToolRegistry,
+    /// Rebuilt with the runtime, since the providers may have changed.
+    pub models: Arc<ModelCatalog>,
 }
 
 impl Runtime {
@@ -40,6 +44,7 @@ impl Runtime {
             config: Arc::new(config),
             providers,
             tools,
+            models: Arc::default(),
         })
     }
 

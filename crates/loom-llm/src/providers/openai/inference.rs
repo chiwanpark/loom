@@ -106,10 +106,7 @@ impl LlmProvider for OpenAiProvider {
         let mut models: Vec<ModelInfo> = data
             .iter()
             .filter_map(|m| m.get("id").and_then(Value::as_str))
-            .map(|id| ModelInfo {
-                id: id.to_owned(),
-                display_name: id.to_owned(),
-            })
+            .map(ModelInfo::named)
             .collect();
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
