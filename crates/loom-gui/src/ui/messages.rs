@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FollowMode, HighlightStyle,
-    InteractiveElement, IntoElement, ListAlignment, ListState, ObjectFit, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage, StyledText,
-    Subscription, Window, div, img, list, prelude::FluentBuilder, px,
+    InteractiveElement, IntoElement, ListAlignment, ListState, ObjectFit, ParentElement, Pixels,
+    Render, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage,
+    StyledText, Subscription, Window, div, img, list, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::scroll::ScrollableElement;
@@ -32,6 +32,24 @@ const OUTPUT_ROWS: u16 = 40;
 /// How far beyond the viewport items are laid out, so scrolling does not
 /// reveal blank space before they are measured.
 const OVERDRAW: f32 = 800.;
+
+/// The padding inside a card (a prompt, a tool call, the activity block).
+const CARD_PADDING: Pixels = px(12.);
+/// Where text starts in every item: a card's padding plus its 1px border.
+/// Items without a card are padded by this much, so all text lines up.
+const TEXT_INSET: Pixels = px(13.);
+
+/// The space above an item: little between tool calls, so a run of them
+/// reads as one block, and the most above a prompt, where a turn starts.
+/// `item` is `None` for the activity block.
+fn gap_before(prev: Option<&Item>, item: Option<&Item>) -> Pixels {
+    match (prev, item) {
+        (None, _) => px(0.),
+        (_, Some(Item::User { .. })) => px(24.),
+        (Some(Item::Tool(_)), Some(Item::Tool(_))) => px(4.),
+        _ => px(12.),
+    }
+}
 
 struct LiveOutput {
     fed: usize,
@@ -192,7 +210,11 @@ impl MessageList {
         self.prepare_markdown(ix, cx);
         let conversation = self.conversation.clone();
         let conversation = conversation.read(cx);
-        let gap = ix > 0;
+        let gap = gap_before(
+            ix.checked_sub(1)
+                .and_then(|prev| conversation.items.get(prev)),
+            conversation.items.get(ix),
+        );
         let content = match conversation.items.get(ix) {
             Some(item) => self.render_item(ix, item, cx),
             None => match conversation.activity() {
@@ -200,11 +222,7 @@ impl MessageList {
                 None => return div().into_any_element(),
             },
         };
-        div()
-            .w_full()
-            .when(gap, |el| el.pt_3())
-            .child(content)
-            .into_any_element()
+        div().w_full().pt(gap).child(content).into_any_element()
     }
 
     fn live_text(&mut self, tool: &ToolItem) -> String {
@@ -263,14 +281,19 @@ impl MessageList {
             Item::User { text, images } => {
                 v_flex()
                     .w_full()
-                    .p_3()
+                    .p(CARD_PADDING)
                     .rounded_md()
                     .bg(theme.secondary)
                     .border_1()
                     .border_color(theme.border)
                     .gap_2()
                     .when(!text.is_empty(), |el| {
-                        el.child(div().whitespace_normal().child(text.clone()))
+                        el.child(
+                            div()
+                                .debug_selector(|| format!("user-text-{ix}"))
+                                .whitespace_normal()
+                                .child(text.clone()),
+                        )
                     })
                     .when(!images.is_empty(), |el| {
                         el.child(h_flex().flex_wrap().gap_2().children(
@@ -321,59 +344,89 @@ impl MessageList {
                 streaming,
             } => {
                 let show = self.show_reasoning.contains(&ix);
+                let hover_color = theme.foreground;
                 v_flex()
                     .w_full()
                     .gap_2()
                     .when(!reasoning.is_empty(), |el| {
                         el.child(
-                            v_flex()
-                                .gap_1()
-                                .items_start()
+                            h_flex()
+                                .id(("reasoning", ix))
+                                .pl(TEXT_INSET)
+                                .gap_2()
+                                .cursor_pointer()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .hover(move |el| el.text_color(hover_color))
                                 .child(
-                                    Button::new(("reasoning", ix))
-                                        .ghost()
-                                        .xsmall()
-                                        .label(if *streaming && text.is_empty() {
-                                            "Thinking…"
-                                        } else if show {
-                                            "Hide reasoning"
-                                        } else {
-                                            "Show reasoning"
-                                        })
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if !this.show_reasoning.remove(&ix) {
-                                                this.show_reasoning.insert(ix);
-                                            }
-                                            cx.notify();
-                                        })),
+                                    div()
+                                        .debug_selector(move || format!("reasoning-icon-{ix}"))
+                                        .child(Icon::new(gpui_kit_assets::IconName::Brain).small()),
                                 )
-                                .when(show, |el| {
-                                    el.child(
-                                        div()
-                                            .pl_3()
-                                            .border_l_2()
-                                            .border_color(theme.border)
-                                            .text_sm()
-                                            .text_color(theme.muted_foreground)
-                                            .when_some(
-                                                self.markdown.get(&(ix, Part::Reasoning)),
-                                                |el, (_, state)| {
-                                                    el.child(TextView::new(state).selectable(true))
-                                                },
-                                            ),
-                                    )
-                                }),
+                                .child(if *streaming && text.is_empty() {
+                                    "Thinking…"
+                                } else if show {
+                                    "Hide reasoning"
+                                } else {
+                                    "Show reasoning"
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.show_reasoning.remove(&ix) {
+                                        this.show_reasoning.insert(ix);
+                                    }
+                                    cx.notify();
+                                })),
                         )
+                        .when(show, |el| {
+                            // The bar lines up with the edges of the cards and the
+                            // text with the text of every other item.
+                            el.child(
+                                div()
+                                    .border_l_2()
+                                    .border_color(theme.border)
+                                    .pl(TEXT_INSET - px(2.))
+                                    .pr(TEXT_INSET)
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .when_some(
+                                        self.markdown.get(&(ix, Part::Reasoning)),
+                                        |el, (_, state)| {
+                                            el.child(
+                                                div()
+                                                    .debug_selector(move || {
+                                                        format!("reasoning-text-{ix}")
+                                                    })
+                                                    .child(TextView::new(state).selectable(true)),
+                                            )
+                                        },
+                                    ),
+                            )
+                        })
                     })
                     .when_some(
                         self.markdown
                             .get(&(ix, Part::Text))
                             .filter(|_| !text.is_empty()),
-                        |el, (_, state)| el.child(TextView::new(state).selectable(true)),
+                        |el, (_, state)| {
+                            el.child(
+                                div().px(TEXT_INSET).child(
+                                    div()
+                                        .debug_selector(move || format!("assistant-text-{ix}"))
+                                        .child(TextView::new(state).selectable(true)),
+                                ),
+                            )
+                        },
                     )
                     .when(
                         *streaming && text.is_empty() && reasoning.is_empty(),
-                        |el| el.child(div().text_color(theme.muted_foreground).child("…")),
+                        |el| {
+                            el.child(
+                                div()
+                                    .px(TEXT_INSET)
+                                    .text_color(theme.muted_foreground)
+                                    .child("…"),
+                            )
+                        },
                     )
                     .into_any_element()
             }
@@ -386,10 +439,15 @@ impl MessageList {
                 };
                 div()
                     .w_full()
-                    .text_sm()
-                    .text_color(color)
-                    .whitespace_normal()
-                    .child(text.clone())
+                    .px(TEXT_INSET)
+                    .child(
+                        div()
+                            .debug_selector(move || format!("notice-{ix}"))
+                            .text_sm()
+                            .text_color(color)
+                            .whitespace_normal()
+                            .child(text.clone()),
+                    )
                     .into_any_element()
             }
         }
@@ -399,22 +457,26 @@ impl MessageList {
         let theme = cx.theme().clone();
         let id = tool.call.call_id.clone();
         let expanded = self.is_expanded(tool);
+        // A finished call says so with its icon alone; the other states are
+        // worth the word.
         let (icon, color, status) = match tool.status {
-            ToolStatus::Requested => (IconName::Loader, theme.muted_foreground, "queued"),
-            ToolStatus::WaitingApproval => {
-                (IconName::TriangleAlert, theme.warning, "needs approval")
-            }
-            ToolStatus::Running => (IconName::LoaderCircle, theme.info, "running"),
-            ToolStatus::Succeeded => (IconName::CircleCheck, theme.success, "done"),
-            ToolStatus::Failed => (IconName::CircleX, theme.danger, "failed"),
-            ToolStatus::Denied => (IconName::Ban, theme.danger, "denied"),
+            ToolStatus::Requested => (IconName::Loader, theme.muted_foreground, Some("queued")),
+            ToolStatus::WaitingApproval => (
+                IconName::TriangleAlert,
+                theme.warning,
+                Some("needs approval"),
+            ),
+            ToolStatus::Running => (IconName::LoaderCircle, theme.info, Some("running")),
+            ToolStatus::Succeeded => (IconName::CircleCheck, theme.success, None),
+            ToolStatus::Failed => (IconName::CircleX, theme.danger, Some("failed")),
+            ToolStatus::Denied => (IconName::Ban, theme.danger, Some("denied")),
         };
         let toggle_id = id.clone();
         let header = h_flex()
             .id(SharedString::from(format!("tool-{id}")))
             .w_full()
             .gap_2()
-            .px_2()
+            .px(CARD_PADDING)
             .py_1()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -438,7 +500,14 @@ impl MessageList {
                 }
                 cx.notify();
             }))
-            .child(Icon::new(icon).small().text_color(color))
+            .child(
+                div()
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("tool-icon-{id}")
+                    })
+                    .child(Icon::new(icon).small().text_color(color)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -446,15 +515,17 @@ impl MessageList {
                     .text_ellipsis()
                     .whitespace_nowrap()
                     .font_family(theme.mono_font_family.clone())
-                    .text_sm()
+                    .text_size(theme.mono_font_size)
                     .child(header_text(&tool.call, &theme)),
             )
-            .child(div().text_xs().text_color(color).child(status));
+            .when_some(status, |el, status| {
+                el.child(div().text_xs().text_color(color).child(status))
+            });
 
         // Collapsed rows have no body; an empty one would still add its bottom
         // padding under the header.
         let mut has_body = false;
-        let mut body = v_flex().w_full().gap_2().px_2().pb_2();
+        let mut body = v_flex().w_full().gap_2().px(CARD_PADDING).pb_2();
         if expanded {
             if let Some(reason) = &tool.approval_reason
                 && tool.status == ToolStatus::WaitingApproval
@@ -633,30 +704,33 @@ fn pretty_arguments(arguments: &str) -> String {
     }
 }
 
-/// The color of a tool's name in its header, so each kind of call is easy to
-/// pick out.
-fn tool_color(name: &str, theme: &gpui_component::Theme) -> gpui::Hsla {
-    match name {
-        "shell" => theme.magenta,
-        "read" => theme.blue,
-        "edit" => theme.yellow,
-        "write" => theme.cyan,
-        _ => theme.foreground,
-    }
+/// The tool summary with the name in one color for every tool, and the
+/// arguments muted so they don't read like the reply text around them. The
+/// rest of the label (the shell timeout) is dimmer still.
+fn header_text(call: &ToolCall, theme: &gpui_component::Theme) -> StyledText {
+    let summary = tool_summary(call);
+    let highlights = header_highlights(call, &summary, theme);
+    StyledText::new(summary).with_highlights(highlights)
 }
 
-/// The tool summary with the name in the tool's color and the rest of the
-/// label (the shell timeout) muted.
-fn header_text(call: &ToolCall, theme: &gpui_component::Theme) -> StyledText {
-    let (summary, label) = (tool_summary(call), tool_label(call));
+fn header_highlights(
+    call: &ToolCall,
+    summary: &str,
+    theme: &gpui_component::Theme,
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    let label = tool_label(call).len();
     let color = |color| HighlightStyle {
         color: Some(color),
         ..Default::default()
     };
-    StyledText::new(summary).with_highlights([
-        (0..call.name.len(), color(tool_color(&call.name, theme))),
-        (call.name.len()..label.len(), color(theme.muted_foreground)),
-    ])
+    vec![
+        (0..call.name.len(), color(theme.blue)),
+        (
+            call.name.len()..label,
+            color(theme.muted_foreground.opacity(0.7)),
+        ),
+        (label..summary.len(), color(theme.muted_foreground)),
+    ]
 }
 
 /// What to show for a tool call's arguments.
@@ -822,7 +896,7 @@ fn code_block(text: String, theme: &gpui_component::Theme) -> AnyElement {
         .rounded_sm()
         .bg(theme.muted)
         .font_family(theme.mono_font_family.clone())
-        .text_xs()
+        .text_size(theme.mono_font_size)
         .whitespace_normal()
         .children(
             clip(&text)
@@ -841,7 +915,7 @@ fn diff_block(diff: &str, theme: &gpui_component::Theme) -> AnyElement {
         .rounded_sm()
         .bg(theme.muted)
         .font_family(theme.mono_font_family.clone())
-        .text_xs()
+        .text_size(theme.mono_font_size)
         .children(
             clipped
                 .lines()
@@ -876,7 +950,7 @@ fn activity_block(activity: &Activity, theme: &gpui_component::Theme) -> AnyElem
         .id("activity")
         .w_full()
         .gap_2()
-        .px_3()
+        .px(CARD_PADDING)
         .py_2()
         .rounded_md()
         .border_1()
@@ -1022,11 +1096,12 @@ mod view_tests {
     use gpui_component::scroll::ScrollbarHandle;
     use gpui_component::v_flex;
     use loom_client::proto::{
-        ContentPart, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
+        ContentPart, ReasoningEffort, SequencedEvent, SessionEvent, SessionId, SessionInfo,
+        SessionState, ToolCall, ToolResult,
     };
 
-    use super::{MessageList, pane};
-    use crate::conversation::Conversation;
+    use super::{MessageList, gap_before, header_highlights, pane};
+    use crate::conversation::{Conversation, Item, ToolItem, ToolStatus};
 
     fn info() -> SessionInfo {
         SessionInfo {
@@ -1109,6 +1184,98 @@ mod view_tests {
         messages.update(cx, |messages, _| {
             std::mem::take(&mut messages.rendered_rows)
         })
+    }
+
+    /// The text of a prompt, a reply, its reasoning and a notice starts where
+    /// the icons of tool calls and the reasoning toggle do.
+    #[gpui::test]
+    fn every_item_starts_its_content_at_the_same_edge(cx: &mut TestAppContext) {
+        let (conversation, _, messages, cx) = open(0, cx);
+        conversation.update(cx, |conversation, cx| {
+            let call = ToolCall {
+                call_id: "c1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"a.rs"}"#.into(),
+                risk: None,
+            };
+            for event in [
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("a prompt")],
+                },
+                SessionEvent::ToolCallRequested { call },
+                SessionEvent::ToolCallFinished {
+                    call_id: "c1".into(),
+                    result: ToolResult {
+                        content: "fn main() {}".into(),
+                        is_error: false,
+                        details: None,
+                    },
+                },
+                SessionEvent::AssistantMessage {
+                    text: "a reply".into(),
+                    reasoning: Some("some reasoning".into()),
+                    model: "test/model".into(),
+                },
+                SessionEvent::ModelChanged {
+                    model: "test/other".into(),
+                    reasoning: Some(ReasoningEffort::High),
+                },
+            ] {
+                apply(conversation, event);
+            }
+            cx.notify();
+        });
+        messages.update(cx, |messages, cx| {
+            messages.show_reasoning.insert(2);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let mut left = |selector: &'static str| cx.debug_bounds(selector).unwrap().left();
+        let edge = left("user-text-0");
+        for selector in [
+            "tool-icon-c1",
+            "reasoning-icon-2",
+            "reasoning-text-2",
+            "assistant-text-2",
+            "notice-3",
+        ] {
+            assert_eq!(left(selector), edge, "{selector}");
+        }
+    }
+
+    #[test]
+    fn tool_calls_sit_close_together_and_prompts_stand_apart() {
+        let user = Item::User {
+            text: "q".into(),
+            images: Vec::new(),
+        };
+        let tool = Item::Tool(ToolItem {
+            call: ToolCall {
+                call_id: "c1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                risk: None,
+            },
+            status: ToolStatus::Succeeded,
+            approval_reason: None,
+            decision: None,
+            output: Vec::new(),
+            output_truncated: false,
+            result: None,
+        });
+        let reply = Item::Assistant {
+            text: "a".into(),
+            reasoning: String::new(),
+            streaming: false,
+        };
+        assert_eq!(gap_before(None, Some(&user)), px(0.));
+        assert_eq!(gap_before(Some(&tool), Some(&tool)), px(4.));
+        assert_eq!(gap_before(Some(&tool), Some(&reply)), px(12.));
+        assert_eq!(gap_before(Some(&reply), Some(&tool)), px(12.));
+        assert_eq!(gap_before(Some(&tool), None), px(12.));
+        assert_eq!(gap_before(Some(&reply), Some(&user)), px(24.));
+        assert_eq!(gap_before(Some(&tool), Some(&user)), px(24.));
     }
 
     #[gpui::test]
@@ -1245,5 +1412,42 @@ mod view_tests {
         });
         cx.run_until_parked();
         assert_eq!(rows(cx), 7);
+    }
+
+    #[gpui::test]
+    fn the_header_colors_the_name_the_timeout_and_the_arguments_apart(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let call = ToolCall {
+            call_id: "c1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({ "command": "cargo test", "timeout": 30 }).to_string(),
+            risk: None,
+        };
+        let summary = crate::conversation::tool_summary(&call);
+        for mode in [
+            gpui_component::ThemeMode::Light,
+            gpui_component::ThemeMode::Dark,
+        ] {
+            cx.update(|cx| {
+                gpui_component::Theme::change(mode, None, cx);
+                let theme = gpui_component::ActiveTheme::theme(cx);
+                let spans = header_highlights(&call, &summary, theme);
+                let parts: Vec<_> = spans
+                    .iter()
+                    .map(|(range, style)| (&summary[range.clone()], style.color.unwrap()))
+                    .collect();
+                assert_eq!(parts[0].0, "shell");
+                assert_eq!(parts[1].0, " (timeout: 30s)");
+                assert_eq!(parts[2].0, " cargo test");
+                // Each part differs from the others and from the reply text.
+                let mut colors: Vec<_> = parts.iter().map(|(_, color)| *color).collect();
+                colors.push(theme.foreground);
+                for (i, a) in colors.iter().enumerate() {
+                    for b in &colors[i + 1..] {
+                        assert_ne!(a, b, "{mode:?}: {parts:?}");
+                    }
+                }
+            });
+        }
     }
 }

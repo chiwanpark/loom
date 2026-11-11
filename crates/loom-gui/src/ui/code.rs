@@ -77,7 +77,7 @@ pub fn code_view(code: &Highlighted, first_line: Option<u64>, theme: &Theme) -> 
         .rounded_sm()
         .bg(theme.muted)
         .font_family(theme.mono_font_family.clone())
-        .text_xs()
+        .text_size(theme.mono_font_size)
         .children(code.lines.iter().enumerate().map(|(ix, (line, runs))| {
             // An empty text has no height; a space keeps the blank line.
             let text = if line.is_empty() {
