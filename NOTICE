@@ -11,7 +11,7 @@ Portions of crates/loom-gui and crates/loom-vt are adapted from Zed (https://git
 - crates/loom-gui/src/ui/tab.rs: the tab element from crates/ui/src/components/tab.rs.
 - crates/loom-gui/src/ui/tabs.rs and the tab bar in crates/loom-gui/src/ui/workspace.rs: tab insertion, reordering, and drag-and-drop handling from crates/workspace/src/pane.rs and crates/workspace/src/workspace.rs.
 
-The theme files in crates/loom-gui/assets/themes are copied unmodified from gpui-component (https://github.com/longbridge/gpui-component, tag v0.9.1, themes/), Copyright Longbridge, licensed under Apache-2.0. Each file names the original color scheme and its author:
+Except for gotham.json, the theme files in crates/loom-gui/assets/themes are copied unmodified from gpui-component (https://github.com/longbridge/gpui-component, tag v0.9.1, themes/), Copyright Longbridge, licensed under Apache-2.0. Each file names the original color scheme and its author:
 
 - ayu.json: Ayu, adapted by Zed Industries from https://github.com/ayu-theme.
 - catppuccin.json: Catppuccin (https://github.com/catppuccin/catppuccin).
@@ -19,3 +19,5 @@ The theme files in crates/loom-gui/assets/themes are copied unmodified from gpui
 - gruvbox.json: Gruvbox by Pavel Pertsev (https://github.com/morhetz/gruvbox).
 - solarized.json: Solarized by Ethan Schoonover (https://ethanschoonover.com/solarized).
 - tokyonight.json: Tokyo Night by Folke Lemaitre (https://github.com/folke/tokyonight.nvim).
+
+crates/loom-gui/assets/themes/gotham.json is written for Loom from the Gotham color scheme by Andrea Leopardi (https://github.com/whatyouhide/vim-gotham, MIT license). Its colors follow the Gotham Default palette published at https://terminalcolors.com/themes/gotham/default/.

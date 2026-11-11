@@ -194,4 +194,4 @@ cargo deny check
 
 ## License
 
-Loom is licensed under the GNU General Public License, version 3 or later. See [LICENSE](LICENSE). Some code is adapted from [Zed](https://github.com/zed-industries/zed), and the themes come from [gpui-component](https://github.com/longbridge/gpui-component). [NOTICE](NOTICE) lists the details.
+Loom is licensed under the GNU General Public License, version 3 or later. See [LICENSE](LICENSE). Some code is adapted from [Zed](https://github.com/zed-industries/zed), and the themes come from [gpui-component](https://github.com/longbridge/gpui-component), except Gotham, which is based on [vim-gotham](https://github.com/whatyouhide/vim-gotham). [NOTICE](NOTICE) lists the details.

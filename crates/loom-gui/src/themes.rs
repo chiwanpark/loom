@@ -4,7 +4,7 @@ use gpui::{App, SharedString, px};
 use gpui_component::{Theme, ThemeMode, ThemeRegistry};
 use loom_config::{AppearanceConfig, Theme as ConfigTheme};
 
-const BUNDLED: [(&str, &str); 6] = [
+const BUNDLED: [(&str, &str); 7] = [
     ("ayu", include_str!("../assets/themes/ayu.json")),
     (
         "catppuccin",
@@ -14,6 +14,7 @@ const BUNDLED: [(&str, &str); 6] = [
         "everforest",
         include_str!("../assets/themes/everforest.json"),
     ),
+    ("gotham", include_str!("../assets/themes/gotham.json")),
     ("gruvbox", include_str!("../assets/themes/gruvbox.json")),
     ("solarized", include_str!("../assets/themes/solarized.json")),
     (
