@@ -8,7 +8,7 @@ use loom_relay::{Relay, TlsListener, load_tls, serve, serve_tls};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
-#[command(name = "loom-relay", version, about = "Loom relay server")]
+#[command(name = "loom-relay", version = loom_version::VERSION, about = "Loom relay server")]
 struct Cli {
     #[arg(long, global = true, env = RELAY_CONFIG_ENV)]
     config: Option<PathBuf>,

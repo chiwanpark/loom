@@ -15,14 +15,15 @@ anyhow = "1.0.100"
 async-trait = "0.1.92"
 bytes = "1.12.1"
 clap = { version = "4.5.51", features = ["derive", "env"] }
-loom-agent-core = { version = "0.1.0", path = "../loom-agent-core" }
-loom-config = { version = "0.1.0", path = "../loom-config" }
-loom-crypto = { version = "0.1.0", path = "../loom-crypto" }
-loom-llm = { version = "0.1.0", path = "../loom-llm" }
-loom-proto = { version = "0.1.0", path = "../loom-proto" }
-loom-telemetry = { version = "0.1.0", path = "../loom-telemetry" }
-loom-tools = { version = "0.1.0", path = "../loom-tools" }
-loom-transport = { version = "0.1.0", path = "../loom-transport" }
+loom-agent-core = { path = "../loom-agent-core" }
+loom-config = { path = "../loom-config" }
+loom-crypto = { path = "../loom-crypto" }
+loom-llm = { path = "../loom-llm" }
+loom-proto = { path = "../loom-proto" }
+loom-telemetry = { path = "../loom-telemetry" }
+loom-tools = { path = "../loom-tools" }
+loom-transport = { path = "../loom-transport" }
+loom-version = { path = "../loom-version" }
 nix = { version = "0.31.3", features = ["signal"] }
 qrcode = { version = "0.14.1", default-features = false }
 serde_json = "1.0.154"
@@ -39,9 +40,9 @@ workspace = true
 [dev-dependencies]
 async-trait = "0.1.92"
 futures = "0.3.34"
-loom-client = { version = "0.1.0", path = "../loom-client" }
+loom-client = { path = "../loom-client" }
 loom-crypto = { path = "../loom-crypto" }
-loom-llm = { version = "0.1.0", path = "../loom-llm" }
+loom-llm = { path = "../loom-llm" }
 loom-relay = { path = "../loom-relay" }
 serde_json = "1.0.154"
 tempfile = "3.27.0"

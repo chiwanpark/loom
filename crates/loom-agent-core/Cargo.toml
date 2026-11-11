@@ -10,10 +10,10 @@ publish.workspace = true
 async-trait = "0.1.92"
 base64 = "0.23.1"
 futures = "0.3.34"
-loom-config = { version = "0.1.0", path = "../loom-config" }
-loom-llm = { version = "0.1.0", path = "../loom-llm" }
-loom-proto = { version = "0.1.0", path = "../loom-proto" }
-loom-tools = { version = "0.1.0", path = "../loom-tools" }
+loom-config = { path = "../loom-config" }
+loom-llm = { path = "../loom-llm" }
+loom-proto = { path = "../loom-proto" }
+loom-tools = { path = "../loom-tools" }
 notify = "8.2.2"
 postcard = { version = "1.1.3", features = ["alloc"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }

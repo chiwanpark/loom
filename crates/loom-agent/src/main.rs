@@ -19,7 +19,7 @@ use nix::unistd::Pid;
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Parser)]
-#[command(name = "loom-agent", version, about = "Loom agent daemon")]
+#[command(name = "loom-agent", version = loom_version::VERSION, about = "Loom agent daemon")]
 struct Cli {
     #[arg(long, global = true, env = CONFIG_ENV, value_name = "PATH")]
     config: Option<PathBuf>,

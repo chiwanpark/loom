@@ -81,7 +81,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         .with_context(|| format!("could not listen on {}", socket.display()))?;
     let started_at = now_unix();
     let pid = std::process::id();
-    let version = env!("CARGO_PKG_VERSION").to_owned();
+    let version = loom_version::VERSION.to_owned();
     let entry = AgentEntry {
         instance: instance.clone(),
         pid,

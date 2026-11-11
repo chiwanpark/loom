@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "--config" => config_path = args.next().map(PathBuf::from),
             "--version" => {
-                println!("loom {}", env!("CARGO_PKG_VERSION"));
+                println!("loom {}", loom_version::VERSION);
                 return Ok(());
             }
             "-h" | "--help" => {

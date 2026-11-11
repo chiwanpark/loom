@@ -4293,6 +4293,7 @@ dependencies = [
  "loom-telemetry",
  "loom-tools",
  "loom-transport",
+ "loom-version",
  "nix 0.31.3",
  "qrcode",
  "serde_json",
@@ -4394,6 +4395,7 @@ dependencies = [
  "image",
  "loom-client",
  "loom-config",
+ "loom-version",
  "loom-vt",
  "serde",
  "serde_json",
@@ -4453,6 +4455,7 @@ dependencies = [
  "loom-crypto",
  "loom-proto",
  "loom-transport",
+ "loom-version",
  "rand 0.10.3",
  "reqwest",
  "rustls",
@@ -4525,6 +4528,10 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "loom-version"
+version = "0.1.0"
 
 [[package]]
 name = "loom-vt"

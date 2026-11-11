@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bytes = "1.12.1"
-loom-proto = { version = "0.1.0", path = "../loom-proto" }
+loom-proto = { path = "../loom-proto" }
 futures = "0.3.34"
 nix = { version = "0.31.3", features = ["user"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -18,7 +18,7 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", features = ["codec", "rt"] }
 tracing = "0.1.44"
-loom-crypto = { version = "0.1.0", path = "../loom-crypto" }
+loom-crypto = { path = "../loom-crypto" }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots", "handshake"] }
 rand = "0.10.3"
 

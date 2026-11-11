@@ -18,9 +18,10 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", default-fe
 gpui-component = { version = "=0.9.1", default-features = false, features = ["tree-sitter-bash", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-css", "tree-sitter-diff", "tree-sitter-go", "tree-sitter-html", "tree-sitter-javascript", "tree-sitter-python", "tree-sitter-rust", "tree-sitter-sql", "tree-sitter-toml", "tree-sitter-tsx", "tree-sitter-typescript", "tree-sitter-yaml"] }
 gpui-kit-assets = "=0.9.1"
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
-loom-client = { version = "0.1.0", path = "../loom-client" }
-loom-config = { version = "0.1.0", path = "../loom-config" }
-loom-vt = { version = "0.1.0", path = "../loom-vt" }
+loom-client = { path = "../loom-client" }
+loom-config = { path = "../loom-config" }
+loom-version = { path = "../loom-version" }
+loom-vt = { path = "../loom-vt" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
