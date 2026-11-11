@@ -85,6 +85,14 @@ pub fn build_body(provider: &str, flavor: Flavor, request: &CompletionRequest) -
     Value::Object(body)
 }
 
+/// The input items for `messages`, as `build_body` writes them for Codex.
+/// The items for a prefix of the history are a prefix of the full input.
+pub(crate) fn history_input(provider: &str, model: &str, messages: &[Message]) -> Vec<Value> {
+    let mut input = Vec::new();
+    convert_messages(provider, model, messages, &mut input);
+    input
+}
+
 fn convert_messages(provider: &str, model: &str, messages: &[Message], input: &mut Vec<Value>) {
     for (index, message) in messages.iter().enumerate() {
         match message {

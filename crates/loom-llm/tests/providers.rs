@@ -297,8 +297,13 @@ async fn codex_sends_account_headers() {
         .unwrap();
     assert_eq!(message.text(), "codex");
     assert_eq!(message.provider, "openai-codex");
+    // The socket attempt gets a 404 from the mock and the response goes over HTTP.
     let requests: Vec<Request> = h.server.received_requests().await.unwrap();
-    let body: Value = requests[0].body_json().unwrap();
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    let body: Value = posts[0].body_json().unwrap();
     assert!(body.get("max_output_tokens").is_none());
     assert_eq!(body["tools"][0]["name"], "read");
 }

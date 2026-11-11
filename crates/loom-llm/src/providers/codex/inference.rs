@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::auth::ORIGINATOR;
+use super::websocket::Websockets;
 use super::{ID, Settings, access_token};
 use crate::error::{LlmError, Result};
 use crate::kind::Shared;
@@ -21,6 +24,7 @@ pub(crate) struct CodexProvider {
     url: String,
     models_url: String,
     usage_url: String,
+    websockets: Arc<Websockets>,
 }
 
 fn codex_base(base_url: &str) -> String {
@@ -56,9 +60,11 @@ fn usage_url(base_url: &str) -> String {
 impl CodexProvider {
     pub(crate) fn new(shared: Shared, settings: Settings) -> Self {
         let base = settings.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
+        let url = responses_url(base);
         Self {
             shared,
-            url: responses_url(base),
+            websockets: Websockets::new(&url, settings.websockets.unwrap_or(true)),
+            url,
             models_url: models_url(base),
             usage_url: usage_url(base),
         }
@@ -76,6 +82,19 @@ impl LlmProvider for CodexProvider {
         let provider = id.as_str();
         let (token, account_id) = access_token(&self.shared).await?;
         let body = build_body(provider, Flavor::Codex, &request);
+        if let Some(session) = &request.session_id
+            && self.websockets.enabled()
+        {
+            let auth = (token.as_str(), account_id.as_str());
+            match self
+                .websockets
+                .start(provider, session, auth, &request, &body)
+                .await
+            {
+                Ok(stream) => return Ok(stream),
+                Err(reason) => tracing::debug!(provider, %reason, "sending the response over HTTP"),
+            }
+        }
         let response = send_with_retry(provider, self.shared.retry, || {
             let mut builder = self
                 .shared

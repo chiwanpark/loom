@@ -1,5 +1,6 @@
 mod auth;
 mod inference;
+mod websocket;
 
 use std::sync::Arc;
 
@@ -40,6 +41,8 @@ pub(crate) struct Settings {
     #[allow(dead_code)]
     pub auth: AuthMode,
     pub base_url: Option<String>,
+    /// Sends responses over a WebSocket, falling back to HTTP. On by default.
+    pub websockets: Option<bool>,
 }
 
 impl Settings {

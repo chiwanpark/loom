@@ -142,8 +142,9 @@ pub(crate) fn chunk_stream(
     model: &str,
     response: reqwest::Response,
 ) -> ChunkStream {
-    let events: BoxStream<'static, reqwest::Result<SseEvent>> =
-        decode_sse(response.bytes_stream().boxed()).boxed();
+    let events: BoxStream<'static, Result<SseEvent>> = decode_sse(response.bytes_stream().boxed())
+        .map(|event| event.map_err(LlmError::Http))
+        .boxed();
     events_to_chunks(provider, model, events).boxed()
 }
 
@@ -153,7 +154,7 @@ pub(crate) fn events_to_chunks<S>(
     events: S,
 ) -> impl Stream<Item = Result<CompletionChunk>> + Send + 'static
 where
-    S: Stream<Item = reqwest::Result<SseEvent>> + Unpin + Send + 'static,
+    S: Stream<Item = Result<SseEvent>> + Unpin + Send + 'static,
 {
     let initial = StreamState {
         events,
@@ -207,7 +208,7 @@ where
                         Err(err) => return fail(st, err),
                     }
                 }
-                Some(Err(err)) => return fail(st, LlmError::Http(err)),
+                Some(Err(err)) => return fail(st, err),
                 None => {
                     let state = st
                         .state
@@ -228,7 +229,7 @@ where
 mod tests {
     use super::*;
 
-    fn sse(data: &str) -> reqwest::Result<SseEvent> {
+    fn sse(data: &str) -> Result<SseEvent> {
         Ok(SseEvent {
             event: None,
             data: data.to_owned(),

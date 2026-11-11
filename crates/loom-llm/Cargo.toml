@@ -21,6 +21,7 @@ sha2 = "0.11.1"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots", "handshake"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 url = "2.5.8"
