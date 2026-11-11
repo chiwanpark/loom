@@ -260,6 +260,13 @@ impl Client {
         }
     }
 
+    pub async fn telemetry_status(&self) -> Result<loom_proto::TelemetryStatus> {
+        match self.request(Command::GetTelemetryStatus).await? {
+            Payload::Telemetry(status) => Ok(status),
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub async fn list_models(&self, provider: &str) -> Result<Vec<ModelInfo>> {
         match self
             .request(Command::ListModels {

@@ -215,6 +215,10 @@ async fn prompt_turn_streams_events_to_subscribers() {
     let metrics = client.metrics().await.unwrap();
     assert_eq!(metrics.connections, 1);
     assert_eq!(metrics.connections_total, 2);
+    assert_eq!(
+        client.telemetry_status().await.unwrap(),
+        loom_client::proto::TelemetryStatus::Off
+    );
 }
 
 #[tokio::test]

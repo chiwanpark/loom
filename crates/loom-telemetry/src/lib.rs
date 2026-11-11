@@ -13,12 +13,13 @@
 
 mod mappers;
 mod recorder;
+mod status;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use loom_agent_core::SessionObserver;
+use loom_agent_core::{SessionObserver, TelemetryReport};
 use loom_config::{OtlpProtocol, TelemetryConfig, Temporality};
 use opentelemetry::KeyValue;
 use opentelemetry::logs::LoggerProvider as _;
@@ -36,6 +37,7 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 pub use recorder::REDACTED;
 
 use recorder::{Counters, Recorder};
+use status::{Board, Recorded, Signal};
 
 const SCOPE: &str = "loom";
 const PROTOCOL_ENV: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
@@ -64,6 +66,7 @@ pub struct Telemetry {
     meters: Option<SdkMeterProvider>,
     logs: Option<SdkLoggerProvider>,
     recorder: Arc<Recorder>,
+    board: Arc<Board>,
 }
 
 fn protocol(config: &TelemetryConfig) -> Result<OtlpProtocol, TelemetryError> {
@@ -178,7 +181,7 @@ impl Telemetry {
         } else {
             None
         };
-        Ok(Some(Self::with_exporters(config, identity, metrics, logs)))
+        Ok(Some(Self::build(config, identity, protocol, metrics, logs)))
     }
 
     /// Builds the providers around the given exporters; tests pass in-memory
@@ -193,6 +196,40 @@ impl Telemetry {
         M: PushMetricExporter,
         L: LogExport + 'static,
     {
+        let protocol = config.protocol.unwrap_or(OtlpProtocol::HttpProtobuf);
+        Self::build(config, identity, protocol, metrics, logs)
+    }
+
+    fn build<M, L>(
+        config: &TelemetryConfig,
+        identity: &AgentIdentity,
+        protocol: OtlpProtocol,
+        metrics: Option<M>,
+        logs: Option<L>,
+    ) -> Self
+    where
+        M: PushMetricExporter,
+        L: LogExport + 'static,
+    {
+        let mut signals = Vec::new();
+        let mut recorded = |name: &str| {
+            let signal = Signal::new(name);
+            signals.push(signal.clone());
+            signal
+        };
+        let metrics = metrics.map(|inner| Recorded {
+            inner,
+            signal: recorded("metrics"),
+        });
+        let logs = logs.map(|inner| Recorded {
+            inner,
+            signal: recorded("logs"),
+        });
+        let board = Arc::new(Board {
+            endpoint: config.endpoint.clone(),
+            protocol,
+            signals,
+        });
         let resource = resource(config, identity);
         let meters = metrics.map(|exporter| {
             SdkMeterProvider::builder()
@@ -227,7 +264,15 @@ impl Telemetry {
             meters,
             logs,
             recorder: Arc::new(recorder),
+            board,
         }
+    }
+
+    /// Reports the export settings and how the exports went; it keeps
+    /// working after the exporter stops.
+    pub fn reporter(&self) -> TelemetryReport {
+        let board = self.board.clone();
+        Arc::new(move || board.status())
     }
 
     /// The observer to give the agent.

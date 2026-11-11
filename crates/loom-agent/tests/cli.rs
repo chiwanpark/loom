@@ -358,6 +358,72 @@ async fn agents_manage_siblings_over_the_protocol() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn agents_report_their_telemetry_export() {
+    use loom_client::proto::TelemetryStatus;
+
+    let env = Env::new();
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        "allowed_roots:\n- ~/work\ntelemetry:\n  enabled: true\n  endpoint: http://127.0.0.1:9\n",
+    )
+    .unwrap();
+    let serve = |ws: &str, protocol: Option<&str>| {
+        let mut command = env.command(&["serve", "--workspace", ws]);
+        if let Some(protocol) = protocol {
+            command.env("OTEL_EXPORTER_OTLP_PROTOCOL", protocol);
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut exporting = serve("~/work/ws1", None);
+    let mut failed = serve("~/work/ws2", Some("carrier-pigeon"));
+    env.wait_for_agents(2).await;
+    let status = |ws: &'static str| {
+        let registry = env.registry();
+        let target = AgentTarget::Workspace {
+            path: env.ws(ws),
+            spawn: false,
+        };
+        async move {
+            let stream = connect_local(&registry, &target, Path::new(BIN))
+                .await
+                .unwrap();
+            let (client, _notes) = Client::connect(stream, "test").await.unwrap();
+            client.telemetry_status().await.unwrap()
+        }
+    };
+
+    match status("ws1").await {
+        TelemetryStatus::Exporting {
+            endpoint,
+            protocol,
+            signals,
+        } => {
+            assert_eq!(endpoint.as_deref(), Some("http://127.0.0.1:9"));
+            assert_eq!(protocol, "http/protobuf");
+            let names: Vec<_> = signals.iter().map(|s| s.signal.as_str()).collect();
+            assert_eq!(names, ["metrics", "logs"]);
+        }
+        other => panic!("{other:?}"),
+    }
+    match status("ws2").await {
+        TelemetryStatus::Failed { error } => {
+            assert!(error.contains("OTEL_EXPORTER_OTLP_PROTOCOL"), "{error}")
+        }
+        other => panic!("{other:?}"),
+    }
+
+    assert!(env.run(&["stop", "--all"]).status.success());
+    assert!(exporting.wait().unwrap().success());
+    assert!(failed.wait().unwrap().success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fetch_telemetry_prints_the_organization_settings() {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

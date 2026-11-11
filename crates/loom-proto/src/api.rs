@@ -206,6 +206,8 @@ pub enum Command {
     GetUsageLimits {
         provider: ProviderId,
     },
+    /// Whether the agent exports OpenTelemetry data and how the exports went.
+    GetTelemetryStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +231,45 @@ pub enum Payload {
     Directory(DirectoryListing),
     FileContent(FileContent),
     UsageLimits(Option<UsageLimits>),
+    Telemetry(TelemetryStatus),
+}
+
+/// The agent's OpenTelemetry export. Settings apply when the agent starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TelemetryStatus {
+    /// Telemetry is disabled, or neither metrics nor logs are on.
+    Off,
+    /// Telemetry is on but the exporter could not start.
+    Failed { error: String },
+    Exporting {
+        /// The configured collector URL; `None` when it comes from the
+        /// `OTEL_EXPORTER_OTLP_*` environment or the default.
+        endpoint: Option<String>,
+        /// `grpc`, `http/protobuf` or `http/json`.
+        protocol: String,
+        /// One entry per exported signal: `metrics`, `logs`.
+        signals: Vec<SignalStatus>,
+    },
+}
+
+/// How exports of one signal went since the agent started.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignalStatus {
+    pub signal: String,
+    pub exports: u64,
+    pub failures: u64,
+    /// Failures since the last success; 0 when the last export succeeded.
+    pub consecutive_failures: u64,
+    /// Seconds since the Unix epoch.
+    pub last_success_at: Option<u64>,
+    pub last_failure: Option<ExportFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportFailure {
+    /// Seconds since the Unix epoch.
+    pub at: u64,
+    pub error: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -30,6 +30,7 @@ use crate::connection::{self, AgentSummary, Env, Target};
 use crate::conversation::{Activity, short_id, state_label};
 use crate::layout::{self, GroupKey, SavedGroup, SavedLayout, SavedPane, SavedTab};
 use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal};
+use crate::telemetry::Health;
 use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::DiffView;
@@ -615,6 +616,9 @@ impl Workspace {
 
     fn poll_changes(&mut self, cx: &mut Context<Self>) {
         self.poll_ticks += 1;
+        if let Some(conn) = self.active_connection.clone() {
+            conn.update(cx, |conn, cx| conn.refresh_telemetry(false, cx));
+        }
         if self.show_right
             && let Some(conn) = self.changes_connection()
         {
@@ -3552,6 +3556,11 @@ impl Workspace {
                         Tooltip::new(status_tooltip.clone()).build(window, cx)
                     }),
             );
+            if conn.status == LinkStatus::Connected
+                && let Some(item) = telemetry_item(conn, &theme, cx)
+            {
+                left = left.child(item);
+            }
         } else {
             left = left.child(
                 h_flex()
@@ -3590,6 +3599,49 @@ impl Workspace {
             .child(right)
             .into_any_element()
     }
+}
+
+/// The status bar item of the agent's OpenTelemetry export; clicking it
+/// asks again. Nothing until the first answer arrives.
+fn telemetry_item(
+    conn: &AgentConnection,
+    theme: &gpui_component::Theme,
+    cx: &Context<Workspace>,
+) -> Option<AnyElement> {
+    let summary = match (&conn.telemetry.status, &conn.telemetry.error) {
+        (Some(status), _) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            crate::telemetry::summarize(status, now)
+        }
+        (None, Some(error)) => crate::telemetry::unknown(error),
+        (None, None) => return None,
+    };
+    let color = match summary.health {
+        Health::Off | Health::Waiting => theme.muted_foreground,
+        Health::Healthy => theme.success,
+        Health::Failing => theme.danger,
+        Health::Unknown => theme.warning,
+    };
+    let tooltip = SharedString::from(format!("{}\nClick to check again.", summary.tooltip));
+    Some(
+        h_flex()
+            .id("status-otel")
+            .gap_1()
+            .cursor_pointer()
+            .text_color(color)
+            .child(Icon::new(gpui_kit_assets::IconName::Activity).xsmall())
+            .child(summary.label)
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(conn) = this.active_connection.clone() {
+                    conn.update(cx, |conn, cx| conn.refresh_telemetry(true, cx));
+                }
+            }))
+            .into_any_element(),
+    )
 }
 
 fn reconnect_target(conn: &AgentConnection) -> Target {

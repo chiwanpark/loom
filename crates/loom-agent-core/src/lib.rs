@@ -19,7 +19,7 @@ pub mod supervisor;
 pub mod terminals;
 pub mod watcher;
 
-pub use agent::{Agent, AgentNotice, AgentOptions, data_dir};
+pub use agent::{Agent, AgentNotice, AgentOptions, TelemetryReport, data_dir};
 pub use connection::{Connection, Flow};
 pub use error::{CoreError, Result};
 pub use events::{EventHub, Subscription};

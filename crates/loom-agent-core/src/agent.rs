@@ -36,7 +36,12 @@ pub struct AgentOptions {
     pub sandbox_exe: Option<PathBuf>,
     /// Sees the events of every live session, for exporters.
     pub observer: Option<Arc<dyn SessionObserver>>,
+    /// Reports the OpenTelemetry export; without it telemetry is off.
+    pub telemetry: Option<TelemetryReport>,
 }
+
+/// Reports the state of the agent's OpenTelemetry export on request.
+pub type TelemetryReport = Arc<dyn Fn() -> loom_proto::TelemetryStatus + Send + Sync>;
 
 impl AgentOptions {
     pub fn new(workspace: impl Into<PathBuf>, config: AgentConfig, dirs: Dirs) -> Self {
@@ -49,6 +54,7 @@ impl AgentOptions {
             persist: true,
             sandbox_exe: None,
             observer: None,
+            telemetry: None,
         }
     }
 }
@@ -65,6 +71,7 @@ struct Inner {
     store: Option<EventStore>,
     metrics: Arc<Metrics>,
     observer: Arc<dyn SessionObserver>,
+    telemetry: Option<TelemetryReport>,
     terminals: Terminals,
 }
 
@@ -166,6 +173,7 @@ impl Agent {
                     .chain(external)
                     .collect(),
                 )),
+                telemetry: options.telemetry,
                 terminals: Terminals::default(),
             }),
         };
@@ -299,6 +307,13 @@ impl Agent {
 
     pub fn metrics(&self) -> &Arc<Metrics> {
         &self.inner.metrics
+    }
+
+    pub fn telemetry_status(&self) -> loom_proto::TelemetryStatus {
+        self.inner
+            .telemetry
+            .as_ref()
+            .map_or(loom_proto::TelemetryStatus::Off, |report| report())
     }
 
     pub fn metrics_snapshot(&self) -> loom_proto::AgentMetrics {

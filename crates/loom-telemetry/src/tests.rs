@@ -518,3 +518,87 @@ async fn grpc_exporter_starts_and_stops_without_a_collector() {
         .await
         .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reports_export_results() {
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(path("/v1/metrics"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(path("/v1/logs"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let config = TelemetryConfig {
+        protocol: Some(OtlpProtocol::HttpJson),
+        endpoint: Some(server.uri().replace("://", "://user:secret@")),
+        ..enabled()
+    };
+    let telemetry = Telemetry::start(&config, &identity()).unwrap().unwrap();
+    let report = telemetry.reporter();
+    let loom_proto::TelemetryStatus::Exporting {
+        endpoint, signals, ..
+    } = report()
+    else {
+        panic!("not exporting");
+    };
+    assert_eq!(endpoint.as_deref(), Some(server.uri().as_str()));
+    assert!(signals.iter().all(|s| s.exports == 0), "{signals:?}");
+
+    turn(telemetry.observer().as_ref());
+    tokio::task::spawn_blocking(move || {
+        telemetry.flush();
+        telemetry.shutdown();
+    })
+    .await
+    .unwrap();
+
+    let loom_proto::TelemetryStatus::Exporting {
+        protocol, signals, ..
+    } = report()
+    else {
+        panic!("not exporting");
+    };
+    assert_eq!(protocol, "http/json");
+    let signal = |name: &str| signals.iter().find(|s| s.signal == name).unwrap().clone();
+    let metrics = signal("metrics");
+    assert!(metrics.exports >= 1 && metrics.failures == 0, "{metrics:?}");
+    assert!(metrics.last_success_at.is_some() && metrics.last_failure.is_none());
+    let logs = signal("logs");
+    assert!(
+        logs.failures >= 1 && logs.last_success_at.is_none(),
+        "{logs:?}"
+    );
+    assert_eq!(logs.consecutive_failures, logs.failures);
+    assert_eq!(metrics.consecutive_failures, 0);
+    let error = logs.last_failure.unwrap().error;
+    assert!(error.contains("503"), "{error}");
+}
+
+#[test]
+fn reports_only_the_enabled_signals() {
+    let config = TelemetryConfig {
+        logs: false,
+        ..enabled()
+    };
+    let telemetry = Telemetry::with_exporters(
+        &config,
+        &identity(),
+        Some(InMemoryMetricExporter::default()),
+        None::<InMemoryLogExporter>,
+    );
+    let loom_proto::TelemetryStatus::Exporting { signals, .. } = telemetry.reporter()() else {
+        panic!("not exporting");
+    };
+    assert_eq!(
+        signals
+            .iter()
+            .map(|s| s.signal.as_str())
+            .collect::<Vec<_>>(),
+        ["metrics"]
+    );
+}

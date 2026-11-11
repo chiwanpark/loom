@@ -343,6 +343,7 @@ impl Connection {
         match command {
             Command::GetAgentInfo => Ok(Payload::AgentInfo(self.agent_info())),
             Command::GetMetrics => Ok(Payload::Metrics(agent.metrics_snapshot())),
+            Command::GetTelemetryStatus => Ok(Payload::Telemetry(agent.telemetry_status())),
             Command::ListProviders => {
                 let runtime = agent.runtime();
                 let statuses = agent.auth().status().await.map_err(llm)?;

@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
     AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, Notice, PolicyAction,
-    ReasoningEffort, SessionId, SessionInfo, TerminalId, UsageLimits, WorkspaceChanges,
+    ReasoningEffort, SessionId, SessionInfo, TelemetryStatus, TerminalId, UsageLimits,
+    WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -71,9 +72,45 @@ impl UsageState {
     }
 }
 
+/// How often the agent's telemetry status is fetched; exports run every few
+/// seconds (logs) to a minute (metrics).
+const TELEMETRY_REFRESH: Duration = Duration::from_secs(15);
+
+/// The last answer to `GetTelemetryStatus`.
+#[derive(Default)]
+pub struct TelemetryState {
+    pub status: Option<TelemetryStatus>,
+    /// Why the last fetch failed, such as an agent too old to answer.
+    pub error: Option<String>,
+    fetched: Option<Instant>,
+    loading: bool,
+    /// Bumped when the connection moves to another agent, so an answer from
+    /// the previous one is dropped.
+    generation: u64,
+}
+
+impl TelemetryState {
+    fn due(&self, force: bool, now: Instant) -> bool {
+        !self.loading
+            && (force
+                || self
+                    .fetched
+                    .is_none_or(|at| now.duration_since(at) >= TELEMETRY_REFRESH))
+    }
+
+    /// Forgets the answer of the previous agent.
+    fn reset(&mut self) {
+        *self = Self {
+            generation: self.generation + 1,
+            ..Self::default()
+        };
+    }
+}
+
 pub struct AgentConnection {
     pub git: GitState,
     pub usage: HashMap<String, UsageState>,
+    pub telemetry: TelemetryState,
     pub host: HostEntry,
     pub info: AgentInfo,
     pub client: Client,
@@ -104,6 +141,7 @@ impl AgentConnection {
         let mut this = Self {
             git: GitState::default(),
             usage: HashMap::new(),
+            telemetry: TelemetryState::default(),
             host,
             info,
             client,
@@ -151,6 +189,8 @@ impl AgentConnection {
         cx: &mut Context<Self>,
     ) {
         let same_agent = client.agent().instance == self.info.instance;
+        // Even the same agent may have changed while the link was down.
+        self.telemetry.reset();
         self.client = client;
         self.info = self.client.agent().clone();
         self.status = LinkStatus::Connected;
@@ -489,6 +529,44 @@ impl AgentConnection {
                         state.error = None;
                     }
                     Some(Err(err)) => state.error = Some(err.to_string()),
+                    None => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Fetches the agent's telemetry status when it is stale, or now with
+    /// `force`.
+    pub fn refresh_telemetry(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.status != LinkStatus::Connected || !self.telemetry.due(force, Instant::now()) {
+            return;
+        }
+        self.telemetry.loading = true;
+        let generation = self.telemetry.generation;
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.telemetry_status().await });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let state = &mut this.telemetry;
+                if state.generation != generation {
+                    return;
+                }
+                state.loading = false;
+                state.fetched = Some(Instant::now());
+                match result {
+                    Some(Ok(status)) => {
+                        state.status = Some(status);
+                        state.error = None;
+                    }
+                    Some(Err(err)) => {
+                        state.status = None;
+                        state.error = Some(err.to_string());
+                    }
                     None => {}
                 }
                 cx.notify();

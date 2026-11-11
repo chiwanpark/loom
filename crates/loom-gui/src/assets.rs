@@ -5,6 +5,7 @@ use gpui::{AssetSource, Result, SharedString};
 gpui_kit_assets::icon_assets!(
     ExtraIcons,
     [
+        Activity,
         Archive,
         ArchiveRestore,
         Brain,
