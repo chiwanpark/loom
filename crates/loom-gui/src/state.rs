@@ -78,7 +78,6 @@ pub struct AgentConnection {
     pub backend: Backend,
     pub status: LinkStatus,
     pub sessions: Vec<SessionInfo>,
-    pub show_archived: bool,
     conversations: HashMap<SessionId, Entity<Conversation>>,
     terminals: HashMap<TerminalId, TerminalEntry>,
     _pump: Option<Task<()>>,
@@ -109,7 +108,6 @@ impl AgentConnection {
             backend,
             status: LinkStatus::Connected,
             sessions: Vec::new(),
-            show_archived: false,
             conversations: HashMap::new(),
             terminals: HashMap::new(),
             _pump: None,
@@ -166,6 +164,11 @@ impl AgentConnection {
             self.subscribe(id, Some(since), cx);
         }
         cx.notify();
+    }
+
+    /// The open conversation of a session, if any.
+    pub fn open_conversation(&self, id: &SessionId) -> Option<&Entity<Conversation>> {
+        self.conversations.get(id)
     }
 
     fn handle(&mut self, note: Notification, cx: &mut Context<Self>) {

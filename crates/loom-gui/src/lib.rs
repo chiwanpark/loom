@@ -1,3 +1,4 @@
+pub mod agent_list;
 pub mod app;
 pub mod assets;
 pub mod attachments;

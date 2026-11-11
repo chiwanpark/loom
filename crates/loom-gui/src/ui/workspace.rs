@@ -11,20 +11,23 @@ use gpui::{
     px,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, TitleBar, h_flex, h_resizable,
     resizable_panel, v_flex, v_resizable,
 };
 use loom_client::proto::{
-    ChangeStatus, FileChange as GitChange, SessionId, SessionInfo, SessionState, WorkspaceChanges,
+    ChangeStatus, FileChange as GitChange, SessionId, SessionInfo, WorkspaceChanges,
 };
 use loom_config::{ClientConfig, HostEntry};
 
+use crate::agent_list::{self, AgentEntry, Group, Link};
 use crate::backend::Backend;
 use crate::changes::{FileChange, display_path, session_changes};
 use crate::connection::{self, AgentSummary, Env, Target};
-use crate::conversation::short_id;
+use crate::conversation::{Activity, short_id, state_label};
 use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal};
 use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
@@ -130,12 +133,22 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys(custom);
 }
 
+/// What a row menu item does to the workspace.
+type MenuAction = dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
+
+/// An agent in the agents panel, with what it takes to act on it.
+struct PanelAgent {
+    entry: AgentEntry,
+    host_ix: Option<usize>,
+    instance: String,
+    conn: Option<Entity<AgentConnection>>,
+}
+
 struct HostNode {
     entry: HostEntry,
     agents: Vec<AgentSummary>,
     loading: bool,
     error: Option<String>,
-    expanded: bool,
 }
 
 #[derive(Clone)]
@@ -398,6 +411,7 @@ pub struct Workspace {
     connect_errors: HashMap<(String, String), String>,
     /// Agents stopped from here, which may still be listed while they exit.
     stopped: HashSet<(String, String)>,
+    show_archived: bool,
     active_connection: Option<Entity<AgentConnection>>,
     groups: Vec<SessionGroup>,
     active_group: Option<usize>,
@@ -429,7 +443,6 @@ impl Workspace {
                 agents: Vec::new(),
                 loading: false,
                 error: None,
-                expanded: true,
             })
             .collect();
         let mut this = Self {
@@ -442,6 +455,7 @@ impl Workspace {
             connecting: HashSet::new(),
             connect_errors: HashMap::new(),
             stopped: HashSet::new(),
+            show_archived: false,
             active_connection: None,
             groups: Vec::new(),
             active_group: None,
@@ -1484,7 +1498,6 @@ impl Workspace {
             agents: Vec::new(),
             loading: false,
             error: None,
-            expanded: true,
         });
         self.save_config(window, cx);
         self.refresh_host(self.hosts.len() - 1, window, cx);
@@ -2232,401 +2245,113 @@ impl Workspace {
         self.pair_dialog(window, cx);
     }
 
-    fn render_archived_toggle(
-        &self,
-        conn: &Entity<AgentConnection>,
-        hix: usize,
-        aix: usize,
-        count: usize,
-        shown: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme();
-        let conn = conn.clone();
-        h_flex()
-            .id(SharedString::from(format!("archived-{hix}-{aix}")))
-            .w_full()
-            .gap_1()
-            .pl_8()
-            .pr_1()
-            .rounded_sm()
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .hover(|s| s.bg(theme.list_hover))
-            .cursor_pointer()
-            .on_click(cx.listener(move |_, _, _, cx| {
-                conn.update(cx, |conn, cx| {
-                    conn.show_archived = !conn.show_archived;
-                    cx.notify();
+    /// The agents the panel lists: every agent the hosts report, plus
+    /// connections to agents they no longer list.
+    fn panel_agents(&self, cx: &App) -> Vec<PanelAgent> {
+        let home = std::env::var("HOME").ok();
+        let mut agents = Vec::new();
+        let mut seen = HashSet::new();
+        let link_of = |conn: Option<&Entity<AgentConnection>>, key: &(String, String)| match conn
+            .map(|c| c.read(cx).status.clone())
+        {
+            Some(LinkStatus::Connected) => Link::Connected,
+            _ if self.connecting.contains(key) => Link::Connecting,
+            Some(LinkStatus::Disconnected(reason)) => Link::Offline(Some(reason)),
+            None => Link::Offline(self.connect_errors.get(key).cloned()),
+        };
+        let workspace_label = |host: &HostEntry, path: String| match host {
+            HostEntry::Local { .. } => agent_list::short_path(&path, home.as_deref()),
+            _ => path,
+        };
+        for (hix, host) in self.hosts.iter().enumerate() {
+            for agent in &host.agents {
+                let key = (host.entry.name().to_owned(), agent.instance.clone());
+                if self.stopped.contains(&key) {
+                    continue;
+                }
+                let conn = self.find_connection(host.entry.name(), &agent.instance, cx);
+                if let Some(conn) = &conn {
+                    seen.insert(conn.entity_id());
+                }
+                let path = agent
+                    .workspace
+                    .as_ref()
+                    .map(|w| w.display().to_string())
+                    .unwrap_or_else(|| format!("agent {}", short_id(&agent.instance)));
+                agents.push(PanelAgent {
+                    entry: AgentEntry {
+                        remote: host.entry.name().to_owned(),
+                        workspace: workspace_label(&host.entry, path),
+                        link: link_of(conn.as_ref(), &key),
+                        sessions: conn
+                            .as_ref()
+                            .map(|c| c.read(cx).sessions.clone())
+                            .unwrap_or_default(),
+                    },
+                    host_ix: Some(hix),
+                    instance: agent.instance.clone(),
+                    conn,
                 });
-            }))
-            .child(
-                Icon::new(if shown {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
-                .xsmall(),
-            )
-            .child(format!("Archived ({count})"))
-            .into_any_element()
+            }
+        }
+        for conn in &self.connections {
+            if seen.contains(&conn.entity_id()) {
+                continue;
+            }
+            let read = conn.read(cx);
+            let key = (read.host.name().to_owned(), read.info.instance.0.clone());
+            agents.push(PanelAgent {
+                entry: AgentEntry {
+                    remote: read.host.name().to_owned(),
+                    workspace: workspace_label(
+                        &read.host,
+                        read.info.workspace.display().to_string(),
+                    ),
+                    link: link_of(Some(conn), &key),
+                    sessions: read.sessions.clone(),
+                },
+                host_ix: self.hosts.iter().position(|h| h.entry == read.host),
+                instance: read.info.instance.0.clone(),
+                conn: Some(conn.clone()),
+            });
+        }
+        agents
     }
 
     fn render_agents_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let mut list = v_flex().w_full().gap_1().p_2();
-        for (hix, host) in self.hosts.iter().enumerate() {
-            let kind = match &host.entry {
-                HostEntry::Local { .. } => "local".to_owned(),
-                HostEntry::Ssh { destination, .. } => format!("ssh {destination}"),
-                HostEntry::Relay { .. } => "relay".to_owned(),
-            };
-            let expanded = host.expanded;
+        let agents = self.panel_agents(cx);
+        let entries: Vec<AgentEntry> = agents.iter().map(|a| a.entry.clone()).collect();
+        let groups = agent_list::group(&entries);
+        let mut list = v_flex().w_full().gap_0p5().p_2();
+        if groups.is_empty() {
             list = list.child(
-                h_flex()
-                    .id(("host", hix))
-                    .w_full()
-                    .gap_1()
+                div()
                     .px_1()
-                    .rounded_sm()
-                    .hover(|s| s.bg(theme.list_hover))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(host) = this.hosts.get_mut(hix) {
-                            host.expanded = !host.expanded;
-                        }
-                        cx.notify();
-                    }))
-                    .child(
-                        Icon::new(if expanded {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .xsmall(),
-                    )
-                    .child(Icon::new(IconName::HardDrive).small())
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(host.entry.name().to_owned()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(kind),
-                            ),
-                    )
-                    .child(
-                        Button::new(("refresh", hix))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::RefreshCw)
-                            .loading(host.loading)
-                            .tooltip("Refresh agents")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.refresh_host(hix, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(("spawn", hix))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Plus)
-                            .tooltip("Start an agent for a workspace")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.spawn_dialog(hix, window, cx)
-                            })),
-                    )
-                    .when(!matches!(host.entry, HostEntry::Local { .. }), |el| {
-                        el.child(
-                            Button::new(("remove-host", hix))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Delete)
-                                .tooltip("Remove this host")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.remove_host(hix, window, cx)
-                                })),
-                        )
-                    }),
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .whitespace_normal()
+                    .child("No running agents. Start one for a workspace with + under Remotes."),
             );
-            if !expanded {
+        }
+        for (group, rows) in groups {
+            let collapsed = group == Group::Archived && !self.show_archived;
+            list = list.child(self.render_group_header(group, rows.len(), collapsed, cx));
+            if collapsed {
                 continue;
             }
-            if let Some(error) = &host.error {
-                list = list.child(
-                    div()
-                        .pl_6()
-                        .text_xs()
-                        .text_color(theme.danger)
-                        .whitespace_normal()
-                        .child(error.clone()),
-                );
-            }
-            if host.agents.is_empty() && !host.loading && host.error.is_none() {
-                list = list.child(
-                    div()
-                        .pl_6()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("No running agents. Use + to start one."),
-                );
-            }
-            for (aix, agent) in host.agents.iter().enumerate() {
-                let conn = self.find_connection(host.entry.name(), &agent.instance, cx);
-                let connecting = self
-                    .connecting
-                    .contains(&(host.entry.name().to_owned(), agent.instance.clone()));
-                let label = agent
-                    .workspace
-                    .as_ref()
-                    .map(|w| w.display().to_string())
-                    .unwrap_or_else(|| agent.instance.clone());
-                let instance = agent.instance.clone();
-                let status_color = match conn.as_ref().map(|c| c.read(cx).status.clone()) {
-                    Some(LinkStatus::Connected) => theme.success,
-                    Some(LinkStatus::Disconnected(_)) => theme.danger,
-                    None => theme.muted_foreground,
-                };
-                let row_conn = conn.clone();
-                let mut row = h_flex()
-                    .id(SharedString::from(format!("agent-{hix}-{aix}")))
-                    .w_full()
-                    .gap_1()
-                    .pl_5()
-                    .pr_1()
-                    .rounded_sm()
-                    .hover(|s| s.bg(theme.list_hover))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| match &row_conn {
-                        Some(conn) => {
-                            if matches!(conn.read(cx).status, LinkStatus::Disconnected(_)) {
-                                this.reconnect(conn, window, cx);
-                            } else {
-                                this.active_connection = Some(conn.clone());
-                                cx.notify();
-                            }
-                        }
-                        None => this.connect(hix, Target::Instance(instance.clone()), window, cx),
-                    }))
-                    .child(div().size(px(8.)).rounded_full().bg(status_color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .child(label),
-                    );
-                if connecting {
-                    row = row.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("connecting…"),
-                    );
-                }
-                if let Some(conn) = conn.clone() {
-                    let (c1, c3, c4) = (conn.clone(), conn.clone(), conn.clone());
-                    row = row
-                        .child(
-                            Button::new(SharedString::from(format!("new-session-{hix}-{aix}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Plus)
-                                .tooltip("New session")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.new_session(c1.clone(), window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("providers-{hix}-{aix}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::CircleUser)
-                                .tooltip("Providers and sign-in")
-                                .on_click(cx.listener(move |_, _, window, cx| {
-                                    cx.stop_propagation();
-                                    dialogs::open_providers(c3.clone(), window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("stop-{hix}-{aix}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Square)
-                                .tooltip("Stop this agent")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.stop_agent(c4.clone(), window, cx)
-                                })),
-                        );
-                }
-                list = list.child(row);
-                if let Some(conn) = conn {
-                    let (sessions, show_archived) = {
-                        let conn = conn.read(cx);
-                        (conn.sessions.clone(), conn.show_archived)
-                    };
-                    let archived_count = sessions.iter().filter(|s| s.archived).count();
-                    let (archived, live): (Vec<_>, Vec<_>) =
-                        sessions.into_iter().partition(|s| s.archived);
-                    let mut visible = live;
-                    if show_archived {
-                        visible.extend(archived);
-                    }
-                    let mut toggle_at = visible.iter().position(|s| s.archived);
-                    if archived_count > 0 && toggle_at.is_none() {
-                        toggle_at = Some(visible.len());
-                    }
-                    let visible_len = visible.len();
-                    for (six, session) in visible.into_iter().enumerate() {
-                        if toggle_at == Some(six) {
-                            list = list.child(self.render_archived_toggle(
-                                &conn,
-                                hix,
-                                aix,
-                                archived_count,
-                                show_archived,
-                                cx,
-                            ));
-                        }
-                        let open_conn = conn.clone();
-                        let archive_conn = conn.clone();
-                        let is_archived = session.archived;
-                        let archive_id = session.id.clone();
-                        let title = session
-                            .title
-                            .clone()
-                            .unwrap_or_else(|| format!("Session {}", short_id(&session.id.0)));
-                        let busy = session.state != SessionState::Idle;
-                        let info = session.clone();
-                        let active = self
-                            .active_group()
-                            .is_some_and(|g| g.is(&conn, &session.id));
-                        let delete_conn = conn.clone();
-                        let delete_info = session.clone();
-                        list = list.child(
-                            h_flex()
-                                .id(SharedString::from(format!("session-{hix}-{aix}-{six}")))
-                                .w_full()
-                                .gap_1()
-                                .when(is_archived, |el| el.pl_12())
-                                .when(!is_archived, |el| el.pl_8())
-                                .pr_1()
-                                .rounded_sm()
-                                .when(active, |el| el.bg(theme.list_active))
-                                .hover(|s| s.bg(theme.list_hover))
-                                .cursor_pointer()
-                                .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, window, cx| {
-                                        if event.click_count() >= 2 {
-                                            let title = info.title.clone().unwrap_or_default();
-                                            crate::ui::session::open_rename(
-                                                open_conn.clone(),
-                                                info.id.clone(),
-                                                title,
-                                                window,
-                                                cx,
-                                            );
-                                        } else {
-                                            this.open_session(
-                                                open_conn.clone(),
-                                                info.clone(),
-                                                window,
-                                                cx,
-                                            )
-                                        }
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_sm()
-                                        .child(title),
-                                )
-                                .when(is_archived, |el| el.text_color(theme.muted_foreground))
-                                .when(busy, |el| {
-                                    el.child(
-                                        Icon::new(IconName::LoaderCircle)
-                                            .xsmall()
-                                            .text_color(theme.info),
-                                    )
-                                })
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "archive-{hix}-{aix}-{six}"
-                                    )))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(if is_archived {
-                                        Icon::new(gpui_kit_assets::IconName::ArchiveRestore)
-                                    } else {
-                                        Icon::new(gpui_kit_assets::IconName::Archive)
-                                    })
-                                    .tooltip(if is_archived {
-                                        "Restore session"
-                                    } else {
-                                        "Archive session"
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.archive_session(
-                                            archive_conn.clone(),
-                                            archive_id.clone(),
-                                            !is_archived,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "delete-{hix}-{aix}-{six}"
-                                    )))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Icon::new(gpui_kit_assets::IconName::Trash))
-                                    .tooltip("Delete session")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.delete_session(
-                                            delete_conn.clone(),
-                                            delete_info.clone(),
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                                ),
-                        );
-                    }
-                    if toggle_at == Some(visible_len) {
-                        list = list.child(self.render_archived_toggle(
-                            &conn,
-                            hix,
-                            aix,
-                            archived_count,
-                            show_archived,
-                            cx,
-                        ));
-                    }
-                }
+            for (ix, row) in rows.into_iter().enumerate() {
+                list = list.child(self.render_agent_row(
+                    group,
+                    ix,
+                    &agents[row.agent],
+                    row.session,
+                    cx,
+                ));
             }
         }
+        list = list.child(self.render_remotes(cx));
         div()
             .id("agents-scroll")
             .flex_1()
@@ -2634,6 +2359,418 @@ impl Workspace {
             .overflow_y_scroll()
             .child(list)
             .into_any_element()
+    }
+
+    fn render_group_header(
+        &self,
+        group: Group,
+        count: usize,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let color = match group {
+            Group::NeedsApproval => theme.warning,
+            Group::Working => theme.info,
+            _ => theme.muted_foreground,
+        };
+        h_flex()
+            .id(SharedString::from(format!("group-{group:?}")))
+            .w_full()
+            .gap_1()
+            .px_1()
+            .pt_2()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(color)
+            .when(group == Group::Archived, |el| {
+                el.cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_archived = !this.show_archived;
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall(),
+                    )
+            })
+            .child(group.title())
+            .child(
+                div()
+                    .text_color(theme.muted_foreground)
+                    .font_weight(FontWeight::NORMAL)
+                    .child(count.to_string()),
+            )
+            .into_any_element()
+    }
+
+    /// One agent session, or an agent without one: its state, the session
+    /// name, and where it runs.
+    fn render_agent_row(
+        &self,
+        group: Group,
+        ix: usize,
+        agent: &PanelAgent,
+        session: Option<SessionInfo>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let conn = agent.conn.clone();
+        let activity = session.as_ref().and_then(|s| {
+            conn.as_ref()?
+                .read(cx)
+                .open_conversation(&s.id)?
+                .read(cx)
+                .activity()
+        });
+        let dot = |color| {
+            div()
+                .size(px(7.))
+                .rounded_full()
+                .bg(color)
+                .into_any_element()
+        };
+        let spinner = |color| {
+            Spinner::new()
+                .icon(IconName::LoaderCircle)
+                .xsmall()
+                .color(color)
+                .into_any_element()
+        };
+        let link = &agent.entry.link;
+        let (indicator, title, detail): (AnyElement, String, Option<(String, gpui::Hsla)>) =
+            match &session {
+                Some(info) => {
+                    let title = info
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
+                    let label = activity
+                        .as_ref()
+                        .map(Activity::label)
+                        .unwrap_or_else(|| state_label(info.state).to_owned());
+                    match group {
+                        Group::NeedsApproval => (
+                            Icon::new(IconName::TriangleAlert)
+                                .xsmall()
+                                .text_color(theme.warning)
+                                .into_any_element(),
+                            title,
+                            Some((label, theme.warning)),
+                        ),
+                        Group::Working => (spinner(theme.info), title, Some((label, theme.info))),
+                        Group::Archived => (
+                            Icon::new(gpui_kit_assets::IconName::Archive)
+                                .xsmall()
+                                .text_color(theme.muted_foreground)
+                                .into_any_element(),
+                            title,
+                            None,
+                        ),
+                        _ => (dot(theme.success), title, None),
+                    }
+                }
+                None => match link {
+                    Link::Connected => (dot(theme.muted_foreground), "No sessions".into(), None),
+                    Link::Connecting => {
+                        (spinner(theme.muted_foreground), "Connecting…".into(), None)
+                    }
+                    Link::Offline(reason) => (
+                        dot(if reason.is_some() {
+                            theme.danger
+                        } else {
+                            theme.muted_foreground
+                        }),
+                        if agent.conn.is_some() {
+                            "Disconnected".into()
+                        } else {
+                            "Not connected".into()
+                        },
+                        reason.clone().map(|r| (r, theme.danger)),
+                    ),
+                },
+            };
+        let placeholder = session.is_none();
+        let active = session.as_ref().is_some_and(|s| {
+            conn.as_ref()
+                .is_some_and(|c| self.active_group().is_some_and(|g| g.is(c, &s.id)))
+        });
+        let place = format!("{} · {}", agent.entry.remote, agent.entry.workspace);
+        let tooltip = SharedString::from(match &session {
+            Some(info) => format!("{place}\n{}", state_label(info.state)),
+            None => place.clone(),
+        });
+        let click_conn = conn.clone();
+        let click_session = session.clone();
+        let host_ix = agent.host_ix;
+        let instance = agent.instance.clone();
+        let connecting = *link == Link::Connecting;
+        h_flex()
+            .id(SharedString::from(format!("agent-row-{group:?}-{ix}")))
+            .w_full()
+            .items_start()
+            .gap_2()
+            .px_1()
+            .py_1()
+            .rounded_md()
+            .when(active, |el| el.bg(theme.list_active))
+            .hover(|s| s.bg(theme.list_hover))
+            .when(!connecting, |el| el.cursor_pointer())
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                match (&click_conn, &click_session) {
+                    (Some(conn), Some(info)) if event.click_count() >= 2 => {
+                        crate::ui::session::open_rename(
+                            conn.clone(),
+                            info.id.clone(),
+                            info.title.clone().unwrap_or_default(),
+                            window,
+                            cx,
+                        )
+                    }
+                    (Some(conn), Some(info)) => {
+                        this.open_session(conn.clone(), info.clone(), window, cx)
+                    }
+                    (Some(conn), None) if conn.read(cx).status == LinkStatus::Connected => {
+                        this.new_session(conn.clone(), window, cx)
+                    }
+                    (Some(conn), None) => this.reconnect(conn, window, cx),
+                    (None, _) if !connecting => {
+                        if let Some(hix) = host_ix {
+                            this.connect(hix, Target::Instance(instance.clone()), window, cx);
+                        }
+                    }
+                    _ => {}
+                }
+            }))
+            .child(div().h(px(20.)).flex().items_center().child(indicator))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .when(placeholder || group == Group::Archived, |el| {
+                                el.text_color(theme.muted_foreground)
+                            })
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(place),
+                    )
+                    .when_some(detail, |el, (text, color)| {
+                        el.child(
+                            div()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_xs()
+                                .text_color(color)
+                                .child(text),
+                        )
+                    }),
+            )
+            .when_some(conn, |el, conn| {
+                el.child(self.render_row_menu(group, ix, conn, session, cx))
+            })
+            .into_any_element()
+    }
+
+    fn render_row_menu(
+        &self,
+        group: Group,
+        ix: usize,
+        conn: Entity<AgentConnection>,
+        session: Option<SessionInfo>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let workspace = cx.entity().downgrade();
+        let connected = conn.read(cx).status == LinkStatus::Connected;
+        div()
+            // The menu is inside the row, which must not see its clicks.
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Button::new(SharedString::from(format!("agent-menu-{group:?}-{ix}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .dropdown_menu(move |mut menu, _, _| {
+                        let item = |label: &'static str, run: Rc<MenuAction>| {
+                            let workspace = workspace.clone();
+                            PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                let run = run.clone();
+                                let _ = workspace.update(cx, |ws, cx| run(ws, window, cx));
+                            })
+                        };
+                        if !connected {
+                            let c = conn.clone();
+                            return menu.item(item(
+                                "Reconnect",
+                                Rc::new(move |ws, window, cx| ws.reconnect(&c, window, cx)),
+                            ));
+                        }
+                        let c = conn.clone();
+                        menu = menu.item(item(
+                            "New session in this workspace",
+                            Rc::new(move |ws, window, cx| ws.new_session(c.clone(), window, cx)),
+                        ));
+                        if let Some(info) = &session {
+                            let (c, i) = (conn.clone(), info.clone());
+                            menu = menu.item(item(
+                                "Rename…",
+                                Rc::new(move |_, window, cx| {
+                                    crate::ui::session::open_rename(
+                                        c.clone(),
+                                        i.id.clone(),
+                                        i.title.clone().unwrap_or_default(),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                            ));
+                            let (c, id, archived) = (conn.clone(), info.id.clone(), info.archived);
+                            menu = menu.item(item(
+                                if archived { "Restore" } else { "Archive" },
+                                Rc::new(move |ws, window, cx| {
+                                    ws.archive_session(c.clone(), id.clone(), !archived, window, cx)
+                                }),
+                            ));
+                            let (c, i) = (conn.clone(), info.clone());
+                            menu = menu.item(item(
+                                "Delete…",
+                                Rc::new(move |ws, window, cx| {
+                                    ws.delete_session(c.clone(), i.clone(), window, cx)
+                                }),
+                            ));
+                        }
+                        let c = conn.clone();
+                        menu = menu.separator().item(item(
+                            "Providers and sign-in…",
+                            Rc::new(move |_, window, cx| {
+                                dialogs::open_providers(c.clone(), window, cx)
+                            }),
+                        ));
+                        let c = conn.clone();
+                        menu.item(item(
+                            "Stop agent",
+                            Rc::new(move |ws, window, cx| ws.stop_agent(c.clone(), window, cx)),
+                        ))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// The configured hosts, with their discovery errors and actions.
+    fn render_remotes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let mut section = v_flex().w_full().gap_0p5().child(
+            div()
+                .px_1()
+                .pt_3()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted_foreground)
+                .child("Remotes"),
+        );
+        for (hix, host) in self.hosts.iter().enumerate() {
+            let kind = match &host.entry {
+                HostEntry::Local { .. } => "local".to_owned(),
+                HostEntry::Ssh { destination, .. } => format!("ssh {destination}"),
+                HostEntry::Relay { .. } => "relay".to_owned(),
+            };
+            let count = host.agents.len();
+            section = section.child(
+                v_flex()
+                    .w_full()
+                    .px_1()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(Icon::new(IconName::HardDrive).xsmall())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_sm()
+                                    .child(host.entry.name().to_owned())
+                                    .child(
+                                        div()
+                                            .ml_1()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(format!(
+                                                "{kind} · {count} agent{}",
+                                                if count == 1 { "" } else { "s" }
+                                            )),
+                                    )
+                                    .flex()
+                                    .items_baseline(),
+                            )
+                            .child(
+                                Button::new(("refresh", hix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::RefreshCw)
+                                    .loading(host.loading)
+                                    .tooltip("Look for agents again")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.refresh_host(hix, window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new(("spawn", hix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Plus)
+                                    .tooltip("Start an agent for a workspace")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.spawn_dialog(hix, window, cx)
+                                    })),
+                            )
+                            .when(!matches!(host.entry, HostEntry::Local { .. }), |el| {
+                                el.child(
+                                    Button::new(("remove-host", hix))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Delete)
+                                        .tooltip("Remove this host")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.remove_host(hix, window, cx)
+                                        })),
+                                )
+                            }),
+                    )
+                    .when_some(host.error.clone(), |el, error| {
+                        el.child(
+                            div()
+                                .pl_5()
+                                .text_xs()
+                                .text_color(theme.danger)
+                                .whitespace_normal()
+                                .child(error),
+                        )
+                    }),
+            );
+        }
+        section.into_any_element()
     }
 
     fn render_center(&mut self, cx: &mut Context<Self>) -> AnyElement {
