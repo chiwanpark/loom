@@ -612,3 +612,69 @@ async fn usage_limit_errors_are_reported() {
     let error = provider.usage_limits().await.unwrap_err();
     assert!(error.to_string().contains("no usage for you"), "{error}");
 }
+
+#[tokio::test]
+async fn managed_settings_come_from_the_claude_code_settings_endpoint() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(method("GET"))
+        .and(path("/api/claude_code/settings"))
+        .and(header("authorization", "Bearer sk-ant-oat-access"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "uuid": "0b6c",
+            "checksum": "abc",
+            "settings": {"env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com"}},
+        })))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(ID, json!({"base_url": format!("{}/v1", h.server.uri())}));
+    let settings = provider.managed_settings().await.unwrap().unwrap();
+    assert_eq!(
+        Value::Object(settings),
+        json!({"env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com"}})
+    );
+    let requests = h.server.received_requests().await.unwrap();
+    assert_eq!(requests[0].headers["anthropic-beta"], "oauth-2025-04-20");
+}
+
+#[tokio::test]
+async fn organizations_without_managed_settings_have_none() {
+    for status in [204, 404] {
+        let h = harness().await;
+        credential(&h, now() + 3600).await;
+        Mock::given(path("/api/claude_code/settings"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&h.server)
+            .await;
+        let provider = h.provider(ID, json!({"base_url": h.server.uri()}));
+        let settings = provider.managed_settings().await.unwrap();
+        assert_eq!(settings, Some(serde_json::Map::new()), "{status}");
+    }
+}
+
+#[tokio::test]
+async fn managed_settings_errors_are_reported() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/api/claude_code/settings"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(
+            json!({"error": {"type": "permission_error", "message": "not your organization"}}),
+        ))
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(ID, json!({"base_url": h.server.uri()}));
+    let error = provider.managed_settings().await.unwrap_err();
+    assert!(
+        error.to_string().contains("not your organization"),
+        "{error}"
+    );
+
+    let h = harness().await;
+    let provider = h.provider(ID, json!({"base_url": h.server.uri()}));
+    let error = provider.managed_settings().await.unwrap_err();
+    assert!(
+        matches!(error, LlmError::NotAuthenticated { .. }),
+        "{error}"
+    );
+}

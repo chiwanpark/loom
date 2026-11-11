@@ -356,3 +356,93 @@ async fn agents_manage_siblings_over_the_protocol() {
     assert!(server.wait().unwrap().success());
     assert!(env.ps().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fetch_telemetry_prints_the_organization_settings() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let env = Env::new();
+    let server = MockServer::start().await;
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        env.config_path(),
+        format!(
+            "version: 1\nllm:\n  providers:\n    anthropic:\n      base_url: {}\n",
+            server.uri()
+        ),
+    )
+    .unwrap();
+    let fetch = |args: &'static [&'static str]| {
+        let command = env.command(args);
+        async move {
+            let mut command = command;
+            tokio::task::spawn_blocking(move || command.output().unwrap())
+                .await
+                .unwrap()
+        }
+    };
+
+    let output = fetch(&["config", "fetch-telemetry"]).await;
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("sign in to Anthropic"),
+        "{output:?}"
+    );
+
+    let store = loom_llm::CredentialStore::in_dir(&env.home().join(".local/share/loom"));
+    store
+        .update(|c| {
+            c.set_section(
+                "anthropic",
+                Some(serde_json::json!({
+                    "access_token": "sk-ant-oat-access", "refresh_token": "refresh",
+                    "expires_at": loom_llm::now_unix() + 3600,
+                })),
+            )
+        })
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/claude_code/settings"))
+        .and(header("authorization", "Bearer sk-ant-oat-access"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "checksum": "abc",
+            "settings": {"env": {
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "OTEL_METRICS_EXPORTER": "otlp",
+                "OTEL_LOGS_EXPORTER": "otlp",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example.com",
+                "OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer abc",
+                "CLAUDE_CODE_OTEL_HEADERS_HELPER": "/usr/local/bin/otel-token",
+            }},
+        })))
+        .mount(&server)
+        .await;
+
+    let output = fetch(&["config", "fetch-telemetry"]).await;
+    assert!(output.status.success(), "{output:?}");
+    let yaml = String::from_utf8(output.stdout.clone()).unwrap();
+    assert!(yaml.contains("telemetry:\n  enabled: true\n"), "{yaml}");
+    assert!(
+        yaml.contains("endpoint: https://otel.example.com"),
+        "{yaml}"
+    );
+    assert!(yaml.contains("authorization: Bearer abc"), "{yaml}");
+    assert!(
+        stderr(&output).contains(
+            "note: CLAUDE_CODE_OTEL_HEADERS_HELPER=\"/usr/local/bin/otel-token\" is not supported"
+        ),
+        "{output:?}"
+    );
+    // The printed section is a valid agent.yaml.
+    let config = std::fs::read_to_string(env.config_path()).unwrap();
+    std::fs::write(env.config_path(), format!("{config}{yaml}")).unwrap();
+    let output = fetch(&["config", "check"]).await;
+    assert!(output.status.success(), "{output:?}");
+
+    let output = fetch(&["config", "fetch-telemetry", "--raw"]).await;
+    assert!(output.status.success(), "{output:?}");
+    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(raw["env"]["OTEL_LOGS_EXPORTER"], "otlp");
+}

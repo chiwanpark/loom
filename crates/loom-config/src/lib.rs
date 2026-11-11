@@ -1,4 +1,5 @@
 mod agent;
+mod claude_code;
 mod client;
 mod dirs;
 mod error;
@@ -13,6 +14,7 @@ pub use agent::{
     SandboxConfig, ShellToolConfig, SocketConfig, StorageConfig, TelemetryConfig, Temporality,
     TerminalConfig, ToolsConfig,
 };
+pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;

@@ -75,6 +75,14 @@ pub trait LlmProvider: Send + Sync {
     async fn usage_limits(&self) -> Result<Option<UsageLimits>> {
         Ok(None)
     }
+
+    /// The settings the account's organization publishes for Claude Code
+    /// (its server-managed settings), as a JSON object; empty when the
+    /// organization publishes none. `None` when the provider has no such
+    /// settings.
+    async fn managed_settings(&self) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        Ok(None)
+    }
 }
 
 pub async fn collect(mut stream: ChunkStream) -> Result<AssistantMessage> {

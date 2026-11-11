@@ -83,6 +83,8 @@ logging:
 
 # OpenTelemetry export of session metrics and events (restart to apply).
 # Unset connection settings fall back to the OTEL_EXPORTER_OTLP_* variables.
+# `loom-agent config fetch-telemetry` prints this section from the settings
+# your organization publishes for Claude Code.
 # telemetry:
 #   enabled: true
 #   protocol: http/protobuf        # or grpc, http/json

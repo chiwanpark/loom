@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use serde_json::Value;
+use reqwest::StatusCode;
+use serde_json::{Map, Value};
 
 use super::{CLAUDE_CODE_VERSION, ID, Settings, access_token, request, stream};
 use crate::error::{LlmError, Result};
@@ -13,6 +14,7 @@ pub(super) struct AnthropicProvider {
     shared: Shared,
     base: String,
     usage_url: String,
+    settings_url: String,
 }
 
 impl AnthropicProvider {
@@ -25,11 +27,13 @@ impl AnthropicProvider {
         let base = base.strip_suffix("/messages").unwrap_or(base);
         let root = base.strip_suffix("/v1").unwrap_or(base);
         let usage_url = format!("{root}/api/oauth/usage");
+        let settings_url = format!("{root}/api/claude_code/settings");
         let base = format!("{root}/v1");
         Self {
             shared,
             base,
             usage_url,
+            settings_url,
         }
     }
 
@@ -77,6 +81,40 @@ impl LlmProvider for AnthropicProvider {
             return Err(api_error(ID.as_str(), response).await);
         }
         Ok(Some(parse_anthropic(&response.json().await?)))
+    }
+
+    /// Claude Code's server-managed settings. The organization's admins
+    /// publish them; `204` and `404` mean it publishes none.
+    async fn managed_settings(&self) -> Result<Option<Map<String, Value>>> {
+        let token = access_token(&self.shared).await?;
+        let response = self
+            .shared
+            .http
+            .get(&self.settings_url)
+            .bearer_auth(&token)
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
+            .header("accept", "application/json")
+            .header("cache-control", "no-cache")
+            .timeout(USAGE_TIMEOUT)
+            .send()
+            .await?;
+        let status = response.status();
+        if status == StatusCode::NO_CONTENT || status == StatusCode::NOT_FOUND {
+            return Ok(Some(Map::new()));
+        }
+        if !status.is_success() {
+            return Err(api_error(ID.as_str(), response).await);
+        }
+        let mut body: Value = response.json().await?;
+        match body.get_mut("settings").map(Value::take) {
+            Some(Value::Object(settings)) => Ok(Some(settings)),
+            Some(Value::Null) | None => Ok(Some(Map::new())),
+            Some(_) => Err(LlmError::protocol(
+                ID.as_str(),
+                "managed settings are not a JSON object",
+            )),
+        }
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {

@@ -9,8 +9,9 @@ use loom_agent::serve::{ServeOptions, serve};
 use loom_agent::stdio::{StdioTarget, bridge, find_target};
 use loom_agent::workspace::canonical_workspace;
 use loom_agent_core::data_dir;
-use loom_config::{AgentConfig, CONFIG_ENV, Dirs};
+use loom_config::{AgentConfig, CONFIG_ENV, Dirs, telemetry_from_claude_code};
 use loom_crypto::{AuthorizedClients, HostIdentity, PairingUri, Pairings, encode_key};
+use loom_llm::{Auth, CredentialStore, ProviderId, ProviderSet, http_client};
 use loom_transport::{AgentEntry, Registry};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
@@ -122,6 +123,13 @@ enum ConfigCommand {
     Check,
     Schema,
     Path,
+    /// Print a `telemetry` section built from the OpenTelemetry settings
+    /// your organization publishes for Claude Code. Uses the Anthropic login.
+    FetchTelemetry {
+        /// Print all of the organization's managed settings as JSON instead.
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 struct Ctx {
@@ -258,6 +266,10 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                 Vec::new()
             };
             stop_agents(&registry, &targets).await
+        }
+        CliCommand::Config(ConfigCommand::FetchTelemetry { raw }) => {
+            init_logging("warn");
+            fetch_telemetry(&ctx, raw).await
         }
         CliCommand::Config(command) => config_command(&ctx, command),
         CliCommand::Host { json } => {
@@ -431,8 +443,46 @@ async fn stop_agents(registry: &Registry, targets: &[AgentEntry]) -> anyhow::Res
     Ok(code)
 }
 
+async fn fetch_telemetry(ctx: &Ctx, raw: bool) -> anyhow::Result<i32> {
+    let config = ctx.load()?;
+    let store = CredentialStore::in_dir(&data_dir(&config, &ctx.dirs));
+    let auth = Auth::new(store, http_client());
+    let anthropic = ProviderId::from("anthropic");
+    let providers = ProviderSet::from_config(&config.llm, &auth)?;
+    if !providers.contains(&anthropic) {
+        bail!(
+            "the anthropic provider is disabled in {}",
+            ctx.config_path.display()
+        );
+    }
+    let Some(settings) = providers.get(&anthropic)?.managed_settings().await? else {
+        bail!("the anthropic provider has no managed settings");
+    };
+    if raw {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+        return Ok(0);
+    }
+    if settings.is_empty() {
+        bail!("your organization publishes no Claude Code settings");
+    }
+    let Some(imported) = telemetry_from_claude_code(&settings)? else {
+        bail!("your organization's Claude Code settings configure no telemetry");
+    };
+    for note in &imported.notes {
+        eprintln!("note: {note}");
+    }
+    println!(
+        "# From your organization's Claude Code settings. Replace the telemetry\n\
+         # section of {} with this; the agent picks it up when it restarts.",
+        ctx.config_path.display()
+    );
+    print!("{}", imported.to_yaml());
+    Ok(0)
+}
+
 fn config_command(ctx: &Ctx, command: ConfigCommand) -> anyhow::Result<i32> {
     match command {
+        ConfigCommand::FetchTelemetry { .. } => unreachable!("handled in run"),
         ConfigCommand::Path => {
             println!("{}", ctx.config_path.display());
         }
