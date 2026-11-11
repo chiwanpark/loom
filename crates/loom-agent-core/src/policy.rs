@@ -1,6 +1,9 @@
 use loom_config::{PolicyAction, PolicyConfig, PolicyRule};
 use serde_json::Value;
 
+/// The start of the result of a tool call the policy denied.
+pub const DENIED_BY_POLICY: &str = "this tool call was denied by policy";
+
 const SHELL_TOOL: &str = "shell";
 const SHELL_METACHARACTERS: &[char] = &[';', '&', '|', '`', '$', '<', '>', '(', ')', '\n', '\r'];
 

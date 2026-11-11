@@ -41,3 +41,16 @@ context:
   compaction_threshold: 0.8
 logging:
   level: info
+telemetry:
+  enabled: false
+  metrics: true
+  logs: true
+  metrics_interval: 1m
+  logs_interval: 5s
+  temporality: cumulative
+  prefix: loom
+  service_name: loom-agent
+  log_user_prompts: false
+  log_assistant_responses: false
+  log_tool_details: false
+  content_max_length: 61440

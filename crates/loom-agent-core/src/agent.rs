@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::error::{CoreError, Result};
 use crate::metrics::Metrics;
+use crate::observer::{Observers, SessionObserver};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::session::{Session, SessionParams};
 use crate::store::{EventStore, store_path};
@@ -33,6 +34,8 @@ pub struct AgentOptions {
     pub providers: Vec<Arc<dyn LlmProvider>>,
     pub persist: bool,
     pub sandbox_exe: Option<PathBuf>,
+    /// Sees the events of every live session, for exporters.
+    pub observer: Option<Arc<dyn SessionObserver>>,
 }
 
 impl AgentOptions {
@@ -45,6 +48,7 @@ impl AgentOptions {
             providers: Vec::new(),
             persist: true,
             sandbox_exe: None,
+            observer: None,
         }
     }
 }
@@ -60,6 +64,7 @@ struct Inner {
     notices: broadcast::Sender<AgentNotice>,
     store: Option<EventStore>,
     metrics: Arc<Metrics>,
+    observer: Arc<dyn SessionObserver>,
     terminals: Terminals,
 }
 
@@ -90,6 +95,9 @@ fn restart_required(current: &AgentConfig, next: &AgentConfig) -> Vec<String> {
     if current.lifecycle != next.lifecycle {
         changed.push("lifecycle");
     }
+    if current.telemetry != next.telemetry {
+        changed.push("telemetry");
+    }
     changed.into_iter().map(str::to_owned).collect()
 }
 
@@ -119,6 +127,7 @@ impl Agent {
         } else {
             (None, Vec::new())
         };
+        let external = options.observer;
         let agent = Self {
             inner: Arc::new(Inner {
                 workspace,
@@ -131,6 +140,7 @@ impl Agent {
                 notices,
                 store,
                 metrics: Arc::new(Metrics::default()),
+                observer: Arc::new(Observers(external.into_iter().collect())),
                 terminals: Terminals::default(),
             }),
         };
@@ -149,6 +159,7 @@ impl Agent {
             model,
             store: self.inner.store.clone(),
             metrics: self.inner.metrics.clone(),
+            observer: Some(self.inner.observer.clone()),
         }
     }
 
@@ -195,6 +206,7 @@ impl Agent {
         next.socket = current.socket.clone();
         next.storage = current.storage.clone();
         next.lifecycle = current.lifecycle.clone();
+        next.telemetry = current.telemetry.clone();
         let runtime = Runtime::build(
             next,
             &self.inner.auth,
@@ -213,6 +225,7 @@ impl Agent {
         let model = model.map(|m| runtime.parse_model(m)).transpose()?;
         let session = Session::new(self.session_params(model));
         self.insert(session.clone());
+        self.inner.observer.session_created(session.id());
         self.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
         Ok(session)
     }
@@ -318,6 +331,10 @@ mod tests {
         assert!(restart_required(&current, &next).is_empty());
         next.socket.dir = Some(PathBuf::from("/tmp/x"));
         next.lifecycle.default_workspace = Some(PathBuf::from("/tmp"));
-        assert_eq!(restart_required(&current, &next), ["socket", "lifecycle"]);
+        next.telemetry.enabled = true;
+        assert_eq!(
+            restart_required(&current, &next),
+            ["socket", "lifecycle", "telemetry"]
+        );
     }
 }

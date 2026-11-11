@@ -7,6 +7,7 @@ use loom_agent_core::{Agent, AgentOptions, watch_config};
 use loom_config::{AgentConfig, Dirs};
 use loom_crypto::HostIdentity;
 use loom_proto::{AgentInfo, InstanceId};
+use loom_telemetry::{AgentIdentity, Telemetry};
 use loom_transport::{AgentEntry, Registry, RegistryError, UnixFrameListener};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
@@ -66,8 +67,10 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         HostIdentity::load_or_create(&data_dir).context("could not load the host identity")?,
     );
     let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
+    let telemetry = start_telemetry(&config, &instance, &workspace);
     let mut options = AgentOptions::new(&workspace, config, dirs.clone());
     options.sandbox_exe = std::env::current_exe().ok();
+    options.observer = telemetry.as_ref().map(Telemetry::observer);
     let agent = Agent::new(options).context("could not start the agent")?;
     let _watcher = start_watcher(&agent, &config_path, &dirs);
     let log_follower = crate::logging::follow_config(&agent);
@@ -139,8 +142,38 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     run_listener(ctx, listener, shutdown).await;
     drop(registration);
     log_follower.abort();
+    if let Some(telemetry) = telemetry {
+        // Flushing blocks while the exporters send what is left.
+        let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
+    }
     tracing::info!("agent stopped");
     Ok(0)
+}
+
+fn start_telemetry(config: &AgentConfig, instance: &str, workspace: &Path) -> Option<Telemetry> {
+    let identity = AgentIdentity {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        instance: instance.to_owned(),
+        workspace: workspace.to_path_buf(),
+    };
+    match Telemetry::start(&config.telemetry, &identity) {
+        Ok(Some(telemetry)) => {
+            tracing::info!(
+                endpoint = config
+                    .telemetry
+                    .endpoint
+                    .as_deref()
+                    .unwrap_or("from the environment"),
+                "exporting telemetry"
+            );
+            Some(telemetry)
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::error!(error = %err, "telemetry is disabled");
+            None
+        }
+    }
 }
 
 fn start_watcher(

@@ -22,6 +22,7 @@ use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
 use crate::instructions::{PromptInputs, build_system_prompt};
 use crate::metrics::Metrics;
+use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, now_unix};
@@ -74,6 +75,7 @@ pub(crate) struct SessionParams {
     pub model: Option<ModelRef>,
     pub store: Option<EventStore>,
     pub metrics: Arc<Metrics>,
+    pub observer: Option<Arc<dyn SessionObserver>>,
 }
 
 enum TurnError {
@@ -133,8 +135,10 @@ impl Core {
 impl Session {
     pub(crate) fn new(params: SessionParams) -> Self {
         let id = SessionId(uuid::Uuid::new_v4().to_string());
+        let observer = params.observer.clone();
         let session = Self::build(params, id, now_unix(), StoredState::default(), Vec::new());
         session.core.persist();
+        session.observe(observer);
         session
     }
 
@@ -148,6 +152,7 @@ impl Session {
         let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
         let unfinished = turn_unfinished(&events);
         let repaired = repair_history(&mut state.history);
+        let observer = params.observer.clone();
         let session = Self::build(params, id, created_at, state, events);
         if let Some(model) = model {
             session.core.lock().model = Some(model);
@@ -164,7 +169,16 @@ impl Session {
             });
             session.core.persist();
         }
+        session.observe(observer);
         session
+    }
+
+    /// Reports later events to `observer`; called once the session's stored
+    /// history is in place, so replayed and repair events are not reported.
+    fn observe(&self, observer: Option<Arc<dyn SessionObserver>>) {
+        if let Some(observer) = observer {
+            self.core.hub.observe(self.core.id.clone(), observer);
+        }
     }
 
     fn build(
@@ -405,6 +419,8 @@ async fn run_turn(core: Arc<Core>, cancel: CancellationToken) {
     state.turn = None;
     state.approvals.clear();
     core.persist_state(&state);
+    // Observers may read the session, so they must not run under its lock.
+    drop(state);
     core.emit(SessionEvent::TurnFinished { outcome });
     core.hub.set_state(SessionState::Idle);
 }
@@ -711,10 +727,7 @@ async fn run_tool_call(
     match verdict.action {
         PolicyAction::Deny => {
             return finish(
-                convert::error_result(format!(
-                    "this tool call was denied by policy ({})",
-                    verdict.reason
-                )),
+                convert::error_result(format!("{} ({})", policy::DENIED_BY_POLICY, verdict.reason)),
                 false,
             );
         }

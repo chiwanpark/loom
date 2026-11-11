@@ -28,6 +28,7 @@ pub struct AgentConfig {
     pub sandbox: SandboxConfig,
     pub context: ContextConfig,
     pub logging: LoggingConfig,
+    pub telemetry: TelemetryConfig,
 }
 
 impl Default for AgentConfig {
@@ -47,6 +48,7 @@ impl Default for AgentConfig {
             sandbox: SandboxConfig::default(),
             context: ContextConfig::default(),
             logging: LoggingConfig::default(),
+            telemetry: TelemetryConfig::default(),
         }
     }
 }
@@ -308,6 +310,137 @@ pub enum LogLevel {
     Trace,
 }
 
+/// OpenTelemetry export of session metrics and events over OTLP.
+///
+/// Unset connection settings fall back to the standard `OTEL_EXPORTER_OTLP_*`
+/// environment variables, and `OTEL_RESOURCE_ATTRIBUTES` is honoured. Changes
+/// take effect when the agent restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+    /// `http/protobuf` unless `OTEL_EXPORTER_OTLP_PROTOCOL` says otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<OtlpProtocol>,
+    /// The collector's base URL, such as `http://localhost:4318`. Over HTTP,
+    /// `/v1/metrics` and `/v1/logs` are appended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Extra request headers, for example an `authorization` token.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    pub metrics: bool,
+    pub logs: bool,
+    pub metrics_interval: HumanDuration,
+    pub logs_interval: HumanDuration,
+    pub temporality: Temporality,
+    /// The prefix of metric and event names. `claude_code` makes the data
+    /// match Claude Code's, so its dashboards work unchanged.
+    pub prefix: String,
+    pub service_name: String,
+    /// Added to the resource of every metric and event.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub resource_attributes: BTreeMap<String, String>,
+    /// Include the prompt text in `user_prompt` events instead of `<REDACTED>`.
+    pub log_user_prompts: bool,
+    /// Include the response text in `assistant_response` events.
+    pub log_assistant_responses: bool,
+    /// Include tool arguments, commands and error messages in tool events.
+    pub log_tool_details: bool,
+    /// The longest text attribute, in characters, before it is truncated.
+    pub content_max_length: usize,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            protocol: None,
+            endpoint: None,
+            headers: BTreeMap::new(),
+            metrics: true,
+            logs: true,
+            metrics_interval: HumanDuration::from_secs(60),
+            logs_interval: HumanDuration::from_secs(5),
+            temporality: Temporality::default(),
+            prefix: "loom".into(),
+            service_name: "loom-agent".into(),
+            resource_attributes: BTreeMap::new(),
+            log_user_prompts: false,
+            log_assistant_responses: false,
+            log_tool_details: false,
+            content_max_length: 61_440,
+        }
+    }
+}
+
+impl TelemetryConfig {
+    pub fn validate(&self, origin: &str) -> Result<(), ConfigError> {
+        let invalid = |field: &str, message: String| ConfigError::invalid(origin, field, message);
+        if self
+            .endpoint
+            .as_deref()
+            .is_some_and(|url| check_url_scheme(url, &["http://", "https://"]).is_err())
+        {
+            return Err(invalid(
+                "telemetry.endpoint",
+                "must start with http:// or https://".into(),
+            ));
+        }
+        for (field, interval) in [
+            ("telemetry.metrics_interval", self.metrics_interval),
+            ("telemetry.logs_interval", self.logs_interval),
+        ] {
+            if interval.as_duration().is_zero() {
+                return Err(invalid(field, "must be greater than zero".into()));
+            }
+        }
+        if self.prefix.trim().is_empty() {
+            return Err(invalid("telemetry.prefix", "must not be empty".into()));
+        }
+        if self.service_name.trim().is_empty() {
+            return Err(invalid(
+                "telemetry.service_name",
+                "must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum OtlpProtocol {
+    #[serde(rename = "grpc")]
+    Grpc,
+    #[serde(rename = "http/protobuf")]
+    HttpProtobuf,
+    #[serde(rename = "http/json")]
+    HttpJson,
+}
+
+impl std::str::FromStr for OtlpProtocol {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "grpc" => Ok(Self::Grpc),
+            "http/protobuf" => Ok(Self::HttpProtobuf),
+            "http/json" => Ok(Self::HttpJson),
+            other => Err(format!(
+                "unknown OTLP protocol {other:?}; expected grpc, http/protobuf or http/json"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Temporality {
+    #[default]
+    Cumulative,
+    Delta,
+}
+
 impl AgentConfig {
     pub fn runtime_dir(&self, dirs: &crate::Dirs) -> PathBuf {
         self.socket
@@ -381,6 +514,8 @@ impl AgentConfig {
                 ));
             }
         }
+
+        self.telemetry.validate(origin)?;
 
         if self.instructions.max_bytes.as_u64() == 0 {
             return Err(invalid(

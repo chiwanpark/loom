@@ -8,9 +8,10 @@ mod units;
 
 pub use agent::{
     AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, InstructionsConfig,
-    LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, PolicyAction, PolicyConfig, PolicyRule,
-    ProviderSetting, ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig,
-    ShellToolConfig, SocketConfig, StorageConfig, TerminalConfig, ToolsConfig,
+    LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, OtlpProtocol, PolicyAction, PolicyConfig,
+    PolicyRule, ProviderSetting, ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend,
+    SandboxConfig, ShellToolConfig, SocketConfig, StorageConfig, TelemetryConfig, Temporality,
+    TerminalConfig, ToolsConfig,
 };
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};

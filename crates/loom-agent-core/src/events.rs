@@ -1,7 +1,8 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use loom_proto::{SequencedEvent, SessionEvent, SessionId, SessionState};
 
+use crate::observer::SessionObserver;
 use crate::store::EventStore;
 use tokio::sync::broadcast;
 
@@ -18,6 +19,7 @@ pub struct EventHub {
     log: Mutex<Log>,
     tx: broadcast::Sender<SequencedEvent>,
     store: Option<(EventStore, SessionId)>,
+    observer: OnceLock<(SessionId, Arc<dyn SessionObserver>)>,
 }
 
 impl std::fmt::Debug for EventHub {
@@ -54,7 +56,13 @@ impl EventHub {
             }),
             tx,
             store,
+            observer: OnceLock::new(),
         }
+    }
+
+    /// Reports every later event to `observer`. Only the first call counts.
+    pub(crate) fn observe(&self, session: SessionId, observer: Arc<dyn SessionObserver>) {
+        let _ = self.observer.set((session, observer));
     }
 
     pub fn events(&self) -> Vec<SequencedEvent> {
@@ -89,7 +97,12 @@ impl EventHub {
             store.append(session, &record);
         }
         log.events.push(record.clone());
+        let observed = self.observer.get().map(|_| record.event.clone());
         let _ = self.tx.send(record);
+        drop(log);
+        if let (Some((session, observer)), Some(event)) = (self.observer.get(), observed) {
+            observer.event(session, &event);
+        }
         seq
     }
 

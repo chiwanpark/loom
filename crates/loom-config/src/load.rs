@@ -167,6 +167,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_telemetry() {
+        let config = parse(
+            "telemetry:\n  enabled: true\n  protocol: grpc\n  endpoint: http://collector:4317\n  \
+             headers:\n    authorization: Bearer x\n  metrics_interval: 10s\n  \
+             temporality: delta\n  prefix: claude_code\n",
+        )
+        .unwrap();
+        let telemetry = config.telemetry;
+        assert!(telemetry.enabled && telemetry.metrics && telemetry.logs);
+        assert_eq!(telemetry.protocol, Some(crate::OtlpProtocol::Grpc));
+        assert_eq!(telemetry.endpoint.as_deref(), Some("http://collector:4317"));
+        assert_eq!(telemetry.headers["authorization"], "Bearer x");
+        assert_eq!(
+            telemetry.metrics_interval.as_duration(),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            telemetry.logs_interval.as_duration(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(telemetry.temporality, crate::Temporality::Delta);
+        assert_eq!(telemetry.prefix, "claude_code");
+        assert!(!telemetry.log_user_prompts);
+        assert!(parse("telemetry:\n  protocol: http\n").is_err());
+    }
+
+    #[test]
     fn reports_invalid_values() {
         let cases = [
             ("version: 2\n", "version"),
@@ -194,6 +221,15 @@ mod tests {
             ),
             ("tools:\n  shell:\n    timeout: 0s\n", "tools.shell.timeout"),
             ("allowed_roots:\n- relative/path\n", "allowed_roots[0]"),
+            (
+                "telemetry:\n  endpoint: localhost:4318\n",
+                "telemetry.endpoint",
+            ),
+            (
+                "telemetry:\n  metrics_interval: 0s\n",
+                "telemetry.metrics_interval",
+            ),
+            ("telemetry:\n  prefix: \"\"\n", "telemetry.prefix"),
         ];
         for (text, field) in cases {
             match parse(text) {

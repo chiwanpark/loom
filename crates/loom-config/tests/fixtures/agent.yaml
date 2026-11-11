@@ -80,3 +80,15 @@ context:
 logging:
   level: info
 
+
+# OpenTelemetry export of session metrics and events (restart to apply).
+# Unset connection settings fall back to the OTEL_EXPORTER_OTLP_* variables.
+# telemetry:
+#   enabled: true
+#   protocol: http/protobuf        # or grpc, http/json
+#   endpoint: http://localhost:4318
+#   headers:
+#     authorization: Bearer <token>
+#   prefix: loom                   # claude_code matches Claude Code's names
+#   log_user_prompts: false
+#   log_tool_details: false
