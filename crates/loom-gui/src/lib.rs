@@ -11,5 +11,7 @@ pub mod layout;
 pub mod state;
 pub mod telemetry;
 pub mod term;
+#[cfg(test)]
+pub(crate) mod test_agent;
 pub mod themes;
 pub mod ui;

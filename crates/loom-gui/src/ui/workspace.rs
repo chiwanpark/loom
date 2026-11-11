@@ -79,7 +79,9 @@ actions!(
         ShowFiles,
         /// Wraps long lines in the focused file or diff view, or stops
         /// wrapping them.
-        ToggleLineWrap
+        ToggleLineWrap,
+        /// Saves the focused file.
+        Save
     ]
 );
 
@@ -125,6 +127,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-alt-down", ActivatePaneDown, Some(CONTEXT)),
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new("alt-z", ToggleLineWrap, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-s", Save, Some(crate::ui::file_view::CONTEXT)),
     ]);
     let mut custom = Vec::new();
     for (keys, name) in overrides {
@@ -216,6 +219,14 @@ impl Panel {
         }
     }
 
+    /// The file view, if this is one with unsaved changes.
+    fn unsaved(&self, cx: &App) -> Option<&Entity<FileView>> {
+        match self {
+            Panel::File(view) if view.read(cx).is_dirty() => Some(view),
+            _ => None,
+        }
+    }
+
     fn focus(&self, window: &mut Window, cx: &mut App) {
         match self {
             Panel::Chat(view) => {
@@ -227,6 +238,11 @@ impl Panel {
             Panel::File(view) => view.read(cx).editor_focus(cx).focus(window, cx),
         }
     }
+}
+
+/// The last part of a slash-separated path.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
@@ -241,6 +257,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
         ("view: toggle line wrap", Box::new(ToggleLineWrap)),
+        ("file: save", Box::new(Save)),
         ("session: archive", Box::new(ArchiveSession)),
         ("session: rename", Box::new(RenameSession)),
         ("session: choose model", Box::new(ChooseModel)),
@@ -503,6 +520,35 @@ impl Workspace {
         })
         .detach();
         cx.on_release(|this, cx| this.save_layout(cx)).detach();
+        let weak = cx.entity().downgrade();
+        let handle = window.window_handle();
+        App::on_action(cx, move |_: &Quit, cx: &mut App| {
+            // The window is busy dispatching the key press that quits; ask
+            // once it is free again.
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                let asked = handle
+                    .update(cx, |_, window, cx| {
+                        weak.update(cx, |ws, cx| ws.quit(window, cx)).is_ok()
+                    })
+                    .unwrap_or(false);
+                if !asked {
+                    cx.quit();
+                }
+            });
+        });
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak.update(cx, |ws, cx| {
+                if ws.unsaved_in(|_| true, cx).is_empty() {
+                    true
+                } else {
+                    ws.close_window(window, cx);
+                    false
+                }
+            })
+            .unwrap_or(true)
+        });
         for ix in 0..this.hosts.len() {
             this.refresh_host(ix, window, cx);
         }
@@ -1409,13 +1455,33 @@ impl Workspace {
         }
     }
 
+    /// Closes a tab of the active group, after asking what to do with its
+    /// unsaved changes, if it has any.
     fn close_tab(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(gix) = self.active_group else {
+        let Some((id, panel)) = self
+            .active_group()
+            .and_then(|g| g.pane(pane))
+            .and_then(|p| p.tabs.iter().nth(ix))
+        else {
             return;
         };
-        let Some(group) = self.groups.get_mut(gix) else {
+        let unsaved = panel.unsaved(cx).cloned().into_iter().collect();
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            ws.close_panel(id, window, cx)
+        });
+    }
+
+    /// Closes a tab wherever it is now; it may have moved while a dialog
+    /// asked about it.
+    fn close_panel(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((gix, pane, ix)) = self.groups.iter().enumerate().find_map(|(gix, g)| {
+            g.panes
+                .iter()
+                .find_map(|p| p.tabs.position(id).map(|ix| (gix, p.id, ix)))
+        }) else {
             return;
         };
+        let group = &mut self.groups[gix];
         let Some(target) = group.pane_mut(pane) else {
             return;
         };
@@ -1434,6 +1500,92 @@ impl Workspace {
             self.focus_active_panel(window, cx);
         }
         cx.notify();
+    }
+
+    /// File views with unsaved changes in the groups that match.
+    fn unsaved_in(&self, pred: impl Fn(&SessionGroup) -> bool, cx: &App) -> Vec<Entity<FileView>> {
+        self.groups
+            .iter()
+            .filter(|g| pred(g))
+            .flat_map(|g| g.panes.iter())
+            .flat_map(|p| p.tabs.iter())
+            .filter_map(|(_, panel)| panel.unsaved(cx).cloned())
+            .collect()
+    }
+
+    /// Runs `then` once the unsaved changes in `views` are taken care of:
+    /// right away when there are none, and otherwise after asking, once
+    /// they are saved or the user chose to throw them away. Cancelling, or
+    /// a save that fails, leaves everything as it was.
+    fn guard_unsaved(
+        &mut self,
+        views: Vec<Entity<FileView>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        if views.is_empty() {
+            then(self, window, cx);
+            return;
+        }
+        let names: Vec<String> = views
+            .iter()
+            .map(|v| v.read(cx).relative().to_string())
+            .collect();
+        let (title, description) = match names.as_slice() {
+            [one] => (
+                format!("Save your changes to {}?", file_name(one)),
+                format!("{one} has changes that are not saved."),
+            ),
+            many => (
+                format!("Save your changes to {} files?", many.len()),
+                format!(
+                    "These files have changes that are not saved: {}.",
+                    many.join(", ")
+                ),
+            ),
+        };
+        let then = Rc::new(std::cell::RefCell::new(Some(then)));
+        let this = cx.entity().downgrade();
+        let discard = {
+            let (this, then) = (this.clone(), then.clone());
+            move |window: &mut Window, cx: &mut App| {
+                if let Some(then) = then.borrow_mut().take() {
+                    let _ = this.update(cx, |ws, cx| then(ws, window, cx));
+                }
+            }
+        };
+        let save = move |window: &mut Window, cx: &mut App| {
+            let saves: Vec<_> = views
+                .iter()
+                .map(|v| v.update(cx, |v, cx| v.save(window, cx)))
+                .collect();
+            let (this, then) = (this.clone(), then.clone());
+            window
+                .spawn(cx, async move |cx: &mut AsyncWindowContext| {
+                    let saved = futures::future::join_all(saves).await;
+                    if saved.into_iter().all(|ok| ok)
+                        && let Some(then) = then.borrow_mut().take()
+                    {
+                        let _ = this.update_in(cx, |ws, window, cx| then(ws, window, cx));
+                    }
+                })
+                .detach();
+        };
+        dialogs::unsaved_changes(title, description, save, discard, window, cx);
+    }
+
+    /// Ctrl+Q: quits once unsaved changes are saved or thrown away.
+    fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unsaved = self.unsaved_in(|_| true, cx);
+        self.guard_unsaved(unsaved, window, cx, |_, _, cx| cx.quit());
+    }
+
+    /// The title bar's close button, or a close request from the window
+    /// manager while there are unsaved changes.
+    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unsaved = self.unsaved_in(|_| true, cx);
+        self.guard_unsaved(unsaved, window, cx, |_, window, _| window.remove_window());
     }
 
     fn remove_group(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1617,6 +1769,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let unsaved = self.unsaved_in(|g| g.is(&conn, &info.id), cx);
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            ws.confirm_delete_session(conn, info, window, cx)
+        });
+    }
+
+    fn confirm_delete_session(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        info: SessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.entity();
         let title = info
             .title
@@ -1649,10 +1814,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if archived {
-            self.remove_groups(window, cx, |g| g.is(&conn, &id));
-        }
-        conn.update(cx, |conn, cx| conn.set_archived(id, archived, cx));
+        let unsaved = if archived {
+            self.unsaved_in(|g| g.is(&conn, &id), cx)
+        } else {
+            Vec::new()
+        };
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            if archived {
+                ws.remove_groups(window, cx, |g| g.is(&conn, &id));
+            }
+            conn.update(cx, |conn, cx| conn.set_archived(id, archived, cx));
+        });
     }
 
     fn new_session(
@@ -1759,6 +1931,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let unsaved = self.unsaved_in(|g| g.connection == conn, cx);
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            ws.stop_agent_now(conn, window, cx)
+        });
+    }
+
+    fn stop_agent_now(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let read = conn.read(cx);
         let client = read.client.clone();
         let instance = read.info.instance.clone();
@@ -1802,6 +1986,18 @@ impl Workspace {
     /// Removes a disconnected agent from the panel, with its tabs. It comes
     /// back if its host lists it again.
     fn remove_agent(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let unsaved = self.unsaved_in(|g| g.connection == conn, cx);
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            ws.remove_agent_now(conn, window, cx)
+        });
+    }
+
+    fn remove_agent_now(
         &mut self,
         conn: Entity<AgentConnection>,
         window: &mut Window,
@@ -3335,17 +3531,20 @@ impl Workspace {
         };
         let len = pane.tabs.len();
         let active = pane.tabs.active_index();
-        let panels: Vec<(PanelId, PanelKind, String)> = pane
+        let panels: Vec<(PanelId, PanelKind, String, bool)> = pane
             .tabs
             .iter()
-            .map(|(id, panel)| (id, panel.kind(), panel.title(cx)))
+            .map(|(id, panel)| {
+                let unsaved = panel.unsaved(cx).is_some();
+                (id, panel.kind(), panel.title(cx), unsaved)
+            })
             .collect();
         let content = pane.tabs.active().cloned();
         let dim = multiple && !is_active;
         let tabs = panels
             .into_iter()
             .enumerate()
-            .map(|(ix, (id, kind, title))| {
+            .map(|(ix, (id, kind, title, unsaved))| {
                 let dragged = DraggedTab {
                     pane: pane_id,
                     panel: id,
@@ -3366,6 +3565,14 @@ impl Workspace {
                             .when(dim, |el| el.text_color(theme.muted_foreground))
                             .child(title),
                     )
+                    .when(unsaved, |tab| {
+                        tab.child(
+                            div()
+                                .debug_selector(move || format!("tab-unsaved-{id}"))
+                                .text_color(theme.muted_foreground)
+                                .child("●"),
+                        )
+                    })
                     .end_slot(
                         Button::new(("close-tab", id as usize))
                             .ghost()
@@ -3721,20 +3928,24 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_pane_up))
             .on_action(cx.listener(Self::on_pane_down))
             .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child("Loom"))
-                        .when_some(self.active_connection.as_ref(), |el, conn| {
-                            el.child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.muted_foreground)
-                                    .child(conn.read(cx).title()),
-                            )
-                        }),
-                ),
+                TitleBar::new()
+                    .on_close_window(
+                        cx.listener(|this, _, window, cx| this.close_window(window, cx)),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Loom"))
+                            .when_some(self.active_connection.as_ref(), |el, conn| {
+                                el.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.muted_foreground)
+                                        .child(conn.read(cx).title()),
+                                )
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -3839,13 +4050,197 @@ impl ChangeRow<'_> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::Action;
+    use std::cell::RefCell;
 
-    use super::ToggleAgents;
+    use gpui::{Action, TestAppContext, VisualTestContext};
+    use gpui_component::{Root, WindowExt};
+    use loom_config::Dirs;
+
+    use super::*;
+    use crate::test_agent::{TestAgent, wait_until};
+
+    /// A workspace connected to `agent`, with a session open and `path`
+    /// open in a file tab, and the file's editor focused.
+    fn open_file<'a>(
+        agent: &TestAgent,
+        path: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::ui::bind_keys(&Default::default(), cx);
+        });
+        let conn = agent.connect(cx);
+        let root = agent.dir.path().to_path_buf();
+        let env = Env {
+            dirs: Dirs {
+                home: root.clone(),
+                config_home: root.join("gui-config"),
+                data_home: root.join("gui-data"),
+                state_home: root.join("gui-state"),
+                runtime_dir: None,
+            },
+            agent_bin: "/nonexistent/loom-agent".into(),
+        };
+        let backend = agent.backend.clone();
+        let slot = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let config_path = root.join("client.yaml");
+                let ws = cx.new(|cx| {
+                    Workspace::new(
+                        backend,
+                        env,
+                        ClientConfig::default(),
+                        config_path,
+                        window,
+                        cx,
+                    )
+                });
+                *slot.borrow_mut() = Some(ws.clone());
+                Root::new(ws, window, cx)
+            }
+        });
+        let ws: Entity<Workspace> = slot.borrow_mut().take().unwrap();
+        ws.update_in(cx, |ws, window, cx| {
+            ws.connections.push(conn.clone());
+            ws.watch_connection(&conn, window, cx);
+            ws.active_connection = Some(conn.clone());
+            ws.new_session(conn.clone(), window, cx);
+        });
+        wait_until(cx, |cx| ws.read(cx).active_group.is_some());
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_file(conn.clone(), path.into(), window, cx)
+        });
+        wait_until(cx, |cx| {
+            file_view(&ws, cx).is_some_and(|view| view.read(cx).is_editable())
+        });
+        ws.update_in(cx, |ws, window, cx| ws.focus_active_panel(window, cx));
+        cx.run_until_parked();
+        (ws, cx)
+    }
+
+    fn file_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<FileView>> {
+        ws.read(cx)
+            .groups
+            .iter()
+            .flat_map(|g| g.panes.iter())
+            .flat_map(|p| p.tabs.iter())
+            .find_map(|(_, panel)| match panel {
+                Panel::File(view) => Some(view.clone()),
+                _ => None,
+            })
+    }
+
+    fn click(selector: &'static str, cx: &mut VisualTestContext) {
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("no {selector}"));
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    fn has_dialog(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| window.has_active_dialog(cx))
+    }
 
     #[test]
     fn keymaps_naming_the_old_left_panel_action_still_work() {
         assert_eq!(ToggleAgents.name(), "loom::ToggleAgents");
         assert_eq!(ToggleAgents::deprecated_aliases(), ["loom::ToggleLeftDock"]);
+    }
+
+    #[gpui::test]
+    fn closing_a_tab_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        let id = ws.read_with(cx, |ws, cx| {
+            let pane = ws.active_group().unwrap().active().unwrap();
+            assert!(pane.tabs.active().unwrap().unsaved(cx).is_none());
+            pane.tabs.iter().nth(pane.tabs.active_index()).unwrap().0
+        });
+        let dot = format!("tab-unsaved-{id}");
+        cx.simulate_input("x");
+        assert!(cx.debug_bounds(dot.clone().leak()).is_some());
+
+        cx.simulate_keystrokes("ctrl-w");
+        assert!(has_dialog(cx));
+        assert!(cx.update(|_, cx| file_view(&ws, cx)).is_some());
+        click("unsaved-cancel", cx);
+        assert!(!has_dialog(cx));
+        assert!(cx.update(|_, cx| file_view(&ws, cx)).is_some());
+
+        cx.simulate_keystrokes("ctrl-w");
+        click("unsaved-discard", cx);
+        assert!(!has_dialog(cx));
+        assert!(cx.update(|_, cx| file_view(&ws, cx)).is_none());
+        assert_eq!(agent.read("a.txt"), b"one\n");
+    }
+
+    #[gpui::test]
+    fn the_close_prompt_saves_and_then_closes(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        cx.simulate_input("x");
+        cx.simulate_keystrokes("ctrl-w");
+        click("unsaved-save", cx);
+        wait_until(cx, |cx| file_view(&ws, cx).is_none());
+        assert_eq!(agent.read("a.txt"), b"xone\n");
+    }
+
+    #[gpui::test]
+    fn a_failed_save_from_the_close_prompt_keeps_the_tab(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        cx.simulate_input("x");
+        agent.write("a.txt", "theirs\n");
+        cx.simulate_keystrokes("ctrl-w");
+        click("unsaved-save", cx);
+        let view = cx.update(|_, cx| file_view(&ws, cx)).unwrap();
+        wait_until(cx, |cx| !view.read(cx).is_saving());
+        assert!(cx.update(|_, cx| file_view(&ws, cx)).is_some());
+        assert!(view.read_with(cx, |view, _| view.is_dirty()));
+        assert_eq!(agent.read("a.txt"), b"theirs\n");
+    }
+
+    #[gpui::test]
+    fn archiving_a_session_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        cx.simulate_input("x");
+        let (conn, session) = ws.read_with(cx, |ws, _| {
+            let group = ws.active_group().unwrap();
+            (group.connection.clone(), group.session.clone())
+        });
+        ws.update_in(cx, |ws, window, cx| {
+            ws.archive_session(conn.clone(), session.clone(), true, window, cx)
+        });
+        assert!(has_dialog(cx));
+        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
+        click("unsaved-discard", cx);
+        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 0);
+    }
+
+    #[gpui::test]
+    fn quitting_or_closing_the_window_asks_about_unsaved_changes(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (_ws, cx) = open_file(&agent, "a.txt", cx);
+        assert!(cx.simulate_close(), "nothing unsaved, so the window closes");
+
+        cx.simulate_input("x");
+        assert!(!cx.simulate_close());
+        assert!(has_dialog(cx));
+        click("unsaved-cancel", cx);
+
+        cx.simulate_keystrokes("ctrl-q");
+        assert!(has_dialog(cx));
+        click("unsaved-cancel", cx);
+        assert!(!has_dialog(cx));
     }
 }

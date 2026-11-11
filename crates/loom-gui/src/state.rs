@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, Notice, PolicyAction,
-    ReasoningEffort, SessionId, SessionInfo, TelemetryStatus, TerminalId, UsageLimits,
-    WorkspaceChanges,
+    AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, FileVersion, Notice,
+    PolicyAction, ReasoningEffort, SessionId, SessionInfo, TelemetryStatus, TerminalId,
+    UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -601,6 +601,17 @@ impl AgentConnection {
         let client = self.client.clone();
         self.backend
             .run(async move { client.read_file(&path).await })
+    }
+
+    pub fn write_file(
+        &self,
+        path: String,
+        text: String,
+        expected: FileVersion,
+    ) -> impl Future<Output = Option<loom_client::Result<FileVersion>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.write_file(&path, text, expected).await })
     }
 
     pub fn register_terminal(

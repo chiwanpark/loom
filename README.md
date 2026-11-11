@@ -180,6 +180,7 @@ Useful default key bindings:
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
 | `ctrl-k` then an arrow | Split the pane |
 | `ctrl-k ctrl-t` | Select a theme |
+| `ctrl-s` | Save the file being edited in a file view |
 | `alt-z` | Wrap long lines in a file or diff view, or stop wrapping them |
 
 ## Development

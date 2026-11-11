@@ -25,6 +25,7 @@ gpui_kit_assets::icon_assets!(
         Pencil,
         Plug,
         Rows2,
+        Save,
         SendHorizontal,
         ShieldCheck,
         TextWrap,

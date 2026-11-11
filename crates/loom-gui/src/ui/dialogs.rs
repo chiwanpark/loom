@@ -175,6 +175,57 @@ pub fn confirm(
     });
 }
 
+type DialogAction = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// Asks what to do with unsaved changes before something throws them away:
+/// save them first, throw them away, or cancel. Escape cancels too.
+pub fn unsaved_changes(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    on_save: impl Fn(&mut Window, &mut App) + 'static,
+    on_discard: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = title.into();
+    let description = description.into();
+    let on_save: DialogAction = Rc::new(on_save);
+    let on_discard: DialogAction = Rc::new(on_discard);
+    let button = |id: &'static str, label: &'static str, action: Option<DialogAction>| {
+        div().debug_selector(move || id.into()).child(
+            Button::new(id)
+                .label(label)
+                .when(id == "unsaved-save", |b| b.primary())
+                .when(id == "unsaved-discard", |b| b.danger())
+                .when(id == "unsaved-cancel", |b| b.outline())
+                .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    if let Some(action) = &action {
+                        action(window, cx);
+                    }
+                }),
+        )
+    };
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert
+            .title(title.clone())
+            .description(description.clone())
+            .footer(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .justify_end()
+                    .child(button("unsaved-cancel", "Cancel", None))
+                    .child(button(
+                        "unsaved-discard",
+                        "Don't save",
+                        Some(on_discard.clone()),
+                    ))
+                    .child(button("unsaved-save", "Save", Some(on_save.clone()))),
+            )
+    });
+}
+
 fn focus_later(input: Option<Entity<InputState>>, window: &mut Window, cx: &mut App) {
     if let Some(input) = input {
         window.defer(cx, move |window, cx| {
