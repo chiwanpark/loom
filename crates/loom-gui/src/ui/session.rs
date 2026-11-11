@@ -730,7 +730,7 @@ impl Render for SessionView {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.add_paths(paths.paths().to_vec(), window, cx);
             }))
-            .child(messages::pane(&self.messages))
+            .child(messages::pane(&self.messages, cx))
             .child(
                 v_flex()
                     .w_full()

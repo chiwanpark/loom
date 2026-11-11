@@ -163,7 +163,7 @@ The main sections:
 
 The client reads `~/.config/loom/client.yaml`. Besides `hosts`, it has:
 
-- `appearance`: theme, UI and monospace fonts and sizes, and fallback fonts for glyphs the monospace font lacks (for example Hangul in terminals).
+- `appearance`: theme, UI and monospace fonts and sizes, fallback fonts for glyphs the monospace font lacks (for example Hangul in terminals), and `wrap_lines`, whether file and diff views open with long lines wrapped (off by default).
 - `keymap`: overrides for the default key bindings.
 
 Useful default key bindings:
@@ -180,6 +180,7 @@ Useful default key bindings:
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
 | `ctrl-k` then an arrow | Split the pane |
 | `ctrl-k ctrl-t` | Select a theme |
+| `alt-z` | Wrap long lines in a file or diff view, or stop wrapping them |
 
 ## Development
 

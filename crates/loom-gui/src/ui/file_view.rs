@@ -7,9 +7,10 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Editor, EditorState};
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Icon, IconName, Selectable, Sizable, h_flex, v_flex};
 
 use crate::state::AgentConnection;
+use crate::ui::workspace::ToggleLineWrap;
 
 enum Status {
     Loading,
@@ -25,6 +26,7 @@ pub struct FileView {
     editor: Entity<EditorState>,
     status: Status,
     loading: bool,
+    wrap: bool,
     focus: FocusHandle,
 }
 
@@ -62,10 +64,31 @@ fn human_size(size: u64) -> String {
     }
 }
 
+/// The header button that turns line wrapping on and off, shared with the
+/// diff view.
+pub(crate) fn wrap_button(id: &'static str, wrap: bool) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .icon(Icon::new(gpui_kit_assets::IconName::TextWrap))
+        .selected(wrap)
+        .toggled(wrap)
+        .tooltip_with_action(
+            if wrap {
+                "Stop wrapping lines"
+            } else {
+                "Wrap lines"
+            },
+            &ToggleLineWrap,
+            None,
+        )
+}
+
 impl FileView {
     pub fn new(
         connection: Entity<AgentConnection>,
         relative: String,
+        wrap: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -76,7 +99,7 @@ impl FileView {
                 .language(language)
                 .line_number(true)
                 .searchable(true)
-                .soft_wrap(false)
+                .soft_wrap(wrap)
         });
         let mut this = Self {
             connection,
@@ -85,6 +108,7 @@ impl FileView {
             editor,
             status: Status::Loading,
             loading: false,
+            wrap,
             focus: cx.focus_handle(),
         };
         this.reload(window, cx);
@@ -109,6 +133,14 @@ impl FileView {
 
     pub fn editor_focus(&self, cx: &App) -> FocusHandle {
         self.editor.read(cx).focus_handle(cx)
+    }
+
+    pub fn toggle_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        let wrap = self.wrap;
+        self.editor
+            .update(cx, |editor, cx| editor.set_soft_wrap(wrap, window, cx));
+        cx.notify();
     }
 
     pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -176,6 +208,9 @@ impl Render for FileView {
         v_flex()
             .size_full()
             .track_focus(&self.focus)
+            .on_action(
+                cx.listener(|this, _: &ToggleLineWrap, window, cx| this.toggle_wrap(window, cx)),
+            )
             .child(
                 h_flex()
                     .w_full()
@@ -199,6 +234,11 @@ impl Render for FileView {
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .child(detail),
+                    )
+                    .child(
+                        wrap_button("file-wrap", self.wrap).on_click(
+                            cx.listener(|this, _, window, cx| this.toggle_wrap(window, cx)),
+                        ),
                     )
                     .child(
                         Button::new("reload-file")

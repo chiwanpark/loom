@@ -7,12 +7,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AppContext, Context, Entity, EventEmitter, FollowMode, HighlightStyle,
+    AnyElement, App, AppContext, Context, Entity, EventEmitter, FollowMode, HighlightStyle,
     InteractiveElement, IntoElement, ListAlignment, ListState, ObjectFit, ParentElement, Render,
     SharedString, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage, StyledText,
     Subscription, Window, div, img, list, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewState};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, Theme, h_flex, v_flex};
@@ -595,12 +596,22 @@ impl MessageList {
 /// The message list, drawn from its own cache: it is rendered again only when
 /// it changes, not on every keystroke, cursor blink, or animation frame
 /// elsewhere in the window.
-pub fn pane(messages: &Entity<MessageList>) -> impl IntoElement {
-    div().flex_1().w_full().min_h_0().child(
-        messages
-            .clone()
-            .cached(StyleRefinement::default().size_full()),
-    )
+///
+/// The scrollbar sits out here rather than in the list, because it redraws
+/// the view it is in on every frame of its fade and while hovered.
+pub fn pane(messages: &Entity<MessageList>, cx: &App) -> impl IntoElement {
+    let list = messages.read(cx).list.clone();
+    div()
+        .relative()
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .child(
+            messages
+                .clone()
+                .cached(StyleRefinement::default().size_full()),
+        )
+        .vertical_scrollbar(&list)
 }
 
 impl Render for MessageList {
@@ -1011,10 +1022,13 @@ mod tests {
 
 #[cfg(test)]
 mod view_tests {
+    use std::time::Duration;
+
     use gpui::{
-        AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext,
-        VisualTestContext, Window, div,
+        AppContext, Context, Entity, IntoElement, Modifiers, ParentElement, Render, ScrollDelta,
+        ScrollEvent, Styled, TestAppContext, VisualTestContext, Window, div, point, px,
     };
+    use gpui_component::scroll::ScrollbarHandle;
     use gpui_component::v_flex;
     use loom_client::proto::{
         ContentPart, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
@@ -1069,10 +1083,10 @@ mod view_tests {
     }
 
     impl Render for Parent {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             v_flex()
                 .size_full()
-                .child(pane(&self.messages))
+                .child(pane(&self.messages, cx))
                 .child(div().h_10().child("prompt"))
         }
     }
@@ -1114,6 +1128,43 @@ mod view_tests {
             rendered > 0 && rendered < 100,
             "rendered {rendered} of 2001 rows"
         );
+    }
+
+    #[gpui::test]
+    fn a_long_conversation_has_a_scrollbar_over_the_list(cx: &mut TestAppContext) {
+        let (_, _, messages, cx) = open(100, cx);
+        let overlay = cx.debug_bounds("scrollbar-overlay").expect("no scrollbar");
+        messages.read_with(cx, |messages, _| {
+            let viewport = ScrollbarHandle::viewport_bounds(&messages.list);
+            let content = ScrollbarHandle::content_size(&messages.list);
+            assert_eq!(overlay, viewport);
+            // Rows out of view count only once measured, but those in view and
+            // the overdraw past them are already taller than the viewport.
+            assert!(content.height > viewport.size.height, "{content:?}");
+        });
+    }
+
+    #[gpui::test]
+    fn hovering_the_scrollbar_does_not_render_the_list_again(cx: &mut TestAppContext) {
+        let (_, _, messages, cx) = open(100, cx);
+        let overlay = cx.debug_bounds("scrollbar-overlay").expect("no scrollbar");
+        take_rendered(&messages, cx);
+        // Wheel over the list, which shows the scrollbar, then rest the
+        // pointer on it while it fades in and stays.
+        let edge = point(overlay.right() - px(4.), overlay.center().y);
+        cx.simulate_event(ScrollEvent {
+            position: edge,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        take_rendered(&messages, cx);
+        for _ in 0..5 {
+            cx.simulate_mouse_move(edge, None, Modifiers::default());
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+        assert_eq!(take_rendered(&messages, cx), 0);
     }
 
     #[gpui::test]

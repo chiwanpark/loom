@@ -27,6 +27,7 @@ gpui_kit_assets::icon_assets!(
         Rows2,
         SendHorizontal,
         ShieldCheck,
+        TextWrap,
         Trash,
         Unplug
     ]

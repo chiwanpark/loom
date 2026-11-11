@@ -89,6 +89,10 @@ pub struct AppearanceConfig {
     /// `D2Coding` or `Noto Sans Mono CJK KR` for Hangul in terminals.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mono_font_fallbacks: Vec<String>,
+    /// Whether file and diff views wrap long lines when they open. Each view
+    /// can still toggle wrapping on its own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub wrap_lines: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -101,6 +105,7 @@ impl Default for AppearanceConfig {
             mono_font: None,
             mono_font_size: 14.0,
             mono_font_fallbacks: Vec::new(),
+            wrap_lines: false,
         }
     }
 }
@@ -250,6 +255,18 @@ mod tests {
                 .to_yaml()
                 .contains("mono_font_fallbacks")
         );
+    }
+
+    #[test]
+    fn parses_wrap_lines() {
+        let config =
+            ClientConfig::parse("appearance:\n  wrap_lines: true\n", "client.yaml").unwrap();
+        assert!(config.appearance.wrap_lines);
+        let again = ClientConfig::parse(&config.to_yaml(), "client.yaml").unwrap();
+        assert_eq!(again, config);
+        // Off is the default and is not written out.
+        assert!(!ClientConfig::default().appearance.wrap_lines);
+        assert!(!ClientConfig::default().to_yaml().contains("wrap_lines"));
     }
 
     #[test]

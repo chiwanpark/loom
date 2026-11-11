@@ -76,7 +76,10 @@ actions!(
         SelectTheme,
         RenameSession,
         ShowChanges,
-        ShowFiles
+        ShowFiles,
+        /// Wraps long lines in the focused file or diff view, or stops
+        /// wrapping them.
+        ToggleLineWrap
     ]
 );
 
@@ -121,6 +124,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-alt-up", ActivatePaneUp, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-down", ActivatePaneDown, Some(CONTEXT)),
         KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new("alt-z", ToggleLineWrap, Some(OUTSIDE_TERMINAL)),
     ]);
     let mut custom = Vec::new();
     for (keys, name) in overrides {
@@ -236,6 +240,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: toggle right panel", Box::new(ToggleRightDock)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
+        ("view: toggle line wrap", Box::new(ToggleLineWrap)),
         ("session: archive", Box::new(ArchiveSession)),
         ("session: rename", Box::new(RenameSession)),
         ("session: choose model", Box::new(ChooseModel)),
@@ -581,7 +586,8 @@ impl Workspace {
             }
             return;
         }
-        let view = cx.new(|cx| FileView::new(conn, relative, window, cx));
+        let wrap = self.config.appearance.wrap_lines;
+        let view = cx.new(|cx| FileView::new(conn, relative, wrap, window, cx));
         self.subscriptions
             .push(cx.observe(&view, |_, _, cx| cx.notify()));
         let id = self.alloc_panel();
@@ -1164,6 +1170,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Panel> {
+        let wrap = self.config.appearance.wrap_lines;
         let panel = match tab {
             SavedTab::Conversation => return Some(self.chat_panel(conn, info, window, cx)),
             SavedTab::Terminal { instance, id } => {
@@ -1172,8 +1179,9 @@ impl Workspace {
                 ));
             }
             SavedTab::GitDiff { path, old_path } => {
-                let view =
-                    cx.new(|cx| DiffView::git(conn.clone(), path.clone(), old_path.clone(), cx));
+                let view = cx.new(|cx| {
+                    DiffView::git(conn.clone(), path.clone(), old_path.clone(), wrap, cx)
+                });
                 self.subscriptions
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
                 Panel::Diff(view)
@@ -1184,13 +1192,14 @@ impl Workspace {
             SavedTab::SessionDiff { path } => {
                 let conversation = conn.update(cx, |conn, cx| conn.conversation(info, cx));
                 let title = display_path(path, &conn.read(cx).info.workspace);
-                let view = cx.new(|cx| DiffView::session(conversation, path.clone(), title, cx));
+                let view =
+                    cx.new(|cx| DiffView::session(conversation, path.clone(), title, wrap, cx));
                 self.subscriptions
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
                 Panel::Diff(view)
             }
             SavedTab::File { path } => {
-                let view = cx.new(|cx| FileView::new(conn.clone(), path.clone(), window, cx));
+                let view = cx.new(|cx| FileView::new(conn.clone(), path.clone(), wrap, window, cx));
                 self.subscriptions
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
                 Panel::File(view)
@@ -1972,7 +1981,8 @@ impl Workspace {
         let conversation = chat.read(cx).conversation.clone();
         let workspace = group.connection.read(cx).info.workspace.clone();
         let title = display_path(&path, &workspace);
-        let view = cx.new(|cx| DiffView::session(conversation, path, title, cx));
+        let wrap = self.config.appearance.wrap_lines;
+        let view = cx.new(|cx| DiffView::session(conversation, path, title, wrap, cx));
         self.add_diff_tab(view, window, cx);
     }
 
@@ -1997,7 +2007,8 @@ impl Workspace {
             }
             return;
         }
-        let view = cx.new(|cx| DiffView::git(conn, change.path, change.old_path, cx));
+        let wrap = self.config.appearance.wrap_lines;
+        let view = cx.new(|cx| DiffView::git(conn, change.path, change.old_path, wrap, cx));
         self.add_diff_tab(view, window, cx);
     }
 
