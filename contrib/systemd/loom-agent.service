@@ -1,5 +1,5 @@
 # Starts a Loom agent for `lifecycle.default_workspace` at login, so the
-# relay path has an agent to reach (docs/ARCHITECTURE.md, Section 5.2).
+# relay path has an agent to reach.
 #
 # Install:
 #   install -Dm644 contrib/systemd/loom-agent.service ~/.config/systemd/user/loom-agent.service
@@ -12,7 +12,7 @@
 
 [Unit]
 Description=Loom agent (default workspace)
-Documentation=https://github.com/chiwanpark/loom/blob/main/docs/ARCHITECTURE.md
+Documentation=https://github.com/chiwanpark/loom#readme
 After=network-online.target
 Wants=network-online.target
 

@@ -1,7 +1,7 @@
 # cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
 #
 # Loom is GPL-3.0-or-later, so every dependency must be available under a
-# GPL-3.0-compatible license (docs/ARCHITECTURE.md, Section 7.2). Run:
+# GPL-3.0-compatible license. Run:
 #
 #   cargo deny check licenses sources
 #
