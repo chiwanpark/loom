@@ -3379,6 +3379,9 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_tab(pane_id, ix, window, cx)
                     }))
+                    .on_middle_click(cx.listener(move |this, _, window, cx| {
+                        this.close_tab(pane_id, ix, window, cx)
+                    }))
                     .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
                     .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
                         let theme = cx.theme();

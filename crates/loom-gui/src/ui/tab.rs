@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 
 use gpui::{
-    AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, Stateful, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
-    px,
+    AnyElement, App, ClickEvent, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
+    Pixels, RenderOnce, Stateful, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::{ActiveTheme, h_flex};
 
@@ -58,6 +58,20 @@ impl Tab {
     pub fn end_slot<E: IntoElement>(mut self, element: impl Into<Option<E>>) -> Self {
         self.end_slot = element.into().map(IntoElement::into_any_element);
         self
+    }
+
+    /// Calls `listener` when the middle button is pressed and released on
+    /// the tab, as browsers close tabs.
+    pub fn on_middle_click(
+        self,
+        listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_aux_click(move |event, window, cx| {
+            if event.is_middle_click() {
+                cx.stop_propagation();
+                listener(event, window, cx);
+            }
+        })
     }
 
     pub fn container_height() -> Pixels {
@@ -143,5 +157,67 @@ impl RenderOnce for Tab {
                     .children(self.children)
                     .child(end_slot),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        Context, Modifiers, MouseButton, Render, TestAppContext, VisualTestContext, Window,
+    };
+
+    use super::*;
+
+    /// Two tabs that record which of them was middle-clicked.
+    struct Tabs {
+        closed: Vec<usize>,
+    }
+
+    impl Render for Tabs {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            gpui_component::h_flex().children((0..2).map(|ix| {
+                Tab::new(("tab", ix))
+                    .debug_selector(move || format!("tab-{ix}"))
+                    .on_middle_click(cx.listener(move |this, _, _, _| this.closed.push(ix)))
+                    .child(format!("tab {ix}"))
+            }))
+        }
+    }
+
+    fn click(
+        cx: &mut VisualTestContext,
+        down: &'static str,
+        up: &'static str,
+        button: MouseButton,
+    ) {
+        let down = cx.debug_bounds(down).unwrap().center();
+        let up = cx.debug_bounds(up).unwrap().center();
+        cx.simulate_mouse_down(down, button, Modifiers::default());
+        cx.simulate_mouse_move(up, button, Modifiers::default());
+        cx.simulate_mouse_up(up, button, Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn a_middle_click_on_a_tab_calls_its_listener(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (view, cx) = cx.add_window_view(|_, _| Tabs { closed: Vec::new() });
+        cx.run_until_parked();
+        let closed = |cx: &mut VisualTestContext| view.read_with(cx, |v, _| v.closed.clone());
+
+        click(cx, "tab-1", "tab-1", MouseButton::Middle);
+        assert_eq!(closed(cx), [1]);
+
+        // Other buttons do nothing.
+        click(cx, "tab-0", "tab-0", MouseButton::Left);
+        click(cx, "tab-0", "tab-0", MouseButton::Right);
+        assert_eq!(closed(cx), [1]);
+
+        // Pressed on one tab and released on another, it is no click at all.
+        click(cx, "tab-0", "tab-1", MouseButton::Middle);
+        assert_eq!(closed(cx), [1]);
+
+        click(cx, "tab-0", "tab-0", MouseButton::Middle);
+        assert_eq!(closed(cx), [1, 0]);
     }
 }
