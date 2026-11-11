@@ -187,6 +187,8 @@ Useful default key bindings:
 
 To copy a workspace file to your machine, right-click it in the files panel and choose **Download…**, or use the download button in its file view. Downloads work over local and SSH connections, not through a relay yet.
 
+To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, and the tool approvals you gave it.
+
 ## Development
 
 ```sh

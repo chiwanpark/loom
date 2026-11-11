@@ -260,6 +260,48 @@ async fn approvals_round_trip_through_the_client() {
 }
 
 #[tokio::test]
+async fn sessions_are_cleared_through_the_client() {
+    let setup = setup(vec![write_call("out.txt"), text("written")]);
+    let (client, mut notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap();
+    client.subscribe(&session.id, None).await.unwrap();
+    client
+        .set_policy(&session.id, Some(PolicyAction::Ask))
+        .await
+        .unwrap();
+    client.send_text(&session.id, "write it").await.unwrap();
+    let call_id = loop {
+        if let (_, _, SessionEvent::ApprovalRequired { call_id, .. }) = next_event(&mut notes).await
+        {
+            break call_id;
+        }
+    };
+    let err = client.clear_session(&session.id).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Busy);
+    client
+        .resolve_approval(&session.id, &call_id, Decision::Deny)
+        .await
+        .unwrap();
+    until_turn_finished(&mut notes).await;
+
+    client.clear_session(&session.id).await.unwrap();
+    let seq = loop {
+        if let (id, seq, SessionEvent::Cleared) = next_event(&mut notes).await {
+            assert_eq!(id, session.id);
+            break seq;
+        }
+    };
+    let (other, mut other_notes) = connect(&setup).await;
+    other.subscribe(&session.id, None).await.unwrap();
+    let (_, first, event) = next_event(&mut other_notes).await;
+    assert_eq!((first, event), (seq, SessionEvent::Cleared));
+
+    let missing = SessionId("nope".into());
+    let err = client.clear_session(&missing).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
 async fn session_settings_and_errors() {
     let setup = setup(vec![]);
     let (client, _notes) = connect(&setup).await;

@@ -73,6 +73,8 @@ pub struct MessageList {
     list: ListState,
     /// The item revisions the list was last told about.
     synced: Vec<u64>,
+    /// The conversation's generation at the last sync.
+    generation: u64,
     expanded: HashSet<String>,
     collapsed: HashSet<String>,
     show_reasoning: HashSet<usize>,
@@ -112,6 +114,7 @@ impl MessageList {
             conversation,
             list,
             synced: Vec::new(),
+            generation: 0,
             expanded: HashSet::new(),
             collapsed: HashSet::new(),
             show_reasoning: HashSet::new(),
@@ -140,6 +143,20 @@ impl MessageList {
     /// them again when they are laid out; rows out of view keep their height
     /// until then.
     fn sync(&mut self, cx: &mut Context<Self>) {
+        let conversation = self.conversation.read(cx);
+        if conversation.generation != self.generation {
+            // Cleared: nothing kept for the old items applies to the new ones.
+            self.generation = conversation.generation;
+            self.list.splice(0..self.synced.len(), 0);
+            self.synced.clear();
+            self.expanded.clear();
+            self.collapsed.clear();
+            self.show_reasoning.clear();
+            self.live.clear();
+            self.highlights.clear();
+            self.markdown.clear();
+            self.list.set_follow_mode(FollowMode::Tail);
+        }
         let revisions = self.conversation.read(cx).item_revisions();
         let common = self.synced.len().min(revisions.len());
         let mut ix = 0;
@@ -1755,6 +1772,39 @@ mod view_tests {
     }
 
     /// Applies `events` to the conversation and draws the list again.
+    /// What the list showed of the items before a clear does not carry over
+    /// to the items that take their places.
+    #[gpui::test]
+    fn a_cleared_conversation_starts_the_list_over(cx: &mut TestAppContext) {
+        let (conversation, _, _, cx) = open(0, cx);
+        let turn = |prompt: &str| {
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text(prompt)],
+                },
+                SessionEvent::AssistantMessage {
+                    text: "a reply".into(),
+                    reasoning: Some("some reasoning".into()),
+                    model: "test/model".into(),
+                },
+            ]
+        };
+        feed(&conversation, turn("before"), cx);
+        let row = cx.debug_bounds("reasoning-row-1").unwrap();
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(shown("reasoning-text-1", cx));
+
+        feed(&conversation, vec![SessionEvent::Cleared], cx);
+        assert!(!shown("user-text-0", cx));
+        assert!(!shown("reasoning-card-1", cx));
+
+        feed(&conversation, turn("after"), cx);
+        assert!(shown("user-text-0", cx));
+        assert!(shown("reasoning-card-1", cx));
+        assert!(!shown("reasoning-text-1", cx));
+    }
+
     fn feed(
         conversation: &Entity<Conversation>,
         events: Vec<SessionEvent>,

@@ -90,6 +90,7 @@ mod tests {
             model: "provider/model".into(),
             reasoning: None,
         });
+        roundtrip(SessionEvent::Cleared);
     }
 
     /// Events stored by an earlier agent still decode: these are the bytes
@@ -188,6 +189,9 @@ mod tests {
                 path: "data.bin".into(),
                 offset: 1 << 40,
                 len: MAX_FILE_CHUNK,
+            },
+            Command::ClearSession {
+                session: session.clone(),
             },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });

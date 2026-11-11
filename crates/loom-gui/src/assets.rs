@@ -13,6 +13,7 @@ gpui_kit_assets::icon_assets!(
         Coins,
         Columns2,
         Download,
+        Eraser,
         FileDiff,
         FileMinus,
         FilePen,

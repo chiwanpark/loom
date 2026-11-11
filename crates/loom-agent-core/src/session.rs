@@ -385,6 +385,28 @@ impl Session {
         Ok(())
     }
 
+    /// Starts the conversation over, as in a new session: forgets the history,
+    /// the events, the context size, and the files read. Keeps the settings
+    /// (model, reasoning effort, policy) and the title, which stays the first
+    /// prompt's when the session was never renamed.
+    pub fn clear(&self) -> Result<()> {
+        let mut state = self.core.lock();
+        if state.turn.is_some() {
+            return Err(CoreError::Busy);
+        }
+        if state.title.is_none() {
+            state.title = title(&state.history);
+        }
+        state.history.clear();
+        state.context_tokens = None;
+        state.last_used = None;
+        self.core.files.clear();
+        self.core.persist_state(&state);
+        // Under the lock, like a prompt, so no prompt lands between the two.
+        self.core.emit(SessionEvent::Cleared);
+        Ok(())
+    }
+
     pub fn interrupt(&self) -> bool {
         match &self.core.lock().turn {
             Some(turn) => {

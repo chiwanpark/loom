@@ -427,6 +427,10 @@ impl Connection {
                     .map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Ok)
             }
+            Command::ClearSession { session: id } => {
+                session(&id)?.clear().map_err(|e| convert::api_error(&e))?;
+                Ok(Payload::Ok)
+            }
             Command::ResolveApproval {
                 session: id,
                 call_id,

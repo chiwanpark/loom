@@ -214,6 +214,9 @@ pub enum SessionEvent {
         model: String,
         reasoning: Option<ReasoningEffort>,
     },
+    /// The conversation was cleared: clients drop everything shown before it.
+    /// It is the first event of a session's log afterwards.
+    Cleared,
 }
 
 impl SessionEvent {

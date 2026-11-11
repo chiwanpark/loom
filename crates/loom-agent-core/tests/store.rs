@@ -27,6 +27,7 @@ fn kinds(events: &[loom_proto::SequencedEvent]) -> Vec<&'static str> {
             SessionEvent::Error { .. } => "error",
             SessionEvent::ContextCompacted { .. } => "compacted",
             SessionEvent::ModelChanged { .. } => "model",
+            SessionEvent::Cleared => "cleared",
         })
         .collect()
 }

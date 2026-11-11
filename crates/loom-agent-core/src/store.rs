@@ -81,6 +81,11 @@ enum Op {
         state: String,
     },
     Delete(SessionId),
+    /// Drops a session's events before `seq`.
+    Truncate {
+        session: SessionId,
+        seq: u64,
+    },
     Flush(oneshot::Sender<()>),
 }
 
@@ -163,6 +168,14 @@ impl EventStore {
 
     pub fn delete_session(&self, session: &SessionId) {
         let _ = self.tx.send(Op::Delete(session.clone()));
+    }
+
+    /// Drops the session's events numbered below `seq`.
+    pub fn truncate(&self, session: &SessionId, seq: u64) {
+        let _ = self.tx.send(Op::Truncate {
+            session: session.clone(),
+            seq,
+        });
     }
 
     pub fn append(&self, session: &SessionId, event: &SequencedEvent) {
@@ -251,7 +264,8 @@ fn apply(
     deleted: &mut HashSet<SessionId>,
 ) -> rusqlite::Result<()> {
     match op {
-        Op::Event { session, .. } | Op::Session { session, .. } if deleted.contains(&session) => {}
+        Op::Event { session, .. } | Op::Session { session, .. } | Op::Truncate { session, .. }
+            if deleted.contains(&session) => {}
         Op::Event { session, seq, data } => {
             conn.execute(
                 "INSERT OR REPLACE INTO events (session_id, seq, event) VALUES (?1, ?2, ?3)",
@@ -276,6 +290,12 @@ fn apply(
             )?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![session.0])?;
             deleted.insert(session);
+        }
+        Op::Truncate { session, seq } => {
+            conn.execute(
+                "DELETE FROM events WHERE session_id = ?1 AND seq < ?2",
+                params![session.0, seq as i64],
+            )?;
         }
         Op::Flush(done) => flushes.push(done),
     }

@@ -88,6 +88,13 @@ impl EventHub {
                 !matches!(&e.event, SessionEvent::ToolOutput { call_id: id, .. } if id == call_id)
             }),
             SessionEvent::StateChanged { state } => log.state = *state,
+            // A cleared session starts its log over with this event.
+            SessionEvent::Cleared => {
+                log.events.clear();
+                if let Some((store, session)) = &self.store {
+                    store.truncate(session, seq);
+                }
+            }
             _ => {}
         }
         let record = SequencedEvent { seq, event };

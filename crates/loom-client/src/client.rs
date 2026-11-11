@@ -635,6 +635,15 @@ impl Client {
         .await
     }
 
+    /// Starts a session's conversation over, keeping its settings. Subscribers
+    /// get a `Cleared` event. Fails with `Busy` while a turn is running.
+    pub async fn clear_session(&self, session: &SessionId) -> Result<()> {
+        self.ok(Command::ClearSession {
+            session: session.clone(),
+        })
+        .await
+    }
+
     /// Reattaches to a terminal opened over an earlier connection to the same agent.
     pub async fn attach_terminal(&self, terminal: TerminalId, cols: u16, rows: u16) -> Result<()> {
         self.ok(Command::AttachTerminal {

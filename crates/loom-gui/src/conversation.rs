@@ -111,6 +111,9 @@ pub struct Conversation {
     /// Bumped when a tool call finishes, the only event that can change the
     /// files the session has changed.
     pub changes_revision: u64,
+    /// Counts the times the conversation was cleared, so views can drop what
+    /// they keep for its items.
+    pub generation: u64,
     /// The revision at which each item last changed, parallel to `items`, so
     /// views can tell which items to lay out again.
     item_revisions: Vec<u64>,
@@ -128,6 +131,7 @@ impl Conversation {
             last_seq: 0,
             revision: 0,
             changes_revision: 0,
+            generation: 0,
             item_revisions: Vec::new(),
             tools: HashMap::new(),
         }
@@ -382,6 +386,14 @@ impl Conversation {
             SessionEvent::ModelChanged { model, reasoning } => {
                 self.finish_streaming();
                 self.notice(NoticeKind::Info, model_changed(model, *reasoning));
+            }
+            SessionEvent::Cleared => {
+                self.items.clear();
+                self.item_revisions.clear();
+                self.tools.clear();
+                self.last_usage = None;
+                self.total_usage = Usage::default();
+                self.generation += 1;
             }
         }
         true
@@ -713,6 +725,63 @@ mod tests {
             }],
         );
         assert_eq!(conv.last_usage, None);
+    }
+
+    #[test]
+    fn clearing_drops_the_items_and_the_usage() {
+        let mut conv = Conversation::new(info());
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("First prompt")],
+                },
+                SessionEvent::ToolCallRequested {
+                    call: call("c1", "shell", r#"{"command":"ls"}"#),
+                },
+                SessionEvent::ApprovalRequired {
+                    call_id: "c1".into(),
+                    reason: "exec".into(),
+                },
+                SessionEvent::Usage {
+                    usage: Usage {
+                        input: 10,
+                        output: 5,
+                        total: 15,
+                        ..Usage::default()
+                    },
+                },
+            ],
+        );
+        assert_eq!(conv.items.len(), 2);
+        feed(&mut conv, vec![SessionEvent::Cleared]);
+        assert!(conv.items.is_empty());
+        assert!(conv.item_revisions().is_empty());
+        assert_eq!(conv.pending_approvals().count(), 0);
+        assert_eq!(conv.last_usage, None);
+        assert_eq!(conv.total_usage, Usage::default());
+        assert_eq!(conv.generation, 1);
+        // The session keeps its name.
+        assert_eq!(conv.title(), "First prompt");
+
+        // Events for the old items find nothing.
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("Next")],
+                },
+                SessionEvent::ToolCallRequested {
+                    call: call("c2", "shell", r#"{"command":"pwd"}"#),
+                },
+                SessionEvent::ToolCallStarted {
+                    call_id: "c1".into(),
+                },
+            ],
+        );
+        assert_eq!(conv.items.len(), 2);
+        assert!(matches!(&conv.items[0], Item::User { text, .. } if text == "Next"));
+        assert!(matches!(&conv.items[1], Item::Tool(tool) if tool.status == ToolStatus::Requested));
     }
 
     #[test]

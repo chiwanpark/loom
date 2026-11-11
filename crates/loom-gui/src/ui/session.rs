@@ -212,6 +212,40 @@ impl SessionView {
         .detach();
     }
 
+    /// Starts the conversation over; the agent keeps the session's settings.
+    fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.connection.read(cx);
+        let client = conn.client.clone();
+        let session = self.session_id(cx);
+        let task = conn
+            .backend
+            .run(async move { client.clear_session(&session).await });
+        cx.spawn_in(window, async move |_, cx: &mut AsyncWindowContext| {
+            if let Some(Err(err)) = task.await {
+                let _ = cx.update(|window, cx| {
+                    notify::error(window, cx, format!("Could not clear the session: {err}"))
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn confirm_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        dialogs::confirm(
+            "Clear this conversation?",
+            "The agent forgets everything in this session so far and starts over. \
+             The session keeps its name, model, reasoning effort, and approvals. \
+             This cannot be undone.",
+            "Clear",
+            move |window, cx| {
+                let _ = this.update(cx, |this, cx| this.clear(window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
     fn interrupt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let conn = self.connection.read(cx);
         let client = conn.client.clone();
@@ -772,6 +806,20 @@ impl Render for SessionView {
                                         cx.listener(|this, _, window, cx| this.compact(window, cx)),
                                     ),
                             )
+                            .child(
+                                div().debug_selector(|| "clear-button".into()).child(
+                                    Button::new("clear")
+                                        .ghost()
+                                        .small()
+                                        .icon(Icon::new(gpui_kit_assets::IconName::Eraser))
+                                        .label("Clear")
+                                        .tooltip("Start the conversation over")
+                                        .disabled(busy || empty)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_clear(window, cx)
+                                        })),
+                                ),
+                            )
                             .child(div().flex_1())
                             .child(
                                 Button::new("interrupt")
@@ -809,6 +857,89 @@ mod tests {
         limits_tooltip,
     };
     use loom_client::proto::UsageLimit;
+
+    mod clear {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui::{AppContext, Entity, TestAppContext, VisualTestContext};
+        use gpui_component::{Root, WindowExt};
+        use loom_client::proto::{SequencedEvent, SessionEvent};
+
+        use super::super::SessionView;
+        use crate::conversation::Conversation;
+        use crate::test_agent::{TestAgent, wait_until};
+
+        fn open<'a>(
+            agent: &TestAgent,
+            cx: &'a mut TestAppContext,
+        ) -> (
+            Entity<SessionView>,
+            Entity<Conversation>,
+            &'a mut VisualTestContext,
+        ) {
+            cx.update(|cx| {
+                gpui_component::init(cx);
+                crate::ui::bind_keys(&Default::default(), cx);
+            });
+            let conn = agent.connect(cx);
+            let client = conn.read_with(cx, |conn, _| conn.client.clone());
+            let info = futures::executor::block_on(
+                agent
+                    .backend
+                    .run(async move { client.create_session(None).await }),
+            )
+            .unwrap()
+            .unwrap();
+            let conversation = conn.update(cx, |conn, cx| conn.conversation(&info, cx));
+            let slot = Rc::new(RefCell::new(None));
+            let (_, cx) = cx.add_window_view({
+                let (slot, conversation) = (slot.clone(), conversation.clone());
+                move |window, cx| {
+                    let view = cx.new(|cx| SessionView::new(conn, conversation, window, cx));
+                    *slot.borrow_mut() = Some(view.clone());
+                    Root::new(view, window, cx)
+                }
+            });
+            let view = slot.borrow_mut().take().unwrap();
+            cx.run_until_parked();
+            (view, conversation, cx)
+        }
+
+        /// Puts something in the conversation, as a turn would.
+        fn say(conversation: &Entity<Conversation>, cx: &mut VisualTestContext) {
+            conversation.update(cx, |conversation, cx| {
+                conversation.apply(&SequencedEvent {
+                    seq: 0,
+                    event: SessionEvent::Warning {
+                        message: "something".into(),
+                    },
+                });
+                cx.notify();
+            });
+            cx.run_until_parked();
+        }
+
+        fn generation(conversation: &Entity<Conversation>, cx: &mut VisualTestContext) -> u64 {
+            conversation.read_with(cx, |conversation, _| conversation.generation)
+        }
+
+        #[gpui::test]
+        fn the_clear_button_asks_first(cx: &mut TestAppContext) {
+            let agent = TestAgent::start();
+            let (_, conversation, cx) = open(&agent, cx);
+            say(&conversation, cx);
+            let button = cx.debug_bounds("clear-button").expect("no clear button");
+            cx.simulate_click(button.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+            assert_eq!(generation(&conversation, cx), 0);
+            cx.simulate_keystrokes("enter");
+            wait_until(cx, |cx| conversation.read(cx).generation == 1);
+            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+            assert!(conversation.read_with(cx, |c, _| c.items.is_empty()));
+        }
+    }
 
     #[test]
     fn limit_levels_follow_the_reference_thresholds() {

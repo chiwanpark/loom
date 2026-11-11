@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -224,6 +224,14 @@ pub enum Command {
         path: String,
         offset: u64,
         len: u32,
+    },
+    /// Starts the session's conversation over: the agent forgets its history
+    /// and events, keeps its settings, and sends [`SessionEvent::Cleared`].
+    /// Fails while the session is busy.
+    ///
+    /// [`SessionEvent::Cleared`]: crate::SessionEvent::Cleared
+    ClearSession {
+        session: SessionId,
     },
 }
 

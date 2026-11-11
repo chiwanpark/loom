@@ -238,6 +238,14 @@ impl FileTracker {
             .remove(path);
     }
 
+    /// Forgets every file, as if none had been read.
+    pub fn clear(&self) {
+        self.stamps
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clear();
+    }
+
     pub fn ensure_fresh(&self, path: &Path, current: Option<FileStamp>) -> Result<()> {
         let stamps = self.stamps.lock().unwrap_or_else(|err| err.into_inner());
         match (stamps.get(path), current) {
