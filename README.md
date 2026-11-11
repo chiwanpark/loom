@@ -183,6 +183,8 @@ Useful default key bindings:
 | `ctrl-s` | Save the file being edited in a file view |
 | `alt-z` | Wrap long lines in a file or diff view, or stop wrapping them |
 
+To copy a workspace file to your machine, right-click it in the files panel and choose **Download…**, or use the download button in its file view. Downloads work over local and SSH connections, not through a relay yet.
+
 ## Development
 
 ```sh

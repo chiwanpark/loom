@@ -12,6 +12,7 @@ gpui_kit_assets::icon_assets!(
         CircleStop,
         Coins,
         Columns2,
+        Download,
         FileDiff,
         FileMinus,
         FilePen,

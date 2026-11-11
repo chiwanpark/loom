@@ -17,6 +17,8 @@ pub enum ClientError {
     Closed,
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("{0} changed while it was being downloaded; try again")]
+    Changed(String),
     #[error("no agent is running for {0}")]
     NoAgent(String),
     #[error(transparent)]

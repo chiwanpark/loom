@@ -7,7 +7,7 @@ use loom_proto::{
     AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode,
     undecodable_request_id,
 };
-use loom_transport::{FrameStream, UnixFrameListener};
+use loom_transport::{FrameStream, PeerInfo, UnixFrameListener};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -57,7 +57,8 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
 
     let mut connection = Connection::new(ctx.agent, ctx.info, out)
         .with_supervisor(ctx.supervisor)
-        .with_host_keys(ctx.host_keys);
+        .with_host_keys(ctx.host_keys)
+        .relayed(matches!(peer, PeerInfo::Relay { .. }));
     tracing::debug!(?peer, "connection opened");
     loop {
         let frame = match receiver.recv().await {

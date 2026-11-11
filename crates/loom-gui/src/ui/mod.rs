@@ -1,6 +1,7 @@
 pub mod code;
 pub mod dialogs;
 pub mod diff;
+pub mod download;
 pub mod file_view;
 pub mod files;
 pub mod image_preview;

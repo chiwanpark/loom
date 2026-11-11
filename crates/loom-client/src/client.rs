@@ -660,6 +660,6 @@ impl Client {
     }
 }
 
-fn unexpected(payload: Payload) -> ClientError {
+pub(crate) fn unexpected(payload: Payload) -> ClientError {
     ClientError::Protocol(format!("unexpected response {payload:?}"))
 }

@@ -37,6 +37,7 @@ pub struct Connection {
     supervisor: Option<Arc<dyn Supervisor>>,
     host_keys: Option<Arc<dyn HostKeys>>,
     connection_id: ConnectionId,
+    relayed: bool,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -58,7 +59,15 @@ impl Connection {
             supervisor: None,
             host_keys: None,
             connection_id,
+            relayed: false,
         }
+    }
+
+    /// Marks a connection that comes through a relay, which does not carry
+    /// downloads yet.
+    pub fn relayed(mut self, relayed: bool) -> Self {
+        self.relayed = relayed;
+        self
     }
 
     pub fn with_host_keys(mut self, host_keys: Option<Arc<dyn HostKeys>>) -> Self {
@@ -178,10 +187,18 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
+            Command::ReadFileChunk { .. } if self.relayed => {
+                let error = ApiError::new(
+                    ErrorCode::Unsupported,
+                    "downloads need a direct connection; they do not work through a relay yet",
+                );
+                self.respond(id, Err(error)).await;
+            }
             Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
             | Command::ReadFile { .. }
+            | Command::ReadFileChunk { .. }
             | Command::WriteFile { .. } => {
                 let workspace = self.agent.workspace().clone();
                 let root = workspace.root().to_path_buf();
@@ -201,6 +218,11 @@ impl Connection {
                         Command::ReadFile { path } => crate::files::read_file(&root, &path)
                             .await
                             .map(Payload::FileContent),
+                        Command::ReadFileChunk { path, offset, len } => {
+                            crate::files::read_chunk(&root, &path, offset, len)
+                                .await
+                                .map(Payload::FileChunk)
+                        }
                         Command::WriteFile {
                             path,
                             text,
@@ -480,6 +502,7 @@ impl Connection {
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
             | Command::ReadFile { .. }
+            | Command::ReadFileChunk { .. }
             | Command::WriteFile { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",

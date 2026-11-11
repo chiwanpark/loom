@@ -1,8 +1,10 @@
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use loom_proto::{
-    ApiError, DirEntry, DirectoryListing, EntryKind, ErrorCode, FileContent, FileVersion,
+    ApiError, DirEntry, DirectoryListing, EntryKind, ErrorCode, FileChunk, FileContent,
+    FileVersion, MAX_FILE_CHUNK,
 };
 use loom_tools::{FileAccess, Workspace};
 use sha2::{Digest, Sha256};
@@ -150,6 +152,50 @@ pub async fn read_file(root: &Path, path: &str) -> Result<FileContent, ApiError>
     }
     let owned = path.to_string();
     tokio::task::spawn_blocking(move || read_text(&file, &owned))
+        .await
+        .map_err(|err| ApiError::new(ErrorCode::Internal, err.to_string()))?
+        .map_err(|err| io_error(path, err))
+}
+
+fn read_chunk_blocking(file: &Path, offset: u64, len: u32) -> std::io::Result<FileChunk> {
+    let mut handle = std::fs::File::open(file)?;
+    // The size and time come from the opened file, so they describe the bytes
+    // that are read even if the path is replaced meanwhile.
+    let meta = handle.metadata()?;
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|since| u64::try_from(since.as_nanos()).unwrap_or(u64::MAX));
+    let mut data = Vec::new();
+    if offset < meta.len() {
+        let len = len.min(MAX_FILE_CHUNK) as u64;
+        data.reserve(len.min(meta.len() - offset) as usize);
+        handle.seek(SeekFrom::Start(offset))?;
+        handle.take(len).read_to_end(&mut data)?;
+    }
+    Ok(FileChunk {
+        size: meta.len(),
+        modified,
+        data,
+    })
+}
+
+/// Reads up to `len` bytes of a file from `offset` on, for a download.
+pub async fn read_chunk(
+    root: &Path,
+    path: &str,
+    offset: u64,
+    len: u32,
+) -> Result<FileChunk, ApiError> {
+    let file = resolve(root, path)?;
+    if !file.is_file() {
+        return Err(ApiError::new(
+            ErrorCode::BadRequest,
+            format!("{path} is not a file"),
+        ));
+    }
+    tokio::task::spawn_blocking(move || read_chunk_blocking(&file, offset, len))
         .await
         .map_err(|err| ApiError::new(ErrorCode::Internal, err.to_string()))?
         .map_err(|err| io_error(path, err))

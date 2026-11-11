@@ -60,6 +60,17 @@ impl TestAgent {
 
     /// A connection to the agent, the way the workspace makes one.
     pub fn connect(&self, cx: &mut TestAppContext) -> Entity<AgentConnection> {
+        self.connect_as(
+            HostEntry::Local {
+                name: "local".into(),
+            },
+            cx,
+        )
+    }
+
+    /// A connection that the GUI takes for one to `host`; it still reaches
+    /// the agent directly.
+    pub fn connect_as(&self, host: HostEntry, cx: &mut TestAppContext) -> Entity<AgentConnection> {
         // Replies from the agent wake the app from the backend's threads, and
         // the connection asks for one as soon as it exists.
         cx.executor().allow_parking();
@@ -72,9 +83,6 @@ impl TestAgent {
         .unwrap()
         .unwrap();
         let backend = self.backend.clone();
-        let host = HostEntry::Local {
-            name: "local".into(),
-        };
         cx.new(|cx| AgentConnection::new(host, client, notifications, backend, cx))
     }
 

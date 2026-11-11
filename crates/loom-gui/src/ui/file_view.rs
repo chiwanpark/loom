@@ -14,7 +14,7 @@ use loom_client::proto::{ErrorCode, FileContent, FileVersion};
 
 use crate::state::AgentConnection;
 use crate::ui::workspace::{Save, ToggleLineWrap};
-use crate::ui::{dialogs, notify};
+use crate::ui::{dialogs, download, notify};
 
 pub(crate) const CONTEXT: &str = "FileView";
 
@@ -93,11 +93,12 @@ pub(crate) fn language(path: &str) -> String {
     .to_string()
 }
 
-fn human_size(size: u64) -> String {
+pub(crate) fn human_size(size: u64) -> String {
     match size {
         0..1024 => format!("{size} B"),
         1024..1_048_576 => format!("{:.1} KB", size as f64 / 1024.),
-        _ => format!("{:.1} MB", size as f64 / 1_048_576.),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", size as f64 / 1_048_576.),
+        _ => format!("{:.1} GB", size as f64 / 1_073_741_824.),
     }
 }
 
@@ -463,6 +464,23 @@ impl Render for FileView {
                                 ),
                         )
                     })
+                    .when(self.connection.read(cx).downloads_supported(), |el| {
+                        el.child(
+                            Button::new("download-file")
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(gpui_kit_assets::IconName::Download))
+                                .tooltip("Download…")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    download::prompt(
+                                        this.connection.clone(),
+                                        this.relative.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("reload-file")
                             .ghost()
@@ -679,6 +697,8 @@ mod tests {
         assert_eq!(language("app/view.JSX"), "javascript");
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(3 << 20), "3.0 MB");
+        assert_eq!(human_size(5 << 30), "5.0 GB");
     }
 
     #[test]

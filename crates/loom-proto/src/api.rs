@@ -216,7 +216,19 @@ pub enum Command {
         text: String,
         expected: FileVersion,
     },
+    /// Raw bytes of a workspace file, from `offset` on, at most `len` of them
+    /// and never more than [`MAX_FILE_CHUNK`]. A client downloads a file by
+    /// asking for its chunks in turn. Answered with [`Payload::FileChunk`].
+    /// Agents refuse it on relayed connections.
+    ReadFileChunk {
+        path: String,
+        offset: u64,
+        len: u32,
+    },
 }
+
+/// The most bytes one [`Command::ReadFileChunk`] returns.
+pub const MAX_FILE_CHUNK: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Payload {
@@ -242,6 +254,18 @@ pub enum Payload {
     Telemetry(TelemetryStatus),
     /// The version of a file after a write.
     FileWritten(FileVersion),
+    FileChunk(FileChunk),
+}
+
+/// Part of a file's bytes. `size` and `modified` describe the whole file when
+/// the chunk was read; a client notices that the file changed between chunks
+/// when they differ.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileChunk {
+    pub size: u64,
+    /// Nanoseconds since the Unix epoch, if the file system reports it.
+    pub modified: Option<u64>,
+    pub data: Vec<u8>,
 }
 
 /// The agent's OpenTelemetry export. Settings apply when the agent starts.

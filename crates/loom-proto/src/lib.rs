@@ -184,6 +184,11 @@ mod tests {
                 text: "fn main() {}\n".into(),
                 expected: FileVersion([7; 32]),
             },
+            Command::ReadFileChunk {
+                path: "data.bin".into(),
+                offset: 1 << 40,
+                len: MAX_FILE_CHUNK,
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }
@@ -273,6 +278,14 @@ mod tests {
         message_roundtrip(ServerMessage::Response {
             id: 7,
             result: Ok(Payload::FileWritten(FileVersion([2; 32]))),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 9,
+            result: Ok(Payload::FileChunk(FileChunk {
+                size: 1 << 40,
+                modified: Some(1_700_000_000_123_456_789),
+                data: vec![0, 1, 255],
+            })),
         });
         message_roundtrip(ServerMessage::Response {
             id: 8,

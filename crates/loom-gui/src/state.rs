@@ -157,6 +157,12 @@ impl AgentConnection {
         this
     }
 
+    /// Whether files can be downloaded from the agent: only over a direct
+    /// connection, not through a relay.
+    pub fn downloads_supported(&self) -> bool {
+        !matches!(self.host, HostEntry::Relay { .. })
+    }
+
     pub fn key(&self) -> (String, String) {
         (self.host.name().to_owned(), self.info.instance.0.clone())
     }

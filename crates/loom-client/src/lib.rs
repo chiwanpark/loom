@@ -1,5 +1,6 @@
 mod client;
 mod connect;
+mod download;
 mod error;
 mod login;
 mod relay;

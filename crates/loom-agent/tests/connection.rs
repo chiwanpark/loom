@@ -678,3 +678,187 @@ async fn sessions_can_be_renamed_and_files_browsed() {
         .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 }
+
+/// Names in a directory, to see that no partial download stays behind.
+fn entries(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn umask() -> u32 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let line = status.lines().find(|l| l.starts_with("Umask:")).unwrap();
+    u32::from_str_radix(line["Umask:".len()..].trim(), 8).unwrap()
+}
+
+#[tokio::test]
+async fn files_download_in_chunks_to_a_local_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    let workspace = &setup.info.workspace;
+    // Several chunks and a partial one, with bytes that are not text.
+    let len = 3 * 1024 * 1024 + 12345;
+    let bytes: Vec<u8> = (0..len).map(|i| (i * 7 % 256) as u8).collect();
+    std::fs::write(workspace.join("data.bin"), &bytes).unwrap();
+    std::fs::write(workspace.join("empty"), b"").unwrap();
+    let out = setup.dir.path().join("downloads");
+    std::fs::create_dir(&out).unwrap();
+    // An existing file is replaced.
+    std::fs::write(out.join("data.bin"), "old").unwrap();
+
+    let mut seen = Vec::new();
+    let size = client
+        .download_file("data.bin", &out.join("data.bin"), |done, total| {
+            seen.push((done, total))
+        })
+        .await
+        .unwrap();
+    assert_eq!(size, len as u64);
+    assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), bytes);
+    let mode = std::fs::metadata(out.join("data.bin"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o666 & !umask());
+    let mib = 1024 * 1024;
+    assert_eq!(
+        seen,
+        vec![
+            (mib, len as u64),
+            (2 * mib, len as u64),
+            (3 * mib, len as u64),
+            (len as u64, len as u64)
+        ]
+    );
+
+    let size = client
+        .download_file("empty", &out.join("empty"), |_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(size, 0);
+    assert_eq!(std::fs::read(out.join("empty")).unwrap(), b"");
+
+    for (path, code) in [
+        ("missing", ErrorCode::NotFound),
+        ("../outside", ErrorCode::BadRequest),
+        ("", ErrorCode::BadRequest),
+    ] {
+        let err = client
+            .download_file(path, &out.join("failed"), |_, _| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.api().map(|e| e.code), Some(code), "{path}: {err}");
+    }
+    assert_eq!(entries(&out), vec!["data.bin", "empty"]);
+}
+
+#[tokio::test]
+async fn a_file_that_changes_during_a_download_is_not_saved() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    let source = setup.info.workspace.join("log.txt");
+    let out = setup.dir.path().join("downloads");
+    std::fs::create_dir(&out).unwrap();
+
+    // The file is rewritten in place, keeping its size, or grows, after the
+    // first chunk arrived and before the next ones are asked for.
+    for grow in [false, true] {
+        std::fs::write(&source, vec![b'a'; 2 * 1024 * 1024 + 1]).unwrap();
+        // An old time, so that the change shows even with coarse timestamps.
+        std::fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000))
+            .unwrap();
+        let err = client
+            .download_file("log.txt", &out.join("log.txt"), |_, _| {
+                let mut file = std::fs::File::options().write(true).open(&source).unwrap();
+                if grow {
+                    file.seek(SeekFrom::End(0)).unwrap();
+                    file.write_all(b"more").unwrap();
+                } else {
+                    file.seek(SeekFrom::Start(1024 * 1024)).unwrap();
+                    file.write_all(b"b").unwrap();
+                }
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ClientError::Changed(path) if path == "log.txt"),
+            "grow {grow}: {err}"
+        );
+        assert!(entries(&out).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_download_leaves_nothing_behind() {
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    std::fs::write(
+        setup.info.workspace.join("big.bin"),
+        vec![1u8; 8 * 1024 * 1024],
+    )
+    .unwrap();
+    let out = setup.dir.path().join("downloads");
+    std::fs::create_dir(&out).unwrap();
+
+    let (started, mut cancel) = tokio::sync::oneshot::channel();
+    let mut started = Some(started);
+    let dest = out.join("big.bin");
+    let download = client.download_file("big.bin", &dest, |_, _| {
+        if let Some(started) = started.take() {
+            let _ = started.send(());
+        }
+    });
+    tokio::select! {
+        biased;
+        _ = &mut cancel => {}
+        _ = download => panic!("the download finished before it was cancelled"),
+    }
+    assert!(entries(&out).is_empty());
+    // The connection still works.
+    assert!(client.list_sessions().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn downloads_are_refused_through_a_relay() {
+    let setup = setup(vec![]);
+    std::fs::write(setup.info.workspace.join("a.txt"), "a").unwrap();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client_read, client_write) = tokio::io::split(client_io);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let peer = loom_transport::PeerInfo::Relay {
+        label: "laptop".into(),
+        pubkey: [0; 32],
+    };
+    tokio::spawn(serve_stream(
+        ServerContext::new(setup.agent.clone(), setup.info.clone()),
+        loom_transport::FrameStream::new(server_read, server_write, peer),
+    ));
+    let stream = loom_transport::FrameStream::new(
+        client_read,
+        client_write,
+        loom_transport::PeerInfo::Memory,
+    );
+    let (client, _notes) = Client::connect(stream, "test").await.unwrap();
+
+    let out = setup.dir.path().join("a.txt");
+    let err = client
+        .download_file("a.txt", &out, |_, _| {})
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().map(|e| e.code), Some(ErrorCode::Unsupported));
+    assert!(!out.exists());
+    // Reading files for the viewer still works.
+    assert_eq!(client.read_file("a.txt").await.unwrap().text, "a");
+}

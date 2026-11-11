@@ -8,10 +8,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder, px, uniform_list,
 };
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{ChangeStatus, DirEntry, EntryKind};
 
 use crate::state::AgentConnection;
+use crate::ui::download;
 
 const ROW_HEIGHT: f32 = 24.;
 const INDENT: f32 = 14.;
@@ -274,7 +276,9 @@ impl FileTreeView {
             IconName::File
         };
         let path = row.path.clone();
-        h_flex()
+        let menu_path = row.path.clone();
+        let connection = self.connection.clone();
+        let row_element = h_flex()
             .id(SharedString::from(row.path.clone()))
             .h(px(ROW_HEIGHT))
             .w_full()
@@ -323,7 +327,27 @@ impl FileTreeView {
                     cx.emit(FileTreeEvent::Open(path.clone()));
                     cx.notify();
                 }
-            }))
+            }));
+        if is_dir {
+            return row_element.into_any_element();
+        }
+        row_element
+            .context_menu(move |menu, _, cx| {
+                let supported = connection.read(cx).downloads_supported();
+                let (connection, path) = (connection.clone(), menu_path.clone());
+                menu.item(
+                    PopupMenuItem::new(if supported {
+                        "Download…"
+                    } else {
+                        "Download… (direct connections only)"
+                    })
+                    .icon(Icon::new(gpui_kit_assets::IconName::Download))
+                    .disabled(!supported)
+                    .on_click(move |_, window, cx| {
+                        download::prompt(connection.clone(), path.clone(), window, cx)
+                    }),
+                )
+            })
             .into_any_element()
     }
 }

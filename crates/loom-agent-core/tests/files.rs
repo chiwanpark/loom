@@ -1,8 +1,8 @@
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
-use loom_agent_core::files::{list_directory, read_file, write_file};
-use loom_proto::{EntryKind, ErrorCode, FileVersion};
+use loom_agent_core::files::{list_directory, read_chunk, read_file, write_file};
+use loom_proto::{EntryKind, ErrorCode, FileVersion, MAX_FILE_CHUNK};
 use loom_tools::{FileAccess, Workspace};
 
 fn names(listing: &loom_proto::DirectoryListing) -> Vec<(&str, EntryKind, bool)> {
@@ -249,4 +249,39 @@ async fn a_write_waits_for_a_tool_call_on_the_same_file() {
     drop(guard);
     write.await.unwrap().unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+}
+
+#[tokio::test]
+async fn reads_raw_chunks_of_any_file_for_downloads() {
+    let (_dir, workspace) = workspace();
+    let root = workspace.root();
+    let len = MAX_FILE_CHUNK as usize + 10;
+    let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+    std::fs::write(root.join("data.bin"), &bytes).unwrap();
+
+    let first = read_chunk(root, "data.bin", 0, 100).await.unwrap();
+    assert_eq!(first.data, bytes[..100]);
+    assert_eq!(first.size, len as u64);
+    assert!(first.modified.is_some());
+    // Asking for more than the limit gets the limit.
+    let big = read_chunk(root, "data.bin", 5, u32::MAX).await.unwrap();
+    assert_eq!(big.data.len(), MAX_FILE_CHUNK as usize);
+    assert_eq!(big.data, bytes[5..5 + MAX_FILE_CHUNK as usize]);
+    let tail = read_chunk(root, "data.bin", len as u64 - 3, 100)
+        .await
+        .unwrap();
+    assert_eq!(tail.data, bytes[len - 3..]);
+    let past = read_chunk(root, "data.bin", len as u64 + 1, 100)
+        .await
+        .unwrap();
+    assert!(past.data.is_empty());
+    assert_eq!((past.size, past.modified), (first.size, first.modified));
+
+    std::fs::create_dir(root.join("dir")).unwrap();
+    let err = read_chunk(root, "dir", 0, 10).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = read_chunk(root, "../outside", 0, 10).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let err = read_chunk(root, "missing", 0, 10).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
 }
