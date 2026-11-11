@@ -86,10 +86,6 @@ impl Activity {
             Self::WaitingLock => "Waiting for another session to release the workspace…".into(),
         }
     }
-
-    pub fn needs_user(&self) -> bool {
-        matches!(self, Self::WaitingApproval(_))
-    }
 }
 
 /// A short name for a session state, for lists and tooltips.
@@ -937,7 +933,6 @@ mod tests {
         );
         let activity = conv.activity().unwrap();
         assert_eq!(activity, Activity::WaitingApproval(1));
-        assert!(activity.needs_user());
         feed(&mut conv, vec![state(SessionState::WaitingLock)]);
         assert_eq!(conv.activity(), Some(Activity::WaitingLock));
         feed(&mut conv, vec![state(SessionState::Idle)]);

@@ -5,16 +5,17 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, EventEmitter, FollowMode, HighlightStyle,
-    InteractiveElement, IntoElement, ListAlignment, ListState, ObjectFit, ParentElement, Pixels,
-    Render, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage,
-    StyledText, Subscription, Window, div, img, list, prelude::FluentBuilder, px,
+    Animation, AnimationExt, AnyElement, App, AppContext, Context, Div, ElementId, Entity,
+    EventEmitter, FollowMode, HighlightStyle, Hsla, InteractiveElement, IntoElement, ListAlignment,
+    ListState, ObjectFit, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
+    StyleRefinement, Styled, StyledImage, StyledText, Subscription, Window, div, img, list,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewState};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, Theme, h_flex, v_flex};
 use loom_client::proto::{Decision, ToolCall, ToolResultDetails};
@@ -33,7 +34,7 @@ const OUTPUT_ROWS: u16 = 40;
 /// reveal blank space before they are measured.
 const OVERDRAW: f32 = 800.;
 
-/// The padding inside a card (a prompt, a tool call, the activity block).
+/// The padding inside a card (a prompt, a tool call, the status row).
 const CARD_PADDING: Pixels = px(12.);
 /// Where text starts in every item: a card's padding plus its 1px border.
 /// Items without a card are padded by this much, so all text lines up.
@@ -41,7 +42,7 @@ const TEXT_INSET: Pixels = px(13.);
 
 /// The space above an item: little between tool calls, so a run of them
 /// reads as one block, and the most above a prompt, where a turn starts.
-/// `item` is `None` for the activity block.
+/// `item` is `None` for the status row.
 fn gap_before(prev: Option<&Item>, item: Option<&Item>) -> Pixels {
     match (prev, item) {
         (None, _) => px(0.),
@@ -121,7 +122,8 @@ impl MessageList {
             rendered_rows: 0,
             _subscriptions: subscriptions,
         };
-        // The last row is the activity block, empty while the session is idle.
+        // The last row is the status row, for what no item shows: thinking
+        // before any reasoning streams in, and waiting for the workspace lock.
         this.list.splice(0..0, 1);
         this.sync(cx);
         this.list.set_follow_mode(FollowMode::Tail);
@@ -157,7 +159,7 @@ impl MessageList {
                 .splice(common..self.synced.len(), revisions.len() - common);
         }
         let count = revisions.len();
-        // The activity block changes with the session state.
+        // The status row changes with the session state.
         self.list.remeasure_items(count..count + 1);
         self.markdown.retain(|(ix, _), _| *ix < count);
         self.synced = revisions.to_vec();
@@ -218,8 +220,15 @@ impl MessageList {
         let content = match conversation.items.get(ix) {
             Some(item) => self.render_item(ix, item, cx),
             None => match conversation.activity() {
-                Some(activity) => activity_block(&activity, cx.theme()),
-                None => return div().into_any_element(),
+                // Once reasoning streams in, its own row says so.
+                Some(Activity::Thinking) if !reasoning_streams(conversation) => {
+                    reasoning_row("Thinking…", "thinking-icon".into(), true, cx.theme())
+                        .into_any_element()
+                }
+                Some(Activity::WaitingLock) => lock_block(cx.theme()),
+                // Everything else shows on the items themselves: the answer as
+                // it streams, running tool calls, and calls awaiting approval.
+                _ => return div().into_any_element(),
             },
         };
         div().w_full().pt(gap).child(content).into_any_element()
@@ -345,37 +354,35 @@ impl MessageList {
             } => {
                 let show = self.show_reasoning.contains(&ix);
                 let hover_color = theme.foreground;
+                let thinking = *streaming && text.is_empty();
                 v_flex()
                     .w_full()
                     .gap_2()
                     .when(!reasoning.is_empty(), |el| {
                         el.child(
-                            h_flex()
-                                .id(("reasoning", ix))
-                                .pl(TEXT_INSET)
-                                .gap_2()
-                                .cursor_pointer()
-                                .text_sm()
-                                .text_color(theme.muted_foreground)
-                                .hover(move |el| el.text_color(hover_color))
-                                .child(
-                                    div()
-                                        .debug_selector(move || format!("reasoning-icon-{ix}"))
-                                        .child(Icon::new(gpui_kit_assets::IconName::Brain).small()),
-                                )
-                                .child(if *streaming && text.is_empty() {
+                            reasoning_row(
+                                if thinking {
                                     "Thinking…"
                                 } else if show {
                                     "Hide reasoning"
                                 } else {
                                     "Show reasoning"
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                },
+                                format!("reasoning-icon-{ix}"),
+                                thinking,
+                                &theme,
+                            )
+                            .id(("reasoning", ix))
+                            .cursor_pointer()
+                            .hover(move |el| el.text_color(hover_color))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     if !this.show_reasoning.remove(&ix) {
                                         this.show_reasoning.insert(ix);
                                     }
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         )
                         .when(show, |el| {
                             // The bar lines up with the edges of the cards and the
@@ -414,17 +421,6 @@ impl MessageList {
                                         .debug_selector(move || format!("assistant-text-{ix}"))
                                         .child(TextView::new(state).selectable(true)),
                                 ),
-                            )
-                        },
-                    )
-                    .when(
-                        *streaming && text.is_empty() && reasoning.is_empty(),
-                        |el| {
-                            el.child(
-                                div()
-                                    .px(TEXT_INSET)
-                                    .text_color(theme.muted_foreground)
-                                    .child("…"),
                             )
                         },
                     )
@@ -516,7 +512,15 @@ impl MessageList {
                     .whitespace_nowrap()
                     .font_family(theme.mono_font_family.clone())
                     .text_size(theme.mono_font_size)
-                    .child(header_text(&tool.call, &theme)),
+                    .map(|el| {
+                        if tool.status == ToolStatus::Running {
+                            let id = id.clone();
+                            el.debug_selector(move || format!("shimmer-{id}"))
+                                .child(running_header_text(&tool.call, &theme))
+                        } else {
+                            el.child(header_text(&tool.call, &theme))
+                        }
+                    }),
             )
             .when_some(status, |el, status| {
                 el.child(div().text_xs().text_color(color).child(status))
@@ -711,6 +715,22 @@ fn header_text(call: &ToolCall, theme: &gpui_component::Theme) -> StyledText {
     let summary = tool_summary(call);
     let highlights = header_highlights(call, &summary, theme);
     StyledText::new(summary).with_highlights(highlights)
+}
+
+/// The header of a running call: its name shimmers.
+fn running_header_text(call: &ToolCall, theme: &Theme) -> impl IntoElement {
+    let summary: SharedString = tool_summary(call).into();
+    let mut rest = header_highlights(call, &summary, theme);
+    // The name's highlight comes first, and the shimmer takes its place.
+    rest.remove(0);
+    shimmer(
+        SharedString::from(format!("shimmer-{}", call.call_id)),
+        summary,
+        0..call.name.len(),
+        rest,
+        theme.blue,
+        theme.foreground,
+    )
 }
 
 fn header_highlights(
@@ -938,56 +958,249 @@ fn diff_block(diff: &str, theme: &gpui_component::Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The last block of a busy conversation: what the session is doing now.
-fn activity_block(activity: &Activity, theme: &gpui_component::Theme) -> AnyElement {
-    let attention = activity.needs_user();
-    let color = if attention {
-        theme.warning
-    } else {
-        theme.muted_foreground
-    };
+/// Whether the reasoning of the answer being written is streaming in, so
+/// its row shows that the model is thinking.
+fn reasoning_streams(conversation: &Conversation) -> bool {
+    matches!(
+        conversation.items.last(),
+        Some(Item::Assistant {
+            streaming: true,
+            reasoning,
+            ..
+        }) if !reasoning.is_empty()
+    )
+}
+
+/// The row that toggles the reasoning of an answer. While the model thinks
+/// before any reasoning arrives, the status row shows the same row, so the
+/// reasoning takes its place without a jump. A `busy` label shimmers.
+fn reasoning_row(label: &'static str, icon_selector: String, busy: bool, theme: &Theme) -> Div {
+    h_flex()
+        .pl(TEXT_INSET)
+        .gap_2()
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child(
+            div()
+                .debug_selector(move || icon_selector.clone())
+                .child(Icon::new(gpui_kit_assets::IconName::Brain).small()),
+        )
+        .map(|el| {
+            if busy {
+                el.child(shimmering_label("shimmer-thinking", label, theme))
+            } else {
+                el.child(label)
+            }
+        })
+}
+
+/// The status row while the session waits for another one to release the
+/// workspace, which no item shows.
+fn lock_block(theme: &Theme) -> AnyElement {
     h_flex()
         .id("activity")
+        .debug_selector(|| "status-block".into())
         .w_full()
         .gap_2()
         .px(CARD_PADDING)
         .py_2()
         .rounded_md()
         .border_1()
-        .border_color(if attention {
-            theme.warning
-        } else {
-            theme.border
-        })
+        .border_color(theme.border)
         .text_sm()
-        .text_color(color)
-        .child(if attention {
-            Icon::new(IconName::TriangleAlert)
+        .text_color(theme.muted_foreground)
+        .child(
+            Icon::new(IconName::LoaderCircle)
                 .small()
-                .text_color(color)
-                .into_any_element()
-        } else {
-            Spinner::new()
-                .icon(IconName::LoaderCircle)
-                .small()
-                .color(theme.info)
-                .into_any_element()
-        })
+                .text_color(theme.info),
+        )
         .child(
             div()
                 .flex_1()
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
-                .child(activity.label()),
+                .child(shimmering_label(
+                    "shimmer-lock",
+                    Activity::WaitingLock.label(),
+                    theme,
+                )),
         )
         .into_any_element()
 }
 
+/// How often the shimmer crosses its text.
+const SHIMMER_PERIOD: Duration = Duration::from_millis(2000);
+/// The part of the period the band spends crossing; it rests the rest.
+const SHIMMER_SWEEP: f32 = 0.7;
+/// How far the band moves a color toward the foreground at its peak.
+const SHIMMER_STRENGTH: f32 = 0.8;
+/// A color sweep looks smooth at this rate, and the list it is in redraws
+/// only half as often as on every frame.
+const SHIMMER_FPS: f32 = 30.;
+
+/// How much the band brightens character `ix` of `len` at `delta` of the
+/// loop, from 0 to 1. The band is about a third of the text wide, so short
+/// and long texts both get one whole sweep.
+fn shimmer_strength(len: usize, ix: usize, delta: f32) -> f32 {
+    let sweep = delta / SHIMMER_SWEEP;
+    if !(0.0..1.0).contains(&sweep) {
+        return 0.0;
+    }
+    let half = (len as f32 * 0.35).max(1.5);
+    let center = -half + (len as f32 + 2.0 * half) * sweep;
+    let t = (1.0 - ((ix as f32 + 0.5) - center).abs() / half).max(0.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Colors each character of `text[range]` with `base`, moved toward `peak`
+/// where the band is at `delta` of the loop. Neighbours of the same color
+/// share a run.
+fn shimmer_highlights(
+    text: &str,
+    range: std::ops::Range<usize>,
+    base: Hsla,
+    peak: Hsla,
+    delta: f32,
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    let part = &text[range.clone()];
+    let len = part.chars().count();
+    let mut runs: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+    for (ix, (offset, ch)) in part.char_indices().enumerate() {
+        let start = range.start + offset;
+        let end = start + ch.len_utf8();
+        let strength = shimmer_strength(len, ix, delta);
+        let color = if strength > 0.0 {
+            base.blend(peak.opacity(SHIMMER_STRENGTH * strength))
+        } else {
+            base
+        };
+        match runs.last_mut() {
+            Some((run, style)) if style.color == Some(color) => run.end = end,
+            _ => runs.push((
+                start..end,
+                HighlightStyle {
+                    color: Some(color),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+    runs
+}
+
+/// Text that shows a block is busy: a band of stronger color sweeps across
+/// `range` of it now and then. `rest` styles the text after the range.
+/// Every shimmer moves in step, and with reduced motion the text is still.
+fn shimmer(
+    id: impl Into<ElementId>,
+    text: SharedString,
+    range: std::ops::Range<usize>,
+    rest: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+    base: Hsla,
+    peak: Hsla,
+) -> impl IntoElement {
+    StyledText::new(text.clone()).with_animation(
+        id,
+        Animation::new(SHIMMER_PERIOD)
+            .repeat_synced()
+            .with_max_fps(SHIMMER_FPS),
+        move |_, delta| {
+            let mut highlights = shimmer_highlights(&text, range.clone(), base, peak, delta);
+            highlights.extend(rest.iter().cloned());
+            StyledText::new(text.clone()).with_highlights(highlights)
+        },
+    )
+}
+
+/// A muted label that shimmers.
+fn shimmering_label(
+    selector: &'static str,
+    label: impl Into<SharedString>,
+    theme: &Theme,
+) -> impl IntoElement {
+    let label: SharedString = label.into();
+    let len = label.len();
+    div().debug_selector(move || selector.into()).child(shimmer(
+        selector,
+        label,
+        0..len,
+        Vec::new(),
+        theme.muted_foreground,
+        theme.foreground,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CallDetails, call_details, edit_preview, head, split_read_note};
+    use super::{
+        CallDetails, SHIMMER_SWEEP, call_details, edit_preview, head, shimmer_highlights,
+        split_read_note,
+    };
+    use gpui::{Hsla, hsla};
     use loom_client::proto::ToolCall;
+
+    const BASE: Hsla = hsla(0., 0., 0.5, 1.);
+    const PEAK: Hsla = hsla(0., 0., 0.1, 1.);
+
+    /// The color of every character, by its byte offset.
+    fn colors(text: &str, range: std::ops::Range<usize>, delta: f32) -> Vec<(usize, Hsla)> {
+        let runs = shimmer_highlights(text, range.clone(), BASE, PEAK, delta);
+        // The runs cover the range in order, on character boundaries.
+        let mut end = range.start;
+        for (run, _) in &runs {
+            assert_eq!(run.start, end);
+            assert!(text.is_char_boundary(run.end));
+            end = run.end;
+        }
+        assert_eq!(end, range.end);
+        text[range.clone()]
+            .char_indices()
+            .map(|(offset, _)| {
+                let at = range.start + offset;
+                let (_, style) = runs.iter().find(|(run, _)| run.contains(&at)).unwrap();
+                (at, style.color.unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shimmer_sweeps_a_band_across_the_text_and_then_rests() {
+        let text = "Thinking…";
+        let all = 0..text.len();
+        // At the start of the loop, which reduced motion shows, and while
+        // resting, the text has its own color.
+        for delta in [0.0, SHIMMER_SWEEP + 0.05, 0.99] {
+            assert!(
+                colors(text, all.clone(), delta)
+                    .iter()
+                    .all(|(_, c)| *c == BASE)
+            );
+        }
+        // The band moves from left to right and darkens toward the peak.
+        let darkest = |delta| {
+            colors(text, all.clone(), delta)
+                .into_iter()
+                .min_by(|a, b| a.1.l.total_cmp(&b.1.l))
+                .unwrap()
+        };
+        let (early, early_color) = darkest(SHIMMER_SWEEP * 0.3);
+        let (late, late_color) = darkest(SHIMMER_SWEEP * 0.7);
+        assert!(early < late, "{early} then {late}");
+        assert!(early_color.l < BASE.l && early_color.l > PEAK.l);
+        assert!(late_color.l < BASE.l);
+        // Only part of the text is in the band at once.
+        let mid = colors(text, all, SHIMMER_SWEEP * 0.5);
+        assert!(mid.iter().any(|(_, c)| *c == BASE));
+    }
+
+    #[test]
+    fn the_shimmer_colors_only_its_range() {
+        let text = "shell cargo test";
+        let colors = colors(text, 0..5, SHIMMER_SWEEP * 0.5);
+        assert_eq!(colors.len(), 5);
+        assert!(colors.iter().any(|(_, c)| *c != BASE));
+    }
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
@@ -1385,7 +1598,7 @@ mod view_tests {
         let rows = |cx: &mut VisualTestContext| {
             messages.read_with(cx, |messages, _| messages.list.item_count())
         };
-        // Six items and the activity row.
+        // Six items and the status row.
         assert_eq!(rows(cx), 7);
         conversation.update(cx, |conversation, cx| {
             apply(
@@ -1412,6 +1625,165 @@ mod view_tests {
         });
         cx.run_until_parked();
         assert_eq!(rows(cx), 7);
+    }
+
+    /// Applies `events` to the conversation and draws the list again.
+    fn feed(
+        conversation: &Entity<Conversation>,
+        events: Vec<SessionEvent>,
+        cx: &mut VisualTestContext,
+    ) {
+        conversation.update(cx, |conversation, cx| {
+            for event in events {
+                apply(conversation, event);
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
+    fn state(state: SessionState) -> SessionEvent {
+        SessionEvent::StateChanged { state }
+    }
+
+    fn shown(selector: &'static str, cx: &mut VisualTestContext) -> bool {
+        cx.debug_bounds(selector).is_some()
+    }
+
+    /// Whether the list keeps being drawn again when only time passes. A
+    /// shimmer that just ended may still have one frame coming, which does
+    /// not count.
+    fn redraws(messages: &Entity<MessageList>, cx: &mut VisualTestContext) -> bool {
+        let tick = |cx: &mut VisualTestContext| {
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+        };
+        tick(cx);
+        take_rendered(messages, cx);
+        for _ in 0..3 {
+            tick(cx);
+        }
+        take_rendered(messages, cx) > 0
+    }
+
+    #[gpui::test]
+    fn thinking_shows_once_and_the_reasoning_takes_its_place(cx: &mut TestAppContext) {
+        let (conversation, _, messages, cx) = open(1, cx);
+        feed(
+            &conversation,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("a prompt")],
+                },
+                state(SessionState::Thinking),
+            ],
+            cx,
+        );
+        let placeholder = cx.debug_bounds("thinking-icon").expect("no thinking row");
+        assert!(shown("shimmer-thinking", cx));
+        assert!(!shown("status-block", cx));
+        // The shimmer draws the list again as time passes.
+        assert!(redraws(&messages, cx));
+
+        feed(
+            &conversation,
+            vec![SessionEvent::ReasoningDelta { text: "hm".into() }],
+            cx,
+        );
+        let ix = conversation.read_with(cx, |c, _| c.items.len() - 1);
+        let selector: &'static str = format!("reasoning-icon-{ix}").leak();
+        // The reasoning row replaces the thinking row, in the same place.
+        assert_eq!(cx.debug_bounds(selector), Some(placeholder));
+        assert!(!shown("thinking-icon", cx));
+        assert!(shown("shimmer-thinking", cx));
+
+        feed(
+            &conversation,
+            vec![SessionEvent::AssistantDelta { text: "Hel".into() }],
+            cx,
+        );
+        assert!(shown(selector, cx));
+        assert!(!shown("shimmer-thinking", cx));
+        assert!(!shown("status-block", cx));
+        // Nothing shimmers, so nothing is drawn again until something changes.
+        assert!(!redraws(&messages, cx));
+    }
+
+    #[gpui::test]
+    fn a_tool_call_shows_that_it_runs_on_its_own_card(cx: &mut TestAppContext) {
+        let (conversation, _, messages, cx) = open(1, cx);
+        let call = |id: &str| ToolCall {
+            call_id: id.into(),
+            name: "shell".into(),
+            arguments: r#"{"command":"cargo test"}"#.into(),
+            risk: None,
+        };
+        feed(
+            &conversation,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("a prompt")],
+                },
+                SessionEvent::ToolCallRequested { call: call("c1") },
+                state(SessionState::RunningTool),
+            ],
+            cx,
+        );
+        // Queued, not running yet.
+        assert!(!shown("shimmer-c1", cx));
+        feed(
+            &conversation,
+            vec![SessionEvent::ToolCallStarted {
+                call_id: "c1".into(),
+            }],
+            cx,
+        );
+        let header = cx
+            .debug_bounds("shimmer-c1")
+            .expect("the name does not shimmer");
+        let icon = cx.debug_bounds("tool-icon-c1").unwrap();
+        assert!(header.left() > icon.right(), "the header text shimmers");
+        assert!(redraws(&messages, cx));
+        assert!(!shown("status-block", cx));
+        assert!(!shown("shimmer-thinking", cx));
+
+        feed(
+            &conversation,
+            vec![
+                SessionEvent::ToolCallFinished {
+                    call_id: "c1".into(),
+                    result: ToolResult {
+                        content: String::new(),
+                        is_error: false,
+                        details: None,
+                    },
+                },
+                SessionEvent::ToolCallRequested { call: call("c2") },
+                SessionEvent::ApprovalRequired {
+                    call_id: "c2".into(),
+                    reason: "ask".into(),
+                },
+                state(SessionState::WaitingApproval),
+            ],
+            cx,
+        );
+        assert!(!shown("shimmer-c1", cx));
+        // The card asks for the approval; nothing else does.
+        assert!(!shown("shimmer-c2", cx));
+        assert!(!shown("status-block", cx));
+        assert!(!redraws(&messages, cx));
+    }
+
+    #[gpui::test]
+    fn waiting_for_the_workspace_lock_has_its_own_status_block(cx: &mut TestAppContext) {
+        let (conversation, _, _, cx) = open(1, cx);
+        feed(&conversation, vec![state(SessionState::WaitingLock)], cx);
+        assert!(shown("status-block", cx));
+        assert!(shown("shimmer-lock", cx));
+        feed(&conversation, vec![state(SessionState::Idle)], cx);
+        assert!(!shown("status-block", cx));
+        assert!(!shown("shimmer-lock", cx));
     }
 
     #[gpui::test]
