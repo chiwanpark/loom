@@ -660,15 +660,29 @@ impl Workspace {
     }
 
     fn refresh_host(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.list_host(ix, true, window, cx);
+    }
+
+    /// Lists the host's agents again. With `retry_failed`, agents whose
+    /// connection failed are tried again; otherwise they wait for a click, so
+    /// a failure that triggers a listing cannot loop.
+    fn list_host(
+        &mut self,
+        ix: usize,
+        retry_failed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(host) = self.hosts.get_mut(ix) else {
             return;
         };
         host.loading = true;
         host.error = None;
         let entry = host.entry.clone();
-        // Looking again also retries agents whose connection failed.
-        self.connect_errors
-            .retain(|(host, _), _| host != entry.name());
+        if retry_failed {
+            self.connect_errors
+                .retain(|(host, _), _| host != entry.name());
+        }
         let env = self.env.clone();
         let task = self
             .backend
@@ -720,6 +734,15 @@ impl Workspace {
         }
     }
 
+    /// Drops an agent from its host's list until the host is listed again.
+    fn forget_agent(&mut self, host: &str, instance: &str) {
+        if let Some(entry) = self.hosts.iter_mut().find(|h| h.entry.name() == host) {
+            entry.agents.retain(|agent| agent.instance != instance);
+        }
+        self.connect_errors
+            .remove(&(host.to_owned(), instance.to_owned()));
+    }
+
     fn find_connection(
         &self,
         host: &str,
@@ -766,6 +789,7 @@ impl Workspace {
                 Target::Workspace(path) | Target::Attach(path) => path.display().to_string(),
             },
         );
+        let by_instance = matches!(target, Target::Instance(_));
         if !self.connecting.insert(key.clone()) {
             return;
         }
@@ -799,6 +823,11 @@ impl Workspace {
                                         })
                                         .cloned()
                                 });
+                        // A restarted agent takes over the old one's connection.
+                        let replaced = existing
+                            .as_ref()
+                            .map(|c| c.read(cx).info.instance.0.clone())
+                            .filter(|old| *old != instance);
                         let conn = match existing {
                             Some(conn) => {
                                 conn.update(cx, |conn, cx| {
@@ -824,10 +853,13 @@ impl Workspace {
                         if !background || this.active_connection.is_none() {
                             this.active_connection = Some(conn);
                         }
-                        if !background
+                        if let Some(old) = &replaced {
+                            this.forget_agent(entry.name(), old);
+                        }
+                        if (!background || replaced.is_some())
                             && let Some(ix) = this.hosts.iter().position(|h| h.entry == entry)
                         {
-                            this.refresh_host(ix, window, cx);
+                            this.list_host(ix, !background, window, cx);
                         }
                     }
                     Some(Err(err)) => {
@@ -837,6 +869,12 @@ impl Workspace {
                             notify::error(window, cx, err.clone());
                         }
                         this.connect_errors.insert(key, err);
+                        // The agent may be gone; the listing drops it if so.
+                        if by_instance
+                            && let Some(ix) = this.hosts.iter().position(|h| h.entry == entry)
+                        {
+                            this.list_host(ix, false, window, cx);
+                        }
                     }
                     None => {}
                 }
@@ -1716,11 +1754,7 @@ impl Workspace {
         let task = read
             .backend
             .run(async move { client.stop_agent(&instance).await });
-        self.remove_groups(window, cx, |g| g.connection == conn);
-        self.connections.retain(|c| c != &conn);
-        if self.active_connection.as_ref() == Some(&conn) {
-            self.active_connection = self.connections.first().cloned();
-        }
+        self.drop_connection(&conn, window, cx);
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -1735,6 +1769,35 @@ impl Workspace {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Closes a connection and its tabs.
+    fn drop_connection(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remove_groups(window, cx, |g| g.connection == *conn);
+        self.connections.retain(|c| c != conn);
+        if self.active_connection.as_ref() == Some(conn) {
+            self.active_connection = self.connections.first().cloned();
+        }
+    }
+
+    /// Removes a disconnected agent from the panel, with its tabs. It comes
+    /// back if its host lists it again.
+    fn remove_agent(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let read = conn.read(cx);
+        let (host, instance) = (read.host.name().to_owned(), read.info.instance.0.clone());
+        self.drop_connection(&conn, window, cx);
+        self.forget_agent(&host, &instance);
         cx.notify();
     }
 
@@ -2770,6 +2833,7 @@ impl Workspace {
     ) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = agent.conn.clone();
+        let unlinked = conn.is_none() && matches!(agent.entry.link, Link::Offline(_));
         let activity = session.as_ref().and_then(|s| {
             conn.as_ref()?
                 .read(cx)
@@ -2937,6 +3001,63 @@ impl Workspace {
             .when_some(conn, |el, conn| {
                 el.child(self.render_row_menu(group, ix, conn, session, cx))
             })
+            .when(unlinked, |el| {
+                el.child(self.render_unlinked_menu(group, ix, agent, cx))
+            })
+            .into_any_element()
+    }
+
+    /// The menu of an agent the host lists but the client has no connection
+    /// to, such as one that failed to connect or has exited.
+    fn render_unlinked_menu(
+        &self,
+        group: Group,
+        ix: usize,
+        agent: &PanelAgent,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let workspace = cx.entity().downgrade();
+        let host_ix = agent.host_ix;
+        let host = agent.entry.remote.clone();
+        let instance = agent.instance.clone();
+        div()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Button::new(SharedString::from(format!("agent-menu-{group:?}-{ix}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .dropdown_menu(move |mut menu, _, _| {
+                        let item = |label: &'static str, run: Rc<MenuAction>| {
+                            let workspace = workspace.clone();
+                            PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                let run = run.clone();
+                                let _ = workspace.update(cx, |ws, cx| run(ws, window, cx));
+                            })
+                        };
+                        if let Some(hix) = host_ix {
+                            let id = instance.clone();
+                            menu = menu.item(item(
+                                "Connect",
+                                Rc::new(move |ws, window, cx| {
+                                    ws.connect(hix, Target::Instance(id.clone()), window, cx)
+                                }),
+                            ));
+                            menu = menu.item(item(
+                                "Look for agents again",
+                                Rc::new(move |ws, window, cx| ws.refresh_host(hix, window, cx)),
+                            ));
+                        }
+                        let (host, id) = (host.clone(), instance.clone());
+                        menu.separator().item(item(
+                            "Remove from list",
+                            Rc::new(move |ws, _, cx| {
+                                ws.forget_agent(&host, &id);
+                                cx.notify();
+                            }),
+                        ))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -2968,9 +3089,16 @@ impl Workspace {
                         };
                         if !connected {
                             let c = conn.clone();
-                            return menu.item(item(
+                            menu = menu.item(item(
                                 "Reconnect",
                                 Rc::new(move |ws, window, cx| ws.reconnect(&c, window, cx)),
+                            ));
+                            let c = conn.clone();
+                            return menu.separator().item(item(
+                                "Remove from list",
+                                Rc::new(move |ws, window, cx| {
+                                    ws.remove_agent(c.clone(), window, cx)
+                                }),
                             ));
                         }
                         let c = conn.clone();
