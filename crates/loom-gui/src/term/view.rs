@@ -133,6 +133,15 @@ impl TerminalView {
         }
     }
 
+    /// Connects a view that was shown before its terminal was ready (a
+    /// restored tab) and tells the terminal the current size.
+    pub fn connect(&mut self, io: Rc<dyn TerminalIo>, cx: &mut Context<Self>) {
+        let (cols, rows) = self.grid_size();
+        io.resize(cols, rows);
+        self.io = Some(io);
+        cx.notify();
+    }
+
     pub fn read_only(mut self) -> Self {
         self.read_only = true;
         self

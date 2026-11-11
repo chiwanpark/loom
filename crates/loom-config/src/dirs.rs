@@ -52,6 +52,10 @@ impl Dirs {
         self.data_home.join(APP_DIR)
     }
 
+    pub fn state_dir(&self) -> PathBuf {
+        self.state_home.join(APP_DIR)
+    }
+
     pub fn default_runtime_dir(&self) -> PathBuf {
         match &self.runtime_dir {
             Some(dir) => dir.join(APP_DIR),

@@ -27,6 +27,8 @@ pub enum ConnectionEvent {
     LoginFinished(Result<String, ApiError>),
     Failed(String),
     SessionRemoved(SessionId),
+    /// The session list arrived (after connecting or reconnecting).
+    SessionsLoaded,
     Closed,
 }
 
@@ -237,6 +239,7 @@ impl AgentConnection {
                 sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
                 let _ = this.update(cx, |this, cx| {
                     this.sessions = sessions;
+                    cx.emit(ConnectionEvent::SessionsLoaded);
                     cx.notify();
                 });
             }
@@ -535,6 +538,22 @@ impl AgentConnection {
                 io,
             },
         );
+    }
+
+    /// Stops routing a terminal to its view without closing it on the agent
+    /// (a restored terminal that could not be reattached).
+    pub fn unregister_terminal(&mut self, id: TerminalId) {
+        if let Some(terminal) = self.terminals.remove(&id) {
+            terminal.io.forget();
+        }
+    }
+
+    /// The agent's ID for a terminal view opened through this connection.
+    pub fn terminal_id(&self, view: &Entity<TerminalView>) -> Option<TerminalId> {
+        self.terminals
+            .iter()
+            .find(|(_, t)| t.view.entity_id() == view.entity_id())
+            .map(|(id, _)| *id)
     }
 
     /// After a reconnect, points every open terminal at the new client and takes it

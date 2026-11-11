@@ -85,6 +85,23 @@ impl PaneGroup {
         }
     }
 
+    /// A group with an existing tree (a restored layout). Its splits get
+    /// fresh IDs, which only need to be unique within the group.
+    pub fn from_root(mut root: Member) -> Self {
+        fn number(member: &mut Member, next: &mut u64) {
+            if let Member::Axis(axis) = member {
+                *next += 1;
+                axis.id = *next;
+                for child in &mut axis.members {
+                    number(child, next);
+                }
+            }
+        }
+        let mut next_axis = 0;
+        number(&mut root, &mut next_axis);
+        Self { root, next_axis }
+    }
+
     fn new_axis(&mut self, old: PaneId, new: PaneId, direction: SplitDirection) -> Member {
         self.next_axis += 1;
         let members = if direction.increasing() {
@@ -323,6 +340,34 @@ mod tests {
             }
             Member::Pane(_) => panic!("expected a nested axis"),
         }
+    }
+
+    #[test]
+    fn a_restored_tree_gets_unique_split_ids() {
+        let tree = Member::Axis(PaneAxis {
+            id: 0,
+            axis: Axis::Horizontal,
+            members: vec![
+                Member::Pane(1),
+                Member::Axis(PaneAxis {
+                    id: 0,
+                    axis: Axis::Vertical,
+                    members: vec![Member::Pane(2), Member::Pane(3)],
+                }),
+            ],
+        });
+        let mut group = PaneGroup::from_root(tree);
+        let outer = axis_of(&group);
+        let Member::Axis(inner) = &outer.members[1] else {
+            panic!("expected a nested split");
+        };
+        assert_ne!(outer.id, inner.id);
+        let ids = [outer.id, inner.id];
+        group.split(1, 4, SplitDirection::Down);
+        let Member::Axis(added) = &axis_of(&group).members[0] else {
+            panic!("expected a new split");
+        };
+        assert!(!ids.contains(&added.id), "a later split reuses an ID");
     }
 
     #[test]

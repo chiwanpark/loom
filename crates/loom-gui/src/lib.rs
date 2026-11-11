@@ -7,6 +7,7 @@ pub mod changes;
 pub mod connection;
 pub mod conversation;
 pub mod fuzzy;
+pub mod layout;
 pub mod state;
 pub mod term;
 pub mod themes;

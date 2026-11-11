@@ -12,6 +12,7 @@ use crate::changes::{
     DiffLine, DiffLineKind, change_lines, count_lines, diff_lines, session_changes,
 };
 use crate::conversation::Conversation;
+use crate::layout::SavedTab;
 use crate::state::AgentConnection;
 
 const ROW_HEIGHT: f32 = 20.;
@@ -113,6 +114,21 @@ impl DiffView {
 
     pub fn title(&self) -> String {
         self.title.clone()
+    }
+
+    /// How to open this view again after a restart.
+    pub fn saved_tab(&self) -> SavedTab {
+        match &self.source {
+            Source::Session { .. } => SavedTab::SessionDiff {
+                path: self.path.clone(),
+            },
+            Source::Git {
+                relative, old_path, ..
+            } => SavedTab::GitDiff {
+                path: relative.clone(),
+                old_path: old_path.clone(),
+            },
+        }
     }
 
     pub fn is_git(&self) -> bool {

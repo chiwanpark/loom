@@ -28,6 +28,7 @@ use crate::backend::Backend;
 use crate::changes::{FileChange, display_path, session_changes};
 use crate::connection::{self, AgentSummary, Env, Target};
 use crate::conversation::{Activity, short_id, state_label};
+use crate::layout::{self, GroupKey, SavedGroup, SavedLayout, SavedPane, SavedTab};
 use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal};
 use crate::term::{TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
@@ -424,6 +425,16 @@ pub struct Workspace {
     poll_ticks: u64,
     focus: FocusHandle,
     subscriptions: Vec<Subscription>,
+    layout_path: PathBuf,
+    /// Saved tab groups whose agent has not listed its sessions yet.
+    pending_layout: Vec<SavedGroup>,
+    /// The saved active group, until it is restored or another is opened.
+    pending_active: Option<GroupKey>,
+    /// What was last read or written, so unchanged layouts are not rewritten.
+    saved_layout: SavedLayout,
+    /// Restored terminal tabs still waiting for the agent, with what they
+    /// were saved as.
+    restoring: HashMap<EntityId, SavedTab>,
 }
 
 impl Workspace {
@@ -445,6 +456,12 @@ impl Workspace {
                 error: None,
             })
             .collect();
+        let layout_path = layout::path(&env.dirs.state_dir());
+        let mut saved_layout = layout::load(&layout_path);
+        // Groups on hosts that were removed can never be restored.
+        saved_layout
+            .groups
+            .retain(|g| config.hosts.iter().any(|h| h.name() == g.key.host));
         let mut this = Self {
             backend,
             env,
@@ -468,7 +485,18 @@ impl Workspace {
             poll_ticks: 0,
             focus: cx.focus_handle(),
             subscriptions: Vec::new(),
+            layout_path,
+            pending_layout: saved_layout.groups.clone(),
+            pending_active: saved_layout.active.clone(),
+            saved_layout,
+            restoring: HashMap::new(),
         };
+        cx.on_app_quit(|this, cx| {
+            this.save_layout(cx);
+            async {}
+        })
+        .detach();
+        cx.on_release(|this, cx| this.save_layout(cx)).detach();
         for ix in 0..this.hosts.len() {
             this.refresh_host(ix, window, cx);
         }
@@ -476,7 +504,11 @@ impl Workspace {
         cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             loop {
                 cx.background_executor().timer(CHANGES_POLL).await;
-                if this.update(cx, |ws, cx| ws.poll_changes(cx)).is_err() {
+                let polled = this.update(cx, |ws, cx| {
+                    ws.poll_changes(cx);
+                    ws.save_layout(cx);
+                });
+                if polled.is_err() {
                     break;
                 }
             }
@@ -880,6 +912,7 @@ impl Workspace {
                     let id = id.clone();
                     this.remove_groups(window, cx, |g| g.is(&conn, &id));
                 }
+                ConnectionEvent::SessionsLoaded => this.restore_groups(conn, window, cx),
                 ConnectionEvent::LoginFinished(_) => {}
             },
         ));
@@ -896,6 +929,323 @@ impl Workspace {
         if let Some(ix) = self.hosts.iter().position(|h| h.entry.name() == host) {
             self.connect(ix, target, window, cx);
         }
+    }
+
+    /// How a tab is opened again after a restart, or `None` when it is not
+    /// worth keeping (an ended terminal).
+    fn saved_tab(&self, group: &SessionGroup, panel: &Panel, cx: &App) -> Option<SavedTab> {
+        match panel {
+            Panel::Chat(_) => Some(SavedTab::Conversation),
+            Panel::Terminal(view) => {
+                if let Some(saved) = self.restoring.get(&view.entity_id()) {
+                    return Some(saved.clone());
+                }
+                if view.read(cx).exited().is_some() {
+                    return None;
+                }
+                let conn = group.connection.read(cx);
+                let id = conn.terminal_id(view)?;
+                Some(SavedTab::Terminal {
+                    instance: conn.info.instance.0.clone(),
+                    id,
+                })
+            }
+            Panel::Diff(view) => Some(view.read(cx).saved_tab()),
+            Panel::File(view) => Some(SavedTab::File {
+                path: view.read(cx).relative().to_owned(),
+            }),
+        }
+    }
+
+    fn group_key(group: &SessionGroup, cx: &App) -> GroupKey {
+        let conn = group.connection.read(cx);
+        GroupKey {
+            host: conn.host.name().to_owned(),
+            workspace: conn.info.workspace.clone(),
+            session: group.session.0.clone(),
+        }
+    }
+
+    fn saved_group(&self, group: &SessionGroup, cx: &App) -> Option<SavedGroup> {
+        let mut order = Vec::new();
+        let root = layout::save_member(&group.layout.root, &mut |id| {
+            let pane = group.pane(id)?;
+            let saved = SavedPane::keep(
+                pane.tabs
+                    .iter()
+                    .map(|(_, panel)| self.saved_tab(group, panel, cx)),
+                pane.tabs.active_index(),
+            )?;
+            order.push(id);
+            Some(saved)
+        })?;
+        Some(SavedGroup {
+            key: Self::group_key(group, cx),
+            root,
+            active_pane: order
+                .iter()
+                .position(|id| *id == group.active_pane)
+                .unwrap_or(0),
+        })
+    }
+
+    /// The open tab groups, followed by the saved ones not restored yet.
+    fn layout_snapshot(&self, cx: &App) -> SavedLayout {
+        let mut groups: Vec<SavedGroup> = self
+            .groups
+            .iter()
+            .filter_map(|group| self.saved_group(group, cx))
+            .collect();
+        for pending in &self.pending_layout {
+            if !groups.iter().any(|g| g.key == pending.key) {
+                groups.push(pending.clone());
+            }
+        }
+        let active = match self.active_group() {
+            Some(group) => Some(Self::group_key(group, cx)),
+            None => self.pending_active.clone(),
+        };
+        SavedLayout {
+            groups,
+            active,
+            ..SavedLayout::default()
+        }
+    }
+
+    fn save_layout(&mut self, cx: &App) {
+        let layout = self.layout_snapshot(cx);
+        if layout == self.saved_layout {
+            return;
+        }
+        if let Err(err) = layout::save(&self.layout_path, &layout) {
+            tracing::warn!("cannot save {}: {err}", self.layout_path.display());
+        }
+        self.saved_layout = layout;
+    }
+
+    /// Reopens the saved tab groups of an agent's workspace once it has
+    /// listed its sessions. Groups of sessions that are gone or archived are
+    /// dropped.
+    fn restore_groups(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let read = conn.read(cx);
+        let host = read.host.name().to_owned();
+        let workspace = read.info.workspace.clone();
+        let sessions = read.sessions.clone();
+        let mut ix = 0;
+        while ix < self.pending_layout.len() {
+            let key = &self.pending_layout[ix].key;
+            if key.host != host || key.workspace != workspace {
+                ix += 1;
+                continue;
+            }
+            let saved = self.pending_layout.remove(ix);
+            let active = self.pending_active.as_ref() == Some(&saved.key);
+            if active {
+                self.pending_active = None;
+            }
+            let Some(info) = sessions
+                .iter()
+                .find(|s| s.id.0 == saved.key.session && !s.archived)
+            else {
+                continue;
+            };
+            if self.groups.iter().any(|g| g.is(conn, &info.id)) {
+                continue;
+            }
+            if let Some(group) = self.restore_group(conn, info, &saved, window, cx) {
+                self.groups.push(group);
+                if active && self.active_group.is_none() {
+                    self.activate_group(self.groups.len() - 1, window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn restore_group(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        info: &SessionInfo,
+        saved: &SavedGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<SessionGroup> {
+        let mut saved_panes = Vec::new();
+        let root =
+            layout::restore_member(&saved.root, &mut || self.alloc_panel(), &mut saved_panes)?;
+        let has_chat = saved_panes
+            .iter()
+            .any(|(_, pane)| pane.tabs.contains(&SavedTab::Conversation));
+        let mut panes = Vec::new();
+        for (id, pane) in saved_panes {
+            let mut tabs = TabList::default();
+            for tab in &pane.tabs {
+                if let Some(panel) = self.restore_panel(conn, info, tab, has_chat, window, cx) {
+                    let panel_id = self.alloc_panel();
+                    tabs.add(panel_id, panel, Some(tabs.len()));
+                }
+            }
+            tabs.activate(pane.active.min(tabs.len().saturating_sub(1)));
+            panes.push(Pane { id, tabs });
+        }
+        let order: Vec<PaneId> = panes.iter().map(|p| p.id).collect();
+        let mut group = SessionGroup {
+            connection: conn.clone(),
+            session: info.id.clone(),
+            layout: PaneGroup::from_root(root),
+            active_pane: order.get(saved.active_pane).copied().unwrap_or(order[0]),
+            panes,
+        };
+        let empty: Vec<PaneId> = group
+            .panes
+            .iter()
+            .filter(|p| p.tabs.is_empty())
+            .map(|p| p.id)
+            .collect();
+        for id in empty {
+            group.remove_pane(id);
+        }
+        (!group.is_empty()).then_some(group)
+    }
+
+    fn restore_panel(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        info: &SessionInfo,
+        tab: &SavedTab,
+        has_chat: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Panel> {
+        let panel = match tab {
+            SavedTab::Conversation => return Some(self.chat_panel(conn, info, window, cx)),
+            SavedTab::Terminal { instance, id } => {
+                return Some(Panel::Terminal(
+                    self.restore_terminal(conn, instance, *id, window, cx),
+                ));
+            }
+            SavedTab::GitDiff { path, old_path } => {
+                let view =
+                    cx.new(|cx| DiffView::git(conn.clone(), path.clone(), old_path.clone(), cx));
+                self.subscriptions
+                    .push(cx.observe(&view, |_, _, cx| cx.notify()));
+                Panel::Diff(view)
+            }
+            // A session diff follows the conversation, which only a
+            // conversation tab keeps open.
+            SavedTab::SessionDiff { .. } if !has_chat => return None,
+            SavedTab::SessionDiff { path } => {
+                let conversation = conn.update(cx, |conn, cx| conn.conversation(info, cx));
+                let title = display_path(path, &conn.read(cx).info.workspace);
+                let view = cx.new(|cx| DiffView::session(conversation, path.clone(), title, cx));
+                self.subscriptions
+                    .push(cx.observe(&view, |_, _, cx| cx.notify()));
+                Panel::Diff(view)
+            }
+            SavedTab::File { path } => {
+                let view = cx.new(|cx| FileView::new(conn.clone(), path.clone(), window, cx));
+                self.subscriptions
+                    .push(cx.observe(&view, |_, _, cx| cx.notify()));
+                Panel::File(view)
+            }
+        };
+        Some(panel)
+    }
+
+    /// A terminal tab that reattaches to its terminal when the same agent
+    /// still runs it, and opens a new one in its place otherwise.
+    fn restore_terminal(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        instance: &str,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TerminalView> {
+        let appearance = &self.config.appearance;
+        let font = mono_font(
+            appearance.mono_font.as_deref(),
+            &appearance.mono_font_fallbacks,
+            cx,
+        );
+        let size = px(appearance.mono_font_size);
+        let view = cx.new(|cx| TerminalView::new(None, font, size, cx));
+        self.subscriptions
+            .push(cx.observe(&view, |_, _, cx| cx.notify()));
+        self.restoring.insert(
+            view.entity_id(),
+            SavedTab::Terminal {
+                instance: instance.to_owned(),
+                id,
+            },
+        );
+        let read = conn.read(cx);
+        let client = read.client.clone();
+        let backend = read.backend.clone();
+        let (cols, rows) = view.read(cx).grid_size();
+        // Register before attaching, so the output that the redraw after
+        // attaching produces reaches the view.
+        let existing = (read.info.instance.0 == instance).then(|| {
+            let remote = RemoteTerminal::new(&backend, client.clone(), id);
+            let rebind = remote.rebinder();
+            conn.update(cx, |conn, _| conn.register_terminal(id, &view, rebind));
+            Rc::new(remote) as Rc<dyn TerminalIo>
+        });
+        let attach = existing.is_some().then_some(id);
+        let task = backend.run({
+            let client = client.clone();
+            async move {
+                if let Some(id) = attach {
+                    match client.attach_terminal(id, cols, rows).await {
+                        Ok(()) => return Ok(None),
+                        Err(err) => tracing::debug!(terminal = id, "cannot reattach: {err}"),
+                    }
+                }
+                client.open_terminal(cols, rows).await.map(Some)
+            }
+        });
+        let conn = conn.clone();
+        let view_handle = view.clone();
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.restoring.remove(&view_handle.entity_id());
+                let io = match result {
+                    Some(Ok(None)) => existing,
+                    Some(Ok(Some(new_id))) => {
+                        if existing.is_some() {
+                            conn.update(cx, |conn, _| conn.unregister_terminal(id));
+                        }
+                        let remote = RemoteTerminal::new(&backend, client, new_id);
+                        let rebind = remote.rebinder();
+                        conn.update(cx, |conn, _| {
+                            conn.register_terminal(new_id, &view_handle, rebind)
+                        });
+                        Some(Rc::new(remote) as Rc<dyn TerminalIo>)
+                    }
+                    Some(Err(err)) => {
+                        if existing.is_some() {
+                            conn.update(cx, |conn, _| conn.unregister_terminal(id));
+                        }
+                        let reason = format!("cannot open a terminal: {err}");
+                        view_handle.update(cx, |view, cx| view.set_lost(&reason, cx));
+                        None
+                    }
+                    None => None,
+                };
+                if let Some(io) = io {
+                    view_handle.update(cx, |view, cx| view.connect(io, cx));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        view
     }
 
     fn alloc_panel(&mut self) -> PanelId {
