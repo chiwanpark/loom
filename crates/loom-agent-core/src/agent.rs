@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use loom_config::{AgentConfig, Dirs};
 use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
-use loom_proto::{SessionId, SessionInfo};
+use loom_proto::{SessionEvent, SessionId, SessionInfo};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -101,6 +101,25 @@ fn restart_required(current: &AgentConfig, next: &AgentConfig) -> Vec<String> {
     changed.into_iter().map(str::to_owned).collect()
 }
 
+/// Tells clients when a session's state changes, so they can show what every
+/// session is doing without subscribing to its events.
+struct StateNotices(Weak<Inner>);
+
+impl SessionObserver for StateNotices {
+    fn event(&self, session: &SessionId, event: &SessionEvent) {
+        if !matches!(event, SessionEvent::StateChanged { .. }) {
+            return;
+        }
+        let Some(inner) = self.0.upgrade() else {
+            return;
+        };
+        let agent = Agent { inner };
+        if let Ok(session) = agent.session(session) {
+            agent.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
+        }
+    }
+}
+
 impl Agent {
     pub fn new(options: AgentOptions) -> Result<Self> {
         let workspace = Arc::new(Workspace::new(&options.workspace)?);
@@ -129,7 +148,7 @@ impl Agent {
         };
         let external = options.observer;
         let agent = Self {
-            inner: Arc::new(Inner {
+            inner: Arc::new_cyclic(|inner| Inner {
                 workspace,
                 dirs: options.dirs,
                 auth,
@@ -140,7 +159,13 @@ impl Agent {
                 notices,
                 store,
                 metrics: Arc::new(Metrics::default()),
-                observer: Arc::new(Observers(external.into_iter().collect())),
+                observer: Arc::new(Observers(
+                    std::iter::once(
+                        Arc::new(StateNotices(inner.clone())) as Arc<dyn SessionObserver>
+                    )
+                    .chain(external)
+                    .collect(),
+                )),
                 terminals: Terminals::default(),
             }),
         };

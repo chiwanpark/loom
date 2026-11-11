@@ -305,6 +305,11 @@ impl AgentConnection {
         }
         match self.sessions.iter_mut().find(|s| s.id == info.id) {
             Some(existing) => {
+                // An open conversation follows the session's events, which
+                // arrive separately from notices and are authoritative.
+                if !self.conversations.contains_key(&info.id) {
+                    existing.state = info.state;
+                }
                 existing.model = info.model;
                 existing.reasoning = info.reasoning;
                 existing.policy_default = info.policy_default;

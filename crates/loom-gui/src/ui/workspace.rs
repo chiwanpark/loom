@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -394,6 +394,10 @@ pub struct Workspace {
     hosts: Vec<HostNode>,
     connections: Vec<Entity<AgentConnection>>,
     connecting: HashSet<(String, String)>,
+    /// Why the last connection to an agent failed, by `(host, instance)`.
+    connect_errors: HashMap<(String, String), String>,
+    /// Agents stopped from here, which may still be listed while they exit.
+    stopped: HashSet<(String, String)>,
     active_connection: Option<Entity<AgentConnection>>,
     groups: Vec<SessionGroup>,
     active_group: Option<usize>,
@@ -436,6 +440,8 @@ impl Workspace {
             hosts,
             connections: Vec::new(),
             connecting: HashSet::new(),
+            connect_errors: HashMap::new(),
+            stopped: HashSet::new(),
             active_connection: None,
             groups: Vec::new(),
             active_group: None,
@@ -614,6 +620,9 @@ impl Workspace {
         host.loading = true;
         host.error = None;
         let entry = host.entry.clone();
+        // Looking again also retries agents whose connection failed.
+        self.connect_errors
+            .retain(|(host, _), _| host != entry.name());
         let env = self.env.clone();
         let task = self
             .backend
@@ -621,11 +630,15 @@ impl Workspace {
         let name = host.entry.name().to_owned();
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if let Some(host) = this.hosts.iter_mut().find(|h| h.entry.name() == name) {
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Some(ix) = this.hosts.iter().position(|h| h.entry.name() == name) {
+                    let host = &mut this.hosts[ix];
                     host.loading = false;
                     match result {
-                        Some(Ok(agents)) => host.agents = agents,
+                        Some(Ok(agents)) => {
+                            host.agents = agents;
+                            this.connect_discovered(ix, window, cx);
+                        }
                         Some(Err(err)) => host.error = Some(err),
                         None => {}
                     }
@@ -635,6 +648,30 @@ impl Workspace {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Connects in the background to the host's agents that have no
+    /// connection yet, so the agents panel can list their sessions and follow
+    /// their state. Agents whose last connection failed wait for a click.
+    fn connect_discovered(&mut self, host_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = self.hosts.get(host_ix) else {
+            return;
+        };
+        let name = host.entry.name().to_owned();
+        let pending: Vec<String> = host
+            .agents
+            .iter()
+            .map(|agent| agent.instance.clone())
+            .filter(|instance| {
+                let key = (name.clone(), instance.clone());
+                self.find_connection(&name, instance, cx).is_none()
+                    && !self.connect_errors.contains_key(&key)
+                    && !self.stopped.contains(&key)
+            })
+            .collect();
+        for instance in pending {
+            self.connect_with(host_ix, Target::Instance(instance), true, window, cx);
+        }
     }
 
     fn find_connection(
@@ -659,14 +696,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.connect_with(host_ix, target, true, window, cx);
+        self.connect_with(host_ix, target, false, window, cx);
     }
 
+    /// Connects to an agent. A `background` connection neither reports
+    /// errors nor replaces the active agent.
     fn connect_with(
         &mut self,
         host_ix: usize,
         target: Target,
-        report_errors: bool,
+        background: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -698,6 +737,7 @@ impl Workspace {
                 this.connecting.remove(&key);
                 match result {
                     Some(Ok((client, notifications))) => {
+                        this.connect_errors.remove(&key);
                         let instance = client.agent().instance.0.clone();
                         let workspace = client.agent().workspace.clone();
                         let existing =
@@ -735,13 +775,23 @@ impl Workspace {
                                 conn
                             }
                         };
-                        this.active_connection = Some(conn);
-                        if let Some(ix) = this.hosts.iter().position(|h| h.entry == entry) {
+                        if !background || this.active_connection.is_none() {
+                            this.active_connection = Some(conn);
+                        }
+                        if !background
+                            && let Some(ix) = this.hosts.iter().position(|h| h.entry == entry)
+                        {
                             this.refresh_host(ix, window, cx);
                         }
                     }
-                    Some(Err(err)) if report_errors => notify::error(window, cx, err),
-                    Some(Err(err)) => tracing::info!("reconnect failed: {err}"),
+                    Some(Err(err)) => {
+                        if background {
+                            tracing::info!("background connection failed: {err}");
+                        } else {
+                            notify::error(window, cx, err.clone());
+                        }
+                        this.connect_errors.insert(key, err);
+                    }
                     None => {}
                 }
                 cx.notify();
@@ -770,7 +820,7 @@ impl Workspace {
                         let target = reconnect_target(conn.read(cx));
                         let host = conn.read(cx).host.name().to_owned();
                         if let Some(ix) = this.hosts.iter().position(|h| h.entry.name() == host) {
-                            this.connect_with(ix, target, false, window, cx);
+                            this.connect_with(ix, target, true, window, cx);
                         }
                         true
                     })
@@ -1298,6 +1348,7 @@ impl Workspace {
         let client = read.client.clone();
         let instance = read.info.instance.clone();
         let host = read.host.name().to_owned();
+        self.stopped.insert((host.clone(), instance.0.clone()));
         let task = read
             .backend
             .run(async move { client.stop_agent(&instance).await });
