@@ -113,6 +113,12 @@ pub struct Conversation {
     pub total_usage: Usage,
     pub last_seq: u64,
     pub revision: u64,
+    /// Bumped when a tool call finishes, the only event that can change the
+    /// files the session has changed.
+    pub changes_revision: u64,
+    /// The revision at which each item last changed, parallel to `items`, so
+    /// views can tell which items to lay out again.
+    item_revisions: Vec<u64>,
     tools: HashMap<String, usize>,
 }
 
@@ -126,7 +132,30 @@ impl Conversation {
             total_usage: Usage::default(),
             last_seq: 0,
             revision: 0,
+            changes_revision: 0,
+            item_revisions: Vec::new(),
             tools: HashMap::new(),
+        }
+    }
+
+    /// The revision at which each item last changed.
+    pub fn item_revisions(&self) -> &[u64] {
+        &self.item_revisions
+    }
+
+    fn push(&mut self, item: Item) {
+        self.items.push(item);
+        self.item_revisions.push(self.revision);
+    }
+
+    fn pop(&mut self) {
+        self.items.pop();
+        self.item_revisions.pop();
+    }
+
+    fn touch(&mut self, index: usize) {
+        if let Some(revision) = self.item_revisions.get_mut(index) {
+            *revision = self.revision;
         }
     }
 
@@ -206,7 +235,7 @@ impl Conversation {
                         .find(|l| !l.is_empty())
                         .map(|l| l.chars().take(80).collect());
                 }
-                self.items.push(Item::User {
+                self.push(Item::User {
                     text: text.join("\n"),
                     images,
                 });
@@ -230,13 +259,14 @@ impl Conversation {
                     })
                 );
                 if !streaming {
-                    self.items.push(Item::Assistant {
+                    self.push(Item::Assistant {
                         text: String::new(),
                         reasoning: String::new(),
                         streaming: true,
                         model: None,
                     });
                 }
+                self.touch(self.items.len() - 1);
                 if let Some(Item::Assistant {
                     text: t,
                     reasoning: r,
@@ -252,13 +282,13 @@ impl Conversation {
                     *m = Some(model.clone());
                 }
                 if text.is_empty() && reasoning.as_deref().unwrap_or("").is_empty() {
-                    self.items.pop();
+                    self.pop();
                 }
             }
             SessionEvent::ToolCallRequested { call } => {
                 self.finish_streaming();
                 self.tools.insert(call.call_id.clone(), self.items.len());
-                self.items.push(Item::Tool(ToolItem {
+                self.push(Item::Tool(ToolItem {
                     call: call.clone(),
                     status: ToolStatus::Requested,
                     approval_reason: None,
@@ -309,6 +339,7 @@ impl Conversation {
                     }
                     tool.result = Some(result.clone());
                 }
+                self.changes_revision += 1;
             }
             SessionEvent::StateChanged { state } => {
                 self.state = *state;
@@ -326,7 +357,7 @@ impl Conversation {
             }
             SessionEvent::TurnFinished { outcome } => {
                 self.finish_streaming();
-                for item in &mut self.items {
+                for (item, revision) in self.items.iter_mut().zip(&mut self.item_revisions) {
                     if let Item::Tool(tool) = item
                         && matches!(
                             tool.status,
@@ -336,6 +367,7 @@ impl Conversation {
                         )
                     {
                         tool.status = ToolStatus::Failed;
+                        *revision = self.revision;
                     }
                 }
                 if *outcome == TurnOutcome::Interrupted {
@@ -362,11 +394,12 @@ impl Conversation {
     }
 
     fn notice(&mut self, kind: NoticeKind, text: String) {
-        self.items.push(Item::Notice { kind, text });
+        self.push(Item::Notice { kind, text });
     }
 
     fn tool_mut(&mut self, call_id: &str) -> Option<&mut ToolItem> {
         let index = *self.tools.get(call_id)?;
+        self.touch(index);
         match self.items.get_mut(index) {
             Some(Item::Tool(tool)) => Some(tool),
             _ => None,
@@ -382,13 +415,14 @@ impl Conversation {
             })
         );
         if !streaming {
-            self.items.push(Item::Assistant {
+            self.push(Item::Assistant {
                 text: String::new(),
                 reasoning: String::new(),
                 streaming: true,
                 model: None,
             });
         }
+        self.touch(self.items.len() - 1);
         match self.items.last_mut() {
             Some(Item::Assistant {
                 text, reasoning, ..
@@ -398,8 +432,11 @@ impl Conversation {
     }
 
     fn finish_streaming(&mut self) {
-        if let Some(Item::Assistant { streaming, .. }) = self.items.last_mut() {
+        if let Some(Item::Assistant { streaming, .. }) = self.items.last_mut()
+            && *streaming
+        {
             *streaming = false;
+            self.touch(self.items.len() - 1);
         }
     }
 }
@@ -507,10 +544,26 @@ mod tests {
         }
     }
 
+    /// Applies the events and checks after each one that every item whose
+    /// content changed got a new revision, as the message list relies on.
     fn feed(conv: &mut Conversation, events: Vec<SessionEvent>) {
         for event in events {
             let seq = conv.last_seq + 1;
-            conv.apply(&SequencedEvent { seq, event });
+            let (items, revisions) = (conv.items.clone(), conv.item_revisions.clone());
+            conv.apply(&SequencedEvent {
+                seq,
+                event: event.clone(),
+            });
+            assert_eq!(conv.item_revisions.len(), conv.items.len());
+            for (ix, (old, revision)) in items.iter().zip(&revisions).enumerate() {
+                if conv.items.get(ix) != Some(old) {
+                    assert_ne!(
+                        conv.item_revisions.get(ix),
+                        Some(revision),
+                        "item {ix} changed without a new revision on {event:?}"
+                    );
+                }
+            }
         }
     }
 

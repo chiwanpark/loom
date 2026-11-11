@@ -52,8 +52,9 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) -> Self {
         let subscription = cx.observe(&conversation, |this, _, cx| {
-            this.refresh_session(cx);
-            cx.notify();
+            if this.refresh_session(cx) {
+                cx.notify();
+            }
         });
         let mut this = Self {
             source: Source::Session {
@@ -201,20 +202,22 @@ impl DiffView {
         cx.notify();
     }
 
-    fn refresh_session(&mut self, cx: &mut Context<Self>) {
+    /// Recomputes the diff after the session's changes did; returns whether
+    /// they did.
+    fn refresh_session(&mut self, cx: &mut Context<Self>) -> bool {
         let Source::Session {
             conversation,
             revision,
             ..
         } = &mut self.source
         else {
-            return;
+            return false;
         };
         let conversation = conversation.read(cx);
-        if *revision == Some(conversation.revision) {
-            return;
+        if *revision == Some(conversation.changes_revision) {
+            return false;
         }
-        *revision = Some(conversation.revision);
+        *revision = Some(conversation.changes_revision);
         let change = session_changes(&conversation.items)
             .into_iter()
             .find(|c| c.path == self.path);
@@ -230,6 +233,7 @@ impl DiffView {
                 self.lines = Rc::new(Vec::new());
             }
         }
+        true
     }
 
     fn empty_message(&self) -> Option<String> {

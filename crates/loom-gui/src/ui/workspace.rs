@@ -1529,7 +1529,7 @@ impl Workspace {
     fn session_changes(&mut self, cx: &App) -> Option<Rc<Vec<FileChange>>> {
         let chat = self.active_group().and_then(SessionGroup::chat)?;
         let conversation = chat.read(cx).conversation.clone();
-        let revision = conversation.read(cx).revision;
+        let revision = conversation.read(cx).changes_revision;
         if let Some((id, cached, changes)) = &self.changes_cache
             && *id == conversation.entity_id()
             && *cached == revision
