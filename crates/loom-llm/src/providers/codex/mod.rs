@@ -19,6 +19,7 @@ use crate::kind::{
 };
 use crate::provider::{LlmProvider, ProviderId};
 use crate::store::CredentialStore;
+pub(crate) use auth::ORIGINATOR;
 use auth::{
     CALLBACK_PORT, CodexClient, CodexCredential, CodexEndpoints, CodexPending, DEVICE_TIMEOUT,
     DeviceAuth, REDIRECT_URI,
@@ -68,6 +69,16 @@ fn not_signed_in() -> LlmError {
         provider: ID.to_string(),
         message: "sign in to Codex first".into(),
     }
+}
+
+/// Whether Codex credentials are stored, fresh or not: a stale token is
+/// refreshed when it is used.
+pub(crate) async fn signed_in(shared: &Shared) -> Result<bool> {
+    Ok(shared
+        .store
+        .load_section::<CodexCredential>(ID.as_str())
+        .await?
+        .is_some())
 }
 
 pub(crate) async fn access_token(shared: &Shared) -> Result<(String, String)> {

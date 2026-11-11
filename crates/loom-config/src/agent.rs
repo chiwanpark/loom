@@ -167,6 +167,7 @@ impl ProvidersConfig {
 pub struct ToolsConfig {
     pub read: ReadToolConfig,
     pub shell: ShellToolConfig,
+    pub web_search: WebSearchToolConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -206,6 +207,50 @@ impl Default for ShellToolConfig {
             pty: false,
         }
     }
+}
+
+/// The `search_web` tool, which asks an OpenAI model to search the web. It
+/// signs in with the `openai-codex` credentials and is blocked without them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebSearchToolConfig {
+    /// The model that searches.
+    pub model: String,
+    /// How many sources a search returns when the model doesn't say.
+    pub max_sources: usize,
+    /// The most sources the model may ask for.
+    pub max_allowed_sources: usize,
+    pub timeout: HumanDuration,
+    /// The Responses endpoint of the ChatGPT backend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// How hard the searching model reasons. Unset leaves it to the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<SearchReasoningEffort>,
+}
+
+impl Default for WebSearchToolConfig {
+    fn default() -> Self {
+        Self {
+            model: "gpt-5.6-luna".into(),
+            max_sources: 5,
+            max_allowed_sources: 10,
+            timeout: HumanDuration::from_secs(120),
+            endpoint: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -522,6 +567,7 @@ impl AgentConfig {
         }
 
         self.telemetry.validate(origin)?;
+        self.tools.web_search.validate(origin)?;
 
         if self.instructions.max_bytes.as_u64() == 0 {
             return Err(invalid(
@@ -653,6 +699,31 @@ impl AgentConfig {
                 "context.compaction_threshold",
                 format!("{threshold} must be greater than 0 and at most 1"),
             ));
+        }
+        Ok(())
+    }
+}
+
+impl WebSearchToolConfig {
+    fn validate(&self, origin: &str) -> Result<(), ConfigError> {
+        let invalid = |field: &str, message: &str| {
+            ConfigError::invalid(origin, format!("tools.web_search.{field}"), message)
+        };
+        if self.model.trim().is_empty() {
+            return Err(invalid("model", "must not be empty"));
+        }
+        if self.max_sources == 0 {
+            return Err(invalid("max_sources", "must be greater than zero"));
+        }
+        if self.max_allowed_sources == 0 {
+            return Err(invalid("max_allowed_sources", "must be greater than zero"));
+        }
+        if self.timeout.as_duration().is_zero() {
+            return Err(invalid("timeout", "must be greater than zero"));
+        }
+        if let Some(url) = &self.endpoint {
+            check_url_scheme(url, &["http://", "https://"])
+                .map_err(|message| invalid("endpoint", &message))?;
         }
         Ok(())
     }

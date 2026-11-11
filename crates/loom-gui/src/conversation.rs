@@ -506,6 +506,31 @@ pub fn tool_summary(call: &ToolCall) -> String {
             }
         }),
         "write" | "edit" => field("path"),
+        "search_web" => field("query").map(|query| {
+            let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
+            // The tool takes numbers or numeric strings, in either case.
+            let sources = args
+                .get("maxSources")
+                .or_else(|| args.get("max_sources"))
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                });
+            let mut options = Vec::new();
+            if args.get("freshness").and_then(|v| v.as_str()) == Some("live") {
+                options.push("live".to_owned());
+            }
+            match sources {
+                Some(1) => options.push("1 source".into()),
+                Some(n) if n > 1 => options.push(format!("up to {n} sources")),
+                _ => {}
+            }
+            if options.is_empty() {
+                query
+            } else {
+                format!("{query} ({})", options.join(", "))
+            }
+        }),
         _ => None,
     };
     let detail = detail.unwrap_or_else(|| {
@@ -624,6 +649,23 @@ mod tests {
         assert_eq!(
             summary(r#"{"command":"cargo build\nls","timeout":1800}"#),
             "shell (timeout: 30m) cargo build"
+        );
+    }
+
+    #[test]
+    fn search_summary_shows_the_query_and_its_options() {
+        let summary = |args: &str| tool_summary(&call("c", "search_web", args));
+        assert_eq!(
+            summary(r#"{"query":"latest  tokio\nrelease"}"#),
+            "search_web latest tokio release"
+        );
+        assert_eq!(
+            summary(r#"{"query":"rust","freshness":"live","maxSources":3}"#),
+            "search_web rust (live, up to 3 sources)"
+        );
+        assert_eq!(
+            summary(r#"{"query":"rust","freshness":"cached","max_sources":"1"}"#),
+            "search_web rust (1 source)"
         );
     }
 

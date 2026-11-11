@@ -494,7 +494,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             .providers
             .get(&model.provider)
             .map_err(CoreError::from)?;
-        let specs = runtime.tools.specs();
+        let specs = runtime.tools.available_specs().await;
         let prompt = build_system_prompt(&PromptInputs {
             base: runtime.config.instructions.system_prompt.as_deref(),
             system_agents_md: &core.system_agents_md,
@@ -769,6 +769,13 @@ async fn run_tool_call(
                 "tool arguments must be a JSON object, got: {}",
                 call.arguments
             )),
+            false,
+        );
+    }
+    // Refused before asking for an approval it could not use.
+    if let Some(reason) = tool.blocked().await {
+        return finish(
+            convert::error_result(format!("{} is unavailable: {reason}", call.name)),
             false,
         );
     }

@@ -18,6 +18,7 @@ pub mod store;
 pub mod supervisor;
 pub mod terminals;
 pub mod watcher;
+pub mod web_search;
 
 pub use agent::{Agent, AgentNotice, AgentOptions, TelemetryReport, data_dir};
 pub use connection::{Connection, Flow};

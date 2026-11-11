@@ -8,6 +8,7 @@ use loom_tools::sandbox::{LauncherKind, SandboxLauncher, SandboxPolicy, find_bwr
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
 use crate::models::ModelCatalog;
+use crate::web_search::SearchWebTool;
 
 #[derive(Clone)]
 pub struct Runtime {
@@ -38,7 +39,8 @@ impl Runtime {
                 });
             }
         }
-        let tools = ToolRegistry::builtin(builtin_tools(&config, sandbox_exe)?);
+        let mut tools = ToolRegistry::builtin(builtin_tools(&config, sandbox_exe)?);
+        tools.register(Arc::new(SearchWebTool::new(&config.tools.web_search, auth)));
         providers.activate(auth);
         Ok(Self {
             config: Arc::new(config),

@@ -61,49 +61,51 @@ pub fn reasoning_summary(message: &AssistantMessage) -> Option<String> {
 
 pub fn tool_result(output: ToolOutput) -> ToolResult {
     let details = match output.details {
+        // The sources are in the content; clients have no view of their own.
+        ToolDetails::WebSearch { .. } => None,
         ToolDetails::Read {
             path,
             start_line,
             end_line,
             total_lines,
             truncated,
-        } => ToolResultDetails::Read {
+        } => Some(ToolResultDetails::Read {
             path,
             start_line: start_line as u64,
             end_line: end_line as u64,
             total_lines: total_lines as u64,
             truncated,
-        },
+        }),
         ToolDetails::Edit {
             path,
             diff,
             first_changed_line,
-        } => ToolResultDetails::Edit {
+        } => Some(ToolResultDetails::Edit {
             path,
             diff,
             first_changed_line: first_changed_line.map(|l| l as u64),
-        },
+        }),
         ToolDetails::Write {
             path,
             bytes,
             created,
             diff: Some(diff),
-        } => ToolResultDetails::WriteWithDiff {
+        } => Some(ToolResultDetails::WriteWithDiff {
             path,
             bytes: bytes as u64,
             created,
             diff,
-        },
+        }),
         ToolDetails::Write {
             path,
             bytes,
             created,
             diff: None,
-        } => ToolResultDetails::Write {
+        } => Some(ToolResultDetails::Write {
             path,
             bytes: bytes as u64,
             created,
-        },
+        }),
         ToolDetails::Shell {
             exit_code,
             signal,
@@ -114,7 +116,7 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
             total_bytes,
             full_output_path,
             duration_ms,
-        } => ToolResultDetails::Shell {
+        } => Some(ToolResultDetails::Shell {
             exit_code,
             signal,
             timed_out,
@@ -124,12 +126,12 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
             total_bytes,
             full_output_path,
             duration_ms,
-        },
+        }),
     };
     ToolResult {
         content: output.content,
         is_error: output.is_error,
-        details: Some(details),
+        details,
     }
 }
 

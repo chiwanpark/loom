@@ -11,6 +11,7 @@ mod sse;
 mod store;
 mod types;
 mod usage;
+mod web_search;
 
 pub use auth::{
     AccountInfo, AccountStatus, Auth, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
@@ -24,3 +25,7 @@ pub use retry::RetryPolicy;
 pub use store::{CREDENTIALS_FILE, CredentialStore, Credentials, StoreGuard, now_unix};
 pub use types::*;
 pub use usage::{UsageLimit, UsageLimits};
+pub use web_search::{
+    DEFAULT_SEARCH_ENDPOINT, Freshness, WebSearch, WebSearchQuery, WebSearchResult,
+    WebSearchSettings, WebSource,
+};

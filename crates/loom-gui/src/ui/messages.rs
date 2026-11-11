@@ -793,6 +793,7 @@ fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
             }
         }
         "read" if field("path").is_some() => return CallDetails::None,
+        "search_web" if field("query").is_some() => return CallDetails::None,
         "edit" if has_result_diff => return CallDetails::None,
         "edit" => {
             if let Some(diff) = args.as_ref().and_then(edit_preview) {
@@ -1287,6 +1288,11 @@ mod tests {
     fn read_has_no_argument_block_and_unknown_tools_show_json() {
         let read = call("read", serde_json::json!({"path": "a.rs", "offset": 3}));
         assert_eq!(call_details(&read, false), CallDetails::None);
+        let search = call(
+            "search_web",
+            serde_json::json!({"query": "x", "maxSources": 3}),
+        );
+        assert_eq!(call_details(&search, false), CallDetails::None);
         let other = call("search", serde_json::json!({"q": "x"}));
         assert_eq!(
             call_details(&other, false),

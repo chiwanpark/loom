@@ -56,6 +56,17 @@ impl ToolRegistry {
         self.tools.values().map(|tool| tool.spec()).collect()
     }
 
+    /// The tools that are not blocked right now.
+    pub async fn available_specs(&self) -> Vec<ToolSpec> {
+        let mut specs = Vec::new();
+        for tool in self.tools.values() {
+            if tool.blocked().await.is_none() {
+                specs.push(tool.spec());
+            }
+        }
+        specs
+    }
+
     pub async fn call(&self, ctx: &ToolContext, name: &str, args: Value) -> Result<ToolOutput> {
         let tool = self
             .get(name)
@@ -76,6 +87,54 @@ mod tests {
         let registry = ToolRegistry::builtin(BuiltinConfig::default());
         let names: Vec<_> = registry.specs().into_iter().map(|spec| spec.name).collect();
         assert_eq!(names, ["edit", "read", "shell", "write"]);
+    }
+
+    struct Blockable(std::sync::atomic::AtomicBool);
+
+    #[async_trait::async_trait]
+    impl Tool for Blockable {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "blockable".into(),
+                description: String::new(),
+                parameters: json!({}),
+            }
+        }
+
+        fn risk(&self, _: &Value) -> crate::Risk {
+            crate::Risk::ReadOnly
+        }
+
+        async fn blocked(&self) -> Option<String> {
+            self.0
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then(|| "blocked".into())
+        }
+
+        async fn call(&self, _: &ToolContext, _: Value) -> Result<ToolOutput> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_tools_are_not_available() {
+        let tool = Arc::new(Blockable(true.into()));
+        let mut registry = ToolRegistry::builtin(BuiltinConfig::default());
+        registry.register(tool.clone());
+        let names = |specs: Vec<ToolSpec>| specs.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(
+            names(registry.specs()),
+            ["blockable", "edit", "read", "shell", "write"]
+        );
+        assert_eq!(
+            names(registry.available_specs().await),
+            ["edit", "read", "shell", "write"]
+        );
+        tool.0.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            names(registry.available_specs().await),
+            ["blockable", "edit", "read", "shell", "write"]
+        );
     }
 
     #[tokio::test]

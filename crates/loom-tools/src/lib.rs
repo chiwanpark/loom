@@ -20,7 +20,7 @@ pub use registry::{BuiltinConfig, ToolRegistry};
 pub use shell::{ShellConfig, ShellTool};
 pub use tool::{
     LockWaitHook, OutputChunk, OutputSink, OutputStream, Risk, Tool, ToolContext, ToolDetails,
-    ToolOutput, ToolSpec,
+    ToolOutput, ToolSpec, lenient_opt_u64,
 };
 pub use truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, Limits};
 pub use workspace::{

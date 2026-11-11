@@ -383,6 +383,64 @@ async fn provider_errors_fail_the_turn() {
 }
 
 #[tokio::test]
+async fn web_search_is_offered_only_with_openai_codex_credentials() {
+    // Signed out, a call to it is refused without asking for approval.
+    let h = Harness::new(
+        test_config(PolicyAction::Ask),
+        vec![
+            calls(&[("c1", "search_web", json!({"query": "tokio"}))]),
+            text("ok"),
+        ],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    let events = run_turn(&session, &mut sub, "hi").await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ApprovalRequired { .. }))
+    );
+    let results = finished_results(&events);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].1);
+    assert!(
+        results[0]
+            .0
+            .starts_with("search_web is unavailable: sign in to OpenAI Codex"),
+        "{}",
+        results[0].0
+    );
+    let offered = |request: &loom_llm::CompletionRequest| {
+        request.tools.iter().any(|tool| tool.name == "search_web")
+    };
+    assert!(h.provider.requests().iter().all(|r| !offered(r)));
+
+    // Once signed in, the next request offers it.
+    let store = loom_llm::CredentialStore::in_dir(&loom_agent_core::data_dir(
+        &test_config(PolicyAction::Ask),
+        &h.dirs,
+    ));
+    store
+        .update(|c| {
+            c.set_section(
+                "openai-codex",
+                Some(json!({
+                    "account_id": "a",
+                    "access_token": "t",
+                    "refresh_token": "r",
+                    "expires_at": 0,
+                    "saved_at": 0,
+                })),
+            )
+        })
+        .await
+        .unwrap();
+    h.provider.push(text("ok"));
+    run_turn(&session, &mut sub, "again").await;
+    assert!(offered(h.provider.requests().last().unwrap()));
+}
+
+#[tokio::test]
 async fn unknown_tools_and_bad_arguments_are_reported_to_the_model() {
     let h = Harness::new(
         test_config(PolicyAction::Allow),

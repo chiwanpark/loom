@@ -136,7 +136,7 @@ The main sections:
 
 - `allowed_roots`: directories an agent may serve as a workspace (default `~`).
 - `llm`: the default model and provider settings.
-- `tools`: output limits for the `read` and `shell` tools, and the shell program.
+- `tools`: output limits for the `read` and `shell` tools, the shell program, and the `search_web` tool (its model, source limits, and timeout). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it.
 - `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`.
 - `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths.
 - `context`: tool output limits and when to compact a long conversation.

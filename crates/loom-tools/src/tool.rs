@@ -177,6 +177,10 @@ pub enum ToolDetails {
         full_output_path: Option<PathBuf>,
         duration_ms: u64,
     },
+    WebSearch {
+        query: String,
+        sources: usize,
+    },
 }
 
 #[async_trait]
@@ -185,6 +189,12 @@ pub trait Tool: Send + Sync {
 
     fn risk(&self, args: &Value) -> Risk;
 
+    /// Why the tool can't be used right now, if it can't: it is then not
+    /// offered to the model, and a call to it fails.
+    async fn blocked(&self) -> Option<String> {
+        None
+    }
+
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput>;
 }
 
@@ -192,7 +202,9 @@ pub(crate) fn parse_args<T: DeserializeOwned>(args: Value) -> Result<T> {
     serde_json::from_value(args).map_err(|err| ToolError::InvalidArguments(err.to_string()))
 }
 
-pub(crate) fn lenient_opt_u64<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
+/// Reads an optional non-negative integer that a model may send as a float or
+/// a string.
+pub fn lenient_opt_u64<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
