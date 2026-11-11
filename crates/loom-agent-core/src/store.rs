@@ -48,6 +48,17 @@ pub struct SessionState {
     pub archived: bool,
     #[serde(default)]
     pub title: Option<String>,
+    /// The model and effort of the last request, so a restart does not
+    /// forget what a change is measured against.
+    #[serde(default)]
+    pub last_used: Option<UsedModel>,
+}
+
+/// The model and reasoning effort a request was sent with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsedModel {
+    pub model: String,
+    pub reasoning: Option<loom_llm::ReasoningEffort>,
 }
 
 #[derive(Debug, Clone)]

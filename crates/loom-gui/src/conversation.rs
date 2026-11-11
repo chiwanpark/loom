@@ -4,8 +4,8 @@ use std::sync::Arc;
 use gpui::Image;
 
 use loom_client::proto::{
-    ContentPart, Decision, SequencedEvent, SessionEvent, SessionInfo, SessionState, ToolCall,
-    ToolResult, TurnOutcome, Usage,
+    ContentPart, Decision, ReasoningEffort, SequencedEvent, SessionEvent, SessionInfo,
+    SessionState, ToolCall, ToolResult, TurnOutcome, Usage,
 };
 
 pub const MAX_TOOL_OUTPUT: usize = 256 * 1024;
@@ -48,7 +48,6 @@ pub enum Item {
         text: String,
         reasoning: String,
         streaming: bool,
-        model: Option<String>,
     },
     Tool(ToolItem),
     Notice {
@@ -247,9 +246,7 @@ impl Conversation {
                 self.streaming_assistant().1.push_str(text);
             }
             SessionEvent::AssistantMessage {
-                text,
-                reasoning,
-                model,
+                text, reasoning, ..
             } => {
                 let streaming = matches!(
                     self.items.last(),
@@ -263,7 +260,6 @@ impl Conversation {
                         text: String::new(),
                         reasoning: String::new(),
                         streaming: true,
-                        model: None,
                     });
                 }
                 self.touch(self.items.len() - 1);
@@ -271,7 +267,6 @@ impl Conversation {
                     text: t,
                     reasoning: r,
                     streaming,
-                    model: m,
                 }) = self.items.last_mut()
                 {
                     *t = text.clone();
@@ -279,7 +274,6 @@ impl Conversation {
                         *r = reasoning.clone();
                     }
                     *streaming = false;
-                    *m = Some(model.clone());
                 }
                 if text.is_empty() && reasoning.as_deref().unwrap_or("").is_empty() {
                     self.pop();
@@ -389,6 +383,10 @@ impl Conversation {
                     format!("Context {how}: {removed_messages} earlier messages were compacted."),
                 );
             }
+            SessionEvent::ModelChanged { model, reasoning } => {
+                self.finish_streaming();
+                self.notice(NoticeKind::Info, model_changed(model, *reasoning));
+            }
         }
         true
     }
@@ -419,7 +417,6 @@ impl Conversation {
                 text: String::new(),
                 reasoning: String::new(),
                 streaming: true,
-                model: None,
             });
         }
         self.touch(self.items.len() - 1);
@@ -439,6 +436,15 @@ impl Conversation {
             self.touch(self.items.len() - 1);
         }
     }
+}
+
+/// The notice for a change of model or reasoning effort.
+fn model_changed(model: &str, reasoning: Option<ReasoningEffort>) -> String {
+    if reasoning == Some(ReasoningEffort::None) {
+        return format!("Switched to {model} with reasoning off.");
+    }
+    let effort = crate::ui::session::reasoning_label(reasoning).to_lowercase();
+    format!("Switched to {model} with {effort} reasoning effort.")
 }
 
 pub fn short_id(id: &str) -> String {
@@ -697,7 +703,6 @@ mod tests {
                 text: "Hello".into(),
                 reasoning: "hm".into(),
                 streaming: true,
-                model: None
             }
         );
         feed(
@@ -731,11 +736,58 @@ mod tests {
                 text: "Hello!".into(),
                 reasoning: "hmm".into(),
                 streaming: false,
-                model: Some("p/m".into())
             }
         );
         assert_eq!(conv.total_usage.total, 12);
         assert!(!conv.is_busy());
+    }
+
+    #[test]
+    fn a_model_change_ends_the_reply_and_adds_a_notice() {
+        let mut conv = Conversation::new(info());
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::AssistantDelta { text: "Hi".into() },
+                SessionEvent::ModelChanged {
+                    model: "p/big".into(),
+                    reasoning: Some(ReasoningEffort::Xhigh),
+                },
+                SessionEvent::ModelChanged {
+                    model: "p/big".into(),
+                    reasoning: None,
+                },
+                SessionEvent::ModelChanged {
+                    model: "p/small".into(),
+                    reasoning: Some(ReasoningEffort::None),
+                },
+            ],
+        );
+        assert!(matches!(
+            conv.items[0],
+            Item::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
+        let notices: Vec<_> = conv.items[1..]
+            .iter()
+            .map(|item| match item {
+                Item::Notice {
+                    kind: NoticeKind::Info,
+                    text,
+                } => text.as_str(),
+                other => panic!("not an info notice: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                "Switched to p/big with extra high reasoning effort.",
+                "Switched to p/big with default reasoning effort.",
+                "Switched to p/small with reasoning off.",
+            ]
+        );
     }
 
     #[test]

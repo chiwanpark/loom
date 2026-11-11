@@ -319,7 +319,6 @@ impl MessageList {
                 text,
                 reasoning,
                 streaming,
-                model,
             } => {
                 let show = self.show_reasoning.contains(&ix);
                 v_flex()
@@ -376,14 +375,6 @@ impl MessageList {
                         *streaming && text.is_empty() && reasoning.is_empty(),
                         |el| el.child(div().text_color(theme.muted_foreground).child("…")),
                     )
-                    .when_some(model.clone().filter(|_| !*streaming), |el, model| {
-                        el.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(model),
-                        )
-                    })
                     .into_any_element()
             }
             Item::Tool(tool) => self.render_tool(tool, cx),

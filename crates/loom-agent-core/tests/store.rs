@@ -3,7 +3,7 @@ mod common;
 use common::{Harness, MODEL_REF, calls, collect_until, run_turn, test_config, text};
 use loom_config::PolicyAction;
 use loom_llm::Message;
-use loom_proto::{SessionEvent, SessionState, TurnOutcome};
+use loom_proto::{ReasoningEffort, SessionEvent, SessionState, TurnOutcome};
 use serde_json::json;
 
 fn kinds(events: &[loom_proto::SequencedEvent]) -> Vec<&'static str> {
@@ -26,6 +26,7 @@ fn kinds(events: &[loom_proto::SequencedEvent]) -> Vec<&'static str> {
             SessionEvent::Warning { .. } => "warning",
             SessionEvent::Error { .. } => "error",
             SessionEvent::ContextCompacted { .. } => "compacted",
+            SessionEvent::ModelChanged { .. } => "model",
         })
         .collect()
 }
@@ -251,4 +252,89 @@ async fn deleted_sessions_are_removed_from_the_store() {
     let (agent, _) = h.reopen(config, vec![]);
     let ids: Vec<_> = agent.list_sessions().into_iter().map(|s| s.id).collect();
     assert_eq!(ids, vec![kept.id().clone()]);
+}
+
+fn model_changes(events: &[SessionEvent]) -> Vec<(String, Option<ReasoningEffort>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::ModelChanged { model, reasoning } => Some((model.clone(), *reasoning)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_restart_keeps_what_a_model_change_is_measured_against() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(config.clone(), vec![text("one")]);
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "one").await;
+    // Changed after the last response: only the saved state knows the
+    // effort that response used.
+    session.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    let id = session.id().clone();
+    h.agent.shutdown().await;
+    drop(session);
+
+    let (agent, _) = h.reopen(config, vec![text("two"), text("three")]);
+    let restored = agent.session(&id).unwrap();
+    let mut sub = restored.subscribe(None);
+    sub.backlog.clear();
+    let events = run_turn(&restored, &mut sub, "two").await;
+    assert_eq!(
+        model_changes(&events),
+        [(MODEL_REF.to_owned(), Some(ReasoningEffort::High))]
+    );
+    let events = run_turn(&restored, &mut sub, "three").await;
+    assert_eq!(model_changes(&events), []);
+    agent.shutdown().await;
+}
+
+/// A session saved before the agent kept the last model measures a change
+/// against the model of its last response.
+#[tokio::test]
+async fn an_older_session_measures_a_change_against_its_last_response() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(config.clone(), vec![text("one")]);
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "one").await;
+    session.set_model(Some("scripted/other")).unwrap();
+    let id = session.id().clone();
+    h.agent.shutdown().await;
+    drop(session);
+
+    let sessions = loom_agent_core::data_dir(&config, &h.dirs).join("sessions");
+    let path = std::fs::read_dir(sessions)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "sqlite"))
+        .unwrap();
+    let db = rusqlite::Connection::open(path).unwrap();
+    let state: String = db
+        .query_row("SELECT state FROM sessions WHERE id = ?1", [&id.0], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let mut state: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert!(state.as_object_mut().unwrap().remove("last_used").is_some());
+    db.execute(
+        "UPDATE sessions SET state = ?1 WHERE id = ?2",
+        [state.to_string(), id.0.clone()],
+    )
+    .unwrap();
+    drop(db);
+
+    let (agent, _) = h.reopen(config, vec![text("two")]);
+    let restored = agent.session(&id).unwrap();
+    let mut sub = restored.subscribe(None);
+    sub.backlog.clear();
+    let events = run_turn(&restored, &mut sub, "two").await;
+    assert_eq!(
+        model_changes(&events),
+        [("scripted/other".to_owned(), None)]
+    );
+    agent.shutdown().await;
 }

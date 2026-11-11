@@ -345,6 +345,10 @@ fn render(note: Notification, streamed: &mut bool) -> Option<Approval> {
                 let how = if summarized { "summarized" } else { "trimmed" };
                 let _ = writeln!(out, "[context {how}: {removed_messages} messages]");
             }
+            SessionEvent::ModelChanged { model, reasoning } => {
+                let effort = reasoning.map_or("default".into(), |e| format!("{e:?}"));
+                let _ = writeln!(out, "[model: {model}, reasoning effort: {effort}]");
+            }
         },
         Notification::LoginFinished { result, .. } => match result {
             Ok(account) => {

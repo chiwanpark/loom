@@ -82,6 +82,32 @@ mod tests {
             reasoning: Some("thought".into()),
             model: "provider/model".into(),
         });
+        roundtrip(SessionEvent::ModelChanged {
+            model: "provider/model".into(),
+            reasoning: Some(ReasoningEffort::High),
+        });
+        roundtrip(SessionEvent::ModelChanged {
+            model: "provider/model".into(),
+            reasoning: None,
+        });
+    }
+
+    /// Events stored by an earlier agent still decode: these are the bytes
+    /// protocol version 3 wrote for the last event it had.
+    #[test]
+    fn stored_events_from_before_model_changed_still_decode() {
+        let stored = [7, 15, 3, 1];
+        let event: SequencedEvent = decode(&stored).unwrap();
+        assert_eq!(
+            event,
+            SequencedEvent {
+                seq: 7,
+                event: SessionEvent::ContextCompacted {
+                    removed_messages: 3,
+                    summarized: true,
+                },
+            }
+        );
     }
 
     fn message_roundtrip<T>(message: T)

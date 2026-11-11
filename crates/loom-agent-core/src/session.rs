@@ -25,7 +25,7 @@ use crate::metrics::Metrics;
 use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
-use crate::store::{EventStore, SessionState as StoredState, StoredSession, now_unix};
+use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
 use loom_config::PolicyAction;
 
 pub const MAX_ROUNDS_PER_TURN: usize = 200;
@@ -47,6 +47,7 @@ struct State {
     context_tokens: Option<u64>,
     archived: bool,
     title: Option<String>,
+    last_used: Option<UsedModel>,
 }
 
 struct Core {
@@ -111,6 +112,7 @@ impl Core {
                     history: state.history.clone(),
                     archived: state.archived,
                     title: state.title.clone(),
+                    last_used: state.last_used.clone(),
                 },
             );
         }
@@ -119,6 +121,22 @@ impl Core {
     fn persist(&self) {
         let state = self.lock();
         self.persist_state(&state);
+    }
+
+    /// Tells clients when this request uses another model or effort than the
+    /// session's last one did.
+    fn note_model(&self, model: &ModelRef, reasoning: Option<ReasoningEffort>) {
+        let used = UsedModel {
+            model: model.to_string(),
+            reasoning,
+        };
+        let previous = self.lock().last_used.replace(used.clone());
+        if previous.is_some_and(|previous| previous != used) {
+            self.emit(SessionEvent::ModelChanged {
+                model: used.model,
+                reasoning: used.reasoning.map(convert::reasoning_to_proto),
+            });
+        }
     }
 
     fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
@@ -152,6 +170,14 @@ impl Session {
         let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
         let unfinished = turn_unfinished(&events);
         let repaired = repair_history(&mut state.history);
+        if state.last_used.is_none() {
+            // Saved before the agent kept this: the last response's model,
+            // with the effort the session has now.
+            state.last_used = last_response_model(&events).map(|model| UsedModel {
+                model,
+                reasoning: state.reasoning,
+            });
+        }
         let observer = params.observer.clone();
         let session = Self::build(params, id, created_at, state, events);
         if let Some(model) = model {
@@ -206,6 +232,7 @@ impl Session {
                     context_tokens: None,
                     archived: state.archived,
                     title: state.title,
+                    last_used: state.last_used,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -498,6 +525,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             let state = core.lock();
             (state.history.clone(), state.reasoning)
         };
+        core.note_model(&model, reasoning);
         let request = CompletionRequest {
             model: model.model.clone(),
             system: Some(prompt.text),
@@ -872,6 +900,14 @@ fn turn_unfinished(events: &[SequencedEvent]) -> bool {
         (Some(_), None) => true,
         _ => false,
     }
+}
+
+/// The model of the last response in `events`.
+fn last_response_model(events: &[SequencedEvent]) -> Option<String> {
+    events.iter().rev().find_map(|e| match &e.event {
+        SessionEvent::AssistantMessage { model, .. } => Some(model.clone()),
+        _ => None,
+    })
 }
 
 fn repair_history(history: &mut Vec<Message>) -> bool {

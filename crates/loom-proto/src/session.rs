@@ -204,6 +204,16 @@ pub enum SessionEvent {
         removed_messages: u32,
         summarized: bool,
     },
+    /// The next response comes from another model or with another reasoning
+    /// effort than the session's last one. Not sent before a session's first
+    /// response. `reasoning` is `None` for the provider's default effort.
+    ///
+    /// New variants go last: postcard stores the variant's position, and
+    /// stored events must keep decoding.
+    ModelChanged {
+        model: String,
+        reasoning: Option<ReasoningEffort>,
+    },
 }
 
 impl SessionEvent {

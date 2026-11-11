@@ -9,7 +9,7 @@ use common::{
 use loom_agent_core::CoreError;
 use loom_config::{AgentConfig, PolicyAction, PolicyRule};
 use loom_llm::{AssistantContent, Message};
-use loom_proto::{ContentPart, Decision, SessionEvent, SessionState, TurnOutcome};
+use loom_proto::{ContentPart, Decision, ReasoningEffort, SessionEvent, SessionState, TurnOutcome};
 use serde_json::json;
 
 fn requested_tool_names(events: &[SessionEvent]) -> Vec<String> {
@@ -32,6 +32,61 @@ fn finished_results(events: &[SessionEvent]) -> Vec<(String, bool)> {
             _ => None,
         })
         .collect()
+}
+
+fn model_changes(events: &[SessionEvent]) -> Vec<(String, Option<ReasoningEffort>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::ModelChanged { model, reasoning } => Some((model.clone(), *reasoning)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_change_of_model_or_effort_is_reported_before_the_next_response() {
+    let h = Harness::new(
+        test_config(PolicyAction::Allow),
+        vec![
+            text("one"),
+            calls(&[("c1", "read", json!({"path": "missing.txt"}))]),
+            text("two"),
+            text("three"),
+            text("four"),
+        ],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    // The first response has nothing to differ from.
+    let events = run_turn(&session, &mut sub, "one").await;
+    assert_eq!(model_changes(&events), []);
+
+    // Reported once for a turn of two responses, before the first.
+    session.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    let events = run_turn(&session, &mut sub, "two").await;
+    assert_eq!(
+        model_changes(&events),
+        [(MODEL_REF.to_owned(), Some(ReasoningEffort::High))]
+    );
+    let changed = events
+        .iter()
+        .position(|e| matches!(e, SessionEvent::ModelChanged { .. }));
+    let answered = events
+        .iter()
+        .position(|e| matches!(e, SessionEvent::AssistantMessage { .. }));
+    assert!(changed < answered);
+
+    let events = run_turn(&session, &mut sub, "three").await;
+    assert_eq!(model_changes(&events), []);
+
+    session.set_model(Some("scripted/other")).unwrap();
+    session.set_reasoning(None);
+    let events = run_turn(&session, &mut sub, "four").await;
+    assert_eq!(
+        model_changes(&events),
+        [("scripted/other".to_owned(), None)]
+    );
 }
 
 #[tokio::test]
