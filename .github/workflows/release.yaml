@@ -58,6 +58,10 @@ jobs:
     needs: version
     if: github.repository == 'chiwanpark/loom'
     runs-on: ubuntu-latest
+    # Draft releases are only visible to a token that can write contents;
+    # without it, an existing draft looks missing and is drafted again.
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.state.outputs.version }}
       action: ${{ steps.state.outputs.action }}
