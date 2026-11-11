@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -208,6 +208,14 @@ pub enum Command {
     },
     /// Whether the agent exports OpenTelemetry data and how the exports went.
     GetTelemetryStatus,
+    /// Replaces the text of an existing file. Fails with
+    /// [`ErrorCode::Conflict`] when the file no longer has the `expected`
+    /// version, that is, it changed since the client read it.
+    WriteFile {
+        path: String,
+        text: String,
+        expected: FileVersion,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +240,8 @@ pub enum Payload {
     FileContent(FileContent),
     UsageLimits(Option<UsageLimits>),
     Telemetry(TelemetryStatus),
+    /// The version of a file after a write.
+    FileWritten(FileVersion),
 }
 
 /// The agent's OpenTelemetry export. Settings apply when the agent starts.
@@ -322,6 +332,26 @@ pub struct FileContent {
     pub size: u64,
     pub binary: bool,
     pub truncated: bool,
+    /// False when the bytes are not UTF-8 and `text` has replacement
+    /// characters, so writing it back would change the file.
+    pub valid_utf8: bool,
+    /// The version of the bytes that were read, for [`Command::WriteFile`].
+    pub version: FileVersion,
+}
+
+/// A SHA-256 hash of a file's bytes, used to notice that a file changed
+/// between reading and writing it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FileVersion(pub [u8; 32]);
+
+impl fmt::Debug for FileVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FileVersion(")?;
+        for byte in &self.0[..6] {
+            write!(f, "{byte:02x}")?;
+        }
+        write!(f, "…)")
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +437,8 @@ pub enum ErrorCode {
     VersionMismatch,
     Protocol,
     Internal,
+    /// The target changed since the client last read it.
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

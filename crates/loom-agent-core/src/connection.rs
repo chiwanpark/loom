@@ -181,8 +181,10 @@ impl Connection {
             Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
-            | Command::ReadFile { .. } => {
-                let root = self.agent.workspace_root().to_path_buf();
+            | Command::ReadFile { .. }
+            | Command::WriteFile { .. } => {
+                let workspace = self.agent.workspace().clone();
+                let root = workspace.root().to_path_buf();
                 let out = self.out.clone();
                 self.tasks.push(tokio::spawn(async move {
                     let result = match command {
@@ -199,6 +201,13 @@ impl Connection {
                         Command::ReadFile { path } => crate::files::read_file(&root, &path)
                             .await
                             .map(Payload::FileContent),
+                        Command::WriteFile {
+                            path,
+                            text,
+                            expected,
+                        } => crate::files::write_file(&workspace, &path, text, expected)
+                            .await
+                            .map(Payload::FileWritten),
                         _ => crate::git::changes(&root)
                             .await
                             .map(Payload::WorkspaceChanges),
@@ -470,7 +479,8 @@ impl Connection {
             | Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
-            | Command::ReadFile { .. } => Err(ApiError::new(
+            | Command::ReadFile { .. }
+            | Command::WriteFile { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),

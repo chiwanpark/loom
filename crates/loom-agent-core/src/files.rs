@@ -1,7 +1,11 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use loom_proto::{ApiError, DirEntry, DirectoryListing, EntryKind, ErrorCode, FileContent};
+use loom_proto::{
+    ApiError, DirEntry, DirectoryListing, EntryKind, ErrorCode, FileContent, FileVersion,
+};
+use loom_tools::{FileAccess, Workspace};
+use sha2::{Digest, Sha256};
 
 const MAX_ENTRIES: usize = 5000;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -105,25 +109,35 @@ pub async fn list_directory(root: &Path, path: &str) -> Result<DirectoryListing,
     })
 }
 
-fn read_text(file: &Path) -> std::io::Result<(String, u64, bool, bool)> {
+fn version(bytes: &[u8]) -> FileVersion {
+    FileVersion(Sha256::digest(bytes).into())
+}
+
+fn read_text(file: &Path, path: &str) -> std::io::Result<FileContent> {
     let size = std::fs::metadata(file)?.len();
     let mut data = Vec::new();
     std::fs::File::open(file)?
         .take(MAX_FILE_BYTES)
         .read_to_end(&mut data)?;
+    let mut content = FileContent {
+        path: path.to_string(),
+        size,
+        ..FileContent::default()
+    };
     if data[..data.len().min(BINARY_SNIFF)].contains(&0) {
-        return Ok((String::new(), size, true, false));
+        content.binary = true;
+        return Ok(content);
     }
-    let truncated = size > data.len() as u64;
-    if truncated && let Some(end) = data.iter().rposition(|b| *b == b'\n') {
+    content.truncated = size > data.len() as u64;
+    if content.truncated
+        && let Some(end) = data.iter().rposition(|b| *b == b'\n')
+    {
         data.truncate(end + 1);
     }
-    Ok((
-        String::from_utf8_lossy(&data).into_owned(),
-        size,
-        false,
-        truncated,
-    ))
+    content.version = version(&data);
+    content.valid_utf8 = std::str::from_utf8(&data).is_ok();
+    content.text = String::from_utf8_lossy(&data).into_owned();
+    Ok(content)
 }
 
 pub async fn read_file(root: &Path, path: &str) -> Result<FileContent, ApiError> {
@@ -134,15 +148,54 @@ pub async fn read_file(root: &Path, path: &str) -> Result<FileContent, ApiError>
             format!("{path} is not a file"),
         ));
     }
-    let (text, size, binary, truncated) = tokio::task::spawn_blocking(move || read_text(&file))
+    let owned = path.to_string();
+    tokio::task::spawn_blocking(move || read_text(&file, &owned))
         .await
         .map_err(|err| ApiError::new(ErrorCode::Internal, err.to_string()))?
-        .map_err(|err| io_error(path, err))?;
-    Ok(FileContent {
-        path: path.to_string(),
-        text,
-        size,
-        binary,
-        truncated,
+        .map_err(|err| io_error(path, err))
+}
+
+/// Replaces the text of an existing file, if it still has the `expected`
+/// version. Holds the file's write lock, so it never interleaves with a tool
+/// call on the same file. Sessions that read the file earlier notice the
+/// change and have to read it again before editing it.
+pub async fn write_file(
+    workspace: &Workspace,
+    path: &str,
+    text: String,
+    expected: FileVersion,
+) -> Result<FileVersion, ApiError> {
+    if text.len() as u64 > MAX_FILE_BYTES {
+        return Err(ApiError::new(
+            ErrorCode::BadRequest,
+            format!("{path} would be larger than 2 MB"),
+        ));
+    }
+    let file = resolve(workspace.root(), path)?;
+    if !file.is_file() {
+        return Err(ApiError::new(
+            ErrorCode::BadRequest,
+            format!("{path} is not a file"),
+        ));
+    }
+    let _guard = workspace.locks().lock_file(&file, FileAccess::Write).await;
+    let owned = path.to_string();
+    tokio::task::spawn_blocking(move || {
+        // A file over the read limit cannot have a version from a full read,
+        // so there is no need to hash all of it.
+        let mut current = Vec::new();
+        std::fs::File::open(&file)
+            .and_then(|f| f.take(MAX_FILE_BYTES + 1).read_to_end(&mut current))
+            .map_err(|err| io_error(&owned, err))?;
+        if current.len() as u64 > MAX_FILE_BYTES || version(&current) != expected {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                format!("{owned} changed since it was read"),
+            ));
+        }
+        loom_tools::write_file(&file, text.as_bytes()).map_err(|err| io_error(&owned, err))?;
+        Ok(version(text.as_bytes()))
     })
+    .await
+    .map_err(|err| ApiError::new(ErrorCode::Internal, err.to_string()))?
 }

@@ -658,4 +658,23 @@ async fn sessions_can_be_renamed_and_files_browsed() {
     assert_eq!(file.text, "pub fn f() {}\n");
     let err = client.read_file("../outside").await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+
+    let version = client
+        .write_file("src/lib.rs", "pub fn g() {}\n".into(), file.version)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("src/lib.rs")).unwrap(),
+        "pub fn g() {}\n"
+    );
+    assert_eq!(
+        client.read_file("src/lib.rs").await.unwrap().version,
+        version
+    );
+    // The version read before the save is out of date now.
+    let err = client
+        .write_file("src/lib.rs", "pub fn h() {}\n".into(), file.version)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 }

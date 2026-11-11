@@ -179,6 +179,11 @@ mod tests {
             Command::CompactSession {
                 session: session.clone(),
             },
+            Command::WriteFile {
+                path: "src/main.rs".into(),
+                text: "fn main() {}\n".into(),
+                expected: FileVersion([7; 32]),
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }
@@ -261,7 +266,17 @@ mod tests {
                 size: 13,
                 binary: false,
                 truncated: false,
+                valid_utf8: true,
+                version: FileVersion([1; 32]),
             })),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 7,
+            result: Ok(Payload::FileWritten(FileVersion([2; 32]))),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 8,
+            result: Err(ApiError::new(ErrorCode::Conflict, "changed")),
         });
         message_roundtrip(ServerMessage::Response {
             id: 4,

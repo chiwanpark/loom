@@ -12,7 +12,10 @@ pub(crate) fn current_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
     }
 }
 
-pub(crate) fn write_file(path: &Path, content: &[u8]) -> io::Result<(FileStamp, bool)> {
+/// Writes a file, creating its parent directories when needed. An existing
+/// file is replaced atomically and keeps its permissions. Returns the new
+/// stamp and whether the file was created.
+pub fn write_file(path: &Path, content: &[u8]) -> io::Result<(FileStamp, bool)> {
     match fs::metadata(path) {
         Ok(metadata) => {
             if metadata.is_dir() {

@@ -14,6 +14,7 @@ mod write;
 
 pub use edit::{EditTool, Replacement, apply_edits};
 pub use error::{Result, ToolError};
+pub use fsutil::write_file;
 pub use read::ReadTool;
 pub use registry::{BuiltinConfig, ToolRegistry};
 pub use shell::{ShellConfig, ShellTool};

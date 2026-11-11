@@ -523,6 +523,25 @@ impl Client {
         }
     }
 
+    /// Replaces the text of a file that still has the `expected` version, and
+    /// returns its new version.
+    pub async fn write_file(
+        &self,
+        path: &str,
+        text: String,
+        expected: loom_proto::FileVersion,
+    ) -> Result<loom_proto::FileVersion> {
+        let command = Command::WriteFile {
+            path: path.to_string(),
+            text,
+            expected,
+        };
+        match self.request(command).await? {
+            Payload::FileWritten(version) => Ok(version),
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub async fn workspace_changes(&self) -> Result<loom_proto::WorkspaceChanges> {
         match self.request(Command::GetWorkspaceChanges).await? {
             Payload::WorkspaceChanges(changes) => Ok(changes),

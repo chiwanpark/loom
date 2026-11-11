@@ -208,6 +208,11 @@ impl Agent {
         self.inner.workspace.root()
     }
 
+    /// The workspace with the file locks that tool calls take.
+    pub(crate) fn workspace(&self) -> &Arc<Workspace> {
+        &self.inner.workspace
+    }
+
     pub fn auth(&self) -> &Auth {
         &self.inner.auth
     }
