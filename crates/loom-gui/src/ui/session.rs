@@ -13,18 +13,19 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, Paste, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::spinner::Spinner;
 use gpui_component::text::TextView;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{
-    ContentPart, Decision, PolicyAction, ReasoningEffort, SessionId, SessionState, ToolCall,
-    ToolResultDetails, UsageLimit,
+    ContentPart, Decision, PolicyAction, ReasoningEffort, SessionId, ToolCall, ToolResultDetails,
+    UsageLimit,
 };
 use loom_vt::{AlacrittyTerminal, TerminalEmulator};
 
 use crate::attachments::{self, AttachError};
 use crate::conversation::{
-    Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label, tool_summary,
+    Activity, Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label, tool_summary,
 };
 use crate::state::{AgentConnection, UsageState};
 use crate::ui::code::{self, Highlighted};
@@ -962,14 +963,50 @@ fn diff_block(diff: &str, theme: &gpui_component::Theme) -> AnyElement {
         .into_any_element()
 }
 
-fn state_label(state: SessionState) -> &'static str {
-    match state {
-        SessionState::Idle => "Idle",
-        SessionState::Thinking => "Thinking…",
-        SessionState::RunningTool => "Running a tool…",
-        SessionState::WaitingApproval => "Waiting for approval",
-        SessionState::WaitingLock => "Waiting for the workspace lock",
-    }
+/// The last block of a busy conversation: what the session is doing now.
+fn activity_block(activity: &Activity, theme: &gpui_component::Theme) -> AnyElement {
+    let attention = activity.needs_user();
+    let color = if attention {
+        theme.warning
+    } else {
+        theme.muted_foreground
+    };
+    h_flex()
+        .id("activity")
+        .w_full()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(if attention {
+            theme.warning
+        } else {
+            theme.border
+        })
+        .text_sm()
+        .text_color(color)
+        .child(if attention {
+            Icon::new(IconName::TriangleAlert)
+                .small()
+                .text_color(color)
+                .into_any_element()
+        } else {
+            Spinner::new()
+                .icon(IconName::LoaderCircle)
+                .small()
+                .color(theme.info)
+                .into_any_element()
+        })
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(activity.label()),
+        )
+        .into_any_element()
 }
 
 pub const REASONING_CHOICES: [(Option<ReasoningEffort>, &str); 7] = [
@@ -1189,30 +1226,13 @@ impl SessionView {
         Some((provider.to_owned(), marker))
     }
 
-    /// The session's entries in the workspace status bar: state, model,
-    /// effort, policy, token usage, plan limits, and pending approvals.
+    /// The session's entries in the workspace status bar: model, effort, policy, token usage, plan limits, and pending approvals.
     pub fn status_items(view: &Entity<Self>, cx: &App) -> Vec<AnyElement> {
         let theme = cx.theme();
         let this = view.read(cx);
         let conv = this.conversation.read(cx);
         let weak = view.downgrade();
         let mut items = Vec::new();
-
-        let busy = conv.is_busy();
-        items.push(
-            status_item(
-                "status-state",
-                if busy {
-                    IconName::LoaderCircle
-                } else {
-                    IconName::CircleCheck
-                },
-                state_label(conv.state),
-                "Session state",
-            )
-            .when(busy, |el| el.text_color(theme.info))
-            .into_any_element(),
-        );
 
         let model = conv
             .info
@@ -1491,7 +1511,10 @@ impl Render for SessionView {
                                         .child("No messages yet. Type a prompt below to start."),
                                 )
                             })
-                            .children(items),
+                            .children(items)
+                            .when_some(conversation.activity(), |el, activity| {
+                                el.child(activity_block(&activity, &theme))
+                            }),
                     ),
             )
             .child(

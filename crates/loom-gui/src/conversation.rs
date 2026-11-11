@@ -57,6 +57,53 @@ pub enum Item {
     },
 }
 
+/// What a busy session is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Activity {
+    Thinking,
+    /// The model is streaming its answer.
+    Responding,
+    /// Summaries of the tool calls that are running.
+    RunningTools(Vec<String>),
+    /// The number of tool calls waiting for the user.
+    WaitingApproval(usize),
+    WaitingLock,
+}
+
+impl Activity {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Thinking => "Thinking…".into(),
+            Self::Responding => "Writing a response…".into(),
+            Self::RunningTools(tools) => match tools.as_slice() {
+                [] => "Running a tool…".into(),
+                [one] => format!("Running {}…", one.lines().next().unwrap_or_default()),
+                many => format!("Running {} tools…", many.len()),
+            },
+            Self::WaitingApproval(0 | 1) => {
+                "Waiting for your approval of the tool call above".into()
+            }
+            Self::WaitingApproval(n) => format!("Waiting for your approval of {n} tool calls"),
+            Self::WaitingLock => "Waiting for another session to release the workspace…".into(),
+        }
+    }
+
+    pub fn needs_user(&self) -> bool {
+        matches!(self, Self::WaitingApproval(_))
+    }
+}
+
+/// A short name for a session state, for lists and tooltips.
+pub fn state_label(state: SessionState) -> &'static str {
+    match state {
+        SessionState::Idle => "Idle",
+        SessionState::Thinking => "Thinking",
+        SessionState::RunningTool => "Running a tool",
+        SessionState::WaitingApproval => "Waiting for approval",
+        SessionState::WaitingLock => "Waiting for the workspace lock",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Conversation {
     pub info: SessionInfo,
@@ -99,6 +146,37 @@ impl Conversation {
 
     pub fn is_busy(&self) -> bool {
         self.state != SessionState::Idle
+    }
+
+    /// What the session is doing now, shown as the last block of the
+    /// conversation; `None` while it is idle.
+    pub fn activity(&self) -> Option<Activity> {
+        Some(match self.state {
+            SessionState::Idle => return None,
+            SessionState::Thinking => match self.items.last() {
+                Some(Item::Assistant {
+                    streaming: true,
+                    text,
+                    ..
+                }) if !text.is_empty() => Activity::Responding,
+                _ => Activity::Thinking,
+            },
+            SessionState::RunningTool => Activity::RunningTools(
+                self.items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::Tool(tool) if tool.status == ToolStatus::Running => {
+                            Some(tool_summary(&tool.call))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            SessionState::WaitingApproval => {
+                Activity::WaitingApproval(self.pending_approvals().count())
+            }
+            SessionState::WaitingLock => Activity::WaitingLock,
+        })
     }
 
     pub fn apply(&mut self, event: &SequencedEvent) -> bool {
@@ -697,6 +775,81 @@ mod tests {
         ));
         assert_eq!(tool_summary(&tools[0].call), "shell ls -la");
         assert_eq!(tool_summary(&tools[1].call), "write x");
+    }
+
+    #[test]
+    fn activity_follows_the_session_state() {
+        let mut conv = Conversation::new(info());
+        assert_eq!(conv.activity(), None);
+        let state = |state| SessionEvent::StateChanged { state };
+        feed(&mut conv, vec![state(SessionState::Thinking)]);
+        assert_eq!(conv.activity(), Some(Activity::Thinking));
+        feed(
+            &mut conv,
+            vec![SessionEvent::AssistantDelta {
+                text: "Let me".into(),
+            }],
+        );
+        assert_eq!(conv.activity(), Some(Activity::Responding));
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::ToolCallRequested {
+                    call: call("c1", "shell", r#"{"command":"cargo test\nls"}"#),
+                },
+                SessionEvent::ToolCallStarted {
+                    call_id: "c1".into(),
+                },
+                state(SessionState::RunningTool),
+            ],
+        );
+        let activity = conv.activity().unwrap();
+        assert_eq!(
+            activity,
+            Activity::RunningTools(vec!["shell cargo test".into()])
+        );
+        assert_eq!(activity.label(), "Running shell cargo test…");
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::ToolCallFinished {
+                    call_id: "c1".into(),
+                    result: ToolResult {
+                        content: String::new(),
+                        is_error: false,
+                        details: None,
+                    },
+                },
+                SessionEvent::ToolCallRequested {
+                    call: call("c2", "write", r#"{"path":"a"}"#),
+                },
+                SessionEvent::ApprovalRequired {
+                    call_id: "c2".into(),
+                    reason: "ask".into(),
+                },
+                state(SessionState::WaitingApproval),
+            ],
+        );
+        let activity = conv.activity().unwrap();
+        assert_eq!(activity, Activity::WaitingApproval(1));
+        assert!(activity.needs_user());
+        feed(&mut conv, vec![state(SessionState::WaitingLock)]);
+        assert_eq!(conv.activity(), Some(Activity::WaitingLock));
+        feed(&mut conv, vec![state(SessionState::Idle)]);
+        assert_eq!(conv.activity(), None);
+    }
+
+    #[test]
+    fn activity_labels() {
+        assert_eq!(Activity::RunningTools(vec![]).label(), "Running a tool…");
+        assert_eq!(
+            Activity::RunningTools(vec!["a".into(), "b".into()]).label(),
+            "Running 2 tools…"
+        );
+        assert_eq!(
+            Activity::WaitingApproval(2).label(),
+            "Waiting for your approval of 2 tool calls"
+        );
     }
 
     #[test]
