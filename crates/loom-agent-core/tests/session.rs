@@ -447,7 +447,9 @@ async fn unknown_tools_and_bad_arguments_are_reported_to_the_model() {
         vec![
             calls(&[
                 ("c1", "teleport", json!({})),
-                ("c2", "read", json!("not an object")),
+                ("c2", "read", json!([1])),
+                // Text a provider could not parse: a raw tab inside a string.
+                ("c3", "read", json!("{\"path\": \"a\tb\"}")),
             ]),
             text("ok"),
         ],
@@ -458,6 +460,12 @@ async fn unknown_tools_and_bad_arguments_are_reported_to_the_model() {
     let results = finished_results(&events);
     assert!(results[0].0.contains("unknown tool"));
     assert!(results[1].0.contains("JSON object"));
+    assert!(results[2].0.contains("not valid JSON"), "{}", results[2].0);
+    assert!(
+        results[2].0.contains("control character"),
+        "{}",
+        results[2].0
+    );
     assert_eq!(outcome(&events), Some(TurnOutcome::Completed));
 }
 

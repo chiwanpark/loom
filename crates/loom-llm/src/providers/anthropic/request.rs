@@ -140,7 +140,10 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
                         }
                     }
                     AssistantContent::ToolCall(call) => Some(json!({
-                        "type": "tool_use", "id": call.call_id, "name": tool_name(&call.name), "input": call.arguments,
+                        "type": "tool_use", "id": call.call_id, "name": tool_name(&call.name),
+                        // Arguments that were not a JSON object were never run, and the
+                        // API takes only an object here.
+                        "input": if call.arguments.is_object() { call.arguments.clone() } else { json!({}) },
                     })),
                     _ => None,
                 }).collect();
@@ -337,6 +340,44 @@ mod tests {
             "high"
         );
         assert_eq!(build_body(&request).unwrap()["max_tokens"], 16384);
+    }
+
+    /// A call whose arguments were not JSON is kept with the raw text, but
+    /// the API takes only an object as a tool_use input.
+    #[test]
+    fn unparsed_tool_arguments_are_sent_as_an_empty_object() {
+        use crate::types::{AssistantMessage, StopReason, ToolCall, Usage};
+        let call = |id: &str, arguments: Value| {
+            AssistantContent::ToolCall(ToolCall {
+                call_id: id.into(),
+                name: "shell".into(),
+                arguments,
+                provider_data: None,
+            })
+        };
+        let request = CompletionRequest {
+            model: "claude-opus-5".into(),
+            messages: vec![
+                Message::user_text("hi"),
+                Message::Assistant(AssistantMessage {
+                    provider: ID,
+                    model: "claude-opus-5".into(),
+                    content: vec![
+                        call("a", Value::String("{\"command\": \"ls".into())),
+                        call("b", json!({"command": "pwd"})),
+                    ],
+                    usage: Usage::default(),
+                    stop_reason: StopReason::ToolUse,
+                    response_id: None,
+                }),
+            ],
+            ..Default::default()
+        };
+        let body = build_body(&request).unwrap();
+        let content = &body["messages"][1]["content"];
+        assert_eq!(content[0]["id"], "a");
+        assert_eq!(content[0]["input"], json!({}));
+        assert_eq!(content[1]["input"], json!({"command": "pwd"}));
     }
 
     /// Newer models omit the thinking text by default and return only a

@@ -786,13 +786,20 @@ async fn run_tool_call(
         );
     };
     if !call.arguments.is_object() {
-        return finish(
-            convert::error_result(format!(
-                "tool arguments must be a JSON object, got: {}",
-                call.arguments
-            )),
-            false,
-        );
+        let message = match &call.arguments {
+            // A provider passes arguments it could not parse as the raw text.
+            serde_json::Value::String(raw) => {
+                match serde_json::from_str::<serde_json::Value>(raw) {
+                    Err(err) => format!(
+                        "not run: the tool arguments are not valid JSON ({err}); \
+                         check the escaping in strings and send the call again"
+                    ),
+                    Ok(_) => format!("tool arguments must be a JSON object, got: {raw}"),
+                }
+            }
+            other => format!("tool arguments must be a JSON object, got: {other}"),
+        };
+        return finish(convert::error_result(message), false);
     }
     // Refused before asking for an approval it could not use.
     if let Some(reason) = tool.blocked().await {

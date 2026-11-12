@@ -213,10 +213,18 @@ impl State {
                             }),
                             Some("tool_use") => {
                                 if !block.arguments.is_empty() {
+                                    // With fine-grained tool streaming the API passes the
+                                    // input through unchecked, so it may not be JSON. Keep
+                                    // the raw text: the call is answered with the error
+                                    // instead of failing the whole turn.
                                     block.data["input"] = serde_json::from_str(&block.arguments)
-                                        .map_err(|_| protocol("invalid tool argument JSON"))?;
+                                        .unwrap_or_else(|_| {
+                                            Value::String(std::mem::take(&mut block.arguments))
+                                        });
                                 }
-                                if !block.data["input"].is_object() {
+                                if !block.data["input"].is_object()
+                                    && !block.data["input"].is_string()
+                                {
                                     return Err(protocol("tool arguments must be an object"));
                                 }
                                 chunks.push(CompletionChunk::ToolCallEnd {
@@ -363,6 +371,38 @@ mod tests {
         assert_eq!((usage.cache_read, usage.cache_write), (50_000, 1_200));
         assert_eq!(usage.prompt_tokens(), 51_203);
         assert_eq!(usage.context_tokens(), 51_640);
+    }
+
+    /// With fine-grained tool streaming the API does not check the input, so
+    /// a call may close with text that is not JSON. The message still ends,
+    /// with the raw text as the arguments, so the call can be answered.
+    #[test]
+    fn tool_input_that_is_not_json_keeps_the_raw_text() {
+        let mut state = State::new("m".into(), vec!["shell".into()]);
+        state
+            .handle(json!({"type": "message_start", "message": {"id": "m"}}))
+            .unwrap();
+        state.handle(json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "c", "name": "shell", "input": {}}})).unwrap();
+        // A raw tab inside a string, which JSON does not allow.
+        let raw = "{\"command\": \"printf 'a\tb'\"}";
+        state.handle(json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": raw}})).unwrap();
+        let chunks = state
+            .handle(json!({"type": "content_block_stop", "index": 0}))
+            .unwrap();
+        let Some(CompletionChunk::ToolCallEnd { call, .. }) = chunks.last() else {
+            panic!("no tool call: {chunks:?}");
+        };
+        assert_eq!(call.arguments, Value::String(raw.into()));
+        state
+            .handle(json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}))
+            .unwrap();
+        let chunks = state.handle(json!({"type": "message_stop"})).unwrap();
+        let Some(CompletionChunk::Done(message)) = chunks.last() else {
+            panic!("no message: {chunks:?}");
+        };
+        let calls: Vec<_> = message.tool_calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, Value::String(raw.into()));
     }
 
     #[test]
