@@ -267,7 +267,8 @@ impl MessageList {
             live.fed = 0;
             live.emulator = AlacrittyTerminal::new(OUTPUT_COLS, OUTPUT_ROWS);
         }
-        live.emulator.feed(&tool.output[live.fed..]);
+        live.emulator
+            .feed(&with_carriage_returns(&tool.output[live.fed..]));
         live.fed = tool.output.len();
         let text = live.emulator.snapshot().text();
         text.trim_end().to_owned()
@@ -742,6 +743,21 @@ fn header_text(call: &ToolCall, theme: &gpui_component::Theme) -> StyledText {
     let summary = tool_summary(call);
     let highlights = header_highlights(call, &summary, theme);
     StyledText::new(summary).with_highlights(highlights)
+}
+
+/// Puts a carriage return before every line feed, as a terminal's line
+/// discipline does. Commands without a terminal write bare line feeds, which
+/// move an emulator down a line but not back to its start. Output that has
+/// them already gets a second carriage return, which changes nothing.
+fn with_carriage_returns(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 16);
+    for &byte in bytes {
+        if byte == b'\n' {
+            out.push(b'\r');
+        }
+        out.push(byte);
+    }
+    out
 }
 
 /// The header of a running call: its name shimmers.
@@ -1697,6 +1713,33 @@ mod view_tests {
         });
         cx.run_until_parked();
         assert!(take_rendered(&messages, cx) > 0);
+    }
+
+    #[gpui::test]
+    fn live_output_starts_each_line_at_the_left(cx: &mut TestAppContext) {
+        let (_, _, messages, cx) = open(0, cx);
+        let mut tool = ToolItem {
+            call: ToolCall {
+                call_id: "c1".into(),
+                name: "shell".into(),
+                arguments: "{}".into(),
+                risk: None,
+            },
+            status: ToolStatus::Running,
+            approval_reason: None,
+            decision: None,
+            output: b"one\ntwo\n".to_vec(),
+            output_truncated: false,
+            result: None,
+        };
+        let text = messages.update(cx, |messages, _| messages.live_text(&tool));
+        assert_eq!(text, "one\ntwo");
+
+        // More arrives: lines from a terminal, and a progress line that
+        // rewrites itself.
+        tool.output.extend_from_slice(b"three\r\nfour\n50%\r100%\n");
+        let text = messages.update(cx, |messages, _| messages.live_text(&tool));
+        assert_eq!(text, "one\ntwo\nthree\nfour\n100%");
     }
 
     #[gpui::test]
