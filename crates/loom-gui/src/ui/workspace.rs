@@ -6,9 +6,9 @@ use std::time::Duration;
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AsyncWindowContext, ClickEvent, Context,
     DefiniteLength, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::FluentBuilder,
-    px,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, actions, div, img,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
@@ -277,6 +277,37 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("hosts: pair with a relay", Box::new(PairRelay)),
         ("app: quit", Box::new(Quit)),
     ]
+}
+
+/// How far to lift a line of text so that it looks centred beside an icon
+/// of the same row.
+///
+/// gpui centres the font's ascent and descent in the line, so a font with a
+/// tall ascent draws its letters low. The text is centred by the middle of
+/// its capitals, moved a quarter of the way toward the middle of its
+/// lowercase letters, as their bulk makes a word look lower. That weighting
+/// suits the Linux UI fonts measured on screen; centring the capitals alone
+/// left most of them a pixel low. The lift is whole device pixels, as glyphs
+/// snap to them and would swallow a fraction.
+fn text_lift(window: &Window, family: &SharedString, weight: FontWeight, size: Pixels) -> Pixels {
+    let mut font = gpui::font(family.clone());
+    font.weight = weight;
+    let text = window.text_system();
+    let id = text.resolve_font(&font);
+    // Font metrics give the descent as negative, below the baseline.
+    let descent = text.descent(id, size).abs();
+    let ascent = text.ascent(id, size);
+    let cap = text.cap_height(id, size);
+    let x = text.x_height(id, size);
+    // Old fonts, like DejaVu Sans, don't say how tall their letters are.
+    // Rather than guess, leave the text where gpui puts it.
+    if cap <= Pixels::ZERO || x <= Pixels::ZERO {
+        return Pixels::ZERO;
+    }
+    let middle = (cap * 3. + x) / 8.;
+    let lift = (ascent - descent) / 2. - middle;
+    let scale = window.scale_factor();
+    (lift * scale).round() / scale
 }
 
 fn panel_icon(kind: PanelKind) -> Icon {
@@ -3890,6 +3921,9 @@ impl Render for Workspace {
             self.focus.focus(window, cx);
         }
         let theme = cx.theme().clone();
+        let rem = window.rem_size();
+        let name_lift = text_lift(window, &theme.font_family, FontWeight::SEMIBOLD, rem);
+        let subtitle_lift = text_lift(window, &theme.font_family, FontWeight::NORMAL, rem * 0.875);
         let center = self.render_center(cx);
         let right = self.show_right.then(|| self.render_right_panel(window, cx));
         let status = self.render_status(cx);
@@ -3936,10 +3970,26 @@ impl Render for Workspace {
                         h_flex()
                             .w_full()
                             .gap_2()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Loom"))
+                            .child(
+                                img(crate::assets::logo())
+                                    .flex_none()
+                                    .size(px(18.))
+                                    .debug_selector(|| "titlebar-logo".into()),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .top(-name_lift)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .debug_selector(|| "titlebar-name".into())
+                                    .child("Loom"),
+                            )
                             .when_some(self.active_connection.as_ref(), |el, conn| {
                                 el.child(
                                     div()
+                                        .relative()
+                                        .top(-subtitle_lift)
+                                        .debug_selector(|| "titlebar-subtitle".into())
                                         .text_sm()
                                         .text_color(theme.muted_foreground)
                                         .child(conn.read(cx).title()),
@@ -4149,6 +4199,56 @@ mod tests {
     fn keymaps_naming_the_old_left_panel_action_still_work() {
         assert_eq!(ToggleAgents.name(), "loom::ToggleAgents");
         assert_eq!(ToggleAgents::deprecated_aliases(), ["loom::ToggleLeftDock"]);
+    }
+
+    #[gpui::test]
+    fn the_title_bar_shows_the_logo_left_of_the_name(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (_, cx) = open_file(&agent, "a.txt", cx);
+        // The test font draws its letters about 0.05em low. A large size makes
+        // that several pixels, so the lift can't vanish into rounding.
+        cx.update(|window, cx| {
+            gpui_component::Theme::global_mut(cx).font_size = px(40.);
+            window.refresh();
+        });
+        cx.run_until_parked();
+        let logo = cx.debug_bounds("titlebar-logo").expect("no logo");
+        let name = cx.debug_bounds("titlebar-name").expect("no name");
+        let subtitle = cx.debug_bounds("titlebar-subtitle").expect("no subtitle");
+        assert_eq!(logo.size, gpui::size(px(18.), px(18.)));
+        assert!(logo.right() <= name.left(), "{logo:?} {name:?}");
+
+        // Where the text looks centred: the middle of its capitals, a quarter
+        // of the way toward that of its lowercase letters. gpui centres the
+        // font's ascent and descent in the line.
+        let text_middle = |cx: &mut VisualTestContext,
+                           bounds: gpui::Bounds<Pixels>,
+                           weight: FontWeight,
+                           scale: f32| {
+            cx.update(|window, cx| {
+                let mut font = gpui::font(cx.theme().font_family.clone());
+                font.weight = weight;
+                let size = window.rem_size() * scale;
+                let text = window.text_system();
+                let id = text.resolve_font(&font);
+                let ascent = text.ascent(id, size);
+                let descent = text.descent(id, size).abs();
+                let letters = (text.cap_height(id, size) * 3. + text.x_height(id, size)) / 8.;
+                let baseline = bounds.top() + (bounds.size.height - ascent - descent) / 2. + ascent;
+                baseline - letters
+            })
+        };
+        // The lift is whole pixels, so the text may be half a pixel off.
+        let logo_middle = logo.top() + logo.size.height / 2.;
+        let name_middle = text_middle(cx, name, FontWeight::SEMIBOLD, 1.);
+        let subtitle_middle = text_middle(cx, subtitle, FontWeight::NORMAL, 0.875);
+        for middle in [name_middle, subtitle_middle] {
+            assert!(
+                (middle - logo_middle).abs() <= px(0.5),
+                "text at {middle:?}, logo at {logo_middle:?}: {logo:?} {name:?} {subtitle:?}"
+            );
+        }
     }
 
     #[gpui::test]

@@ -1,6 +1,17 @@
 use std::borrow::Cow;
+use std::sync::{Arc, LazyLock};
 
-use gpui::{AssetSource, Result, SharedString};
+use gpui::{AssetSource, Image, ImageFormat, Result, SharedString};
+
+/// The project logo at 64 px, enough for the title bar on a 2x screen.
+const LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo-64.png");
+
+/// The app's logo, shown in the title bar.
+pub fn logo() -> Arc<Image> {
+    static LOGO: LazyLock<Arc<Image>> =
+        LazyLock::new(|| Arc::new(Image::from_bytes(ImageFormat::Png, LOGO_PNG.to_vec())));
+    LOGO.clone()
+}
 
 gpui_kit_assets::icon_assets!(
     ExtraIcons,
@@ -62,6 +73,12 @@ mod tests {
     use gpui_kit_assets::IconName;
 
     use super::*;
+
+    #[test]
+    fn the_logo_is_a_square_png() {
+        let logo = image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png).unwrap();
+        assert_eq!((logo.width(), logo.height()), (64, 64));
+    }
 
     /// `FooBar2` -> `icons/foo-bar-2.svg`, matching the Lucide file names.
     fn icon_path(name: &str) -> String {
