@@ -8,14 +8,15 @@ use loom_llm::{
     ReasoningEffort, StopReason, ToolCall as LlmToolCall, ToolDefinition,
 };
 use loom_proto::{
-    ContentPart, Decision, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
-    ToolCall, ToolResult, TurnOutcome,
+    ContentPart, Decision, FileVersion, SequencedEvent, SessionEvent, SessionId, SessionInfo,
+    SessionState, ThreadContent, ToolCall, ToolResult, TurnOutcome,
 };
 use loom_tools::{FileTracker, LockWaitHook, ThreadAccess, ToolContext, ToolError, Workspace};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::AgentNotice;
 use crate::compaction;
 use crate::convert;
 use crate::error::{CoreError, Result};
@@ -26,7 +27,7 @@ use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
-use crate::thread::THREAD_READ_TOOL;
+use crate::thread::{self, THREAD_READ_TOOL};
 use loom_config::PolicyAction;
 
 pub const MAX_ROUNDS_PER_TURN: usize = 200;
@@ -69,6 +70,7 @@ struct Core {
     files: Arc<FileTracker>,
     system_agents_md: PathBuf,
     removed: CancellationToken,
+    notices: Option<broadcast::Sender<AgentNotice>>,
 }
 
 #[derive(Clone)]
@@ -84,6 +86,8 @@ pub(crate) struct SessionParams {
     pub store: Option<EventStore>,
     pub metrics: Arc<Metrics>,
     pub observer: Option<Arc<dyn SessionObserver>>,
+    /// Where the session reports changes of its operation thread.
+    pub notices: Option<broadcast::Sender<AgentNotice>>,
 }
 
 enum TurnError {
@@ -156,31 +160,49 @@ impl Core {
             .as_u64()
     }
 
-    /// Replaces the operation thread, refusing a text over `max` bytes. The
-    /// caller holds the lock, so the store gets writes in the order they
-    /// happen.
-    fn replace_thread(&self, state: &mut State, text: String, max: u64) -> Result<()> {
+    /// Replaces the operation thread, refusing a text over `max` bytes, and
+    /// tells whether the text changed. The caller holds the lock, so the
+    /// store and clients get changes in the order they happen.
+    fn replace_thread(&self, state: &mut State, text: String, max: u64) -> Result<bool> {
         if text.len() as u64 > max {
             return Err(CoreError::ThreadTooLarge {
                 size: text.len(),
                 max,
             });
         }
+        if text == state.thread {
+            return Ok(false);
+        }
         if let Some(store) = &self.store {
             store.save_thread(&self.id, &text);
         }
+        if let Some(notices) = &self.notices
+            && !self.removed.is_cancelled()
+        {
+            let _ = notices.send(AgentNotice::ThreadChanged {
+                session: self.id.clone(),
+                version: thread::version(&text),
+            });
+        }
         state.thread = text;
-        Ok(())
+        Ok(true)
     }
 
-    /// Replaces the operation thread for the user, during a turn too. Refused
-    /// when the text is over `tools.thread.max_bytes`.
-    fn set_thread(&self, text: String) -> Result<()> {
+    /// Replaces the operation thread for the user, during a turn too, and
+    /// returns its new version. Refused when the text is over
+    /// `tools.thread.max_bytes`, or when the thread no longer has the
+    /// `expected` version.
+    fn set_thread(&self, text: String, expected: Option<FileVersion>) -> Result<FileVersion> {
         let max = self.thread_limit();
         let mut state = self.lock();
-        self.replace_thread(&mut state, text, max)?;
-        state.thread_seen = false;
-        Ok(())
+        if expected.is_some_and(|expected| expected != thread::version(&state.thread)) {
+            return Err(CoreError::ThreadChanged);
+        }
+        let version = thread::version(&text);
+        if self.replace_thread(&mut state, text, max)? {
+            state.thread_seen = false;
+        }
+        Ok(version)
     }
 
     fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
@@ -294,6 +316,7 @@ impl Session {
                 files: Arc::new(FileTracker::default()),
                 system_agents_md: params.system_agents_md,
                 removed: CancellationToken::new(),
+                notices: params.notices,
             }),
         }
     }
@@ -339,10 +362,28 @@ impl Session {
         self.core.lock().thread.clone()
     }
 
+    /// The operation thread with its version and size limit, for clients.
+    pub fn thread_content(&self) -> ThreadContent {
+        let max_bytes = self.core.thread_limit();
+        let text = self.thread();
+        ThreadContent {
+            version: thread::version(&text),
+            text,
+            max_bytes,
+        }
+    }
+
     /// Replaces the operation thread for the user, so the agent has to read
     /// it again before replacing all of it; see [`Core::set_thread`].
     pub fn set_thread(&self, text: String) -> Result<()> {
-        self.core.set_thread(text)
+        self.core.set_thread(text, None).map(drop)
+    }
+
+    /// Like [`Session::set_thread`], but fails with
+    /// [`CoreError::ThreadChanged`] unless the thread still has the
+    /// `expected` version. Returns the new version.
+    pub fn write_thread(&self, text: String, expected: FileVersion) -> Result<FileVersion> {
+        self.core.set_thread(text, Some(expected))
     }
 
     pub fn history(&self) -> Vec<Message> {

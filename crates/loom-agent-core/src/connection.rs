@@ -431,6 +431,17 @@ impl Connection {
                 session(&id)?.clear().map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Ok)
             }
+            Command::GetThread { session: id } => {
+                Ok(Payload::Thread(session(&id)?.thread_content()))
+            }
+            Command::WriteThread {
+                session: id,
+                text,
+                expected,
+            } => session(&id)?
+                .write_thread(text, expected)
+                .map(Payload::ThreadWritten)
+                .map_err(|e| convert::api_error(&e)),
             Command::ResolveApproval {
                 session: id,
                 call_id,
@@ -690,6 +701,9 @@ async fn forward_notices(
             Ok(AgentNotice::ShuttingDown) => Notice::ShuttingDown,
             Ok(AgentNotice::SessionUpdated(info)) => Notice::SessionUpdated(*info),
             Ok(AgentNotice::SessionRemoved(id)) => Notice::SessionRemoved(id),
+            Ok(AgentNotice::ThreadChanged { session, version }) => {
+                Notice::ThreadChanged { session, version }
+            }
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,
         };

@@ -644,6 +644,38 @@ impl Client {
         .await
     }
 
+    /// A session's operation thread. Every connection gets a `ThreadChanged`
+    /// notice when it changes.
+    pub async fn thread(&self, session: &SessionId) -> Result<loom_proto::ThreadContent> {
+        let command = Command::GetThread {
+            session: session.clone(),
+        };
+        match self.request(command).await? {
+            Payload::Thread(thread) => Ok(thread),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Replaces a session's operation thread if it still has the `expected`
+    /// version, and returns its new version. Fails with `Conflict` when the
+    /// thread changed since the client read it.
+    pub async fn write_thread(
+        &self,
+        session: &SessionId,
+        text: String,
+        expected: loom_proto::FileVersion,
+    ) -> Result<loom_proto::FileVersion> {
+        let command = Command::WriteThread {
+            session: session.clone(),
+            text,
+            expected,
+        };
+        match self.request(command).await? {
+            Payload::ThreadWritten(version) => Ok(version),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Reattaches to a terminal opened over an earlier connection to the same agent.
     pub async fn attach_terminal(&self, terminal: TerminalId, cols: u16, rows: u16) -> Result<()> {
         self.ok(Command::AttachTerminal {

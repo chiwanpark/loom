@@ -20,6 +20,8 @@ pub enum CoreError {
         "the operation thread would be {size} bytes, more than the {max}-byte limit (tools.thread.max_bytes)"
     )]
     ThreadTooLarge { size: usize, max: u64 },
+    #[error("the operation thread changed since it was read")]
+    ThreadChanged,
     #[error(transparent)]
     Llm(#[from] loom_llm::LlmError),
     #[error(transparent)]

@@ -204,6 +204,7 @@ pub fn api_error(err: &crate::CoreError) -> loom_proto::ApiError {
         | CoreError::EmptyPrompt
         | CoreError::NothingToCompact
         | CoreError::ThreadTooLarge { .. } => ErrorCode::BadRequest,
+        CoreError::ThreadChanged => ErrorCode::Conflict,
         CoreError::UnknownSession(_) | CoreError::UnknownApproval(_) => ErrorCode::NotFound,
         CoreError::Llm(err) => return llm_error(err),
         CoreError::Tool(_) => ErrorCode::Internal,

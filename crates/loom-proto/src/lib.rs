@@ -193,6 +193,14 @@ mod tests {
             Command::ClearSession {
                 session: session.clone(),
             },
+            Command::GetThread {
+                session: session.clone(),
+            },
+            Command::WriteThread {
+                session: session.clone(),
+                text: "- plan\n".into(),
+                expected: FileVersion([3; 32]),
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }
@@ -323,6 +331,22 @@ mod tests {
         });
         message_roundtrip(ServerMessage::Notice(Notice::ConfigReloaded {
             restart_required: vec!["socket".into()],
+        }));
+        message_roundtrip(ServerMessage::Response {
+            id: 10,
+            result: Ok(Payload::Thread(ThreadContent {
+                text: "- plan\n".into(),
+                version: FileVersion([4; 32]),
+                max_bytes: 65536,
+            })),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 11,
+            result: Ok(Payload::ThreadWritten(FileVersion([5; 32]))),
+        });
+        message_roundtrip(ServerMessage::Notice(Notice::ThreadChanged {
+            session: SessionId("s2".into()),
+            version: FileVersion([6; 32]),
         }));
     }
 

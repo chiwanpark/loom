@@ -721,6 +721,90 @@ async fn sessions_can_be_renamed_and_files_browsed() {
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 }
 
+/// The next `ThreadChanged` notice, skipping other notifications.
+async fn thread_changed(notes: &mut Notifications) -> (SessionId, loom_client::proto::FileVersion) {
+    loop {
+        let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
+            .await
+            .expect("timed out waiting for a thread notice")
+            .expect("connection closed");
+        if let Notification::Notice(Notice::ThreadChanged { session, version }) = note {
+            return (session, version);
+        }
+    }
+}
+
+#[tokio::test]
+async fn threads_are_read_and_written_through_the_client() {
+    let edit = reply(
+        vec![AssistantContent::ToolCall(ToolCall {
+            call_id: "call-1".into(),
+            name: "thread_edit".into(),
+            arguments: json!({"old_text": "- plan", "new_text": "- plan\n- step done"}),
+            provider_data: None,
+        })],
+        StopReason::ToolUse,
+    );
+    let setup = setup(vec![edit, text("ok")]);
+    let (client, mut notes) = connect(&setup).await;
+    let (other, mut other_notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap().id;
+
+    let empty = client.thread(&session).await.unwrap();
+    assert_eq!(empty.text, "");
+    assert_eq!(empty.max_bytes, 64 * 1024);
+    let version = client
+        .write_thread(&session, "- plan".into(), empty.version)
+        .await
+        .unwrap();
+    for notes in [&mut notes, &mut other_notes] {
+        assert_eq!(thread_changed(notes).await, (session.clone(), version));
+    }
+    let read = other.thread(&session).await.unwrap();
+    assert_eq!((read.text.as_str(), read.version), ("- plan", version));
+
+    // A client that read the thread before the write is out of date.
+    let err = other
+        .write_thread(&session, "lost".into(), empty.version)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
+
+    // The agent changes it during a turn, without asking.
+    client.subscribe(&session, None).await.unwrap();
+    client
+        .send_prompt(&session, vec![loom_client::proto::ContentPart::text("go")])
+        .await
+        .unwrap();
+    let events = until_turn_finished(&mut notes).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ApprovalRequired { .. }))
+    );
+    let (changed, version) = thread_changed(&mut other_notes).await;
+    assert_eq!(changed, session);
+    let read = other.thread(&session).await.unwrap();
+    assert_eq!(read.text, "- plan\n- step done");
+    assert_eq!(read.version, version);
+
+    let err = client
+        .write_thread(&session, "x".repeat(64 * 1024 + 1), version)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+    let cleared = client
+        .write_thread(&session, String::new(), version)
+        .await
+        .unwrap();
+    assert_eq!(cleared, empty.version);
+    assert_eq!(client.thread(&session).await.unwrap().text, "");
+
+    client.delete_session(&session).await.unwrap();
+    let err = client.thread(&session).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
 /// Names in a directory, to see that no partial download stays behind.
 fn entries(dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)

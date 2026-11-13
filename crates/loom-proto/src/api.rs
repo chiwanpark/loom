@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -233,6 +233,21 @@ pub enum Command {
     ClearSession {
         session: SessionId,
     },
+    /// The session's operation thread: the agent's notes on its work, which
+    /// stay when the conversation is compacted or cleared. Answered with
+    /// [`Payload::Thread`].
+    GetThread {
+        session: SessionId,
+    },
+    /// Replaces the session's operation thread, during a turn too; an empty
+    /// `text` clears it. Fails with [`ErrorCode::Conflict`] when the thread no
+    /// longer has the `expected` version, that is, it changed since the client
+    /// read it. Answered with [`Payload::ThreadWritten`].
+    WriteThread {
+        session: SessionId,
+        text: String,
+        expected: FileVersion,
+    },
 }
 
 /// The most bytes one [`Command::ReadFileChunk`] returns.
@@ -263,6 +278,19 @@ pub enum Payload {
     /// The version of a file after a write.
     FileWritten(FileVersion),
     FileChunk(FileChunk),
+    Thread(ThreadContent),
+    /// The version of the operation thread after a write.
+    ThreadWritten(FileVersion),
+}
+
+/// A session's operation thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadContent {
+    pub text: String,
+    /// A SHA-256 hash of `text`, for [`Command::WriteThread`].
+    pub version: FileVersion,
+    /// The most bytes the thread may hold.
+    pub max_bytes: u64,
 }
 
 /// Part of a file's bytes. `size` and `modified` describe the whole file when
@@ -498,11 +526,21 @@ impl std::error::Error for ApiError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Notice {
-    ConfigReloaded { restart_required: Vec<String> },
-    ConfigRejected { message: String },
+    ConfigReloaded {
+        restart_required: Vec<String>,
+    },
+    ConfigRejected {
+        message: String,
+    },
     ShuttingDown,
     SessionUpdated(SessionInfo),
     SessionRemoved(SessionId),
+    /// A session's operation thread changed, by the agent or a client. The
+    /// `version` is the hash of its new text, as in [`ThreadContent`].
+    ThreadChanged {
+        session: SessionId,
+        version: FileVersion,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

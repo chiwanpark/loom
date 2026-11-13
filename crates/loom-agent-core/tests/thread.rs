@@ -1,8 +1,9 @@
 mod common;
 
 use common::{Harness, MODEL_REF, calls, collect_until, run_turn, test_config, text};
-use loom_agent_core::CoreError;
 use loom_agent_core::policy::DENIED_BY_POLICY;
+use loom_agent_core::thread::version;
+use loom_agent_core::{AgentNotice, CoreError};
 use loom_config::{ByteSize, PolicyAction, PolicyRule};
 use loom_llm::{InputContent, Message};
 use loom_proto::{SessionEvent, ToolResult};
@@ -343,4 +344,63 @@ async fn thread_reads_are_not_cut_off() {
     run_turn(&session, &mut sub, "go").await;
     assert_eq!(sent_result(&h, "thread_read"), long);
     assert!(!sent_result(&h, "read").contains("END"));
+}
+
+/// Clients hear of every change in order, and of nothing else.
+#[tokio::test]
+async fn thread_changes_are_announced() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(
+        config,
+        vec![
+            calls(&[("r", "thread_read", json!({}))]),
+            text("ok"),
+            calls(&[("w", "thread_write", json!({"text": "by the agent"}))]),
+            text("ok"),
+        ],
+    );
+    let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let id = session.id().clone();
+    let mut notices = h.agent.notices();
+    let mut changes = move || {
+        let mut versions = Vec::new();
+        while let Ok(notice) = notices.try_recv() {
+            if let AgentNotice::ThreadChanged { session, version } = notice {
+                assert_eq!(session, id);
+                versions.push(version);
+            }
+        }
+        versions
+    };
+
+    let empty = session.thread_content();
+    assert_eq!(empty.version, version(""));
+    // Any change makes another version, whitespace too.
+    assert_ne!(version("a"), version("a\n"));
+    let v1 = session.write_thread("a".into(), empty.version).unwrap();
+    assert_eq!(v1, version("a"));
+    session.set_thread("b".into()).unwrap();
+    assert_eq!(changes(), [v1, version("b")]);
+
+    let err = session.write_thread("c".into(), v1).unwrap_err();
+    assert!(matches!(err, CoreError::ThreadChanged), "{err}");
+    assert_eq!(session.thread(), "b");
+    assert_eq!(changes(), []);
+
+    // Saving the same text changes nothing: no notice, and the agent, which
+    // read it, may still replace it.
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "read").await;
+    assert_eq!(
+        session.write_thread("b".into(), version("b")).unwrap(),
+        version("b")
+    );
+    assert_eq!(changes(), []);
+    let results = results(&run_turn(&session, &mut sub, "write").await);
+    assert!(!result(&results, "w").is_error);
+    assert_eq!(changes(), [version("by the agent")]);
+
+    h.agent.delete_session(session.id()).unwrap();
+    session.set_thread("after deletion".into()).unwrap();
+    assert_eq!(changes(), []);
 }

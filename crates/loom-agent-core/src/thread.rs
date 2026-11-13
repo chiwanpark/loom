@@ -5,12 +5,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use loom_proto::FileVersion;
 use loom_tools::{
     Replacement, Risk, ThreadAccess, Tool, ToolContext, ToolDetails, ToolError, ToolOutput,
     ToolSpec, apply_edits,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 pub const THREAD_READ_TOOL: &str = "thread_read";
 pub const THREAD_EDIT_TOOL: &str = "thread_edit";
@@ -19,6 +21,11 @@ pub const THREAD_WRITE_TOOL: &str = "thread_write";
 /// Whether `tool` only touches the session's own operation thread.
 pub fn is_thread_tool(tool: &str) -> bool {
     [THREAD_READ_TOOL, THREAD_EDIT_TOOL, THREAD_WRITE_TOOL].contains(&tool)
+}
+
+/// The version clients see of a thread with `text`: a SHA-256 hash of it.
+pub fn version(text: &str) -> FileVersion {
+    FileVersion(Sha256::digest(text.as_bytes()).into())
 }
 
 const LABEL: &str = "the operation thread";

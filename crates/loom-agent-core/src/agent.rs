@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use loom_config::{AgentConfig, Dirs};
 use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
-use loom_proto::{SessionEvent, SessionId, SessionInfo};
+use loom_proto::{FileVersion, SessionEvent, SessionId, SessionInfo};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -19,11 +19,19 @@ use crate::terminals::Terminals;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentNotice {
-    ConfigReloaded { restart_required: Vec<String> },
-    ConfigRejected { message: String },
+    ConfigReloaded {
+        restart_required: Vec<String>,
+    },
+    ConfigRejected {
+        message: String,
+    },
     ShuttingDown,
     SessionUpdated(Box<SessionInfo>),
     SessionRemoved(SessionId),
+    ThreadChanged {
+        session: SessionId,
+        version: FileVersion,
+    },
 }
 
 pub struct AgentOptions {
@@ -193,6 +201,7 @@ impl Agent {
             store: self.inner.store.clone(),
             metrics: self.inner.metrics.clone(),
             observer: Some(self.inner.observer.clone()),
+            notices: Some(self.inner.notices.clone()),
         }
     }
 
