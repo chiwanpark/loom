@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.svg" alt="Loom logo" width="128" height="128"></p>
+<p><img src="assets/logo.svg" alt="Loom logo" width="128" height="128"></p>
 
 # Loom
 
