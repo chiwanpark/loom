@@ -150,6 +150,14 @@ pub fn evaluate(
             reason: describe(rule, "configured"),
         };
     }
+    // They touch nothing but the session's own notes; asking for each one
+    // would make the thread too costly to use. Rules still decide.
+    if crate::thread::is_thread_tool(tool) {
+        return Verdict {
+            action: PolicyAction::Allow,
+            reason: "operation thread tools are allowed unless a rule says otherwise".into(),
+        };
+    }
     match session.default {
         Some(action) => Verdict {
             action,
@@ -289,5 +297,41 @@ mod tests {
             evaluate(&config(), &session, "shell", &json!({"command": "sudo x"})).action,
             PolicyAction::Deny
         );
+    }
+
+    #[test]
+    fn thread_tools_are_allowed_unless_a_rule_says_otherwise() {
+        let defaults = [None, Some(PolicyAction::Ask), Some(PolicyAction::Deny)];
+        for tool in ["thread_read", "thread_edit", "thread_write"] {
+            for default in defaults {
+                let session = SessionPolicy {
+                    default,
+                    rules: Vec::new(),
+                };
+                assert_eq!(
+                    evaluate(&config(), &session, tool, &json!({})).action,
+                    PolicyAction::Allow,
+                    "{tool} with {default:?}"
+                );
+            }
+        }
+        // Other tools still follow the default.
+        assert_eq!(action("thread", json!({})), PolicyAction::Ask);
+
+        let mut config = config();
+        config
+            .rules
+            .push(rule("thread_write", PolicyAction::Deny, &[]));
+        config
+            .rules
+            .push(rule("thread_edit", PolicyAction::Ask, &[]));
+        let session = SessionPolicy {
+            default: None,
+            rules: vec![rule("thread_read", PolicyAction::Ask, &[])],
+        };
+        let eval = |tool: &str| evaluate(&config, &session, tool, &json!({})).action;
+        assert_eq!(eval("thread_write"), PolicyAction::Deny);
+        assert_eq!(eval("thread_edit"), PolicyAction::Ask);
+        assert_eq!(eval("thread_read"), PolicyAction::Ask);
     }
 }

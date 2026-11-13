@@ -136,7 +136,19 @@ async fn text_turn_streams_and_builds_request() {
     assert!(system.contains("Always answer in haiku."));
     assert!(system.contains(&h.agent.workspace_root().display().to_string()));
     let names: Vec<_> = request.tools.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, ["edit", "read", "shell", "write"]);
+    assert_eq!(
+        names,
+        [
+            "edit",
+            "read",
+            "shell",
+            "thread_edit",
+            "thread_read",
+            "thread_write",
+            "write"
+        ]
+    );
+    assert!(system.contains("# Operation thread"));
     assert_eq!(request.messages, vec![Message::user_text("hi")]);
     assert_eq!(request.session_id.as_deref(), Some(session.id().0.as_str()));
 

@@ -8,6 +8,7 @@ use loom_tools::sandbox::{LauncherKind, SandboxLauncher, SandboxPolicy, find_bwr
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
 use crate::models::ModelCatalog;
+use crate::thread::{ThreadEditTool, ThreadReadTool, ThreadWriteTool};
 use crate::web_search::SearchWebTool;
 
 #[derive(Clone)]
@@ -41,6 +42,9 @@ impl Runtime {
         }
         let mut tools = ToolRegistry::builtin(builtin_tools(&config, sandbox_exe)?);
         tools.register(Arc::new(SearchWebTool::new(&config.tools.web_search, auth)));
+        tools.register(Arc::new(ThreadReadTool));
+        tools.register(Arc::new(ThreadEditTool));
+        tools.register(Arc::new(ThreadWriteTool));
         providers.activate(auth);
         Ok(Self {
             config: Arc::new(config),

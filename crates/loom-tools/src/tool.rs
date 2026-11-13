@@ -64,6 +64,21 @@ impl Drop for WaitNotice<'_> {
     }
 }
 
+/// The operation thread of the session a tool call runs in: a text board for
+/// the agent's notes that the user can edit too.
+pub trait ThreadAccess: Send + Sync + std::fmt::Debug {
+    /// The thread's text, which the agent has now seen.
+    fn read(&self) -> String;
+
+    /// Replaces the thread with what `change` makes of its current text, with
+    /// no other change in between, and returns the new text.
+    fn edit(&self, change: &mut dyn FnMut(&str) -> Result<String>) -> Result<String>;
+
+    /// Replaces the thread with `text`. Refused when the thread has text the
+    /// agent has not seen, such as the user's changes.
+    fn write(&self, text: String) -> Result<()>;
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace: Arc<Workspace>,
@@ -71,6 +86,8 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     pub output: Option<OutputSink>,
     pub lock_wait: Option<LockWaitHook>,
+    /// The session's operation thread; `None` outside a session.
+    pub thread: Option<Arc<dyn ThreadAccess>>,
 }
 
 impl ToolContext {
@@ -81,7 +98,13 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             output: None,
             lock_wait: None,
+            thread: None,
         }
+    }
+
+    pub fn with_thread(mut self, thread: Arc<dyn ThreadAccess>) -> Self {
+        self.thread = Some(thread);
+        self
     }
 
     pub fn with_lock_wait(mut self, hook: LockWaitHook) -> Self {
@@ -180,6 +203,10 @@ pub enum ToolDetails {
     WebSearch {
         query: String,
         sources: usize,
+    },
+    /// The operation thread after a thread tool read or changed it.
+    Thread {
+        bytes: usize,
     },
 }
 

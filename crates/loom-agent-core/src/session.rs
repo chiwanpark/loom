@@ -11,7 +11,7 @@ use loom_proto::{
     ContentPart, Decision, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
     ToolCall, ToolResult, TurnOutcome,
 };
-use loom_tools::{FileTracker, LockWaitHook, ToolContext, ToolError, Workspace};
+use loom_tools::{FileTracker, LockWaitHook, ThreadAccess, ToolContext, ToolError, Workspace};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +26,7 @@ use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
+use crate::thread::THREAD_READ_TOOL;
 use loom_config::PolicyAction;
 
 pub const MAX_ROUNDS_PER_TURN: usize = 200;
@@ -50,6 +51,10 @@ struct State {
     last_used: Option<UsedModel>,
     /// The operation thread, saved apart from the rest of the state.
     thread: String,
+    /// Whether the conversation holds the thread as it is: the agent read or
+    /// wrote it since the user last changed it and the context was last
+    /// cleared or compacted. Only then may the agent replace all of it.
+    thread_seen: bool,
 }
 
 struct Core {
@@ -141,29 +146,40 @@ impl Core {
         }
     }
 
-    /// Replaces the operation thread, during a turn too. Refused when the
-    /// text is over `tools.thread.max_bytes`.
-    fn set_thread(&self, text: String) -> Result<()> {
-        let max = self
-            .runtime
+    fn thread_limit(&self) -> u64 {
+        self.runtime
             .current()
             .config
             .tools
             .thread
             .max_bytes
-            .as_u64();
+            .as_u64()
+    }
+
+    /// Replaces the operation thread, refusing a text over `max` bytes. The
+    /// caller holds the lock, so the store gets writes in the order they
+    /// happen.
+    fn replace_thread(&self, state: &mut State, text: String, max: u64) -> Result<()> {
         if text.len() as u64 > max {
             return Err(CoreError::ThreadTooLarge {
                 size: text.len(),
                 max,
             });
         }
-        let mut state = self.lock();
-        // Under the lock, so the store gets writes in the order they happen.
         if let Some(store) = &self.store {
             store.save_thread(&self.id, &text);
         }
         state.thread = text;
+        Ok(())
+    }
+
+    /// Replaces the operation thread for the user, during a turn too. Refused
+    /// when the text is over `tools.thread.max_bytes`.
+    fn set_thread(&self, text: String) -> Result<()> {
+        let max = self.thread_limit();
+        let mut state = self.lock();
+        self.replace_thread(&mut state, text, max)?;
+        state.thread_seen = false;
         Ok(())
     }
 
@@ -271,6 +287,7 @@ impl Session {
                     title: state.title,
                     last_used: state.last_used,
                     thread,
+                    thread_seen: false,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -322,7 +339,8 @@ impl Session {
         self.core.lock().thread.clone()
     }
 
-    /// Replaces the operation thread; see [`Core::set_thread`].
+    /// Replaces the operation thread for the user, so the agent has to read
+    /// it again before replacing all of it; see [`Core::set_thread`].
     pub fn set_thread(&self, text: String) -> Result<()> {
         self.core.set_thread(text)
     }
@@ -448,6 +466,7 @@ impl Session {
         state.history.clear();
         state.context_tokens = None;
         state.last_used = None;
+        state.thread_seen = false;
         self.core.files.clear();
         self.core.persist_state(&state);
         // Under the lock, like a prompt, so no prompt lands between the two.
@@ -652,13 +671,17 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
                 interrupted = cancelled || cancel.is_cancelled();
                 result
             };
+            // The thread is capped by its own limit, and a cut-off read would
+            // lose its end if the agent wrote the thread back.
+            let content = if call.name == THREAD_READ_TOOL {
+                result.content
+            } else {
+                convert::cap_chars(&result.content, max_chars.max(1))
+            };
             core.lock().history.push(Message::ToolResult {
                 call_id: call.call_id.clone(),
                 tool_name: call.name.clone(),
-                content: vec![loom_llm::InputContent::text(convert::cap_chars(
-                    &result.content,
-                    max_chars.max(1),
-                ))],
+                content: vec![loom_llm::InputContent::text(content)],
                 is_error: result.is_error,
             });
         }
@@ -721,6 +744,8 @@ async fn compact(
                 let mut state = core.lock();
                 let removed = compaction::elide_tool_results(&mut state.history);
                 state.context_tokens = None;
+                // The thread's text may have been in the removed results.
+                state.thread_seen = false;
                 core.persist_state(&state);
                 removed
             };
@@ -753,6 +778,7 @@ async fn compact(
                             );
                         }
                         state.context_tokens = None;
+                        state.thread_seen = false;
                         core.persist_state(&state);
                     }
                     core.emit(SessionEvent::ContextCompacted {
@@ -913,6 +939,7 @@ async fn run_tool_call(
     let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL);
     let hook_core = core.clone();
     let ctx = ToolContext::new(core.workspace.clone())
+        .with_thread(Arc::new(SessionThread(core.clone())))
         .with_files(core.files.clone())
         .with_cancel(cancel.child_token())
         .with_output(output_tx)
@@ -954,6 +981,56 @@ async fn run_tool_call(
             true,
         ),
         Err(err) => finish(convert::error_result(err.to_string()), false),
+    }
+}
+
+/// A session's operation thread as the thread tools see it: what the agent
+/// reads or writes is in its conversation, so it counts as seen.
+struct SessionThread(Arc<Core>);
+
+impl std::fmt::Debug for SessionThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SessionThread").field(&self.0.id).finish()
+    }
+}
+
+impl ThreadAccess for SessionThread {
+    fn read(&self) -> String {
+        let mut state = self.0.lock();
+        state.thread_seen = true;
+        state.thread.clone()
+    }
+
+    fn edit(
+        &self,
+        change: &mut dyn FnMut(&str) -> loom_tools::Result<String>,
+    ) -> loom_tools::Result<String> {
+        let max = self.0.thread_limit();
+        let mut state = self.0.lock();
+        let text = change(&state.thread)?;
+        // The agent saw only what it replaced, so whether it holds the
+        // thread as it is stays as it was.
+        self.0
+            .replace_thread(&mut state, text.clone(), max)
+            .map_err(|err| ToolError::failed(err.to_string()))?;
+        Ok(text)
+    }
+
+    fn write(&self, text: String) -> loom_tools::Result<()> {
+        let max = self.0.thread_limit();
+        let mut state = self.0.lock();
+        if !state.thread_seen && !state.thread.is_empty() {
+            return Err(ToolError::failed(
+                "the operation thread has text you have not read since it last changed or the \
+                 conversation was compacted or cleared; read it with thread_read before \
+                 replacing it, or change a part of it with thread_edit",
+            ));
+        }
+        self.0
+            .replace_thread(&mut state, text, max)
+            .map_err(|err| ToolError::failed(err.to_string()))?;
+        state.thread_seen = true;
+        Ok(())
     }
 }
 

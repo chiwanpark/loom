@@ -63,6 +63,8 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
     let details = match output.details {
         // The sources are in the content; clients have no view of their own.
         ToolDetails::WebSearch { .. } => None,
+        // Not a file: clients must not count it among the workspace changes.
+        ToolDetails::Thread { .. } => None,
         ToolDetails::Read {
             path,
             start_line,
