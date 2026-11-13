@@ -17,6 +17,7 @@ mod session;
 pub mod store;
 pub mod supervisor;
 pub mod terminals;
+pub mod thread;
 pub mod watcher;
 pub mod web_search;
 

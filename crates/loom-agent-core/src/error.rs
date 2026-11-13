@@ -16,6 +16,10 @@ pub enum CoreError {
     EmptyPrompt,
     #[error("there is nothing to compact in this session yet")]
     NothingToCompact,
+    #[error(
+        "the operation thread would be {size} bytes, more than the {max}-byte limit (tools.thread.max_bytes)"
+    )]
+    ThreadTooLarge { size: usize, max: u64 },
     #[error(transparent)]
     Llm(#[from] loom_llm::LlmError),
     #[error(transparent)]

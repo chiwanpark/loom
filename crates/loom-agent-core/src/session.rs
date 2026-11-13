@@ -48,6 +48,8 @@ struct State {
     archived: bool,
     title: Option<String>,
     last_used: Option<UsedModel>,
+    /// The operation thread, saved apart from the rest of the state.
+    thread: String,
 }
 
 struct Core {
@@ -139,6 +141,32 @@ impl Core {
         }
     }
 
+    /// Replaces the operation thread, during a turn too. Refused when the
+    /// text is over `tools.thread.max_bytes`.
+    fn set_thread(&self, text: String) -> Result<()> {
+        let max = self
+            .runtime
+            .current()
+            .config
+            .tools
+            .thread
+            .max_bytes
+            .as_u64();
+        if text.len() as u64 > max {
+            return Err(CoreError::ThreadTooLarge {
+                size: text.len(),
+                max,
+            });
+        }
+        let mut state = self.lock();
+        // Under the lock, so the store gets writes in the order they happen.
+        if let Some(store) = &self.store {
+            store.save_thread(&self.id, &text);
+        }
+        state.thread = text;
+        Ok(())
+    }
+
     fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
         if let Some(model) = &self.lock().model {
             return Ok(model.clone());
@@ -154,7 +182,14 @@ impl Session {
     pub(crate) fn new(params: SessionParams) -> Self {
         let id = SessionId(uuid::Uuid::new_v4().to_string());
         let observer = params.observer.clone();
-        let session = Self::build(params, id, now_unix(), StoredState::default(), Vec::new());
+        let session = Self::build(
+            params,
+            id,
+            now_unix(),
+            StoredState::default(),
+            Vec::new(),
+            String::new(),
+        );
         session.core.persist();
         session.observe(observer);
         session
@@ -166,7 +201,7 @@ impl Session {
             created_at,
             mut state,
             events,
-            thread: _,
+            thread,
         } = stored;
         let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
         let unfinished = turn_unfinished(&events);
@@ -180,7 +215,7 @@ impl Session {
             });
         }
         let observer = params.observer.clone();
-        let session = Self::build(params, id, created_at, state, events);
+        let session = Self::build(params, id, created_at, state, events, thread);
         if let Some(model) = model {
             session.core.lock().model = Some(model);
         }
@@ -214,6 +249,7 @@ impl Session {
         created_at: u64,
         state: StoredState,
         events: Vec<SequencedEvent>,
+        thread: String,
     ) -> Self {
         let hub = EventHub::restore(params.store.clone().map(|s| (s, id.clone())), events);
         Self {
@@ -234,6 +270,7 @@ impl Session {
                     archived: state.archived,
                     title: state.title,
                     last_used: state.last_used,
+                    thread,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -278,6 +315,16 @@ impl Session {
 
     pub fn subscribe(&self, since_seq: Option<u64>) -> Subscription {
         self.core.hub.subscribe(since_seq)
+    }
+
+    /// The session's operation thread.
+    pub fn thread(&self) -> String {
+        self.core.lock().thread.clone()
+    }
+
+    /// Replaces the operation thread; see [`Core::set_thread`].
+    pub fn set_thread(&self, text: String) -> Result<()> {
+        self.core.set_thread(text)
     }
 
     pub fn history(&self) -> Vec<Message> {
@@ -388,8 +435,8 @@ impl Session {
 
     /// Starts the conversation over, as in a new session: forgets the history,
     /// the events, the context size, and the files read. Keeps the settings
-    /// (model, reasoning effort, policy) and the title, which stays the first
-    /// prompt's when the session was never renamed.
+    /// (model, reasoning effort, policy), the operation thread, and the title,
+    /// which stays the first prompt's when the session was never renamed.
     pub fn clear(&self) -> Result<()> {
         let mut state = self.core.lock();
         if state.turn.is_some() {

@@ -4,6 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use loom_config::AGENTS_MD;
 use loom_tools::ToolSpec;
 
+use crate::thread::{self, THREAD_READ_TOOL};
+
 pub const BUILTIN_INSTRUCTIONS: &str = "\
 You are Loom, a coding agent working in a software project on the user's machine.
 
@@ -62,6 +64,13 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
             Ok(None) => {}
             Err(err) => warnings.push(format!("cannot read {}: {err}", path.display())),
         }
+    }
+    if inputs
+        .tools
+        .iter()
+        .any(|tool| tool.name == THREAD_READ_TOOL)
+    {
+        sections.push(thread::PROMPT_SECTION.to_owned());
     }
     sections.push(runtime_section(inputs.workspace_root, inputs.tools));
     SystemPrompt {
@@ -141,12 +150,45 @@ mod tests {
 
     use super::*;
 
-    fn tools() -> Vec<ToolSpec> {
-        vec![ToolSpec {
-            name: "read".into(),
+    fn tool(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
             description: String::new(),
             parameters: json!({}),
-        }]
+        }
+    }
+
+    fn tools() -> Vec<ToolSpec> {
+        vec![tool("read")]
+    }
+
+    #[tokio::test]
+    async fn explains_the_thread_when_it_can_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "WORKSPACE RULE").unwrap();
+        let missing = dir.path().join("missing.md");
+        let prompt = |tools: Vec<ToolSpec>| {
+            let dir = dir.path().to_path_buf();
+            let missing = missing.clone();
+            async move {
+                build_system_prompt(&PromptInputs {
+                    base: None,
+                    system_agents_md: &missing,
+                    workspace_root: &dir,
+                    max_bytes: 1024,
+                    tools: &tools,
+                })
+                .await
+                .text
+            }
+        };
+        let without = prompt(tools()).await;
+        assert!(!without.contains("# Operation thread"));
+        let with = prompt(vec![tool("read"), tool(THREAD_READ_TOOL)]).await;
+        let ws = with.find("WORKSPACE RULE").unwrap();
+        let thread = with.find("# Operation thread").unwrap();
+        let env = with.find("# Environment").unwrap();
+        assert!(ws < thread && thread < env);
     }
 
     #[test]

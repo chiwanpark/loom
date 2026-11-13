@@ -168,6 +168,24 @@ pub struct ToolsConfig {
     pub read: ReadToolConfig,
     pub shell: ShellToolConfig,
     pub web_search: WebSearchToolConfig,
+    pub thread: ThreadToolConfig,
+}
+
+/// The operation thread: a text board each session keeps for the agent's
+/// notes on its work, which the agent and the user both read and edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThreadToolConfig {
+    /// The largest thread, in bytes, that the agent or the user may save.
+    pub max_bytes: ByteSize,
+}
+
+impl Default for ThreadToolConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: ByteSize::kib(64),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -619,6 +637,12 @@ impl AgentConfig {
         if self.tools.read.max_bytes.as_u64() == 0 {
             return Err(invalid(
                 "tools.read.max_bytes",
+                "must be greater than zero".into(),
+            ));
+        }
+        if self.tools.thread.max_bytes.as_u64() == 0 {
+            return Err(invalid(
+                "tools.thread.max_bytes",
                 "must be greater than zero".into(),
             ));
         }

@@ -220,6 +220,10 @@ mod tests {
                 "tools.read.max_lines",
             ),
             ("tools:\n  shell:\n    timeout: 0s\n", "tools.shell.timeout"),
+            (
+                "tools:\n  thread:\n    max_bytes: 0\n",
+                "tools.thread.max_bytes",
+            ),
             ("allowed_roots:\n- relative/path\n", "allowed_roots[0]"),
             (
                 "telemetry:\n  endpoint: localhost:4318\n",

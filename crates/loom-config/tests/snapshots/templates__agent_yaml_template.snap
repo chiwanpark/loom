@@ -28,6 +28,8 @@ tools:
     max_sources: 5
     max_allowed_sources: 10
     timeout: 2m
+  thread:
+    max_bytes: 64KiB
 terminal:
   detached_timeout: 10m
 policy:

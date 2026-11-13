@@ -12,8 +12,8 @@ pub use agent::{
     InstructionsConfig, LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, OtlpProtocol,
     PolicyAction, PolicyConfig, PolicyRule, ProviderSetting, ProvidersConfig, ReadToolConfig,
     RelayConfig, SandboxBackend, SandboxConfig, SearchReasoningEffort, ShellToolConfig,
-    SocketConfig, StorageConfig, TelemetryConfig, Temporality, TerminalConfig, ToolsConfig,
-    WebSearchToolConfig,
+    SocketConfig, StorageConfig, TelemetryConfig, Temporality, TerminalConfig, ThreadToolConfig,
+    ToolsConfig, WebSearchToolConfig,
 };
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};

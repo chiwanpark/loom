@@ -198,9 +198,10 @@ pub fn api_error(err: &crate::CoreError) -> loom_proto::ApiError {
     use loom_proto::ErrorCode;
     let code = match err {
         CoreError::Busy => ErrorCode::Busy,
-        CoreError::NoModel | CoreError::EmptyPrompt | CoreError::NothingToCompact => {
-            ErrorCode::BadRequest
-        }
+        CoreError::NoModel
+        | CoreError::EmptyPrompt
+        | CoreError::NothingToCompact
+        | CoreError::ThreadTooLarge { .. } => ErrorCode::BadRequest,
         CoreError::UnknownSession(_) | CoreError::UnknownApproval(_) => ErrorCode::NotFound,
         CoreError::Llm(err) => return llm_error(err),
         CoreError::Tool(_) => ErrorCode::Internal,
