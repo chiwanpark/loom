@@ -9,6 +9,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 installer=$PWD/scripts/install.sh
 target=x86_64-unknown-linux-musl
+arm_target=aarch64-unknown-linux-musl
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 releases=$root/releases
@@ -45,10 +46,10 @@ EOF
 }
 
 # Packs the archive of $1 for release v$2 into $3, as the Release workflow
-# lays it out, with a stub of version $4.
+# lays it out, with a stub of version $4, for target $5.
 pack() {
-    local name=$1 version=$2 dir=$3 binary=${4:-$2}
-    local stem=$name-$version-$target stage
+    local name=$1 version=$2 dir=$3 binary=${4:-$2} for=${5:-$target}
+    local stem=$name-$version-$for stage
     stage=$(mktemp -d -p "$root" stage.XXXX)
     mkdir -p "$stage/$stem" "$dir"
     stub "$name" "$binary" >"$stage/$stem/$name"
@@ -57,13 +58,17 @@ pack() {
     tar -C "$stage" -czf "$dir/$stem.tar.gz" "$stem"
 }
 
-# Builds release v<version> and makes it the latest when asked.
+# Builds release v<version> and makes it the latest when asked. Its arm64
+# binaries say they are, in their version.
 release() {
     local version=$1 latest=${2:-}
     local dir=$releases/download/v$version
     pack loom-agent "$version" "$dir"
     pack loom-relay "$version" "$dir"
-    # The GUI archive is listed first, as sha256sum sorts it so.
+    # Listed before the x86-64 archives, as sha256sum sorts them so.
+    pack loom-agent "$version" "$dir" "$version-arm64" "$arm_target"
+    pack loom-relay "$version" "$dir" "$version-arm64" "$arm_target"
+    # The GUI archive is listed first.
     echo "not an archive" >"$dir/loom-$version-x86_64-unknown-linux-gnu.tar.gz"
     (cd "$dir" && sha256sum -- *.tar.gz >SHA256SUMS)
     if [ -n "$latest" ]; then
@@ -74,7 +79,8 @@ release() {
 }
 
 # Runs the installer with dash, as `curl ... | sh` does on Debian, in a
-# fresh home directory unless $home is set, as root if $STUB_ROOT is set.
+# fresh home directory unless $home is set, as root if $STUB_ROOT is set,
+# on the system that $STUB_OS and $STUB_ARCH name (Linux x86_64 if unset).
 # Output goes to $out.
 run() {
     home=${home:-$(mktemp -d -p "$root" home.XXXX)}
@@ -83,6 +89,7 @@ run() {
         LOOM_RELEASES_URL="file://$releases" LOOM_RAW_URL="file://$root/raw" \
         LOOM_INSTALL_SYSROOT="$sysroot" \
         STUB_RUNNING="${STUB_RUNNING:-}" STUB_ROOT="${STUB_ROOT:-}" \
+        STUB_OS="${STUB_OS:-}" STUB_ARCH="${STUB_ARCH:-}" \
         dash "$installer" "$@" >"$out" 2>&1
 }
 
@@ -125,6 +132,16 @@ cat >"$root/fake-bin/id" <<'EOF'
 if [ -n "$STUB_ROOT" ] && [ "$*" = -u ]; then echo 0; else exec /usr/bin/id "$@"; fi
 EOF
 chmod 755 "$root/fake-bin/id"
+# uname names the system in $STUB_OS and $STUB_ARCH.
+cat >"$root/fake-bin/uname" <<'EOF'
+#!/bin/sh
+case $* in
+    -s) echo "${STUB_OS:-Linux}" ;;
+    -m) echo "${STUB_ARCH:-x86_64}" ;;
+    *) exec /usr/bin/uname "$@" ;;
+esac
+EOF
+chmod 755 "$root/fake-bin/uname"
 release 0.1.0
 release 0.2.0 latest
 
@@ -145,6 +162,7 @@ unset home
 if run agent; then status=0; else status=$?; fi
 check "installs the latest release" [ $status -eq 0 ]
 check "the latest is 0.2.0" [ "$(agent_version)" = "loom-agent 0.2.0 (stub)" ]
+check "says which build it downloads" has "Downloading loom-agent 0.2.0 for $target"
 check "writes a configuration" [ -f "$home/.config/loom/agent.yaml" ]
 check "says the bin directory is not on PATH" has "is not on your PATH"
 check "names the binary for SSH clients" has "remote_bin: $home/.local/bin/loom-agent"
@@ -201,6 +219,33 @@ check "rejects an archive that fails its checksum" [ $status -ne 0 ]
 check "says the checksum does not match" has "does not match its checksum"
 check "keeps the binary after a bad download" [ "$(agent_version)" = "loom-agent 0.2.0 (stub)" ]
 release 0.3.0 latest
+
+# Other architectures.
+unset home
+if STUB_ARCH=aarch64 run agent; then status=0; else status=$?; fi
+check "installs on arm64" [ $status -eq 0 ]
+check "installs the arm64 build on arm64" [ "$(agent_version)" = "loom-agent 0.3.0-arm64 (stub)" ]
+check "says it downloads the arm64 build" has "Downloading loom-agent 0.3.0 for $arm_target"
+arm_home=$home
+unset home
+STUB_ARCH=arm64 run relay || true
+check "takes arm64 for aarch64" \
+    [ "$("$home/.local/bin/loom-relay" --version)" = "loom-relay 0.3.0-arm64 (stub)" ]
+mkdir -p "$releases/download/v0.2.7"
+cp "$releases/download/v0.2.0/"* "$releases/download/v0.2.7/"
+grep -v "$arm_target" "$releases/download/v0.2.0/SHA256SUMS" >"$releases/download/v0.2.7/SHA256SUMS"
+home=$arm_home
+if STUB_ARCH=aarch64 run agent --version 0.2.7; then status=0; else status=$?; fi
+check "fails for a release without an arm64 build" [ $status -ne 0 ]
+check "says the release has no arm64 build" has "has no loom-agent archive for $arm_target"
+check "keeps the binary when there is no build" [ "$(agent_version)" = "loom-agent 0.3.0-arm64 (stub)" ]
+for system in Linux/riscv64 Darwin/arm64; do
+    unset home
+    if STUB_OS=${system%/*} STUB_ARCH=${system#*/} run agent; then status=0; else status=$?; fi
+    check "refuses to download for $system" [ $status -ne 0 ]
+    check "suggests --source on $system" has "not ${system%/*} ${system#*/}; use --source"
+    check "installs nothing on $system" [ ! -e "$home/.local" ]
+done
 
 # Options.
 unset home
@@ -323,6 +368,10 @@ run relay --source || true
 check "builds the relay with Cargo" grep -sq -- "--branch main --root .*/root loom-relay\$" "$root/cargo.log"
 check "installs the relay Cargo built" \
     [ "$("$home/.local/bin/loom-relay" --version)" = "loom-relay built (stub)" ]
+unset home
+if STUB_ARCH=riscv64 run agent --source; then status=0; else status=$?; fi
+check "builds with Cargo where there is no prebuilt binary" [ $status -eq 0 ]
+check "installs that build" [ "$(agent_version)" = "loom-agent built (stub)" ]
 
 if [ $failures -gt 0 ]; then
     echo "$failures check(s) failed"

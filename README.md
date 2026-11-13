@@ -20,16 +20,16 @@ The other crates are libraries: the agent core (`loom-agent-core`), model provid
 
 ## Downloading
 
-The [releases page](https://github.com/chiwanpark/loom/releases) has prebuilt archives for x86-64 Linux:
+The [releases page](https://github.com/chiwanpark/loom/releases) has prebuilt archives for Linux:
 
-- `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` holds the desktop client `loom` together with `loom-agent`. It needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, a Wayland session, and a Vulkan driver.
-- `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` and `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` are statically linked and run on any x86-64 Linux, such as the remote hosts you reach over SSH.
+- `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` holds the desktop client `loom` together with `loom-agent`, for x86-64. It needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, a Wayland session, and a Vulkan driver.
+- `loom-agent-<version>-<arch>-unknown-linux-musl.tar.gz` and `loom-relay-<version>-<arch>-unknown-linux-musl.tar.gz` are statically linked and run on any Linux, such as the remote hosts you reach over SSH. `<arch>` is `x86_64` for x86-64 and `aarch64` for arm64.
 
 Unpack an archive and put its binaries on your `PATH`, for example in `~/.local/bin`. `SHA256SUMS` on the release page lists the archive checksums. Every binary prints its version and the commit it was built from with `--version`. [RELEASING.md](RELEASING.md) describes how releases are made.
 
 ### Installing the agent or relay
 
-`scripts/install.sh agent` installs `loom-agent` for the current user. It downloads the static binary from the latest release, checks it against `SHA256SUMS`, puts it in `~/.local/bin`, and writes `~/.config/loom/agent.yaml` if there is none. Run it again to upgrade.
+`scripts/install.sh agent` installs `loom-agent` for the current user. It downloads the static binary for the host's architecture from the latest release, checks it against `SHA256SUMS`, puts it in `~/.local/bin`, and writes `~/.config/loom/agent.yaml` if there is none. Run it again to upgrade.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiwanpark/loom/main/scripts/install.sh | sh -s agent
@@ -51,7 +51,7 @@ Options go after the component, for example `| sh -s agent --version 0.2.0`:
 
 - `--version <version>` installs that release instead of the latest.
 - `--bin-dir <dir>` installs somewhere other than `~/.local/bin` (or `/usr/local/bin`).
-- `--source` builds the binary with Cargo instead, for hosts without a prebuilt binary (anything but x86-64 Linux). Without `--version` it builds the `main` branch.
+- `--source` builds the binary with Cargo instead, for hosts without a prebuilt binary (anything but x86-64 or arm64 Linux). Without `--version` it builds the `main` branch.
 - `--systemd` also installs and starts the systemd service: for the agent, the user service described under [Through a relay](#through-a-relay); for the relay, the system service, which needs root.
 - `--no-config` leaves the configuration alone.
 

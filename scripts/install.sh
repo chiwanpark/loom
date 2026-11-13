@@ -18,7 +18,6 @@ REPO_URL=https://github.com/chiwanpark/loom
 RELEASES_URL=${LOOM_RELEASES_URL:-$REPO_URL/releases}
 RAW_URL=${LOOM_RAW_URL:-https://raw.githubusercontent.com/chiwanpark/loom}
 SYSROOT=${LOOM_INSTALL_SYSROOT:-}
-TARGET=x86_64-unknown-linux-musl
 
 usage() {
     cat <<EOF
@@ -44,8 +43,8 @@ Options:
   --no-config          Don't write a configuration when there is none.
   -h, --help           Show this help.
 
-Prebuilt binaries are for x86-64 Linux. Agents and relays that are already
-running keep the old version until they are restarted.
+Prebuilt binaries are for x86-64 and arm64 Linux. Agents and relays that are
+already running keep the old version until they are restarted.
 EOF
 }
 
@@ -112,7 +111,7 @@ download() {
         die "release v$version lists $name $found"
     fi
     version=$found
-    say "Downloading $name $version"
+    say "Downloading $name $version for $TARGET"
     fetch "$dir/$archive" "$work/$archive" || die "could not download $dir/$archive"
     actual=$(sha256 "$work/$archive")
     [ "$actual" = "$expected" ] ||
@@ -283,9 +282,11 @@ main() {
     if [ "$source" = no ]; then
         os=$(uname -s)
         arch=$(uname -m)
-        if [ "$os" != Linux ] || { [ "$arch" != x86_64 ] && [ "$arch" != amd64 ]; }; then
-            die "prebuilt binaries are for x86-64 Linux, not $os $arch; use --source to build $name with Cargo"
-        fi
+        case $os/$arch in
+            Linux/x86_64 | Linux/amd64) TARGET=x86_64-unknown-linux-musl ;;
+            Linux/aarch64 | Linux/arm64) TARGET=aarch64-unknown-linux-musl ;;
+            *) die "prebuilt binaries are for x86-64 and arm64 Linux, not $os $arch; use --source to build $name with Cargo" ;;
+        esac
         need tar
     fi
 

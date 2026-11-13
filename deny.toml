@@ -9,7 +9,7 @@
 # for example "Apache-2.0 OR GPL-2.0-only" is accepted through Apache-2.0.
 
 [graph]
-targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl"]
 
 [licenses]
 version = 2

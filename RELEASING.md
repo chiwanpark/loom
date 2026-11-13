@@ -7,6 +7,10 @@ Loom's binaries are published as archives on [GitHub releases](https://github.co
 | `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` | `loom` (GUI) and `loom-agent` | x86-64 Linux with glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, Wayland, and a Vulkan driver |
 | `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any x86-64 Linux; statically linked |
 | `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-relay` and its systemd unit | any x86-64 Linux; statically linked |
+| `loom-agent-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any arm64 Linux; statically linked |
+| `loom-relay-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-relay` and its systemd unit | any arm64 Linux; statically linked |
+
+Each architecture is built natively, the arm64 archives on GitHub's `ubuntu-24.04-arm` runners.
 
 `scripts/install.sh` downloads the agent and relay archives and `SHA256SUMS` from the latest published release, so keep those names when changing the build. Drafts are not visible to it, and until a release is published it can only build from source (`--source`).
 
@@ -35,7 +39,7 @@ Leaving `0.x` is a deliberate decision: set the version to `1.0.0` by hand in a 
 ## Repository settings
 
 - `Settings` → `Actions` → `General`: allow GitHub Actions to create and approve pull requests, so the version pull request can be opened.
-- Protect `main` and require the `CI` checks (`Format and lint`, `Test`, `Check licenses and sources`, `Scripts`, and the two `Release build` jobs).
+- Protect `main` and require the `CI` checks (`Format and lint`, `Test`, `Check licenses and sources`, `Scripts`, and the three `Release build` jobs).
 - Pull requests opened with the workflow's `GITHUB_TOKEN` do not trigger other workflows, so CI does not run on the version pull request by itself. Close and reopen it, or push an empty commit to `release-next`, to run the checks before merging. Its changes are only the version and changelog.
 
 ## Manual fallback
@@ -54,6 +58,14 @@ cargo build --release --locked --target x86_64-unknown-linux-gnu -p loom-gui -p 
 scripts/package-release.sh x86_64-unknown-linux-musl loom-agent loom-agent
 scripts/package-release.sh x86_64-unknown-linux-musl loom-relay loom-relay
 scripts/package-release.sh x86_64-unknown-linux-gnu loom loom loom-agent
+
+# On an arm64 machine, for the arm64 archives (the cc crate needs to be told
+# about musl-gcc there). Copy them into dist/ here before the checksums.
+rustup target add aarch64-unknown-linux-musl
+CC_aarch64_unknown_linux_musl=musl-gcc cargo build --release --locked --target aarch64-unknown-linux-musl -p loom-agent -p loom-relay
+scripts/package-release.sh aarch64-unknown-linux-musl loom-agent loom-agent
+scripts/package-release.sh aarch64-unknown-linux-musl loom-relay loom-relay
+
 (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
 gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file <(sed -n '/^## X.Y.Z$/,/^## /{//!p}' CHANGELOG.md) dist/*
 ```

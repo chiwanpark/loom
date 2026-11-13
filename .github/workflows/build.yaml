@@ -16,23 +16,35 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.name }}
-    # Pinned rather than ubuntu-latest: the GUI links against this release's
-    # glibc, which sets the oldest distribution it runs on.
-    runs-on: ubuntu-24.04
+    name: Build ${{ matrix.name }} (${{ matrix.arch }})
+    # Each architecture builds natively on its own runner. Pinned rather than
+    # ubuntu-latest: the GUI links against this release's glibc, which sets
+    # the oldest distribution it runs on.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
         # Static binaries, so the agent and relay run on any Linux host.
         - name: loom-agent and loom-relay
+          arch: x86-64
+          runner: ubuntu-24.04
           target: x86_64-unknown-linux-musl
+          packages: musl-tools
+          binaries: loom-agent loom-relay
+          archives: loom-agent=loom-agent loom-relay=loom-relay
+        - name: loom-agent and loom-relay
+          arch: arm64
+          runner: ubuntu-24.04-arm
+          target: aarch64-unknown-linux-musl
           packages: musl-tools
           binaries: loom-agent loom-relay
           archives: loom-agent=loom-agent loom-relay=loom-relay
         # The GUI loads Wayland and Vulkan from the system. Its archive also
         # holds loom-agent, which it starts for the local host.
         - name: loom
+          arch: x86-64
+          runner: ubuntu-24.04
           target: x86_64-unknown-linux-gnu
           packages: pkg-config libfontconfig-dev libfreetype-dev libxkbcommon-dev libwayland-dev
           binaries: loom loom-agent
@@ -57,6 +69,11 @@ jobs:
         TARGET: ${{ matrix.target }}
         BINARIES: ${{ matrix.binaries }}
       run: |
+        # C code in dependencies (ring, aws-lc, SQLite) has to be compiled
+        # for musl too. The cc crate finds musl-gcc by itself only on x86-64.
+        if [[ $TARGET == *-musl ]]; then
+          export "CC_${TARGET//-/_}=musl-gcc"
+        fi
         args=()
         for binary in $BINARIES; do
           case $binary in
