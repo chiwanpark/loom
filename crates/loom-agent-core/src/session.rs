@@ -166,6 +166,7 @@ impl Session {
             created_at,
             mut state,
             events,
+            thread: _,
         } = stored;
         let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
         let unfinished = turn_unfinished(&events);

@@ -26,7 +26,14 @@ CREATE TABLE IF NOT EXISTS events (
     event BLOB NOT NULL,
     PRIMARY KEY (session_id, seq)
 );
+CREATE TABLE IF NOT EXISTS threads (
+    session_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 ";
+/// Tables are only ever added, so files stay at version 1 and older agents,
+/// which refuse other versions, can still open them.
 const SCHEMA_VERSION: &str = "1";
 const BATCH_WINDOW: Duration = Duration::from_millis(20);
 
@@ -67,6 +74,8 @@ pub struct StoredSession {
     pub created_at: u64,
     pub state: SessionState,
     pub events: Vec<SequencedEvent>,
+    /// The session's operation thread; empty when it was never written.
+    pub thread: String,
 }
 
 enum Op {
@@ -79,6 +88,10 @@ enum Op {
         session: SessionId,
         created_at: u64,
         state: String,
+    },
+    Thread {
+        session: SessionId,
+        text: String,
     },
     Delete(SessionId),
     /// Drops a session's events before `seq`.
@@ -204,6 +217,14 @@ impl EventStore {
         }
     }
 
+    /// Replaces the session's operation thread.
+    pub fn save_thread(&self, session: &SessionId, text: &str) {
+        let _ = self.tx.send(Op::Thread {
+            session: session.clone(),
+            text: text.to_owned(),
+        });
+    }
+
     pub async fn flush(&self) {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Op::Flush(tx)).is_ok() {
@@ -225,6 +246,7 @@ fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
     })?;
     let mut events_stmt =
         conn.prepare("SELECT seq, event FROM events WHERE session_id = ?1 ORDER BY seq")?;
+    let mut thread_stmt = conn.prepare("SELECT text FROM threads WHERE session_id = ?1")?;
     for row in rows {
         let (id, created_at, state) = row?;
         let state: SessionState = match serde_json::from_str(&state) {
@@ -247,11 +269,16 @@ fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
                 }
             }
         }
+        let thread = thread_stmt
+            .query_row(params![id], |row| row.get::<_, String>(0))
+            .optional()?
+            .unwrap_or_default();
         sessions.push(StoredSession {
             id: SessionId(id),
             created_at: created_at as u64,
             state,
             events,
+            thread,
         });
     }
     Ok(sessions)
@@ -264,7 +291,10 @@ fn apply(
     deleted: &mut HashSet<SessionId>,
 ) -> rusqlite::Result<()> {
     match op {
-        Op::Event { session, .. } | Op::Session { session, .. } | Op::Truncate { session, .. }
+        Op::Event { session, .. }
+        | Op::Session { session, .. }
+        | Op::Thread { session, .. }
+        | Op::Truncate { session, .. }
             if deleted.contains(&session) => {}
         Op::Event { session, seq, data } => {
             conn.execute(
@@ -283,12 +313,23 @@ fn apply(
                 params![session.0, created_at as i64, now_unix() as i64, state],
             )?;
         }
+        Op::Thread { session, text } => {
+            conn.execute(
+                "INSERT INTO threads (session_id, text, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+                params![session.0, text, now_unix() as i64],
+            )?;
+        }
         Op::Delete(session) => {
             conn.execute(
                 "DELETE FROM events WHERE session_id = ?1",
                 params![session.0],
             )?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![session.0])?;
+            conn.execute(
+                "DELETE FROM threads WHERE session_id = ?1",
+                params![session.0],
+            )?;
             deleted.insert(session);
         }
         Op::Truncate { session, seq } => {
@@ -323,5 +364,100 @@ fn writer(mut conn: Connection, rx: std_mpsc::Receiver<Op>, path: PathBuf) {
         for done in flushes {
             let _ = done.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(name: &str) -> SessionId {
+        SessionId(name.into())
+    }
+
+    fn count(path: &Path, sql: &str) -> i64 {
+        Connection::open(path)
+            .unwrap()
+            .query_row(sql, [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn threads_survive_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite");
+        let (store, _) = EventStore::open(&path, dir.path()).unwrap();
+        for name in ["a", "b"] {
+            store.save_session(&id(name), 1, &SessionState::default());
+        }
+        store.save_thread(&id("a"), "first");
+        store.save_thread(&id("a"), "- plan\n- done");
+        store.flush().await;
+        drop(store);
+
+        let (_, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        let threads: Vec<_> = sessions
+            .iter()
+            .map(|s| (s.id.0.as_str(), s.thread.as_str()))
+            .collect();
+        assert_eq!(threads, [("a", "- plan\n- done"), ("b", "")]);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_removes_its_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite");
+        let (store, _) = EventStore::open(&path, dir.path()).unwrap();
+        for name in ["a", "b"] {
+            store.save_session(&id(name), 1, &SessionState::default());
+            store.save_thread(&id(name), name);
+        }
+        store.flush().await;
+        store.delete_session(&id("a"));
+        // A write that was already on its way when the session went.
+        store.save_thread(&id("a"), "late");
+        store.flush().await;
+        assert_eq!(
+            count(&path, "SELECT count(*) FROM threads WHERE session_id = 'a'"),
+            0
+        );
+        assert_eq!(count(&path, "SELECT count(*) FROM threads"), 1);
+    }
+
+    #[tokio::test]
+    async fn opens_a_file_written_before_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite");
+        let state = serde_json::to_string(&SessionState::default()).unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL, state TEXT NOT NULL);
+                 CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                     event BLOB NOT NULL, PRIMARY KEY (session_id, seq));
+                 INSERT INTO meta VALUES ('schema', '1');
+                 INSERT INTO sessions VALUES ('old', 1, 1, '{state}');"
+            ))
+            .unwrap();
+
+        let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].thread, "");
+        store.save_thread(&id("old"), "notes");
+        store.flush().await;
+        drop(store);
+
+        let (_, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        assert_eq!(sessions[0].thread, "notes");
+        // Older agents refuse any other version.
+        assert_eq!(
+            count(
+                &path,
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema'"
+            ),
+            1
+        );
     }
 }
