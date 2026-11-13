@@ -518,6 +518,30 @@ pub fn tool_summary(call: &ToolCall) -> String {
             }
         }),
         "write" | "edit" => field("path"),
+        "thread_read" => Some(String::new()),
+        "thread_edit" => {
+            let edits = args
+                .get("edits")
+                .and_then(|edits| edits.as_array())
+                .map_or(0, Vec::len)
+                + usize::from(
+                    args.get("old_text")
+                        .or_else(|| args.get("oldText"))
+                        .is_some(),
+                );
+            Some(match edits {
+                1 => "1 edit".into(),
+                n => format!("{n} edits"),
+            })
+        }
+        "thread_write" => {
+            field("text")
+                .or_else(|| field("content"))
+                .map(|text| match text.lines().count() {
+                    1 => "1 line".into(),
+                    n => format!("{n} lines"),
+                })
+        }
         "search_web" => field("query").map(|query| {
             let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
             // The tool takes numbers or numeric strings, in either case.
@@ -553,7 +577,11 @@ pub fn tool_summary(call: &ToolCall) -> String {
         text
     });
     let first = detail.lines().next().unwrap_or_default();
-    format!("{} {first}", tool_label(call))
+    if first.is_empty() {
+        tool_label(call)
+    } else {
+        format!("{} {first}", tool_label(call))
+    }
 }
 
 /// The start of a tool's summary: its name, and the timeout of a shell call.
@@ -678,6 +706,31 @@ mod tests {
         assert_eq!(
             summary(r#"{"query":"rust","freshness":"cached","max_sources":"1"}"#),
             "search_web rust (1 source)"
+        );
+    }
+
+    #[test]
+    fn thread_summaries_say_how_much_changed() {
+        let summary = |name: &str, args: &str| tool_summary(&call("c", name, args));
+        assert_eq!(summary("thread_read", "{}"), "thread_read");
+        assert_eq!(
+            summary(
+                "thread_edit",
+                r#"{"edits":[{"old_text":"a","new_text":"b"},{"old_text":"c","new_text":"d"}]}"#
+            ),
+            "thread_edit 2 edits"
+        );
+        assert_eq!(
+            summary("thread_edit", r#"{"old_text":"a","new_text":"b"}"#),
+            "thread_edit 1 edit"
+        );
+        assert_eq!(
+            summary("thread_write", r##"{"text":"# Plan\n- one\n- two\n"}"##),
+            "thread_write 3 lines"
+        );
+        assert_eq!(
+            summary("thread_write", r#"{"content":"x"}"#),
+            "thread_write 1 line"
         );
     }
 

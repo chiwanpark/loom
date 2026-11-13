@@ -7,7 +7,7 @@ use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity
 use loom_client::proto::{
     AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, FileVersion, Notice,
     PolicyAction, ReasoningEffort, SessionId, SessionInfo, TelemetryStatus, TerminalId,
-    UsageLimits, WorkspaceChanges,
+    ThreadContent, UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -28,6 +28,12 @@ pub enum ConnectionEvent {
     LoginFinished(Result<String, ApiError>),
     Failed(String),
     SessionRemoved(SessionId),
+    /// A session's operation thread changed on the agent; `version` is the
+    /// hash of its new text.
+    ThreadChanged {
+        session: SessionId,
+        version: FileVersion,
+    },
     /// The session list arrived (after connecting or reconnecting).
     SessionsLoaded,
     Closed,
@@ -256,6 +262,9 @@ impl AgentConnection {
                 self.conversations.remove(&id);
                 cx.emit(ConnectionEvent::SessionRemoved(id));
                 cx.notify();
+            }
+            Notification::Notice(Notice::ThreadChanged { session, version }) => {
+                cx.emit(ConnectionEvent::ThreadChanged { session, version })
             }
             Notification::Notice(notice) => cx.emit(ConnectionEvent::Notice(notice)),
             Notification::TerminalOutput { terminal, data } => {
@@ -618,6 +627,26 @@ impl AgentConnection {
         let client = self.client.clone();
         self.backend
             .run(async move { client.write_file(&path, text, expected).await })
+    }
+
+    pub fn read_thread(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Option<loom_client::Result<ThreadContent>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.thread(&session).await })
+    }
+
+    pub fn write_thread(
+        &self,
+        session: SessionId,
+        text: String,
+        expected: FileVersion,
+    ) -> impl Future<Output = Option<loom_client::Result<FileVersion>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.write_thread(&session, text, expected).await })
     }
 
     pub fn register_terminal(

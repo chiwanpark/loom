@@ -42,6 +42,7 @@ use crate::ui::picker::{PickerItem, open_picker};
 use crate::ui::session::SessionView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
+use crate::ui::thread_view::ThreadView;
 
 actions!(
     loom,
@@ -77,6 +78,8 @@ actions!(
         RenameSession,
         ShowChanges,
         ShowFiles,
+        /// Shows the active session's operation thread in the right panel.
+        ShowThread,
         /// Wraps long lines in the focused file or diff view, or stops
         /// wrapping them.
         ToggleLineWrap,
@@ -128,6 +131,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new("alt-z", ToggleLineWrap, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-s", Save, Some(crate::ui::file_view::CONTEXT)),
+        KeyBinding::new("ctrl-s", Save, Some(crate::ui::thread_view::CONTEXT)),
     ]);
     let mut custom = Vec::new();
     for (keys, name) in overrides {
@@ -181,6 +185,32 @@ enum RightTab {
     Agents,
     Changes,
     Files,
+    Thread,
+}
+
+/// Something with changes that are not saved, which closing must not lose
+/// without asking.
+#[derive(Clone)]
+enum Unsaved {
+    File(Entity<FileView>),
+    Thread(Entity<ThreadView>),
+}
+
+impl Unsaved {
+    /// What the prompt calls it: a file's path, or the thread.
+    fn name(&self, cx: &App) -> String {
+        match self {
+            Unsaved::File(view) => view.read(cx).relative().to_string(),
+            Unsaved::Thread(_) => "the thread".into(),
+        }
+    }
+
+    fn save(&self, window: &mut Window, cx: &mut App) -> gpui::Task<bool> {
+        match self {
+            Unsaved::File(view) => view.update(cx, |v, cx| v.save(window, cx)),
+            Unsaved::Thread(view) => view.update(cx, |v, cx| v.save(window, cx)),
+        }
+    }
 }
 
 impl Panel {
@@ -220,9 +250,9 @@ impl Panel {
     }
 
     /// The file view, if this is one with unsaved changes.
-    fn unsaved(&self, cx: &App) -> Option<&Entity<FileView>> {
+    fn unsaved(&self, cx: &App) -> Option<Unsaved> {
         match self {
-            Panel::File(view) if view.read(cx).is_dirty() => Some(view),
+            Panel::File(view) if view.read(cx).is_dirty() => Some(Unsaved::File(view.clone())),
             _ => None,
         }
     }
@@ -256,6 +286,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: toggle right panel", Box::new(ToggleRightDock)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
+        ("panel: thread", Box::new(ShowThread)),
         ("view: toggle line wrap", Box::new(ToggleLineWrap)),
         ("file: save", Box::new(Save)),
         ("session: archive", Box::new(ArchiveSession)),
@@ -330,6 +361,8 @@ struct SessionGroup {
     panes: Vec<Pane>,
     layout: PaneGroup,
     active_pane: PaneId,
+    /// The session's thread, once the Thread tab has shown it.
+    thread: Option<Entity<ThreadView>>,
 }
 
 impl SessionGroup {
@@ -343,7 +376,16 @@ impl SessionGroup {
             }],
             layout: PaneGroup::new(pane),
             active_pane: pane,
+            thread: None,
         }
+    }
+
+    /// The thread view, if it has changes that are not saved.
+    fn unsaved_thread(&self, cx: &App) -> Option<Unsaved> {
+        self.thread
+            .as_ref()
+            .filter(|view| view.read(cx).is_dirty())
+            .map(|view| Unsaved::Thread(view.clone()))
     }
 
     fn chat(&self) -> Option<Entity<SessionView>> {
@@ -679,6 +721,31 @@ impl Workspace {
         self.show_right = true;
         self.right_tab = RightTab::Changes;
         cx.notify();
+    }
+
+    fn on_show_thread(&mut self, _: &ShowThread, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = true;
+        self.right_tab = RightTab::Thread;
+        if let Some(view) = self.thread_view(window, cx) {
+            view.read(cx).editor_focus(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The active session's thread view, made the first time it is asked for.
+    fn thread_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ThreadView>> {
+        let group = self.active_group_mut()?;
+        if let Some(view) = &group.thread {
+            return Some(view.clone());
+        }
+        let (conn, session) = (group.connection.clone(), group.session.clone());
+        let view = cx.new(|cx| ThreadView::new(conn, session, window, cx));
+        self.active_group_mut()?.thread = Some(view.clone());
+        Some(view)
     }
 
     fn on_show_files(&mut self, _: &ShowFiles, window: &mut Window, cx: &mut Context<Self>) {
@@ -1038,7 +1105,7 @@ impl Workspace {
                     this.remove_groups(window, cx, |g| g.is(&conn, &id));
                 }
                 ConnectionEvent::SessionsLoaded => this.restore_groups(conn, window, cx),
-                ConnectionEvent::LoginFinished(_) => {}
+                ConnectionEvent::LoginFinished(_) | ConnectionEvent::ThreadChanged { .. } => {}
             },
         ));
     }
@@ -1225,6 +1292,7 @@ impl Workspace {
             layout: PaneGroup::from_root(root),
             active_pane: order.get(saved.active_pane).copied().unwrap_or(order[0]),
             panes,
+            thread: None,
         };
         let empty: Vec<PaneId> = group
             .panes
@@ -1489,14 +1557,18 @@ impl Workspace {
     /// Closes a tab of the active group, after asking what to do with its
     /// unsaved changes, if it has any.
     fn close_tab(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((id, panel)) = self
-            .active_group()
-            .and_then(|g| g.pane(pane))
-            .and_then(|p| p.tabs.iter().nth(ix))
-        else {
+        let Some(group) = self.active_group() else {
             return;
         };
-        let unsaved = panel.unsaved(cx).cloned().into_iter().collect();
+        let Some((id, panel)) = group.pane(pane).and_then(|p| p.tabs.iter().nth(ix)) else {
+            return;
+        };
+        let mut unsaved: Vec<Unsaved> = panel.unsaved(cx).into_iter().collect();
+        // Closing the last tab closes the session's group, and its thread.
+        let tabs: usize = group.panes.iter().map(|p| p.tabs.len()).sum();
+        if tabs == 1 {
+            unsaved.extend(group.unsaved_thread(cx));
+        }
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.close_panel(id, window, cx)
         });
@@ -1533,14 +1605,18 @@ impl Workspace {
         cx.notify();
     }
 
-    /// File views with unsaved changes in the groups that match.
-    fn unsaved_in(&self, pred: impl Fn(&SessionGroup) -> bool, cx: &App) -> Vec<Entity<FileView>> {
+    /// File and thread views with unsaved changes in the groups that match.
+    fn unsaved_in(&self, pred: impl Fn(&SessionGroup) -> bool, cx: &App) -> Vec<Unsaved> {
         self.groups
             .iter()
             .filter(|g| pred(g))
-            .flat_map(|g| g.panes.iter())
-            .flat_map(|p| p.tabs.iter())
-            .filter_map(|(_, panel)| panel.unsaved(cx).cloned())
+            .flat_map(|g| {
+                g.panes
+                    .iter()
+                    .flat_map(|p| p.tabs.iter())
+                    .filter_map(|(_, panel)| panel.unsaved(cx))
+                    .chain(g.unsaved_thread(cx))
+            })
             .collect()
     }
 
@@ -1550,7 +1626,7 @@ impl Workspace {
     /// a save that fails, leaves everything as it was.
     fn guard_unsaved(
         &mut self,
-        views: Vec<Entity<FileView>>,
+        views: Vec<Unsaved>,
         window: &mut Window,
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
@@ -1559,19 +1635,28 @@ impl Workspace {
             then(self, window, cx);
             return;
         }
-        let names: Vec<String> = views
-            .iter()
-            .map(|v| v.read(cx).relative().to_string())
-            .collect();
+        let names: Vec<String> = views.iter().map(|v| v.name(cx)).collect();
+        let files = views.iter().all(|v| matches!(v, Unsaved::File(_)));
         let (title, description) = match names.as_slice() {
-            [one] => (
+            [one] if files => (
                 format!("Save your changes to {}?", file_name(one)),
                 format!("{one} has changes that are not saved."),
             ),
-            many => (
+            [_] => (
+                "Save your changes to the thread?".to_string(),
+                "The session's thread has changes that are not saved.".to_string(),
+            ),
+            many if files => (
                 format!("Save your changes to {} files?", many.len()),
                 format!(
                     "These files have changes that are not saved: {}.",
+                    many.join(", ")
+                ),
+            ),
+            many => (
+                "Save your changes?".to_string(),
+                format!(
+                    "These have changes that are not saved: {}.",
                     many.join(", ")
                 ),
             ),
@@ -1587,10 +1672,7 @@ impl Workspace {
             }
         };
         let save = move |window: &mut Window, cx: &mut App| {
-            let saves: Vec<_> = views
-                .iter()
-                .map(|v| v.update(cx, |v, cx| v.save(window, cx)))
-                .collect();
+            let saves: Vec<_> = views.iter().map(|v| v.save(window, cx)).collect();
             let (this, then) = (this.clone(), then.clone());
             window
                 .spawn(cx, async move |cx: &mut AsyncWindowContext| {
@@ -2255,8 +2337,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The right panel: tabs for the agents list, the workspace's changes, and
-    /// its files. Changes and files need a connection; agents do not.
+    /// The right panel: tabs for the agents list, the workspace's changes,
+    /// its files, and the active session's thread. Changes and files need a
+    /// connection, and the thread a session; agents need neither.
     fn render_right_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = self.changes_connection();
@@ -2325,6 +2408,15 @@ impl Workspace {
         }
         let body = match (tab, &tree) {
             (RightTab::Agents, _) => self.render_agents_panel(cx),
+            (RightTab::Thread, _) => match self.thread_view(window, cx) {
+                Some(view) => div().flex_1().min_h_0().child(view).into_any_element(),
+                None => div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("Open a session to see its thread.")
+                    .into_any_element(),
+            },
             (_, Some(tree)) => div()
                 .flex_1()
                 .min_h_0()
@@ -2379,6 +2471,19 @@ impl Workspace {
                     .tooltip("Workspace files (ctrl-shift-e)")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.right_tab = RightTab::Files;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("right-thread")
+                    .debug_selector(|| "right-thread".into())
+                    .ghost()
+                    .small()
+                    .label("Thread")
+                    .selected(tab == RightTab::Thread)
+                    .tooltip("The session's operation thread: the agent's notes")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_tab = RightTab::Thread;
                         cx.notify();
                     })),
             )
@@ -3947,6 +4052,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_rename_session))
             .on_action(cx.listener(Self::on_show_changes))
             .on_action(cx.listener(Self::on_show_files))
+            .on_action(cx.listener(Self::on_show_thread))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))
             .on_action(cx.listener(Self::on_providers))
@@ -4324,6 +4430,108 @@ mod tests {
         assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
         click("unsaved-discard", cx);
         assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 0);
+    }
+
+    /// The active session's thread view, once the Thread tab has shown it.
+    fn thread_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<ThreadView>> {
+        ws.read(cx).active_group().and_then(|g| g.thread.clone())
+    }
+
+    /// Shows the Thread tab and types `text` into the thread.
+    fn edit_thread(
+        ws: &Entity<Workspace>,
+        text: &str,
+        cx: &mut VisualTestContext,
+    ) -> Entity<ThreadView> {
+        click("right-thread", cx);
+        let view = cx
+            .update(|_, cx| thread_view(ws, cx))
+            .expect("no thread view");
+        wait_until(cx, |cx| view.read(cx).max_bytes() > 0);
+        view.update_in(cx, |view, window, cx| {
+            view.editor_focus(cx).focus(window, cx)
+        });
+        cx.simulate_input(text);
+        assert!(view.read_with(cx, |view, _| view.is_dirty()));
+        view
+    }
+
+    #[gpui::test]
+    fn the_thread_tab_follows_the_active_session(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        let first = edit_thread(&ws, "plan", cx);
+        let (conn, session) = ws.read_with(cx, |ws, _| {
+            let group = ws.active_group().unwrap();
+            (group.connection.clone(), group.session.clone())
+        });
+        assert_eq!(
+            first.read_with(cx, |view, _| view.session().clone()),
+            session
+        );
+
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_session(conn.clone(), window, cx)
+        });
+        wait_until(cx, |cx| {
+            ws.read(cx)
+                .active_group()
+                .is_some_and(|g| g.session != session)
+        });
+        cx.run_until_parked();
+        let second = cx
+            .update(|_, cx| thread_view(&ws, cx))
+            .expect("no thread view");
+        assert_ne!(second, first);
+        let other = ws.read_with(cx, |ws, _| ws.active_group().unwrap().session.clone());
+        assert_eq!(
+            second.read_with(cx, |view, _| view.session().clone()),
+            other
+        );
+        // The first session's view keeps its edits.
+        assert!(first.read_with(cx, |view, _| view.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn closing_a_session_with_unsaved_thread_changes_asks_first(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        let view = edit_thread(&ws, "plan", cx);
+
+        assert!(!cx.simulate_close());
+        assert!(has_dialog(cx));
+        click("unsaved-cancel", cx);
+
+        // Closing a tab while others stay does not close the thread.
+        let pane = ws.read_with(cx, |ws, _| ws.active_group().unwrap().active_pane);
+        let (ix, total) = ws.read_with(cx, |ws, _| {
+            let group = ws.active_group().unwrap();
+            let tabs = &group.active().unwrap().tabs;
+            let ix = tabs
+                .iter()
+                .position(|(_, panel)| matches!(panel, Panel::File(_)))
+                .unwrap();
+            (ix, group.panes.iter().map(|p| p.tabs.len()).sum::<usize>())
+        });
+        assert_eq!(total, 2, "the chat and the file");
+        ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, ix, window, cx));
+        assert!(!has_dialog(cx));
+        // Closing the last one does.
+        ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, 0, window, cx));
+        assert!(has_dialog(cx));
+        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
+        click("unsaved-save", cx);
+        wait_until(cx, |cx| ws.read(cx).groups.is_empty());
+        let (conn, session) = view.read_with(cx, |view, _| {
+            (view.connection().clone(), view.session().clone())
+        });
+        let task = conn.read_with(cx, |conn, _| conn.read_thread(session));
+        assert_eq!(
+            futures::executor::block_on(task).unwrap().unwrap().text,
+            "plan"
+        );
     }
 
     #[gpui::test]

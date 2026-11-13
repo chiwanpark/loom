@@ -819,6 +819,14 @@ fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
         text: text.to_owned(),
         language: language.to_owned(),
     };
+    let long = |content: &str, language: &str| {
+        let (shown, hidden) = head(content, MAX_BLOCK_LINES);
+        let mut text = shown.to_owned();
+        if hidden > 0 {
+            text.push_str(&format!("\n… {hidden} more lines not shown"));
+        }
+        code(&text, language)
+    };
     match call.name.as_str() {
         "shell" => {
             if let Some(command) = field("command") {
@@ -836,12 +844,18 @@ fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
         "write" if has_result_diff => return CallDetails::None,
         "write" => {
             if let (Some(path), Some(content)) = (field("path"), field("content")) {
-                let (shown, hidden) = head(content, MAX_BLOCK_LINES);
-                let mut text = shown.to_owned();
-                if hidden > 0 {
-                    text.push_str(&format!("\n… {hidden} more lines not shown"));
-                }
-                return code(&text, &language(path));
+                return long(content, &language(path));
+            }
+        }
+        "thread_read" => return CallDetails::None,
+        "thread_edit" => {
+            if let Some(diff) = args.as_ref().and_then(edit_preview) {
+                return CallDetails::Diff(diff);
+            }
+        }
+        "thread_write" => {
+            if let Some(text) = field("text").or_else(|| field("content")) {
+                return long(text, "text");
             }
         }
         _ => {}
@@ -1191,8 +1205,8 @@ fn shimmering_label(
 #[cfg(test)]
 mod tests {
     use super::{
-        CallDetails, SHIMMER_SWEEP, call_details, edit_preview, head, shimmer_highlights,
-        split_read_note,
+        CallDetails, MAX_BLOCK_LINES, SHIMMER_SWEEP, call_details, edit_preview, head,
+        shimmer_highlights, split_read_note,
     };
     use gpui::{Hsla, hsla};
     use loom_client::proto::ToolCall;
@@ -1315,6 +1329,28 @@ mod tests {
         );
         assert_eq!(call_details(&write, false), code("fn main() {}\n", "rs"));
         assert_eq!(call_details(&write, true), CallDetails::None);
+    }
+
+    #[test]
+    fn thread_calls_show_their_text_or_a_diff() {
+        let read = call("thread_read", serde_json::json!({}));
+        assert_eq!(call_details(&read, false), CallDetails::None);
+        let edit = call(
+            "thread_edit",
+            serde_json::json!({"edits": [{"old_text": "- [ ] a", "new_text": "- [x] a"}]}),
+        );
+        assert_eq!(
+            call_details(&edit, false),
+            CallDetails::Diff("-- [ ] a\n+- [x] a".into())
+        );
+        let write = call("thread_write", serde_json::json!({"text": "# Plan\n"}));
+        assert_eq!(call_details(&write, false), code("# Plan\n", "text"));
+        let long = "line\n".repeat(MAX_BLOCK_LINES + 3);
+        let write = call("thread_write", serde_json::json!({"content": long}));
+        let CallDetails::Code { text, .. } = call_details(&write, false) else {
+            panic!("no code block");
+        };
+        assert!(text.ends_with("… 3 more lines not shown"), "{text}");
     }
 
     #[test]

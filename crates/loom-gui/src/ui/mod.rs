@@ -12,6 +12,7 @@ pub mod picker;
 pub mod session;
 pub mod tab;
 pub mod tabs;
+pub mod thread_view;
 pub mod workspace;
 
 pub use workspace::{Workspace, bind_keys};
