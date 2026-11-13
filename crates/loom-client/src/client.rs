@@ -644,34 +644,63 @@ impl Client {
         .await
     }
 
-    /// A session's operation thread. Every connection gets a `ThreadChanged`
-    /// notice when it changes.
-    pub async fn thread(&self, session: &SessionId) -> Result<loom_proto::ThreadContent> {
-        let command = Command::GetThread {
+    /// A session's notes. Every connection gets a `NotesChanged` notice when
+    /// they change.
+    pub async fn notes(&self, session: &SessionId) -> Result<loom_proto::NotesContent> {
+        let command = Command::GetNotes {
             session: session.clone(),
         };
         match self.request(command).await? {
-            Payload::Thread(thread) => Ok(thread),
+            Payload::Notes(notes) => Ok(notes),
             other => Err(unexpected(other)),
         }
     }
 
-    /// Replaces a session's operation thread if it still has the `expected`
-    /// version, and returns its new version. Fails with `Conflict` when the
-    /// thread changed since the client read it.
-    pub async fn write_thread(
+    /// Replaces a session's notes if they still have the `expected` version,
+    /// and returns their new version. Fails with `Conflict` when the notes
+    /// changed since the client read them.
+    pub async fn write_notes(
         &self,
         session: &SessionId,
         text: String,
         expected: loom_proto::FileVersion,
     ) -> Result<loom_proto::FileVersion> {
-        let command = Command::WriteThread {
+        let command = Command::WriteNotes {
             session: session.clone(),
             text,
             expected,
         };
         match self.request(command).await? {
-            Payload::ThreadWritten(version) => Ok(version),
+            Payload::NotesWritten(version) => Ok(version),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// A session's task list. Every connection gets a `TasksChanged` notice
+    /// when it changes.
+    pub async fn tasks(&self, session: &SessionId) -> Result<loom_proto::TasksContent> {
+        let command = Command::GetTasks {
+            session: session.clone(),
+        };
+        match self.request(command).await? {
+            Payload::Tasks(tasks) => Ok(tasks),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Applies `changes` to a session's task list, all or none, and returns
+    /// the new list.
+    pub async fn update_tasks(
+        &self,
+        session: &SessionId,
+        changes: Vec<loom_proto::TaskChange>,
+    ) -> Result<loom_proto::TasksContent> {
+        let command = Command::UpdateTasks {
+            session: session.clone(),
+            changes,
+        };
+        match self.request(command).await? {
+            Payload::Tasks(tasks) => Ok(tasks),
             other => Err(unexpected(other)),
         }
     }

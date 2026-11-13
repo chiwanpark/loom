@@ -518,8 +518,8 @@ pub fn tool_summary(call: &ToolCall) -> String {
             }
         }),
         "write" | "edit" => field("path"),
-        "thread_read" => Some(String::new()),
-        "thread_edit" => {
+        "notes_read" | "tasks_read" => Some(String::new()),
+        "notes_edit" => {
             let edits = args
                 .get("edits")
                 .and_then(|edits| edits.as_array())
@@ -534,7 +534,7 @@ pub fn tool_summary(call: &ToolCall) -> String {
                 n => format!("{n} edits"),
             })
         }
-        "thread_write" => {
+        "notes_write" => {
             field("text")
                 .or_else(|| field("content"))
                 .map(|text| match text.lines().count() {
@@ -542,6 +542,13 @@ pub fn tool_summary(call: &ToolCall) -> String {
                     n => format!("{n} lines"),
                 })
         }
+        "tasks_update" => args
+            .get("changes")
+            .and_then(|changes| changes.as_array())
+            .map(|changes| match changes.len() {
+                1 => "1 change".into(),
+                n => format!("{n} changes"),
+            }),
         "search_web" => field("query").map(|query| {
             let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
             // The tool takes numbers or numeric strings, in either case.
@@ -710,27 +717,42 @@ mod tests {
     }
 
     #[test]
-    fn thread_summaries_say_how_much_changed() {
+    fn notes_and_tasks_summaries_say_how_much_changed() {
         let summary = |name: &str, args: &str| tool_summary(&call("c", name, args));
-        assert_eq!(summary("thread_read", "{}"), "thread_read");
+        assert_eq!(summary("notes_read", "{}"), "notes_read");
+        assert_eq!(summary("tasks_read", "{}"), "tasks_read");
         assert_eq!(
             summary(
-                "thread_edit",
+                "tasks_update",
+                r#"{"changes":[{"action":"add","text":"a"},{"action":"remove","id":1}]}"#
+            ),
+            "tasks_update 2 changes"
+        );
+        assert_eq!(
+            summary(
+                "tasks_update",
+                r#"{"changes":[{"action":"remove","id":1}]}"#
+            ),
+            "tasks_update 1 change"
+        );
+        assert_eq!(
+            summary(
+                "notes_edit",
                 r#"{"edits":[{"old_text":"a","new_text":"b"},{"old_text":"c","new_text":"d"}]}"#
             ),
-            "thread_edit 2 edits"
+            "notes_edit 2 edits"
         );
         assert_eq!(
-            summary("thread_edit", r#"{"old_text":"a","new_text":"b"}"#),
-            "thread_edit 1 edit"
+            summary("notes_edit", r#"{"old_text":"a","new_text":"b"}"#),
+            "notes_edit 1 edit"
         );
         assert_eq!(
-            summary("thread_write", r##"{"text":"# Plan\n- one\n- two\n"}"##),
-            "thread_write 3 lines"
+            summary("notes_write", r##"{"text":"# Plan\n- one\n- two\n"}"##),
+            "notes_write 3 lines"
         );
         assert_eq!(
-            summary("thread_write", r#"{"content":"x"}"#),
-            "thread_write 1 line"
+            summary("notes_write", r#"{"content":"x"}"#),
+            "notes_write 1 line"
         );
     }
 

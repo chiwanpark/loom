@@ -150,12 +150,12 @@ pub fn evaluate(
             reason: describe(rule, "configured"),
         };
     }
-    // They touch nothing but the session's own notes; asking for each one
-    // would make the thread too costly to use. Rules still decide.
-    if crate::thread::is_thread_tool(tool) {
+    // They touch nothing but the session's own notes and tasks; asking for
+    // each one would make them too costly to use. Rules still decide.
+    if crate::notes::is_notes_tool(tool) || crate::tasks::is_tasks_tool(tool) {
         return Verdict {
             action: PolicyAction::Allow,
-            reason: "operation thread tools are allowed unless a rule says otherwise".into(),
+            reason: "notes and tasks tools are allowed unless a rule says otherwise".into(),
         };
     }
     match session.default {
@@ -300,9 +300,15 @@ mod tests {
     }
 
     #[test]
-    fn thread_tools_are_allowed_unless_a_rule_says_otherwise() {
+    fn notes_and_tasks_tools_are_allowed_unless_a_rule_says_otherwise() {
         let defaults = [None, Some(PolicyAction::Ask), Some(PolicyAction::Deny)];
-        for tool in ["thread_read", "thread_edit", "thread_write"] {
+        for tool in [
+            "notes_read",
+            "notes_edit",
+            "notes_write",
+            "tasks_read",
+            "tasks_update",
+        ] {
             for default in defaults {
                 let session = SessionPolicy {
                     default,
@@ -316,22 +322,22 @@ mod tests {
             }
         }
         // Other tools still follow the default.
-        assert_eq!(action("thread", json!({})), PolicyAction::Ask);
+        assert_eq!(action("notes", json!({})), PolicyAction::Ask);
 
         let mut config = config();
         config
             .rules
-            .push(rule("thread_write", PolicyAction::Deny, &[]));
+            .push(rule("notes_write", PolicyAction::Deny, &[]));
         config
             .rules
-            .push(rule("thread_edit", PolicyAction::Ask, &[]));
+            .push(rule("tasks_update", PolicyAction::Ask, &[]));
         let session = SessionPolicy {
             default: None,
-            rules: vec![rule("thread_read", PolicyAction::Ask, &[])],
+            rules: vec![rule("notes_read", PolicyAction::Ask, &[])],
         };
         let eval = |tool: &str| evaluate(&config, &session, tool, &json!({})).action;
-        assert_eq!(eval("thread_write"), PolicyAction::Deny);
-        assert_eq!(eval("thread_edit"), PolicyAction::Ask);
-        assert_eq!(eval("thread_read"), PolicyAction::Ask);
+        assert_eq!(eval("notes_write"), PolicyAction::Deny);
+        assert_eq!(eval("tasks_update"), PolicyAction::Ask);
+        assert_eq!(eval("notes_read"), PolicyAction::Ask);
     }
 }

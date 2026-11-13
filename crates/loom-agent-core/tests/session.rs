@@ -140,15 +140,17 @@ async fn text_turn_streams_and_builds_request() {
         names,
         [
             "edit",
+            "notes_edit",
+            "notes_read",
+            "notes_write",
             "read",
             "shell",
-            "thread_edit",
-            "thread_read",
-            "thread_write",
+            "tasks_read",
+            "tasks_update",
             "write"
         ]
     );
-    assert!(system.contains("# Operation thread"));
+    assert!(system.contains("# Notes and tasks"));
     assert_eq!(request.messages, vec![Message::user_text("hi")]);
     assert_eq!(request.session_id.as_deref(), Some(session.id().0.as_str()));
 

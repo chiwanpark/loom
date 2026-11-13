@@ -8,10 +8,12 @@ use loom_llm::{
     ReasoningEffort, StopReason, ToolCall as LlmToolCall, ToolDefinition,
 };
 use loom_proto::{
-    ContentPart, Decision, FileVersion, SequencedEvent, SessionEvent, SessionId, SessionInfo,
-    SessionState, ThreadContent, ToolCall, ToolResult, TurnOutcome,
+    ContentPart, Decision, FileVersion, NotesContent, SequencedEvent, SessionEvent, SessionId,
+    SessionInfo, SessionState, Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
 };
-use loom_tools::{FileTracker, LockWaitHook, ThreadAccess, ToolContext, ToolError, Workspace};
+use loom_tools::{
+    FileTracker, LockWaitHook, NotesAccess, TasksAccess, ToolContext, ToolError, Workspace,
+};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -23,11 +25,12 @@ use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
 use crate::instructions::{PromptInputs, build_system_prompt};
 use crate::metrics::Metrics;
+use crate::notes::{self, NOTES_READ_TOOL};
 use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
-use crate::thread::{self, THREAD_READ_TOOL};
+use crate::tasks::TaskList;
 use loom_config::PolicyAction;
 
 pub const MAX_ROUNDS_PER_TURN: usize = 200;
@@ -50,12 +53,14 @@ struct State {
     archived: bool,
     title: Option<String>,
     last_used: Option<UsedModel>,
-    /// The operation thread, saved apart from the rest of the state.
-    thread: String,
-    /// Whether the conversation holds the thread as it is: the agent read or
-    /// wrote it since the user last changed it and the context was last
-    /// cleared or compacted. Only then may the agent replace all of it.
-    thread_seen: bool,
+    /// The notes, saved apart from the rest of the state.
+    notes: String,
+    /// Whether the conversation holds the notes as they are: the agent read
+    /// or wrote them since the user last changed them and the context was
+    /// last cleared or compacted. Only then may the agent replace all of them.
+    notes_seen: bool,
+    /// The task list, saved apart from the rest of the state.
+    tasks: TaskList,
 }
 
 struct Core {
@@ -86,7 +91,7 @@ pub(crate) struct SessionParams {
     pub store: Option<EventStore>,
     pub metrics: Arc<Metrics>,
     pub observer: Option<Arc<dyn SessionObserver>>,
-    /// Where the session reports changes of its operation thread.
+    /// Where the session reports changes of its notes and tasks.
     pub notices: Option<broadcast::Sender<AgentNotice>>,
 }
 
@@ -150,59 +155,81 @@ impl Core {
         }
     }
 
-    fn thread_limit(&self) -> u64 {
-        self.runtime
-            .current()
-            .config
-            .tools
-            .thread
-            .max_bytes
-            .as_u64()
+    fn notes_limit(&self) -> u64 {
+        self.runtime.current().config.tools.notes.max_bytes.as_u64()
     }
 
-    /// Replaces the operation thread, refusing a text over `max` bytes, and
-    /// tells whether the text changed. The caller holds the lock, so the
-    /// store and clients get changes in the order they happen.
-    fn replace_thread(&self, state: &mut State, text: String, max: u64) -> Result<bool> {
+    fn tasks_limit(&self) -> u32 {
+        self.runtime.current().config.tools.tasks.max_items
+    }
+
+    /// Whether clients should hear of a change: not once the session is gone.
+    fn notify(&self, notice: impl FnOnce() -> AgentNotice) {
+        if let Some(notices) = &self.notices
+            && !self.removed.is_cancelled()
+        {
+            let _ = notices.send(notice());
+        }
+    }
+
+    /// Replaces the notes, refusing a text over `max` bytes, and tells
+    /// whether the text changed. The caller holds the lock, so the store and
+    /// clients get changes in the order they happen.
+    fn replace_notes(&self, state: &mut State, text: String, max: u64) -> Result<bool> {
         if text.len() as u64 > max {
-            return Err(CoreError::ThreadTooLarge {
+            return Err(CoreError::NotesTooLarge {
                 size: text.len(),
                 max,
             });
         }
-        if text == state.thread {
+        if text == state.notes {
             return Ok(false);
         }
         if let Some(store) = &self.store {
-            store.save_thread(&self.id, &text);
+            store.save_notes(&self.id, &text);
         }
-        if let Some(notices) = &self.notices
-            && !self.removed.is_cancelled()
-        {
-            let _ = notices.send(AgentNotice::ThreadChanged {
-                session: self.id.clone(),
-                version: thread::version(&text),
-            });
-        }
-        state.thread = text;
+        self.notify(|| AgentNotice::NotesChanged {
+            session: self.id.clone(),
+            version: notes::version(&text),
+        });
+        state.notes = text;
         Ok(true)
     }
 
-    /// Replaces the operation thread for the user, during a turn too, and
-    /// returns its new version. Refused when the text is over
-    /// `tools.thread.max_bytes`, or when the thread no longer has the
-    /// `expected` version.
-    fn set_thread(&self, text: String, expected: Option<FileVersion>) -> Result<FileVersion> {
-        let max = self.thread_limit();
+    /// Replaces the notes for the user, during a turn too, and returns their
+    /// new version. Refused when the text is over `tools.notes.max_bytes`, or
+    /// when the notes no longer have the `expected` version.
+    fn set_notes(&self, text: String, expected: Option<FileVersion>) -> Result<FileVersion> {
+        let max = self.notes_limit();
         let mut state = self.lock();
-        if expected.is_some_and(|expected| expected != thread::version(&state.thread)) {
-            return Err(CoreError::ThreadChanged);
+        if expected.is_some_and(|expected| expected != notes::version(&state.notes)) {
+            return Err(CoreError::NotesChanged);
         }
-        let version = thread::version(&text);
-        if self.replace_thread(&mut state, text, max)? {
-            state.thread_seen = false;
+        let version = notes::version(&text);
+        if self.replace_notes(&mut state, text, max)? {
+            state.notes_seen = false;
         }
         Ok(version)
+    }
+
+    /// Applies `changes` to the task list, all or none, during a turn too,
+    /// and returns the new list.
+    fn update_tasks(&self, changes: Vec<TaskChange>) -> Result<Vec<Task>> {
+        let max = self.tasks_limit();
+        let mut state = self.lock();
+        let mut list = state.tasks.clone();
+        list.apply(changes, max)?;
+        if list != state.tasks {
+            if let Some(store) = &self.store {
+                store.save_tasks(&self.id, &list);
+            }
+            self.notify(|| AgentNotice::TasksChanged {
+                session: self.id.clone(),
+                tasks: list.tasks.clone(),
+            });
+            state.tasks = list;
+        }
+        Ok(state.tasks.tasks.clone())
     }
 
     fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
@@ -227,6 +254,7 @@ impl Session {
             StoredState::default(),
             Vec::new(),
             String::new(),
+            TaskList::default(),
         );
         session.core.persist();
         session.observe(observer);
@@ -239,7 +267,8 @@ impl Session {
             created_at,
             mut state,
             events,
-            thread,
+            notes,
+            tasks,
         } = stored;
         let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
         let unfinished = turn_unfinished(&events);
@@ -253,7 +282,7 @@ impl Session {
             });
         }
         let observer = params.observer.clone();
-        let session = Self::build(params, id, created_at, state, events, thread);
+        let session = Self::build(params, id, created_at, state, events, notes, tasks);
         if let Some(model) = model {
             session.core.lock().model = Some(model);
         }
@@ -287,7 +316,8 @@ impl Session {
         created_at: u64,
         state: StoredState,
         events: Vec<SequencedEvent>,
-        thread: String,
+        notes: String,
+        tasks: TaskList,
     ) -> Self {
         let hub = EventHub::restore(params.store.clone().map(|s| (s, id.clone())), events);
         Self {
@@ -308,8 +338,9 @@ impl Session {
                     archived: state.archived,
                     title: state.title,
                     last_used: state.last_used,
-                    thread,
-                    thread_seen: false,
+                    notes,
+                    notes_seen: false,
+                    tasks,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -357,33 +388,56 @@ impl Session {
         self.core.hub.subscribe(since_seq)
     }
 
-    /// The session's operation thread.
-    pub fn thread(&self) -> String {
-        self.core.lock().thread.clone()
+    /// The session's notes.
+    pub fn notes(&self) -> String {
+        self.core.lock().notes.clone()
     }
 
-    /// The operation thread with its version and size limit, for clients.
-    pub fn thread_content(&self) -> ThreadContent {
-        let max_bytes = self.core.thread_limit();
-        let text = self.thread();
-        ThreadContent {
-            version: thread::version(&text),
+    /// The notes with their version and size limit, for clients.
+    pub fn notes_content(&self) -> NotesContent {
+        let max_bytes = self.core.notes_limit();
+        let text = self.notes();
+        NotesContent {
+            version: notes::version(&text),
             text,
             max_bytes,
         }
     }
 
-    /// Replaces the operation thread for the user, so the agent has to read
-    /// it again before replacing all of it; see [`Core::set_thread`].
-    pub fn set_thread(&self, text: String) -> Result<()> {
-        self.core.set_thread(text, None).map(drop)
+    /// Replaces the notes for the user, so the agent has to read them again
+    /// before replacing all of them; see [`Core::set_notes`].
+    pub fn set_notes(&self, text: String) -> Result<()> {
+        self.core.set_notes(text, None).map(drop)
     }
 
-    /// Like [`Session::set_thread`], but fails with
-    /// [`CoreError::ThreadChanged`] unless the thread still has the
+    /// Like [`Session::set_notes`], but fails with
+    /// [`CoreError::NotesChanged`] unless the notes still have the
     /// `expected` version. Returns the new version.
-    pub fn write_thread(&self, text: String, expected: FileVersion) -> Result<FileVersion> {
-        self.core.set_thread(text, Some(expected))
+    pub fn write_notes(&self, text: String, expected: FileVersion) -> Result<FileVersion> {
+        self.core.set_notes(text, Some(expected))
+    }
+
+    /// The session's tasks, in order.
+    pub fn tasks(&self) -> Vec<Task> {
+        self.core.lock().tasks.tasks.clone()
+    }
+
+    /// The task list with its limit, for clients.
+    pub fn tasks_content(&self) -> TasksContent {
+        TasksContent {
+            tasks: self.tasks(),
+            max_tasks: self.core.tasks_limit(),
+        }
+    }
+
+    /// Applies `changes` to the task list, all or none, and returns the new
+    /// list. Fails when a change names a task that is gone, leaves a task
+    /// without text, or would go over `tools.tasks.max_items`.
+    pub fn update_tasks(&self, changes: Vec<TaskChange>) -> Result<TasksContent> {
+        Ok(TasksContent {
+            tasks: self.core.update_tasks(changes)?,
+            max_tasks: self.core.tasks_limit(),
+        })
     }
 
     pub fn history(&self) -> Vec<Message> {
@@ -494,7 +548,7 @@ impl Session {
 
     /// Starts the conversation over, as in a new session: forgets the history,
     /// the events, the context size, and the files read. Keeps the settings
-    /// (model, reasoning effort, policy), the operation thread, and the title,
+    /// (model, reasoning effort, policy), the notes and tasks, and the title,
     /// which stays the first prompt's when the session was never renamed.
     pub fn clear(&self) -> Result<()> {
         let mut state = self.core.lock();
@@ -507,7 +561,7 @@ impl Session {
         state.history.clear();
         state.context_tokens = None;
         state.last_used = None;
-        state.thread_seen = false;
+        state.notes_seen = false;
         self.core.files.clear();
         self.core.persist_state(&state);
         // Under the lock, like a prompt, so no prompt lands between the two.
@@ -712,9 +766,9 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
                 interrupted = cancelled || cancel.is_cancelled();
                 result
             };
-            // The thread is capped by its own limit, and a cut-off read would
-            // lose its end if the agent wrote the thread back.
-            let content = if call.name == THREAD_READ_TOOL {
+            // The notes are capped by their own limit, and a cut-off read
+            // would lose their end if the agent wrote the notes back.
+            let content = if call.name == NOTES_READ_TOOL {
                 result.content
             } else {
                 convert::cap_chars(&result.content, max_chars.max(1))
@@ -785,8 +839,8 @@ async fn compact(
                 let mut state = core.lock();
                 let removed = compaction::elide_tool_results(&mut state.history);
                 state.context_tokens = None;
-                // The thread's text may have been in the removed results.
-                state.thread_seen = false;
+                // The notes' text may have been in the removed results.
+                state.notes_seen = false;
                 core.persist_state(&state);
                 removed
             };
@@ -819,7 +873,7 @@ async fn compact(
                             );
                         }
                         state.context_tokens = None;
-                        state.thread_seen = false;
+                        state.notes_seen = false;
                         core.persist_state(&state);
                     }
                     core.emit(SessionEvent::ContextCompacted {
@@ -980,7 +1034,8 @@ async fn run_tool_call(
     let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL);
     let hook_core = core.clone();
     let ctx = ToolContext::new(core.workspace.clone())
-        .with_thread(Arc::new(SessionThread(core.clone())))
+        .with_notes(Arc::new(SessionNotes(core.clone())))
+        .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_files(core.files.clone())
         .with_cancel(cancel.child_token())
         .with_output(output_tx)
@@ -1025,53 +1080,74 @@ async fn run_tool_call(
     }
 }
 
-/// A session's operation thread as the thread tools see it: what the agent
-/// reads or writes is in its conversation, so it counts as seen.
-struct SessionThread(Arc<Core>);
+/// A session's notes as the notes tools see them: what the agent reads or
+/// writes is in its conversation, so it counts as seen.
+struct SessionNotes(Arc<Core>);
 
-impl std::fmt::Debug for SessionThread {
+impl std::fmt::Debug for SessionNotes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SessionThread").field(&self.0.id).finish()
+        f.debug_tuple("SessionNotes").field(&self.0.id).finish()
     }
 }
 
-impl ThreadAccess for SessionThread {
+impl NotesAccess for SessionNotes {
     fn read(&self) -> String {
         let mut state = self.0.lock();
-        state.thread_seen = true;
-        state.thread.clone()
+        state.notes_seen = true;
+        state.notes.clone()
     }
 
     fn edit(
         &self,
         change: &mut dyn FnMut(&str) -> loom_tools::Result<String>,
     ) -> loom_tools::Result<String> {
-        let max = self.0.thread_limit();
+        let max = self.0.notes_limit();
         let mut state = self.0.lock();
-        let text = change(&state.thread)?;
-        // The agent saw only what it replaced, so whether it holds the
-        // thread as it is stays as it was.
+        let text = change(&state.notes)?;
+        // The agent saw only what it replaced, so whether it holds the notes
+        // as they are stays as it was.
         self.0
-            .replace_thread(&mut state, text.clone(), max)
+            .replace_notes(&mut state, text.clone(), max)
             .map_err(|err| ToolError::failed(err.to_string()))?;
         Ok(text)
     }
 
     fn write(&self, text: String) -> loom_tools::Result<()> {
-        let max = self.0.thread_limit();
+        let max = self.0.notes_limit();
         let mut state = self.0.lock();
-        if !state.thread_seen && !state.thread.is_empty() {
+        if !state.notes_seen && !state.notes.is_empty() {
             return Err(ToolError::failed(
-                "the operation thread has text you have not read since it last changed or the \
-                 conversation was compacted or cleared; read it with thread_read before \
-                 replacing it, or change a part of it with thread_edit",
+                "the notes have text you have not read since they last changed or the \
+                 conversation was compacted or cleared; read them with notes_read before \
+                 replacing them, or change a part of them with notes_edit",
             ));
         }
         self.0
-            .replace_thread(&mut state, text, max)
+            .replace_notes(&mut state, text, max)
             .map_err(|err| ToolError::failed(err.to_string()))?;
-        state.thread_seen = true;
+        state.notes_seen = true;
         Ok(())
+    }
+}
+
+/// A session's task list as the tasks tools see it.
+struct SessionTasks(Arc<Core>);
+
+impl std::fmt::Debug for SessionTasks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SessionTasks").field(&self.0.id).finish()
+    }
+}
+
+impl TasksAccess for SessionTasks {
+    fn read(&self) -> Vec<Task> {
+        self.0.lock().tasks.tasks.clone()
+    }
+
+    fn update(&self, changes: Vec<TaskChange>) -> loom_tools::Result<Vec<Task>> {
+        self.0
+            .update_tasks(changes)
+            .map_err(|err| ToolError::failed(err.to_string()))
     }
 }
 

@@ -168,23 +168,39 @@ pub struct ToolsConfig {
     pub read: ReadToolConfig,
     pub shell: ShellToolConfig,
     pub web_search: WebSearchToolConfig,
-    pub thread: ThreadToolConfig,
+    pub notes: NotesToolConfig,
+    pub tasks: TasksToolConfig,
 }
 
-/// The operation thread: a text board each session keeps for the agent's
-/// notes on its work, which the agent and the user both read and edit.
+/// The notes: a text scratchpad each session keeps for the agent's work,
+/// which the agent and the user both read and edit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
-pub struct ThreadToolConfig {
-    /// The largest thread, in bytes, that the agent or the user may save.
+pub struct NotesToolConfig {
+    /// The largest notes, in bytes, that the agent or the user may save.
     pub max_bytes: ByteSize,
 }
 
-impl Default for ThreadToolConfig {
+impl Default for NotesToolConfig {
     fn default() -> Self {
         Self {
             max_bytes: ByteSize::kib(64),
         }
+    }
+}
+
+/// The task list each session keeps, which the agent and the user both
+/// read and change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct TasksToolConfig {
+    /// The most tasks a session's list may hold.
+    pub max_items: u32,
+}
+
+impl Default for TasksToolConfig {
+    fn default() -> Self {
+        Self { max_items: 100 }
     }
 }
 
@@ -640,9 +656,15 @@ impl AgentConfig {
                 "must be greater than zero".into(),
             ));
         }
-        if self.tools.thread.max_bytes.as_u64() == 0 {
+        if self.tools.notes.max_bytes.as_u64() == 0 {
             return Err(invalid(
-                "tools.thread.max_bytes",
+                "tools.notes.max_bytes",
+                "must be greater than zero".into(),
+            ));
+        }
+        if self.tools.tasks.max_items == 0 {
+            return Err(invalid(
+                "tools.tasks.max_items",
                 "must be greater than zero".into(),
             ));
         }

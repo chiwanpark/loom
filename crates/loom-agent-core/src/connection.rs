@@ -431,16 +431,22 @@ impl Connection {
                 session(&id)?.clear().map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Ok)
             }
-            Command::GetThread { session: id } => {
-                Ok(Payload::Thread(session(&id)?.thread_content()))
-            }
-            Command::WriteThread {
+            Command::GetNotes { session: id } => Ok(Payload::Notes(session(&id)?.notes_content())),
+            Command::WriteNotes {
                 session: id,
                 text,
                 expected,
             } => session(&id)?
-                .write_thread(text, expected)
-                .map(Payload::ThreadWritten)
+                .write_notes(text, expected)
+                .map(Payload::NotesWritten)
+                .map_err(|e| convert::api_error(&e)),
+            Command::GetTasks { session: id } => Ok(Payload::Tasks(session(&id)?.tasks_content())),
+            Command::UpdateTasks {
+                session: id,
+                changes,
+            } => session(&id)?
+                .update_tasks(changes)
+                .map(Payload::Tasks)
                 .map_err(|e| convert::api_error(&e)),
             Command::ResolveApproval {
                 session: id,
@@ -701,8 +707,11 @@ async fn forward_notices(
             Ok(AgentNotice::ShuttingDown) => Notice::ShuttingDown,
             Ok(AgentNotice::SessionUpdated(info)) => Notice::SessionUpdated(*info),
             Ok(AgentNotice::SessionRemoved(id)) => Notice::SessionRemoved(id),
-            Ok(AgentNotice::ThreadChanged { session, version }) => {
-                Notice::ThreadChanged { session, version }
+            Ok(AgentNotice::NotesChanged { session, version }) => {
+                Notice::NotesChanged { session, version }
+            }
+            Ok(AgentNotice::TasksChanged { session, tasks }) => {
+                Notice::TasksChanged { session, tasks }
             }
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,

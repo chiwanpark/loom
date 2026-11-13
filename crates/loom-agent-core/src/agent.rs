@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use loom_config::{AgentConfig, Dirs};
 use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
-use loom_proto::{FileVersion, SessionEvent, SessionId, SessionInfo};
+use loom_proto::{FileVersion, SessionEvent, SessionId, SessionInfo, Task};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -28,9 +28,13 @@ pub enum AgentNotice {
     ShuttingDown,
     SessionUpdated(Box<SessionInfo>),
     SessionRemoved(SessionId),
-    ThreadChanged {
+    NotesChanged {
         session: SessionId,
         version: FileVersion,
+    },
+    TasksChanged {
+        session: SessionId,
+        tasks: Vec<Task>,
     },
 }
 

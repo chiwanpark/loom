@@ -221,8 +221,12 @@ mod tests {
             ),
             ("tools:\n  shell:\n    timeout: 0s\n", "tools.shell.timeout"),
             (
-                "tools:\n  thread:\n    max_bytes: 0\n",
-                "tools.thread.max_bytes",
+                "tools:\n  notes:\n    max_bytes: 0\n",
+                "tools.notes.max_bytes",
+            ),
+            (
+                "tools:\n  tasks:\n    max_items: 0\n",
+                "tools.tasks.max_items",
             ),
             ("allowed_roots:\n- relative/path\n", "allowed_roots[0]"),
             (

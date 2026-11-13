@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::policy::SessionPolicy;
+use crate::tasks::TaskList;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -26,9 +27,21 @@ CREATE TABLE IF NOT EXISTS events (
     event BLOB NOT NULL,
     PRIMARY KEY (session_id, seq)
 );
+-- Notes from before they had their name; read when a session has no row in
+-- notes, and never written.
 CREATE TABLE IF NOT EXISTS threads (
     session_id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notes (
+    session_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    session_id TEXT PRIMARY KEY,
+    list TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
 ";
@@ -74,8 +87,10 @@ pub struct StoredSession {
     pub created_at: u64,
     pub state: SessionState,
     pub events: Vec<SequencedEvent>,
-    /// The session's operation thread; empty when it was never written.
-    pub thread: String,
+    /// The session's notes; empty when they were never written.
+    pub notes: String,
+    /// The session's task list; empty when it was never written.
+    pub tasks: TaskList,
 }
 
 enum Op {
@@ -89,9 +104,13 @@ enum Op {
         created_at: u64,
         state: String,
     },
-    Thread {
+    Notes {
         session: SessionId,
         text: String,
+    },
+    Tasks {
+        session: SessionId,
+        list: String,
     },
     Delete(SessionId),
     /// Drops a session's events before `seq`.
@@ -217,12 +236,25 @@ impl EventStore {
         }
     }
 
-    /// Replaces the session's operation thread.
-    pub fn save_thread(&self, session: &SessionId, text: &str) {
-        let _ = self.tx.send(Op::Thread {
+    /// Replaces the session's notes.
+    pub fn save_notes(&self, session: &SessionId, text: &str) {
+        let _ = self.tx.send(Op::Notes {
             session: session.clone(),
             text: text.to_owned(),
         });
+    }
+
+    /// Replaces the session's task list.
+    pub fn save_tasks(&self, session: &SessionId, list: &TaskList) {
+        match serde_json::to_string(list) {
+            Ok(list) => {
+                let _ = self.tx.send(Op::Tasks {
+                    session: session.clone(),
+                    list,
+                });
+            }
+            Err(err) => tracing::error!(error = %err, "could not encode a task list for the store"),
+        }
     }
 
     pub async fn flush(&self) {
@@ -246,7 +278,13 @@ fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
     })?;
     let mut events_stmt =
         conn.prepare("SELECT seq, event FROM events WHERE session_id = ?1 ORDER BY seq")?;
-    let mut thread_stmt = conn.prepare("SELECT text FROM threads WHERE session_id = ?1")?;
+    let mut notes_stmt = conn.prepare(
+        "SELECT COALESCE(
+             (SELECT text FROM notes WHERE session_id = ?1),
+             (SELECT text FROM threads WHERE session_id = ?1)
+         )",
+    )?;
+    let mut tasks_stmt = conn.prepare("SELECT list FROM tasks WHERE session_id = ?1")?;
     for row in rows {
         let (id, created_at, state) = row?;
         let state: SessionState = match serde_json::from_str(&state) {
@@ -269,16 +307,27 @@ fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
                 }
             }
         }
-        let thread = thread_stmt
+        let notes = notes_stmt
+            .query_row(params![id], |row| row.get::<_, Option<String>>(0))?
+            .unwrap_or_default();
+        let tasks = tasks_stmt
             .query_row(params![id], |row| row.get::<_, String>(0))
             .optional()?
+            .and_then(|list| match serde_json::from_str(&list) {
+                Ok(list) => Some(list),
+                Err(err) => {
+                    tracing::warn!(session = %id, error = %err, "skipping a task list that cannot be read");
+                    None
+                }
+            })
             .unwrap_or_default();
         sessions.push(StoredSession {
             id: SessionId(id),
             created_at: created_at as u64,
             state,
             events,
-            thread,
+            notes,
+            tasks,
         });
     }
     Ok(sessions)
@@ -293,7 +342,8 @@ fn apply(
     match op {
         Op::Event { session, .. }
         | Op::Session { session, .. }
-        | Op::Thread { session, .. }
+        | Op::Notes { session, .. }
+        | Op::Tasks { session, .. }
         | Op::Truncate { session, .. }
             if deleted.contains(&session) => {}
         Op::Event { session, seq, data } => {
@@ -313,11 +363,18 @@ fn apply(
                 params![session.0, created_at as i64, now_unix() as i64, state],
             )?;
         }
-        Op::Thread { session, text } => {
+        Op::Notes { session, text } => {
             conn.execute(
-                "INSERT INTO threads (session_id, text, updated_at) VALUES (?1, ?2, ?3)
+                "INSERT INTO notes (session_id, text, updated_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
                 params![session.0, text, now_unix() as i64],
+            )?;
+        }
+        Op::Tasks { session, list } => {
+            conn.execute(
+                "INSERT INTO tasks (session_id, list, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET list = excluded.list, updated_at = excluded.updated_at",
+                params![session.0, list, now_unix() as i64],
             )?;
         }
         Op::Delete(session) => {
@@ -326,10 +383,12 @@ fn apply(
                 params![session.0],
             )?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![session.0])?;
-            conn.execute(
-                "DELETE FROM threads WHERE session_id = ?1",
-                params![session.0],
-            )?;
+            for table in ["threads", "notes", "tasks"] {
+                conn.execute(
+                    &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                    params![session.0],
+                )?;
+            }
             deleted.insert(session);
         }
         Op::Truncate { session, seq } => {
@@ -382,50 +441,110 @@ mod tests {
             .unwrap()
     }
 
+    fn task(id: u32, text: &str) -> loom_proto::Task {
+        loom_proto::Task {
+            id,
+            text: text.into(),
+            status: loom_proto::TaskStatus::InProgress,
+        }
+    }
+
     #[tokio::test]
-    async fn threads_survive_a_reopen() {
+    async fn notes_and_tasks_survive_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.sqlite");
         let (store, _) = EventStore::open(&path, dir.path()).unwrap();
         for name in ["a", "b"] {
             store.save_session(&id(name), 1, &SessionState::default());
         }
-        store.save_thread(&id("a"), "first");
-        store.save_thread(&id("a"), "- plan\n- done");
+        store.save_notes(&id("a"), "first");
+        store.save_notes(&id("a"), "- plan\n- done");
+        let list = TaskList {
+            tasks: vec![task(2, "build")],
+            next_id: 3,
+        };
+        store.save_tasks(&id("a"), &TaskList::default());
+        store.save_tasks(&id("a"), &list);
         store.flush().await;
         drop(store);
 
         let (_, sessions) = EventStore::open(&path, dir.path()).unwrap();
-        let threads: Vec<_> = sessions
+        let notes: Vec<_> = sessions
             .iter()
-            .map(|s| (s.id.0.as_str(), s.thread.as_str()))
+            .map(|s| (s.id.0.as_str(), s.notes.as_str()))
             .collect();
-        assert_eq!(threads, [("a", "- plan\n- done"), ("b", "")]);
+        assert_eq!(notes, [("a", "- plan\n- done"), ("b", "")]);
+        assert_eq!(sessions[0].tasks, list);
+        assert_eq!(sessions[1].tasks, TaskList::default());
     }
 
     #[tokio::test]
-    async fn deleting_a_session_removes_its_thread() {
+    async fn deleting_a_session_removes_its_notes_and_tasks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.sqlite");
         let (store, _) = EventStore::open(&path, dir.path()).unwrap();
         for name in ["a", "b"] {
             store.save_session(&id(name), 1, &SessionState::default());
-            store.save_thread(&id(name), name);
+            store.save_notes(&id(name), name);
+            store.save_tasks(&id(name), &TaskList::default());
         }
         store.flush().await;
         store.delete_session(&id("a"));
-        // A write that was already on its way when the session went.
-        store.save_thread(&id("a"), "late");
+        // Writes that were already on their way when the session went.
+        store.save_notes(&id("a"), "late");
+        store.save_tasks(&id("a"), &TaskList::default());
         store.flush().await;
-        assert_eq!(
-            count(&path, "SELECT count(*) FROM threads WHERE session_id = 'a'"),
-            0
-        );
+        for table in ["notes", "tasks"] {
+            assert_eq!(
+                count(
+                    &path,
+                    &format!("SELECT count(*) FROM {table} WHERE session_id = 'a'")
+                ),
+                0,
+                "{table}"
+            );
+            assert_eq!(
+                count(&path, &format!("SELECT count(*) FROM {table}")),
+                1,
+                "{table}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn notes_start_from_a_thread_saved_before_the_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite");
+        let (store, _) = EventStore::open(&path, dir.path()).unwrap();
+        for name in ["a", "b"] {
+            store.save_session(&id(name), 1, &SessionState::default());
+        }
+        store.flush().await;
+        drop(store);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO threads VALUES ('a', 'old notes', 1);
+             INSERT INTO threads VALUES ('b', 'old b', 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        assert_eq!(sessions[0].notes, "old notes");
+        store.save_notes(&id("b"), "");
+        store.flush().await;
+        drop(store);
+        let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        assert_eq!(sessions[0].notes, "old notes");
+        // Cleared notes stay cleared rather than going back to the thread.
+        assert_eq!(sessions[1].notes, "");
+        store.delete_session(&id("a"));
+        store.flush().await;
         assert_eq!(count(&path, "SELECT count(*) FROM threads"), 1);
     }
 
     #[tokio::test]
-    async fn opens_a_file_written_before_threads() {
+    async fn opens_a_file_written_before_notes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.sqlite");
         let state = serde_json::to_string(&SessionState::default()).unwrap();
@@ -444,13 +563,14 @@ mod tests {
 
         let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].thread, "");
-        store.save_thread(&id("old"), "notes");
+        assert_eq!(sessions[0].notes, "");
+        assert_eq!(sessions[0].tasks, TaskList::default());
+        store.save_notes(&id("old"), "notes");
         store.flush().await;
         drop(store);
 
         let (_, sessions) = EventStore::open(&path, dir.path()).unwrap();
-        assert_eq!(sessions[0].thread, "notes");
+        assert_eq!(sessions[0].notes, "notes");
         // Older agents refuse any other version.
         assert_eq!(
             count(

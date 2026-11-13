@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use loom_proto::{Task, TaskChange};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -64,19 +65,29 @@ impl Drop for WaitNotice<'_> {
     }
 }
 
-/// The operation thread of the session a tool call runs in: a text board for
-/// the agent's notes that the user can edit too.
-pub trait ThreadAccess: Send + Sync + std::fmt::Debug {
-    /// The thread's text, which the agent has now seen.
+/// The notes of the session a tool call runs in: a text scratchpad for the
+/// agent's work that the user can edit too.
+pub trait NotesAccess: Send + Sync + std::fmt::Debug {
+    /// The notes' text, which the agent has now seen.
     fn read(&self) -> String;
 
-    /// Replaces the thread with what `change` makes of its current text, with
-    /// no other change in between, and returns the new text.
+    /// Replaces the notes with what `change` makes of their current text,
+    /// with no other change in between, and returns the new text.
     fn edit(&self, change: &mut dyn FnMut(&str) -> Result<String>) -> Result<String>;
 
-    /// Replaces the thread with `text`. Refused when the thread has text the
+    /// Replaces the notes with `text`. Refused when the notes have text the
     /// agent has not seen, such as the user's changes.
     fn write(&self, text: String) -> Result<()>;
+}
+
+/// The task list of the session a tool call runs in, which the user can
+/// change too.
+pub trait TasksAccess: Send + Sync + std::fmt::Debug {
+    /// The tasks, in order.
+    fn read(&self) -> Vec<Task>;
+
+    /// Applies `changes` in order, all or none, and returns the new list.
+    fn update(&self, changes: Vec<TaskChange>) -> Result<Vec<Task>>;
 }
 
 #[derive(Debug, Clone)]
@@ -86,8 +97,10 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     pub output: Option<OutputSink>,
     pub lock_wait: Option<LockWaitHook>,
-    /// The session's operation thread; `None` outside a session.
-    pub thread: Option<Arc<dyn ThreadAccess>>,
+    /// The session's notes; `None` outside a session.
+    pub notes: Option<Arc<dyn NotesAccess>>,
+    /// The session's task list; `None` outside a session.
+    pub tasks: Option<Arc<dyn TasksAccess>>,
 }
 
 impl ToolContext {
@@ -98,12 +111,18 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             output: None,
             lock_wait: None,
-            thread: None,
+            notes: None,
+            tasks: None,
         }
     }
 
-    pub fn with_thread(mut self, thread: Arc<dyn ThreadAccess>) -> Self {
-        self.thread = Some(thread);
+    pub fn with_notes(mut self, notes: Arc<dyn NotesAccess>) -> Self {
+        self.notes = Some(notes);
+        self
+    }
+
+    pub fn with_tasks(mut self, tasks: Arc<dyn TasksAccess>) -> Self {
+        self.tasks = Some(tasks);
         self
     }
 
@@ -204,9 +223,13 @@ pub enum ToolDetails {
         query: String,
         sources: usize,
     },
-    /// The operation thread after a thread tool read or changed it.
-    Thread {
+    /// The notes after a notes tool read or changed them.
+    Notes {
         bytes: usize,
+    },
+    /// The task list after a tasks tool read or changed it.
+    Tasks {
+        tasks: usize,
     },
 }
 

@@ -9,8 +9,8 @@ use loom_agent::server::{ServerContext, serve_stream};
 use loom_agent_core::{Agent, AgentOptions};
 use loom_client::proto::{
     AgentInfo, ClientHello, ClientMessage, Command, Decision, ErrorCode, InstanceId, Notice,
-    PROTOCOL_VERSION, PolicyAction, ReasoningEffort, ServerMessage, SessionEvent, SessionId,
-    TurnOutcome, decode, encode,
+    PROTOCOL_VERSION, PolicyAction, ReasoningEffort, ServerMessage, SessionEvent, SessionId, Task,
+    TaskChange, TaskStatus, TurnOutcome, decode, encode,
 };
 use loom_client::{Client, ClientError, Notification, Notifications, memory_pair};
 use loom_config::{AgentConfig, Dirs};
@@ -721,25 +721,25 @@ async fn sessions_can_be_renamed_and_files_browsed() {
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 }
 
-/// The next `ThreadChanged` notice, skipping other notifications.
-async fn thread_changed(notes: &mut Notifications) -> (SessionId, loom_client::proto::FileVersion) {
+/// The next `NotesChanged` notice, skipping other notifications.
+async fn notes_changed(notes: &mut Notifications) -> (SessionId, loom_client::proto::FileVersion) {
     loop {
         let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
             .await
-            .expect("timed out waiting for a thread notice")
+            .expect("timed out waiting for a notes notice")
             .expect("connection closed");
-        if let Notification::Notice(Notice::ThreadChanged { session, version }) = note {
+        if let Notification::Notice(Notice::NotesChanged { session, version }) = note {
             return (session, version);
         }
     }
 }
 
 #[tokio::test]
-async fn threads_are_read_and_written_through_the_client() {
+async fn notes_are_read_and_written_through_the_client() {
     let edit = reply(
         vec![AssistantContent::ToolCall(ToolCall {
             call_id: "call-1".into(),
-            name: "thread_edit".into(),
+            name: "notes_edit".into(),
             arguments: json!({"old_text": "- plan", "new_text": "- plan\n- step done"}),
             provider_data: None,
         })],
@@ -750,25 +750,117 @@ async fn threads_are_read_and_written_through_the_client() {
     let (other, mut other_notes) = connect(&setup).await;
     let session = client.create_session(None).await.unwrap().id;
 
-    let empty = client.thread(&session).await.unwrap();
+    let empty = client.notes(&session).await.unwrap();
     assert_eq!(empty.text, "");
     assert_eq!(empty.max_bytes, 64 * 1024);
     let version = client
-        .write_thread(&session, "- plan".into(), empty.version)
+        .write_notes(&session, "- plan".into(), empty.version)
         .await
         .unwrap();
     for notes in [&mut notes, &mut other_notes] {
-        assert_eq!(thread_changed(notes).await, (session.clone(), version));
+        assert_eq!(notes_changed(notes).await, (session.clone(), version));
     }
-    let read = other.thread(&session).await.unwrap();
+    let read = other.notes(&session).await.unwrap();
     assert_eq!((read.text.as_str(), read.version), ("- plan", version));
 
-    // A client that read the thread before the write is out of date.
+    // A client that read the notes before the write is out of date.
     let err = other
-        .write_thread(&session, "lost".into(), empty.version)
+        .write_notes(&session, "lost".into(), empty.version)
         .await
         .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
+
+    // The agent changes them during a turn, without asking.
+    client.subscribe(&session, None).await.unwrap();
+    client
+        .send_prompt(&session, vec![loom_client::proto::ContentPart::text("go")])
+        .await
+        .unwrap();
+    let events = until_turn_finished(&mut notes).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ApprovalRequired { .. }))
+    );
+    let (changed, version) = notes_changed(&mut other_notes).await;
+    assert_eq!(changed, session);
+    let read = other.notes(&session).await.unwrap();
+    assert_eq!(read.text, "- plan\n- step done");
+    assert_eq!(read.version, version);
+
+    let err = client
+        .write_notes(&session, "x".repeat(64 * 1024 + 1), version)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+    let cleared = client
+        .write_notes(&session, String::new(), version)
+        .await
+        .unwrap();
+    assert_eq!(cleared, empty.version);
+    assert_eq!(client.notes(&session).await.unwrap().text, "");
+
+    client.delete_session(&session).await.unwrap();
+    let err = client.notes(&session).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
+/// The next `TasksChanged` notice, skipping other notifications.
+async fn tasks_changed(notes: &mut Notifications) -> (SessionId, Vec<Task>) {
+    loop {
+        let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
+            .await
+            .expect("timed out waiting for a tasks notice")
+            .expect("connection closed");
+        if let Notification::Notice(Notice::TasksChanged { session, tasks }) = note {
+            return (session, tasks);
+        }
+    }
+}
+
+#[tokio::test]
+async fn tasks_are_read_and_changed_through_the_client() {
+    let update = reply(
+        vec![AssistantContent::ToolCall(ToolCall {
+            call_id: "call-1".into(),
+            name: "tasks_update".into(),
+            arguments: json!({"changes": [{"action": "update", "id": 1, "status": "done"}]}),
+            provider_data: None,
+        })],
+        StopReason::ToolUse,
+    );
+    let setup = setup(vec![update, text("ok")]);
+    let (client, mut notes) = connect(&setup).await;
+    let (other, mut other_notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap().id;
+
+    let empty = client.tasks(&session).await.unwrap();
+    assert!(empty.tasks.is_empty());
+    assert_eq!(empty.max_tasks, 100);
+    let list = client
+        .update_tasks(
+            &session,
+            vec![TaskChange::Add {
+                text: "plan".into(),
+                status: TaskStatus::InProgress,
+            }],
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.tasks.len(), 1);
+    for notes in [&mut notes, &mut other_notes] {
+        assert_eq!(
+            tasks_changed(notes).await,
+            (session.clone(), list.tasks.clone())
+        );
+    }
+    assert_eq!(other.tasks(&session).await.unwrap(), list);
+
+    let err = other
+        .update_tasks(&session, vec![TaskChange::Remove { id: 5 }])
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
 
     // The agent changes it during a turn, without asking.
     client.subscribe(&session, None).await.unwrap();
@@ -782,26 +874,13 @@ async fn threads_are_read_and_written_through_the_client() {
             .iter()
             .any(|e| matches!(e, SessionEvent::ApprovalRequired { .. }))
     );
-    let (changed, version) = thread_changed(&mut other_notes).await;
+    let (changed, tasks) = tasks_changed(&mut other_notes).await;
     assert_eq!(changed, session);
-    let read = other.thread(&session).await.unwrap();
-    assert_eq!(read.text, "- plan\n- step done");
-    assert_eq!(read.version, version);
-
-    let err = client
-        .write_thread(&session, "x".repeat(64 * 1024 + 1), version)
-        .await
-        .unwrap_err();
-    assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
-    let cleared = client
-        .write_thread(&session, String::new(), version)
-        .await
-        .unwrap();
-    assert_eq!(cleared, empty.version);
-    assert_eq!(client.thread(&session).await.unwrap().text, "");
+    assert_eq!(tasks[0].status, TaskStatus::Done);
+    assert_eq!(other.tasks(&session).await.unwrap().tasks, tasks);
 
     client.delete_session(&session).await.unwrap();
-    let err = client.thread(&session).await.unwrap_err();
+    let err = client.tasks(&session).await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
 }
 

@@ -17,11 +17,17 @@ pub enum CoreError {
     #[error("there is nothing to compact in this session yet")]
     NothingToCompact,
     #[error(
-        "the operation thread would be {size} bytes, more than the {max}-byte limit (tools.thread.max_bytes)"
+        "the notes would be {size} bytes, more than the {max}-byte limit (tools.notes.max_bytes)"
     )]
-    ThreadTooLarge { size: usize, max: u64 },
-    #[error("the operation thread changed since it was read")]
-    ThreadChanged,
+    NotesTooLarge { size: usize, max: u64 },
+    #[error("the notes changed since they were read")]
+    NotesChanged,
+    #[error("the task list would have more than {max} tasks (tools.tasks.max_items)")]
+    TooManyTasks { max: u32 },
+    #[error("there is no task #{id}")]
+    NoSuchTask { id: u32 },
+    #[error("a task's text must not be empty")]
+    EmptyTask,
     #[error(transparent)]
     Llm(#[from] loom_llm::LlmError),
     #[error(transparent)]

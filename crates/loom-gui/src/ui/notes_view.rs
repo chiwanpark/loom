@@ -1,6 +1,6 @@
-//! The Thread tab of the right panel: a session's operation thread, the
-//! notes the agent keeps for the session with its thread tools. The user
-//! reads and edits the same text here.
+//! The Notes tab of the right panel: a session's notes, the scratchpad the
+//! agent keeps for the session with its notes tools. The user reads and
+//! edits the same text here.
 
 use gpui::{
     App, AppContext, AsyncWindowContext, Context, Entity, FocusHandle, Focusable, FontWeight,
@@ -10,38 +10,38 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Editor, EditorState, InputEvent};
 use gpui_component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
-use loom_client::proto::{ErrorCode, FileVersion, SessionId, ThreadContent};
+use loom_client::proto::{ErrorCode, FileVersion, NotesContent, SessionId};
 
 use crate::state::{AgentConnection, ConnectionEvent};
 use crate::ui::file_view::human_size;
 use crate::ui::workspace::Save;
 use crate::ui::{dialogs, notify};
 
-pub(crate) const CONTEXT: &str = "ThreadView";
+pub(crate) const CONTEXT: &str = "NotesView";
 
-/// The thread as the agent holds it, as far as this view knows: the text
+/// The notes as the agent holds them, as far as this view knows: the text
 /// it last read or saved, and that text's version.
 struct Saved {
     text: String,
     version: FileVersion,
 }
 
-pub struct ThreadView {
+pub struct NotesView {
     connection: Entity<AgentConnection>,
     session: SessionId,
     editor: Entity<EditorState>,
-    /// `None` until the thread is first read.
+    /// `None` until the notes are first read.
     saved: Option<Saved>,
     max_bytes: u64,
-    /// Why the thread could not be read the last time.
+    /// Why the notes could not be read the last time.
     error: Option<String>,
-    /// The thread's version on the agent, when it moved on from `saved`
+    /// The notes' version on the agent, when they moved on from `saved`
     /// while the editor had changes that are not saved.
     remote: Option<FileVersion>,
     /// Whether the editor's text differs from `saved`.
     dirty: bool,
     loading: bool,
-    /// A read to make once the current one is answered, since the thread
+    /// A read to make once the current one is answered, since the notes
     /// may have changed after the agent answered it; `Some(true)` throws
     /// away the editor's changes.
     load_again: Option<bool>,
@@ -50,7 +50,7 @@ pub struct ThreadView {
     _subscriptions: Vec<Subscription>,
 }
 
-impl ThreadView {
+impl NotesView {
     pub fn new(
         connection: Entity<AgentConnection>,
         session: SessionId,
@@ -63,7 +63,7 @@ impl ThreadView {
                 .line_number(false)
                 .searchable(true)
                 .soft_wrap(true)
-                .placeholder("Notes the agent keeps for this session")
+                .placeholder("Notes the agent and you keep for this session")
         });
         let subscriptions = vec![
             cx.subscribe(&editor, |this: &mut Self, _, event, cx| {
@@ -73,7 +73,7 @@ impl ThreadView {
             }),
             cx.subscribe_in(&connection, window, |this, _, event, window, cx| {
                 match event {
-                    ConnectionEvent::ThreadChanged { session, version }
+                    ConnectionEvent::NotesChanged { session, version }
                         if *session == this.session
                             && this.saved.as_ref().is_none_or(|s| s.version != *version) =>
                     {
@@ -117,7 +117,7 @@ impl ThreadView {
         self.dirty
     }
 
-    /// The most bytes the thread may hold; 0 until it is first read.
+    /// The most bytes the notes may hold; 0 until they are first read.
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes
     }
@@ -145,16 +145,16 @@ impl ThreadView {
         }
     }
 
-    /// Reads the thread. The text replaces the editor's when the editor has
+    /// Reads the notes. The text replaces the editor's when the editor has
     /// no changes by the time it arrives, or when `discard` says to throw
-    /// them away; otherwise the view only learns that the thread moved on.
+    /// them away; otherwise the view only learns that the notes moved on.
     fn load(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading {
             self.load_again = Some(discard || self.load_again == Some(true));
             return;
         }
         self.loading = true;
-        let task = self.connection.read(cx).read_thread(self.session.clone());
+        let task = self.connection.read(cx).read_notes(self.session.clone());
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -175,7 +175,7 @@ impl ThreadView {
 
     fn loaded(
         &mut self,
-        content: ThreadContent,
+        content: NotesContent,
         discard: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -204,9 +204,9 @@ impl ThreadView {
         self.dirty = false;
     }
 
-    /// Saves the editor's text over the thread the view last read. The task
-    /// says whether the thread holds the text now. A thread that changed on
-    /// the agent since is not overwritten; the edits stay in the editor.
+    /// Saves the editor's text over the notes the view last read. The task
+    /// says whether the notes hold the text now. Notes that changed on the
+    /// agent since are not overwritten; the edits stay in the editor.
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let Some(saved) = &self.saved else {
             return Task::ready(false);
@@ -218,7 +218,7 @@ impl ThreadView {
         self.write(expected, window, cx)
     }
 
-    /// Saves the editor's text over the thread's newer text on the agent.
+    /// Saves the editor's text over the notes' newer text on the agent.
     fn overwrite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(remote) = self.remote {
             self.write(remote, window, cx).detach();
@@ -240,7 +240,7 @@ impl ThreadView {
                 window,
                 cx,
                 format!(
-                    "The thread was not saved: it holds at most {}.",
+                    "The notes were not saved: they hold at most {}.",
                     human_size(self.max_bytes)
                 ),
             );
@@ -251,7 +251,7 @@ impl ThreadView {
         let task =
             self.connection
                 .read(cx)
-                .write_thread(self.session.clone(), text.clone(), expected);
+                .write_notes(self.session.clone(), text.clone(), expected);
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -270,11 +270,12 @@ impl ThreadView {
                                 // Learn the new version, for the notice and
                                 // for overwriting.
                                 this.load(false, window, cx);
-                                "The thread was not saved: it changed since it was \
-                                 loaded. Reload it, or overwrite it with your text."
+                                "The notes were not saved: they changed since they \
+                                 were loaded. Reload them, or overwrite them with \
+                                 your text."
                                     .to_string()
                             }
-                            _ => format!("Could not save the thread: {err}"),
+                            _ => format!("Could not save the notes: {err}"),
                         };
                         notify::error(window, cx, message);
                         false
@@ -290,7 +291,7 @@ impl ThreadView {
         self.save(window, cx).detach();
     }
 
-    /// Throws away the editor's changes and reads the thread again, after
+    /// Throws away the editor's changes and reads the notes again, after
     /// asking.
     fn revert_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dirty {
@@ -300,7 +301,7 @@ impl ThreadView {
         let this = cx.entity().downgrade();
         dialogs::confirm(
             "Discard your changes?",
-            "Reloading the thread throws away the changes you have not saved.",
+            "Reloading the notes throws away the changes you have not saved.",
             "Discard and reload",
             move |window, cx| {
                 let _ = this.update(cx, |this, cx| this.load(true, window, cx));
@@ -310,18 +311,20 @@ impl ThreadView {
         );
     }
 
-    /// Empties the thread, for the agent too, after asking.
+    /// Empties the notes, for the agent too, after asking.
     fn clear_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut description =
-            "The agent's notes for this session are deleted. The conversation stays.".to_string();
+            "The notes of this session are deleted, for the agent too. The conversation \
+             stays."
+                .to_string();
         if self.dirty {
             description.push_str(" Your changes that are not saved are thrown away too.");
         }
         let this = cx.entity().downgrade();
         dialogs::confirm(
-            "Clear the thread?",
+            "Clear the notes?",
             description,
-            "Clear thread",
+            "Clear notes",
             move |window, cx| {
                 let _ = this.update(cx, |this, cx| this.clear(window, cx));
             },
@@ -330,7 +333,7 @@ impl ThreadView {
         );
     }
 
-    /// Empties the editor and saves that. When the thread changed on the
+    /// Empties the editor and saves that. When the notes changed on the
     /// agent meanwhile, nothing is lost there: the view offers to reload
     /// or overwrite, as for any save.
     fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -347,13 +350,13 @@ impl ThreadView {
     }
 }
 
-impl Focusable for ThreadView {
+impl Focusable for NotesView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
 
-impl Render for ThreadView {
+impl Render for NotesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let loaded = self.saved.is_some();
@@ -386,8 +389,8 @@ impl Render for ThreadView {
                     .border_color(theme.border)
                     .child(
                         div()
-                            .id("thread-size")
-                            .debug_selector(|| "thread-size".into())
+                            .id("notes-size")
+                            .debug_selector(|| "notes-size".into())
                             .flex_1()
                             .min_w_0()
                             .overflow_hidden()
@@ -407,37 +410,37 @@ impl Render for ThreadView {
                             }),
                     )
                     .child(
-                        Button::new("thread-save")
-                            .debug_selector(|| "thread-save".into())
+                        Button::new("notes-save")
+                            .debug_selector(|| "notes-save".into())
                             .ghost()
                             .xsmall()
                             .label("Save")
                             .disabled(!self.dirty || self.saving || too_large)
-                            .tooltip_with_action("Save the thread", &Save, Some(CONTEXT))
+                            .tooltip_with_action("Save the notes", &Save, Some(CONTEXT))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.save_clicked(window, cx)),
                             ),
                     )
                     .child(
-                        Button::new("thread-revert")
-                            .debug_selector(|| "thread-revert".into())
+                        Button::new("notes-revert")
+                            .debug_selector(|| "notes-revert".into())
                             .ghost()
                             .xsmall()
                             .label("Revert")
                             .disabled(!self.dirty || self.saving)
-                            .tooltip("Throw away your changes and reload the thread")
+                            .tooltip("Throw away your changes and reload the notes")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.revert_clicked(window, cx)),
                             ),
                     )
                     .child(
-                        Button::new("thread-clear")
-                            .debug_selector(|| "thread-clear".into())
+                        Button::new("notes-clear")
+                            .debug_selector(|| "notes-clear".into())
                             .ghost()
                             .xsmall()
-                            .label("Clear thread")
+                            .label("Clear notes")
                             .disabled(!loaded || empty || self.saving)
-                            .tooltip("Empty the thread, for the agent too")
+                            .tooltip("Empty the notes, for the agent too")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.clear_clicked(window, cx)),
                             ),
@@ -446,8 +449,8 @@ impl Render for ThreadView {
             .when(stale, |el| {
                 el.child(
                     h_flex()
-                        .id("thread-stale")
-                        .debug_selector(|| "thread-stale".into())
+                        .id("notes-stale")
+                        .debug_selector(|| "notes-stale".into())
                         .w_full()
                         .flex_none()
                         .px_2()
@@ -461,11 +464,11 @@ impl Render for ThreadView {
                                 .flex_1()
                                 .min_w_0()
                                 .text_xs()
-                                .child("The thread changed elsewhere while you were editing it."),
+                                .child("The notes changed elsewhere while you were editing them."),
                         )
                         .child(
-                            Button::new("thread-reload")
-                                .debug_selector(|| "thread-reload".into())
+                            Button::new("notes-reload")
+                                .debug_selector(|| "notes-reload".into())
                                 .ghost()
                                 .xsmall()
                                 .label("Reload")
@@ -475,8 +478,8 @@ impl Render for ThreadView {
                                 })),
                         )
                         .child(
-                            Button::new("thread-overwrite")
-                                .debug_selector(|| "thread-overwrite".into())
+                            Button::new("notes-overwrite")
+                                .debug_selector(|| "notes-overwrite".into())
                                 .ghost()
                                 .xsmall()
                                 .label("Overwrite")
@@ -494,14 +497,14 @@ impl Render for ThreadView {
                         .p_3()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(format!("Could not read the thread: {error}")),
+                        .child(format!("Could not read the notes: {error}")),
                 ),
                 (None, None) => el.child(
                     div()
                         .p_3()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child("Loading the thread…"),
+                        .child("Loading the notes…"),
                 ),
                 (Some(_), _) => el.child(
                     div().flex_1().min_h_0().child(
@@ -527,13 +530,13 @@ mod tests {
     use super::*;
     use crate::test_agent::{TestAgent, wait_until};
 
-    /// A thread view on a new session, with its editor focused, and a second
-    /// connection that stands in for another client changing the thread.
+    /// A notes view on a new session, with its editor focused, and a second
+    /// connection that stands in for another client changing the notes.
     fn open<'a>(
         agent: &TestAgent,
         cx: &'a mut TestAppContext,
     ) -> (
-        Entity<ThreadView>,
+        Entity<NotesView>,
         Entity<AgentConnection>,
         &'a mut VisualTestContext,
     ) {
@@ -556,7 +559,7 @@ mod tests {
         let (_, cx) = cx.add_window_view({
             let slot = slot.clone();
             move |window, cx| {
-                let view = cx.new(|cx| ThreadView::new(conn, session, window, cx));
+                let view = cx.new(|cx| NotesView::new(conn, session, window, cx));
                 *slot.borrow_mut() = Some(view.clone());
                 Root::new(view, window, cx)
             }
@@ -570,37 +573,37 @@ mod tests {
         (view, other, cx)
     }
 
-    fn text(view: &Entity<ThreadView>, cx: &mut VisualTestContext) -> String {
+    fn text(view: &Entity<NotesView>, cx: &mut VisualTestContext) -> String {
         view.read_with(cx, |view, cx| view.text(cx))
     }
 
-    /// The thread on the agent, read over the other connection.
-    fn thread(
-        view: &Entity<ThreadView>,
+    /// The notes on the agent, read over the other connection.
+    fn notes(
+        view: &Entity<NotesView>,
         other: &Entity<AgentConnection>,
         cx: &mut VisualTestContext,
-    ) -> ThreadContent {
+    ) -> NotesContent {
         let session = view.read_with(cx, |view, _| view.session.clone());
-        let task = other.read_with(cx, |conn, _| conn.read_thread(session));
+        let task = other.read_with(cx, |conn, _| conn.read_notes(session));
         futures::executor::block_on(task).unwrap().unwrap()
     }
 
-    /// Replaces the thread from the other connection.
+    /// Replaces the notes from the other connection.
     fn write_elsewhere(
-        view: &Entity<ThreadView>,
+        view: &Entity<NotesView>,
         other: &Entity<AgentConnection>,
         text: &str,
         cx: &mut VisualTestContext,
     ) {
-        let current = thread(view, other, cx).version;
+        let current = notes(view, other, cx).version;
         let session = view.read_with(cx, |view, _| view.session.clone());
         let task = other.read_with(cx, |conn, _| {
-            conn.write_thread(session, text.into(), current)
+            conn.write_notes(session, text.into(), current)
         });
         futures::executor::block_on(task).unwrap().unwrap();
     }
 
-    fn save(view: &Entity<ThreadView>, cx: &mut VisualTestContext) -> bool {
+    fn save(view: &Entity<NotesView>, cx: &mut VisualTestContext) -> bool {
         let saved = view.update_in(cx, |view, window, cx| view.save(window, cx));
         wait_until(cx, |cx| !view.read(cx).saving);
         futures::executor::block_on(saved)
@@ -621,11 +624,11 @@ mod tests {
         assert!(view.read_with(cx, |view, _| view.is_dirty()));
         cx.simulate_keystrokes("ctrl-s");
         wait_until(cx, |cx| !view.read(cx).is_dirty());
-        assert_eq!(thread(&view, &other, cx).text, "plan");
+        assert_eq!(notes(&view, &other, cx).text, "plan");
         // A second save builds on the first.
         cx.simulate_input(" two");
         assert!(save(&view, cx));
-        assert_eq!(thread(&view, &other, cx).text, "plan two");
+        assert_eq!(notes(&view, &other, cx).text, "plan two");
     }
 
     #[gpui::test]
@@ -635,11 +638,11 @@ mod tests {
         write_elsewhere(&view, &other, "from the agent", cx);
         wait_until(cx, |cx| view.read(cx).text(cx) == "from the agent");
         assert!(!view.read_with(cx, |view, _| view.is_dirty()));
-        assert!(cx.debug_bounds("thread-stale").is_none());
+        assert!(cx.debug_bounds("notes-stale").is_none());
         // The view saves over the new text, not the one it first read.
         cx.simulate_input("x");
         assert!(save(&view, cx));
-        assert_eq!(thread(&view, &other, cx).text, "xfrom the agent");
+        assert_eq!(notes(&view, &other, cx).text, "xfrom the agent");
     }
 
     #[gpui::test]
@@ -650,19 +653,19 @@ mod tests {
         write_elsewhere(&view, &other, "theirs", cx);
         wait_until(cx, |cx| view.read(cx).remote.is_some());
         assert_eq!(text(&view, cx), "mine");
-        assert!(cx.debug_bounds("thread-stale").is_some());
+        assert!(cx.debug_bounds("notes-stale").is_some());
 
         // Saving does not overwrite the other change.
         assert!(!save(&view, cx));
-        assert_eq!(thread(&view, &other, cx).text, "theirs");
+        assert_eq!(notes(&view, &other, cx).text, "theirs");
         assert_eq!(text(&view, cx), "mine");
 
         // Overwriting does, on purpose.
         view.update_in(cx, |view, window, cx| view.overwrite(window, cx));
         wait_until(cx, |cx| !view.read(cx).saving);
-        assert_eq!(thread(&view, &other, cx).text, "mine");
+        assert_eq!(notes(&view, &other, cx).text, "mine");
         assert!(!view.read_with(cx, |view, _| view.is_dirty()));
-        assert!(cx.debug_bounds("thread-stale").is_none());
+        assert!(cx.debug_bounds("notes-stale").is_none());
     }
 
     #[gpui::test]
@@ -691,7 +694,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_reconnect_reads_the_thread_again(cx: &mut TestAppContext) {
+    fn a_reconnect_reads_the_notes_again(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
         write_elsewhere(&view, &other, "theirs", cx);
@@ -713,7 +716,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn clearing_empties_the_thread_after_asking(cx: &mut TestAppContext) {
+    fn clearing_empties_the_notes_after_asking(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
         write_elsewhere(&view, &other, "notes", cx);
@@ -721,17 +724,17 @@ mod tests {
 
         view.update_in(cx, |view, window, cx| view.clear_clicked(window, cx));
         assert!(has_dialog(cx));
-        assert_eq!(thread(&view, &other, cx).text, "notes");
+        assert_eq!(notes(&view, &other, cx).text, "notes");
         cx.update(|window, cx| window.close_dialog(cx));
         view.update_in(cx, |view, window, cx| view.clear(window, cx));
         wait_until(cx, |cx| !view.read(cx).saving);
-        assert_eq!(thread(&view, &other, cx).text, "");
+        assert_eq!(notes(&view, &other, cx).text, "");
         assert_eq!(text(&view, cx), "");
         assert!(!view.read_with(cx, |view, _| view.is_dirty()));
     }
 
     #[gpui::test]
-    fn a_thread_over_the_limit_is_not_sent(cx: &mut TestAppContext) {
+    fn notes_over_the_limit_are_not_sent(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
         let max = view.read_with(cx, |view, _| view.max_bytes) as usize;
@@ -746,10 +749,10 @@ mod tests {
         set(max + 1, cx);
         assert!(view.read_with(cx, |view, _| view.is_dirty()));
         assert!(!save(&view, cx));
-        assert_eq!(thread(&view, &other, cx).text, "");
+        assert_eq!(notes(&view, &other, cx).text, "");
         // Exactly at the limit is fine.
         set(max, cx);
         assert!(save(&view, cx));
-        assert_eq!(thread(&view, &other, cx).text.len(), max);
+        assert_eq!(notes(&view, &other, cx).text.len(), max);
     }
 }

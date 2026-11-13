@@ -847,15 +847,20 @@ fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
                 return long(content, &language(path));
             }
         }
-        "thread_read" => return CallDetails::None,
-        "thread_edit" => {
+        "notes_read" | "tasks_read" => return CallDetails::None,
+        "notes_edit" => {
             if let Some(diff) = args.as_ref().and_then(edit_preview) {
                 return CallDetails::Diff(diff);
             }
         }
-        "thread_write" => {
+        "notes_write" => {
             if let Some(text) = field("text").or_else(|| field("content")) {
                 return long(text, "text");
+            }
+        }
+        "tasks_update" => {
+            if let Some(text) = args.as_ref().and_then(task_changes_preview) {
+                return long(&text, "text");
             }
         }
         _ => {}
@@ -865,6 +870,41 @@ fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
     } else {
         code(&call.arguments, "text")
     }
+}
+
+/// The changes of a tasks_update call, one per line: `+ text` adds a task,
+/// `#3 → done` or `#3: text` updates one, `- #3` removes one.
+fn task_changes_preview(args: &serde_json::Value) -> Option<String> {
+    let changes = args.get("changes")?.as_array()?;
+    let mut lines = Vec::new();
+    for change in changes {
+        let field = |name: &str| change.get(name).and_then(|v| v.as_str());
+        let id = match change.get("id") {
+            Some(serde_json::Value::Number(n)) => format!("#{n}"),
+            Some(serde_json::Value::String(s)) => format!("#{}", s.trim_start_matches('#')),
+            _ => "#?".to_owned(),
+        };
+        let text = field("text").map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "));
+        let status = field("status");
+        lines.push(match field("action")? {
+            "add" => {
+                let text = text.unwrap_or_default();
+                match status {
+                    Some(status) if status != "created" => format!("+ {text} ({status})"),
+                    _ => format!("+ {text}"),
+                }
+            }
+            "update" => match (text, status) {
+                (Some(text), Some(status)) => format!("{id} → {status}: {text}"),
+                (Some(text), None) => format!("{id}: {text}"),
+                (None, Some(status)) => format!("{id} → {status}"),
+                (None, None) => id,
+            },
+            "remove" => format!("- {id}"),
+            other => format!("{other} {id}"),
+        });
+    }
+    Some(lines.join("\n") + "\n")
 }
 
 /// The replacements of an edit call as a diff: removed lines, then added.
@@ -1332,21 +1372,44 @@ mod tests {
     }
 
     #[test]
-    fn thread_calls_show_their_text_or_a_diff() {
-        let read = call("thread_read", serde_json::json!({}));
+    fn task_updates_show_their_changes() {
+        let read = call("tasks_read", serde_json::json!({}));
+        assert_eq!(call_details(&read, false), CallDetails::None);
+        let update = call(
+            "tasks_update",
+            serde_json::json!({"changes": [
+                {"action": "add", "text": "build\n it"},
+                {"action": "add", "text": "test", "status": "in_progress"},
+                {"action": "update", "id": 1, "status": "done"},
+                {"action": "update", "id": "2", "text": "test more"},
+                {"action": "remove", "id": 3},
+            ]}),
+        );
+        assert_eq!(
+            call_details(&update, false),
+            code(
+                "+ build it\n+ test (in_progress)\n#1 → done\n#2: test more\n- #3\n",
+                "text"
+            )
+        );
+    }
+
+    #[test]
+    fn notes_calls_show_their_text_or_a_diff() {
+        let read = call("notes_read", serde_json::json!({}));
         assert_eq!(call_details(&read, false), CallDetails::None);
         let edit = call(
-            "thread_edit",
+            "notes_edit",
             serde_json::json!({"edits": [{"old_text": "- [ ] a", "new_text": "- [x] a"}]}),
         );
         assert_eq!(
             call_details(&edit, false),
             CallDetails::Diff("-- [ ] a\n+- [x] a".into())
         );
-        let write = call("thread_write", serde_json::json!({"text": "# Plan\n"}));
+        let write = call("notes_write", serde_json::json!({"text": "# Plan\n"}));
         assert_eq!(call_details(&write, false), code("# Plan\n", "text"));
         let long = "line\n".repeat(MAX_BLOCK_LINES + 3);
-        let write = call("thread_write", serde_json::json!({"content": long}));
+        let write = call("notes_write", serde_json::json!({"content": long}));
         let CallDetails::Code { text, .. } = call_details(&write, false) else {
             panic!("no code block");
         };

@@ -193,13 +193,31 @@ mod tests {
             Command::ClearSession {
                 session: session.clone(),
             },
-            Command::GetThread {
+            Command::GetNotes {
                 session: session.clone(),
             },
-            Command::WriteThread {
+            Command::WriteNotes {
                 session: session.clone(),
                 text: "- plan\n".into(),
                 expected: FileVersion([3; 32]),
+            },
+            Command::GetTasks {
+                session: session.clone(),
+            },
+            Command::UpdateTasks {
+                session: session.clone(),
+                changes: vec![
+                    TaskChange::Add {
+                        text: "write tests".into(),
+                        status: TaskStatus::InProgress,
+                    },
+                    TaskChange::Update {
+                        id: 2,
+                        text: None,
+                        status: Some(TaskStatus::Done),
+                    },
+                    TaskChange::Remove { id: 1 },
+                ],
             },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
@@ -334,7 +352,7 @@ mod tests {
         }));
         message_roundtrip(ServerMessage::Response {
             id: 10,
-            result: Ok(Payload::Thread(ThreadContent {
+            result: Ok(Payload::Notes(NotesContent {
                 text: "- plan\n".into(),
                 version: FileVersion([4; 32]),
                 max_bytes: 65536,
@@ -342,11 +360,27 @@ mod tests {
         });
         message_roundtrip(ServerMessage::Response {
             id: 11,
-            result: Ok(Payload::ThreadWritten(FileVersion([5; 32]))),
+            result: Ok(Payload::NotesWritten(FileVersion([5; 32]))),
         });
-        message_roundtrip(ServerMessage::Notice(Notice::ThreadChanged {
+        message_roundtrip(ServerMessage::Notice(Notice::NotesChanged {
             session: SessionId("s2".into()),
             version: FileVersion([6; 32]),
+        }));
+        let tasks = vec![Task {
+            id: 3,
+            text: "ship it".into(),
+            status: TaskStatus::Created,
+        }];
+        message_roundtrip(ServerMessage::Response {
+            id: 12,
+            result: Ok(Payload::Tasks(TasksContent {
+                tasks: tasks.clone(),
+                max_tasks: 100,
+            })),
+        });
+        message_roundtrip(ServerMessage::Notice(Notice::TasksChanged {
+            session: SessionId("s2".into()),
+            tasks,
         }));
     }
 

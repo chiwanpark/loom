@@ -36,13 +36,14 @@ use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::DiffView;
 use crate::ui::file_view::FileView;
 use crate::ui::files::{FileTreeEvent, FileTreeView};
+use crate::ui::notes_view::NotesView;
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
 use crate::ui::picker::{PickerItem, open_picker};
 use crate::ui::session::SessionView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
-use crate::ui::thread_view::ThreadView;
+use crate::ui::tasks_view::TasksView;
 
 actions!(
     loom,
@@ -102,8 +103,10 @@ actions!(
         ShowFiles,
         /// Shows the Agents tab of the right panel.
         ShowAgents,
-        /// Shows the active session's operation thread in the right panel.
-        ShowThread,
+        /// Shows the active session's notes in the right panel.
+        ShowNotes,
+        /// Shows the active session's task list in the right panel.
+        ShowTasks,
         /// Wraps long lines in the focused file or diff view, or stops
         /// wrapping them.
         ToggleLineWrap,
@@ -149,7 +152,8 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-shift-pageup", MoveTabLeft, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-pagedown", MoveTabRight, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-b", ShowAgents, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-t", ShowThread, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-n", ShowNotes, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-t", ShowTasks, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-m", ChooseModel, Some(CONTEXT)),
         KeyBinding::new("ctrl-k left", SplitLeft, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-k right", SplitRight, Some(OUTSIDE_TERMINAL)),
@@ -170,7 +174,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new("alt-z", ToggleLineWrap, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-s", Save, Some(crate::ui::file_view::CONTEXT)),
-        KeyBinding::new("ctrl-s", Save, Some(crate::ui::thread_view::CONTEXT)),
+        KeyBinding::new("ctrl-s", Save, Some(crate::ui::notes_view::CONTEXT)),
     ]);
     let mut custom = Vec::new();
     for (keys, name) in overrides {
@@ -224,7 +228,8 @@ enum RightTab {
     Agents,
     Changes,
     Files,
-    Thread,
+    Notes,
+    Tasks,
 }
 
 /// Something with changes that are not saved, which closing must not lose
@@ -232,22 +237,22 @@ enum RightTab {
 #[derive(Clone)]
 enum Unsaved {
     File(Entity<FileView>),
-    Thread(Entity<ThreadView>),
+    Notes(Entity<NotesView>),
 }
 
 impl Unsaved {
-    /// What the prompt calls it: a file's path, or the thread.
+    /// What the prompt calls it: a file's path, or the notes.
     fn name(&self, cx: &App) -> String {
         match self {
             Unsaved::File(view) => view.read(cx).relative().to_string(),
-            Unsaved::Thread(_) => "the thread".into(),
+            Unsaved::Notes(_) => "the notes".into(),
         }
     }
 
     fn save(&self, window: &mut Window, cx: &mut App) -> gpui::Task<bool> {
         match self {
             Unsaved::File(view) => view.update(cx, |v, cx| v.save(window, cx)),
-            Unsaved::Thread(view) => view.update(cx, |v, cx| v.save(window, cx)),
+            Unsaved::Notes(view) => view.update(cx, |v, cx| v.save(window, cx)),
         }
     }
 }
@@ -330,7 +335,8 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("panel: agents", Box::new(ShowAgents)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
-        ("panel: thread", Box::new(ShowThread)),
+        ("panel: notes", Box::new(ShowNotes)),
+        ("panel: tasks", Box::new(ShowTasks)),
         ("view: toggle line wrap", Box::new(ToggleLineWrap)),
         ("file: save", Box::new(Save)),
         ("session: archive", Box::new(ArchiveSession)),
@@ -405,8 +411,10 @@ struct SessionGroup {
     panes: Vec<Pane>,
     layout: PaneGroup,
     active_pane: PaneId,
-    /// The session's thread, once the Thread tab has shown it.
-    thread: Option<Entity<ThreadView>>,
+    /// The session's notes, once the Notes tab has shown them.
+    notes: Option<Entity<NotesView>>,
+    /// The session's task list, once the Tasks tab has shown it.
+    tasks: Option<Entity<TasksView>>,
 }
 
 impl SessionGroup {
@@ -420,16 +428,17 @@ impl SessionGroup {
             }],
             layout: PaneGroup::new(pane),
             active_pane: pane,
-            thread: None,
+            notes: None,
+            tasks: None,
         }
     }
 
-    /// The thread view, if it has changes that are not saved.
-    fn unsaved_thread(&self, cx: &App) -> Option<Unsaved> {
-        self.thread
+    /// The notes view, if it has changes that are not saved.
+    fn unsaved_notes(&self, cx: &App) -> Option<Unsaved> {
+        self.notes
             .as_ref()
             .filter(|view| view.read(cx).is_dirty())
-            .map(|view| Unsaved::Thread(view.clone()))
+            .map(|view| Unsaved::Notes(view.clone()))
     }
 
     fn chat(&self) -> Option<Entity<SessionView>> {
@@ -767,28 +776,53 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_show_thread(&mut self, _: &ShowThread, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_show_notes(&mut self, _: &ShowNotes, window: &mut Window, cx: &mut Context<Self>) {
         self.show_right = true;
-        self.right_tab = RightTab::Thread;
-        if let Some(view) = self.thread_view(window, cx) {
+        self.right_tab = RightTab::Notes;
+        if let Some(view) = self.notes_view(window, cx) {
             view.read(cx).editor_focus(cx).focus(window, cx);
         }
         cx.notify();
     }
 
-    /// The active session's thread view, made the first time it is asked for.
-    fn thread_view(
+    fn on_show_tasks(&mut self, _: &ShowTasks, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = true;
+        self.right_tab = RightTab::Tasks;
+        if let Some(view) = self.tasks_view(window, cx) {
+            view.read(cx).input_focus(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The active session's notes view, made the first time it is asked for.
+    fn notes_view(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<Entity<ThreadView>> {
+    ) -> Option<Entity<NotesView>> {
         let group = self.active_group_mut()?;
-        if let Some(view) = &group.thread {
+        if let Some(view) = &group.notes {
             return Some(view.clone());
         }
         let (conn, session) = (group.connection.clone(), group.session.clone());
-        let view = cx.new(|cx| ThreadView::new(conn, session, window, cx));
-        self.active_group_mut()?.thread = Some(view.clone());
+        let view = cx.new(|cx| NotesView::new(conn, session, window, cx));
+        self.active_group_mut()?.notes = Some(view.clone());
+        Some(view)
+    }
+
+    /// The active session's tasks view, made the first time it is asked for.
+    fn tasks_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TasksView>> {
+        let group = self.active_group_mut()?;
+        if let Some(view) = &group.tasks {
+            return Some(view.clone());
+        }
+        let (conn, session) = (group.connection.clone(), group.session.clone());
+        let view = cx.new(|cx| TasksView::new(conn, session, window, cx));
+        self.active_group_mut()?.tasks = Some(view.clone());
         Some(view)
     }
 
@@ -1149,7 +1183,9 @@ impl Workspace {
                     this.remove_groups(window, cx, |g| g.is(&conn, &id));
                 }
                 ConnectionEvent::SessionsLoaded => this.restore_groups(conn, window, cx),
-                ConnectionEvent::LoginFinished(_) | ConnectionEvent::ThreadChanged { .. } => {}
+                ConnectionEvent::LoginFinished(_)
+                | ConnectionEvent::NotesChanged { .. }
+                | ConnectionEvent::TasksChanged { .. } => {}
             },
         ));
     }
@@ -1336,7 +1372,8 @@ impl Workspace {
             layout: PaneGroup::from_root(root),
             active_pane: order.get(saved.active_pane).copied().unwrap_or(order[0]),
             panes,
-            thread: None,
+            notes: None,
+            tasks: None,
         };
         let empty: Vec<PaneId> = group
             .panes
@@ -1608,10 +1645,10 @@ impl Workspace {
             return;
         };
         let mut unsaved: Vec<Unsaved> = panel.unsaved(cx).into_iter().collect();
-        // Closing the last tab closes the session's group, and its thread.
+        // Closing the last tab closes the session's group, and its notes.
         let tabs: usize = group.panes.iter().map(|p| p.tabs.len()).sum();
         if tabs == 1 {
-            unsaved.extend(group.unsaved_thread(cx));
+            unsaved.extend(group.unsaved_notes(cx));
         }
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.close_panel(id, window, cx)
@@ -1649,7 +1686,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// File and thread views with unsaved changes in the groups that match.
+    /// File and notes views with unsaved changes in the groups that match.
     fn unsaved_in(&self, pred: impl Fn(&SessionGroup) -> bool, cx: &App) -> Vec<Unsaved> {
         self.groups
             .iter()
@@ -1659,7 +1696,7 @@ impl Workspace {
                     .iter()
                     .flat_map(|p| p.tabs.iter())
                     .filter_map(|(_, panel)| panel.unsaved(cx))
-                    .chain(g.unsaved_thread(cx))
+                    .chain(g.unsaved_notes(cx))
             })
             .collect()
     }
@@ -1687,8 +1724,8 @@ impl Workspace {
                 format!("{one} has changes that are not saved."),
             ),
             [_] => (
-                "Save your changes to the thread?".to_string(),
-                "The session's thread has changes that are not saved.".to_string(),
+                "Save your changes to the notes?".to_string(),
+                "The session's notes have changes that are not saved.".to_string(),
             ),
             many if files => (
                 format!("Save your changes to {} files?", many.len()),
@@ -2388,8 +2425,8 @@ impl Workspace {
     }
 
     /// The right panel: tabs for the agents list, the workspace's changes,
-    /// its files, and the active session's thread. Changes and files need a
-    /// connection, and the thread a session; agents need neither.
+    /// its files, and the active session's notes and tasks. Changes and files
+    /// need a connection, and notes and tasks a session; agents need neither.
     fn render_right_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = self.changes_connection();
@@ -2458,13 +2495,22 @@ impl Workspace {
         }
         let body = match (tab, &tree) {
             (RightTab::Agents, _) => self.render_agents_panel(cx),
-            (RightTab::Thread, _) => match self.thread_view(window, cx) {
+            (RightTab::Notes, _) => match self.notes_view(window, cx) {
                 Some(view) => div().flex_1().min_h_0().child(view).into_any_element(),
                 None => div()
                     .p_3()
                     .text_sm()
                     .text_color(theme.muted_foreground)
-                    .child("Open a session to see its thread.")
+                    .child("Open a session to see its notes.")
+                    .into_any_element(),
+            },
+            (RightTab::Tasks, _) => match self.tasks_view(window, cx) {
+                Some(view) => div().flex_1().min_h_0().child(view).into_any_element(),
+                None => div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("Open a session to see its tasks.")
                     .into_any_element(),
             },
             (_, Some(tree)) => div()
@@ -2480,18 +2526,22 @@ impl Workspace {
                 .into_any_element(),
             _ => body,
         };
+        // Scrolls sideways when the panel is too narrow for all the tabs.
         let header = h_flex()
+            .id("right-tabs")
             .w_full()
             .h(Tab::container_height())
             .flex_none()
+            .overflow_x_scroll()
             .px_2()
             .gap_1()
             .border_b_1()
             .border_color(theme.border)
             .child(
                 Button::new("right-agents")
+                    .debug_selector(|| "right-agents".into())
                     .ghost()
-                    .small()
+                    .xsmall()
                     .label("Agents")
                     .selected(tab == RightTab::Agents)
                     .tooltip("Agents and their sessions (ctrl-shift-b)")
@@ -2502,8 +2552,9 @@ impl Workspace {
             )
             .child(
                 Button::new("right-changes")
+                    .debug_selector(|| "right-changes".into())
                     .ghost()
-                    .small()
+                    .xsmall()
                     .label(changes_label)
                     .selected(tab == RightTab::Changes)
                     .tooltip("Uncommitted changes (ctrl-shift-g)")
@@ -2514,8 +2565,9 @@ impl Workspace {
             )
             .child(
                 Button::new("right-files")
+                    .debug_selector(|| "right-files".into())
                     .ghost()
-                    .small()
+                    .xsmall()
                     .label("Files")
                     .selected(files_tab)
                     .tooltip("Workspace files (ctrl-shift-e)")
@@ -2525,15 +2577,28 @@ impl Workspace {
                     })),
             )
             .child(
-                Button::new("right-thread")
-                    .debug_selector(|| "right-thread".into())
+                Button::new("right-notes")
+                    .debug_selector(|| "right-notes".into())
                     .ghost()
-                    .small()
-                    .label("Thread")
-                    .selected(tab == RightTab::Thread)
-                    .tooltip("The session's operation thread: the agent's notes (ctrl-shift-t)")
+                    .xsmall()
+                    .label("Notes")
+                    .selected(tab == RightTab::Notes)
+                    .tooltip("The session's notes, kept by the agent and you (ctrl-shift-n)")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.right_tab = RightTab::Thread;
+                        this.right_tab = RightTab::Notes;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("right-tasks")
+                    .debug_selector(|| "right-tasks".into())
+                    .ghost()
+                    .xsmall()
+                    .label("Tasks")
+                    .selected(tab == RightTab::Tasks)
+                    .tooltip("The session's task list, kept by the agent and you (ctrl-shift-t)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_tab = RightTab::Tasks;
                         cx.notify();
                     })),
             )
@@ -4138,7 +4203,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_rename_session))
             .on_action(cx.listener(Self::on_show_changes))
             .on_action(cx.listener(Self::on_show_files))
-            .on_action(cx.listener(Self::on_show_thread))
+            .on_action(cx.listener(Self::on_show_notes))
+            .on_action(cx.listener(Self::on_show_tasks))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))
             .on_action(cx.listener(|this, _: &ActivateTab1, window, cx| {
@@ -4548,21 +4614,26 @@ mod tests {
         assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 0);
     }
 
-    /// The active session's thread view, once the Thread tab has shown it.
-    fn thread_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<ThreadView>> {
-        ws.read(cx).active_group().and_then(|g| g.thread.clone())
+    /// The active session's notes view, once the Notes tab has shown it.
+    fn notes_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<NotesView>> {
+        ws.read(cx).active_group().and_then(|g| g.notes.clone())
     }
 
-    /// Shows the Thread tab and types `text` into the thread.
-    fn edit_thread(
+    /// The active session's tasks view, once the Tasks tab has shown it.
+    fn tasks_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<TasksView>> {
+        ws.read(cx).active_group().and_then(|g| g.tasks.clone())
+    }
+
+    /// Shows the Notes tab and types `text` into the notes.
+    fn edit_notes(
         ws: &Entity<Workspace>,
         text: &str,
         cx: &mut VisualTestContext,
-    ) -> Entity<ThreadView> {
-        click("right-thread", cx);
+    ) -> Entity<NotesView> {
+        click("right-notes", cx);
         let view = cx
-            .update(|_, cx| thread_view(ws, cx))
-            .expect("no thread view");
+            .update(|_, cx| notes_view(ws, cx))
+            .expect("no notes view");
         wait_until(cx, |cx| view.read(cx).max_bytes() > 0);
         view.update_in(cx, |view, window, cx| {
             view.editor_focus(cx).focus(window, cx)
@@ -4573,11 +4644,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_thread_tab_follows_the_active_session(cx: &mut TestAppContext) {
+    fn the_notes_and_tasks_tabs_follow_the_active_session(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
-        let first = edit_thread(&ws, "plan", cx);
+        click("right-tasks", cx);
+        let first_tasks = cx
+            .update(|_, cx| tasks_view(&ws, cx))
+            .expect("no tasks view");
+        let first = edit_notes(&ws, "plan", cx);
         let (conn, session) = ws.read_with(cx, |ws, _| {
             let group = ws.active_group().unwrap();
             (group.connection.clone(), group.session.clone())
@@ -4597,30 +4672,43 @@ mod tests {
         });
         cx.run_until_parked();
         let second = cx
-            .update(|_, cx| thread_view(&ws, cx))
-            .expect("no thread view");
+            .update(|_, cx| notes_view(&ws, cx))
+            .expect("no notes view");
         assert_ne!(second, first);
         let other = ws.read_with(cx, |ws, _| ws.active_group().unwrap().session.clone());
         assert_eq!(
             second.read_with(cx, |view, _| view.session().clone()),
             other
         );
+        click("right-tasks", cx);
+        let second_tasks = cx
+            .update(|_, cx| tasks_view(&ws, cx))
+            .expect("no tasks view");
+        assert_ne!(second_tasks, first_tasks);
+        assert_eq!(
+            second_tasks.read_with(cx, |view, _| view.session().clone()),
+            other
+        );
+        assert_eq!(
+            first_tasks.read_with(cx, |view, _| view.session().clone()),
+            session
+        );
         // The first session's view keeps its edits.
         assert!(first.read_with(cx, |view, _| view.is_dirty()));
     }
 
     #[gpui::test]
-    fn closing_a_session_with_unsaved_thread_changes_asks_first(cx: &mut TestAppContext) {
+    fn closing_a_session_with_unsaved_notes_asks_first(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
-        let view = edit_thread(&ws, "plan", cx);
+        let view = edit_notes(&ws, "plan", cx);
 
         assert!(!cx.simulate_close());
         assert!(has_dialog(cx));
         click("unsaved-cancel", cx);
 
-        // Closing a tab while others stay does not close the thread.
+        // Closing a tab while others stay does not close the notes.
         let pane = ws.read_with(cx, |ws, _| ws.active_group().unwrap().active_pane);
         let (ix, total) = ws.read_with(cx, |ws, _| {
             let group = ws.active_group().unwrap();
@@ -4643,7 +4731,7 @@ mod tests {
         let (conn, session) = view.read_with(cx, |view, _| {
             (view.connection().clone(), view.session().clone())
         });
-        let task = conn.read_with(cx, |conn, _| conn.read_thread(session));
+        let task = conn.read_with(cx, |conn, _| conn.read_notes(session));
         assert_eq!(
             futures::executor::block_on(task).unwrap().unwrap().text,
             "plan"
@@ -4777,16 +4865,26 @@ mod tests {
     }
 
     #[gpui::test]
-    fn panel_shortcuts_show_the_agents_and_thread_tabs(cx: &mut TestAppContext) {
+    fn panel_shortcuts_show_the_agents_notes_and_tasks_tabs(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
         let right =
             |cx: &mut VisualTestContext| ws.read_with(cx, |ws, _| (ws.show_right, ws.right_tab));
+        cx.simulate_keystrokes("ctrl-shift-n");
+        cx.run_until_parked();
+        assert!(right(cx) == (true, RightTab::Notes));
+        assert!(cx.update(|_, cx| notes_view(&ws, cx)).is_some());
+        // The notes editor has the focus, and the workspace keys still work
+        // from there.
         cx.simulate_keystrokes("ctrl-shift-t");
         cx.run_until_parked();
-        assert!(right(cx) == (true, RightTab::Thread));
-        assert!(cx.update(|_, cx| thread_view(&ws, cx)).is_some());
+        assert!(right(cx) == (true, RightTab::Tasks));
+        let tasks = cx
+            .update(|_, cx| tasks_view(&ws, cx))
+            .expect("no tasks view");
+        let focused = cx.update(|window, cx| tasks.read(cx).input_focus(cx).is_focused(window));
+        assert!(focused, "the new-task input has the focus");
 
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();

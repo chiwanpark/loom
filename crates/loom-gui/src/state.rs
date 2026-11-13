@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, FileVersion, Notice,
-    PolicyAction, ReasoningEffort, SessionId, SessionInfo, TelemetryStatus, TerminalId,
-    ThreadContent, UsageLimits, WorkspaceChanges,
+    AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, FileVersion,
+    NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo, TaskChange,
+    TasksContent, TelemetryStatus, TerminalId, UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications};
 use loom_config::HostEntry;
@@ -28,11 +28,16 @@ pub enum ConnectionEvent {
     LoginFinished(Result<String, ApiError>),
     Failed(String),
     SessionRemoved(SessionId),
-    /// A session's operation thread changed on the agent; `version` is the
-    /// hash of its new text.
-    ThreadChanged {
+    /// A session's notes changed on the agent; `version` is the hash of
+    /// their new text.
+    NotesChanged {
         session: SessionId,
         version: FileVersion,
+    },
+    /// A session's task list changed on the agent.
+    TasksChanged {
+        session: SessionId,
+        tasks: Vec<loom_client::proto::Task>,
     },
     /// The session list arrived (after connecting or reconnecting).
     SessionsLoaded,
@@ -263,8 +268,11 @@ impl AgentConnection {
                 cx.emit(ConnectionEvent::SessionRemoved(id));
                 cx.notify();
             }
-            Notification::Notice(Notice::ThreadChanged { session, version }) => {
-                cx.emit(ConnectionEvent::ThreadChanged { session, version })
+            Notification::Notice(Notice::NotesChanged { session, version }) => {
+                cx.emit(ConnectionEvent::NotesChanged { session, version })
+            }
+            Notification::Notice(Notice::TasksChanged { session, tasks }) => {
+                cx.emit(ConnectionEvent::TasksChanged { session, tasks })
             }
             Notification::Notice(notice) => cx.emit(ConnectionEvent::Notice(notice)),
             Notification::TerminalOutput { terminal, data } => {
@@ -629,16 +637,35 @@ impl AgentConnection {
             .run(async move { client.write_file(&path, text, expected).await })
     }
 
-    pub fn read_thread(
+    pub fn read_notes(
         &self,
         session: SessionId,
-    ) -> impl Future<Output = Option<loom_client::Result<ThreadContent>>> + use<> {
+    ) -> impl Future<Output = Option<loom_client::Result<NotesContent>>> + use<> {
         let client = self.client.clone();
         self.backend
-            .run(async move { client.thread(&session).await })
+            .run(async move { client.notes(&session).await })
     }
 
-    pub fn write_thread(
+    pub fn read_tasks(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Option<loom_client::Result<TasksContent>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.tasks(&session).await })
+    }
+
+    pub fn update_tasks(
+        &self,
+        session: SessionId,
+        changes: Vec<TaskChange>,
+    ) -> impl Future<Output = Option<loom_client::Result<TasksContent>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.update_tasks(&session, changes).await })
+    }
+
+    pub fn write_notes(
         &self,
         session: SessionId,
         text: String,
@@ -646,7 +673,7 @@ impl AgentConnection {
     ) -> impl Future<Output = Option<loom_client::Result<FileVersion>>> + use<> {
         let client = self.client.clone();
         self.backend
-            .run(async move { client.write_thread(&session, text, expected).await })
+            .run(async move { client.write_notes(&session, text, expected).await })
     }
 
     pub fn register_terminal(

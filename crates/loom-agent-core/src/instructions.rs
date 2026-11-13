@@ -4,7 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use loom_config::AGENTS_MD;
 use loom_tools::ToolSpec;
 
-use crate::thread::{self, THREAD_READ_TOOL};
+use crate::notes::NOTES_READ_TOOL;
+use crate::tasks::{self, TASKS_READ_TOOL};
 
 pub const BUILTIN_INSTRUCTIONS: &str = "\
 You are Loom, a coding agent working in a software project on the user's machine.
@@ -68,9 +69,9 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
     if inputs
         .tools
         .iter()
-        .any(|tool| tool.name == THREAD_READ_TOOL)
+        .any(|tool| tool.name == NOTES_READ_TOOL || tool.name == TASKS_READ_TOOL)
     {
-        sections.push(thread::PROMPT_SECTION.to_owned());
+        sections.push(tasks::PROMPT_SECTION.to_owned());
     }
     sections.push(runtime_section(inputs.workspace_root, inputs.tools));
     SystemPrompt {
@@ -163,7 +164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explains_the_thread_when_it_can_be_read() {
+    async fn explains_notes_and_tasks_when_they_can_be_read() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "WORKSPACE RULE").unwrap();
         let missing = dir.path().join("missing.md");
@@ -183,12 +184,14 @@ mod tests {
             }
         };
         let without = prompt(tools()).await;
-        assert!(!without.contains("# Operation thread"));
-        let with = prompt(vec![tool("read"), tool(THREAD_READ_TOOL)]).await;
-        let ws = with.find("WORKSPACE RULE").unwrap();
-        let thread = with.find("# Operation thread").unwrap();
-        let env = with.find("# Environment").unwrap();
-        assert!(ws < thread && thread < env);
+        assert!(!without.contains("# Notes and tasks"));
+        for read in [NOTES_READ_TOOL, TASKS_READ_TOOL] {
+            let with = prompt(vec![tool("read"), tool(read)]).await;
+            let ws = with.find("WORKSPACE RULE").unwrap();
+            let section = with.find("# Notes and tasks").unwrap();
+            let env = with.find("# Environment").unwrap();
+            assert!(ws < section && section < env, "{read}");
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -233,20 +233,32 @@ pub enum Command {
     ClearSession {
         session: SessionId,
     },
-    /// The session's operation thread: the agent's notes on its work, which
-    /// stay when the conversation is compacted or cleared. Answered with
-    /// [`Payload::Thread`].
-    GetThread {
+    /// The session's notes: the agent's scratchpad for its work, which stays
+    /// when the conversation is compacted or cleared. Answered with
+    /// [`Payload::Notes`].
+    GetNotes {
         session: SessionId,
     },
-    /// Replaces the session's operation thread, during a turn too; an empty
-    /// `text` clears it. Fails with [`ErrorCode::Conflict`] when the thread no
-    /// longer has the `expected` version, that is, it changed since the client
-    /// read it. Answered with [`Payload::ThreadWritten`].
-    WriteThread {
+    /// Replaces the session's notes, during a turn too; an empty `text`
+    /// clears them. Fails with [`ErrorCode::Conflict`] when the notes no
+    /// longer have the `expected` version, that is, they changed since the
+    /// client read them. Answered with [`Payload::NotesWritten`].
+    WriteNotes {
         session: SessionId,
         text: String,
         expected: FileVersion,
+    },
+    /// The session's task list, which stays when the conversation is
+    /// compacted or cleared. Answered with [`Payload::Tasks`].
+    GetTasks {
+        session: SessionId,
+    },
+    /// Changes the session's task list, during a turn too. The changes apply
+    /// in order and all together: when one fails, for example because its
+    /// task is gone, none applies. Answered with [`Payload::Tasks`].
+    UpdateTasks {
+        session: SessionId,
+        changes: Vec<TaskChange>,
     },
 }
 
@@ -278,19 +290,85 @@ pub enum Payload {
     /// The version of a file after a write.
     FileWritten(FileVersion),
     FileChunk(FileChunk),
-    Thread(ThreadContent),
-    /// The version of the operation thread after a write.
-    ThreadWritten(FileVersion),
+    Notes(NotesContent),
+    /// The version of the notes after a write.
+    NotesWritten(FileVersion),
+    Tasks(TasksContent),
 }
 
-/// A session's operation thread.
+/// A session's notes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadContent {
+pub struct NotesContent {
     pub text: String,
-    /// A SHA-256 hash of `text`, for [`Command::WriteThread`].
+    /// A SHA-256 hash of `text`, for [`Command::WriteNotes`].
     pub version: FileVersion,
-    /// The most bytes the thread may hold.
+    /// The most bytes the notes may hold.
     pub max_bytes: u64,
+}
+
+/// A session's task list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksContent {
+    pub tasks: Vec<Task>,
+    /// The most tasks the list may hold.
+    pub max_tasks: u32,
+}
+
+/// One task of a session's task list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Task {
+    /// Numbers the task in its session; never reused there.
+    pub id: u32,
+    pub text: String,
+    pub status: TaskStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    #[default]
+    Created,
+    InProgress,
+    Done,
+}
+
+impl TaskStatus {
+    /// The status after this one, wrapping around after `Done`.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Created => Self::InProgress,
+            Self::InProgress => Self::Done,
+            Self::Done => Self::Created,
+        }
+    }
+
+    /// How the status is written: `created`, `in_progress`, or `done`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::InProgress => "in_progress",
+            Self::Done => "done",
+        }
+    }
+}
+
+/// A change to a session's task list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskChange {
+    /// Adds a task at the end of the list.
+    Add {
+        text: String,
+        status: TaskStatus,
+    },
+    /// Changes a task's text, its status, or both.
+    Update {
+        id: u32,
+        text: Option<String>,
+        status: Option<TaskStatus>,
+    },
+    Remove {
+        id: u32,
+    },
 }
 
 /// Part of a file's bytes. `size` and `modified` describe the whole file when
@@ -535,11 +613,16 @@ pub enum Notice {
     ShuttingDown,
     SessionUpdated(SessionInfo),
     SessionRemoved(SessionId),
-    /// A session's operation thread changed, by the agent or a client. The
-    /// `version` is the hash of its new text, as in [`ThreadContent`].
-    ThreadChanged {
+    /// A session's notes changed, by the agent or a client. The `version` is
+    /// the hash of their new text, as in [`NotesContent`].
+    NotesChanged {
         session: SessionId,
         version: FileVersion,
+    },
+    /// A session's task list changed, by the agent or a client.
+    TasksChanged {
+        session: SessionId,
+        tasks: Vec<Task>,
     },
 }
 

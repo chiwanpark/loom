@@ -63,8 +63,8 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
     let details = match output.details {
         // The sources are in the content; clients have no view of their own.
         ToolDetails::WebSearch { .. } => None,
-        // Not a file: clients must not count it among the workspace changes.
-        ToolDetails::Thread { .. } => None,
+        // Not files: clients must not count them among the workspace changes.
+        ToolDetails::Notes { .. } | ToolDetails::Tasks { .. } => None,
         ToolDetails::Read {
             path,
             start_line,
@@ -203,8 +203,11 @@ pub fn api_error(err: &crate::CoreError) -> loom_proto::ApiError {
         CoreError::NoModel
         | CoreError::EmptyPrompt
         | CoreError::NothingToCompact
-        | CoreError::ThreadTooLarge { .. } => ErrorCode::BadRequest,
-        CoreError::ThreadChanged => ErrorCode::Conflict,
+        | CoreError::NotesTooLarge { .. }
+        | CoreError::TooManyTasks { .. }
+        | CoreError::EmptyTask => ErrorCode::BadRequest,
+        CoreError::NotesChanged => ErrorCode::Conflict,
+        CoreError::NoSuchTask { .. } => ErrorCode::NotFound,
         CoreError::UnknownSession(_) | CoreError::UnknownApproval(_) => ErrorCode::NotFound,
         CoreError::Llm(err) => return llm_error(err),
         CoreError::Tool(_) => ErrorCode::Internal,
