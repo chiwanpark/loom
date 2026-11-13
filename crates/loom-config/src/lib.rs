@@ -9,11 +9,11 @@ mod units;
 
 pub use agent::{
     AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, DEFAULT_WINDOW_TOKENS,
-    InstructionsConfig, LifecycleConfig, LlmConfig, LogLevel, LoggingConfig, NotesToolConfig,
-    OtlpProtocol, PolicyAction, PolicyConfig, PolicyRule, ProviderSetting, ProvidersConfig,
-    ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig, SearchReasoningEffort,
-    ShellToolConfig, SocketConfig, StorageConfig, TasksToolConfig, TelemetryConfig, Temporality,
-    TerminalConfig, ToolsConfig, WebSearchToolConfig,
+    InstructionsConfig, LifecycleConfig, LimitsConfig, LlmConfig, LogLevel, LoggingConfig,
+    NotesToolConfig, OtlpProtocol, PolicyAction, PolicyConfig, PolicyRule, ProviderSetting,
+    ProvidersConfig, ReadToolConfig, RelayConfig, SandboxBackend, SandboxConfig,
+    SearchReasoningEffort, ShellToolConfig, SocketConfig, StorageConfig, TasksToolConfig,
+    TelemetryConfig, Temporality, TerminalConfig, ToolsConfig, WebSearchToolConfig,
 };
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};

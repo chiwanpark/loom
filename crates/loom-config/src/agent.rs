@@ -27,6 +27,7 @@ pub struct AgentConfig {
     pub policy: PolicyConfig,
     pub sandbox: SandboxConfig,
     pub context: ContextConfig,
+    pub limits: LimitsConfig,
     pub logging: LoggingConfig,
     pub telemetry: TelemetryConfig,
 }
@@ -47,6 +48,7 @@ impl Default for AgentConfig {
             policy: PolicyConfig::default(),
             sandbox: SandboxConfig::default(),
             context: ContextConfig::default(),
+            limits: LimitsConfig::default(),
             logging: LoggingConfig::default(),
             telemetry: TelemetryConfig::default(),
         }
@@ -374,6 +376,24 @@ impl Default for ContextConfig {
             max_tool_output_tokens: 8000,
             window_tokens: None,
             compaction_threshold: 0.8,
+        }
+    }
+}
+
+/// Limits on how long the agent works on one request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LimitsConfig {
+    /// The most model calls one request may make, each a reply and the tool
+    /// calls it asks for, before the turn stops; 0 means no limit. It guards
+    /// against a model stuck in a loop while no one is watching.
+    pub max_rounds_per_turn: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_rounds_per_turn: 200,
         }
     }
 }

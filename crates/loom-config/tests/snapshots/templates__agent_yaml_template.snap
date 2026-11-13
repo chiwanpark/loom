@@ -47,6 +47,8 @@ sandbox:
 context:
   max_tool_output_tokens: 8000
   compaction_threshold: 0.8
+limits:
+  max_rounds_per_turn: 200
 logging:
   level: info
 telemetry:

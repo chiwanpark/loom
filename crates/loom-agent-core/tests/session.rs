@@ -577,3 +577,32 @@ async fn unknown_default_model_provider_is_rejected() {
     let err = loom_agent_core::Agent::new(options).err().unwrap();
     assert!(err.to_string().contains("missing"), "{err}");
 }
+
+#[tokio::test]
+async fn a_turn_stops_at_the_round_limit_and_zero_means_none() {
+    let round = || calls(&[("c", "tasks_read", json!({}))]);
+    let mut config = test_config(PolicyAction::Allow);
+    config.limits.max_rounds_per_turn = 3;
+    let h = Harness::new(config.clone(), (0..3).map(|_| round()).collect());
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    let events = run_turn(&session, &mut sub, "loop").await;
+    assert_eq!(outcome(&events), Some(TurnOutcome::Failed));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        SessionEvent::Error { message }
+            if message.contains("3 model calls") && message.contains("limits.max_rounds_per_turn")
+    )));
+    assert_eq!(h.provider.requests().len(), 3);
+
+    // A reload applies to the next turn; without a limit it runs to the end.
+    config.limits.max_rounds_per_turn = 0;
+    h.agent.apply_config(config).unwrap();
+    for _ in 0..4 {
+        h.provider.push(round());
+    }
+    h.provider.push(text("done"));
+    let events = run_turn(&session, &mut sub, "go on").await;
+    assert_eq!(outcome(&events), Some(TurnOutcome::Completed));
+    assert_eq!(h.provider.requests().len(), 3 + 5);
+}

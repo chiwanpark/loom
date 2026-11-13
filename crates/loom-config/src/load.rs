@@ -148,6 +148,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_turn_limits() {
+        assert_eq!(parse("").unwrap().limits.max_rounds_per_turn, 200);
+        let config = parse("limits:\n  max_rounds_per_turn: 0\n").unwrap();
+        assert_eq!(config.limits.max_rounds_per_turn, 0);
+        let config = parse("limits:\n  max_rounds_per_turn: 1000\n").unwrap();
+        assert_eq!(config.limits.max_rounds_per_turn, 1000);
+    }
+
+    #[test]
     fn rejects_removed_workspace_section() {
         let err = parse("workspaces:\n- path: ~/x\n").unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");

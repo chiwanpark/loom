@@ -33,7 +33,6 @@ use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedM
 use crate::tasks::TaskList;
 use loom_config::PolicyAction;
 
-pub const MAX_ROUNDS_PER_TURN: usize = 200;
 const CHARS_PER_TOKEN: usize = 4;
 const OUTPUT_CHANNEL: usize = 64;
 
@@ -668,11 +667,22 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
 }
 
 async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), TurnError> {
-    for round in 0..MAX_ROUNDS_PER_TURN {
+    let mut rounds: u32 = 0;
+    loop {
         if cancel.is_cancelled() {
             return Err(TurnError::Interrupted);
         }
         let runtime = core.runtime.current();
+        // Read every round, so that a config reload applies to a long turn.
+        let max_rounds = runtime.config.limits.max_rounds_per_turn;
+        if max_rounds != 0 && rounds >= max_rounds {
+            return Err(TurnError::Failed(format!(
+                "stopped after {rounds} model calls in one turn \
+                 (limits.max_rounds_per_turn); send a message to go on"
+            )));
+        }
+        let first = rounds == 0;
+        rounds += 1;
         let model = core.model(&runtime)?;
         let provider = runtime
             .providers
@@ -687,7 +697,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             tools: &specs,
         })
         .await;
-        if round == 0 {
+        if first {
             for message in prompt.warnings {
                 core.emit(SessionEvent::Warning { message });
             }
@@ -785,9 +795,6 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             return Err(TurnError::Interrupted);
         }
     }
-    Err(TurnError::Failed(format!(
-        "stopped after {MAX_ROUNDS_PER_TURN} model calls in one turn"
-    )))
 }
 
 async fn maybe_compact(
