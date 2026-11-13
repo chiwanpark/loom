@@ -208,6 +208,8 @@ pub fn api_error(err: &crate::CoreError) -> loom_proto::ApiError {
         | CoreError::EmptyTask => ErrorCode::BadRequest,
         CoreError::NotesChanged => ErrorCode::Conflict,
         CoreError::NoSuchTask { .. } => ErrorCode::NotFound,
+        CoreError::ConfigRejected(_) => ErrorCode::Config,
+        CoreError::NoConfigFile => ErrorCode::Unsupported,
         CoreError::UnknownSession(_) | CoreError::UnknownApproval(_) => ErrorCode::NotFound,
         CoreError::Llm(err) => return llm_error(err),
         CoreError::Tool(_) => ErrorCode::Internal,

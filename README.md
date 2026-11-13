@@ -179,6 +179,12 @@ The main sections:
 
 `crates/loom-config/tests/fixtures/agent.yaml` is an example that uses most of these settings.
 
+### Reloading the configuration
+
+A running agent applies `agent.yaml` again when the file changes. To make it read the file on demand, for example when it missed a change or you want to know whether it accepted the file, run `loom-agent reload --workspace <dir> | --instance <id> | --all`, or choose **Reload configuration** in an agent's menu in the client's Agents panel. Each agent says whether it reloaded the file, found it unchanged, or rejected it; `loom-agent reload` exits with status 1 if any agent rejected the file or could not be reached.
+
+An agent that rejects the file keeps the configuration it has, and every connected client shows why. Changes to `relay`, `socket`, `storage`, `lifecycle`, and `telemetry` take effect only when the agent restarts; the agent names the sections that are waiting for a restart.
+
 ## Agent commands
 
 | Command | What it does |
@@ -186,6 +192,7 @@ The main sections:
 | `loom-agent serve --workspace <dir>` | Run an agent for a workspace. `--default` serves `lifecycle.default_workspace`. |
 | `loom-agent ps [--json]` | List the agents running on this host. |
 | `loom-agent stop --workspace <dir> \| --instance <id> \| --all` | Stop agents gracefully. |
+| `loom-agent reload --workspace <dir> \| --instance <id> \| --all` | Make agents read their configuration file again; see [Reloading the configuration](#reloading-the-configuration). |
 | `loom-agent stdio --workspace <dir> [--spawn]` | Bridge stdin/stdout to an agent; this is what SSH connections use. `--spawn` starts the agent if none is running. |
 | `loom-agent pair` | Print a one-time pairing link for a relay client. |
 | `loom-agent clients list \| revoke <label>` | Manage clients paired through a relay. |

@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loom_config::{AgentConfig, Dirs};
+use loom_config::Dirs;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::agent::{Agent, AgentNotice};
+use crate::agent::Agent;
 
 pub const DEBOUNCE: Duration = Duration::from_millis(200);
 
@@ -57,31 +57,8 @@ pub fn watch_config(agent: Agent, path: PathBuf, dirs: Dirs) -> notify::Result<C
     })
 }
 
+/// Reloads after a change of the file; the agent logs and announces the
+/// outcome itself.
 pub async fn reload(agent: &Agent, path: &Path, dirs: &Dirs) {
-    let load_path = path.to_path_buf();
-    let load_dirs = dirs.clone();
-    let loaded =
-        tokio::task::spawn_blocking(move || AgentConfig::load(&load_path, &load_dirs)).await;
-    match loaded {
-        Ok(Ok(config)) => {
-            if *agent.config() != config {
-                match agent.apply_config(config) {
-                    Ok(restart) => tracing::info!(?restart, "configuration reloaded"),
-                    Err(err) => {
-                        tracing::warn!(error = %err, "configuration rejected");
-                        agent.notify(AgentNotice::ConfigRejected {
-                            message: err.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "configuration rejected");
-            agent.notify(AgentNotice::ConfigRejected {
-                message: err.to_string(),
-            });
-        }
-        Err(err) => tracing::warn!(error = %err, "configuration reload failed"),
-    }
+    let _ = agent.reload_config_from(path, dirs).await;
 }

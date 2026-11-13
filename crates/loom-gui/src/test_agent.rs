@@ -20,6 +20,9 @@ pub struct TestAgent {
     pub workspace: PathBuf,
     pub backend: Backend,
     pub info: AgentInfo,
+    /// The agent's configuration file, which it reloads on request; it
+    /// does not exist until a test writes it.
+    pub config_path: PathBuf,
     agent: Agent,
 }
 
@@ -37,7 +40,9 @@ impl TestAgent {
             runtime_dir: None,
         };
         let backend = Backend::new().unwrap();
-        let options = AgentOptions::new(&workspace, AgentConfig::default(), dirs);
+        let config_path = root.join("agent.yaml");
+        let mut options = AgentOptions::new(&workspace, AgentConfig::default(), dirs);
+        options.config_path = Some(config_path.clone());
         let agent = futures::executor::block_on(backend.run(async move { Agent::new(options) }))
             .unwrap()
             .unwrap();
@@ -54,6 +59,7 @@ impl TestAgent {
             workspace,
             backend,
             info,
+            config_path,
             agent,
         }
     }
@@ -84,6 +90,11 @@ impl TestAgent {
         .unwrap();
         let backend = self.backend.clone();
         cx.new(|cx| AgentConnection::new(host, client, notifications, backend, cx))
+    }
+
+    /// The configuration the agent is using.
+    pub fn config(&self) -> std::sync::Arc<AgentConfig> {
+        self.agent.config()
     }
 
     pub fn write(&self, path: &str, content: impl AsRef<[u8]>) {

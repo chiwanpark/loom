@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use loom_config::{AgentConfig, Dirs};
 use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
-use loom_proto::{FileVersion, SessionEvent, SessionId, SessionInfo, Task};
+use loom_proto::{ConfigReload, FileVersion, SessionEvent, SessionId, SessionInfo, Task};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -50,6 +50,9 @@ pub struct AgentOptions {
     pub observer: Option<Arc<dyn SessionObserver>>,
     /// Reports the OpenTelemetry export; without it telemetry is off.
     pub telemetry: Option<TelemetryReport>,
+    /// The file `config` came from, which [`Agent::reload_config`] reads
+    /// again; without it the agent cannot reload on request.
+    pub config_path: Option<PathBuf>,
 }
 
 /// Reports the state of the agent's OpenTelemetry export on request.
@@ -67,6 +70,7 @@ impl AgentOptions {
             sandbox_exe: None,
             observer: None,
             telemetry: None,
+            config_path: None,
         }
     }
 }
@@ -74,6 +78,7 @@ impl AgentOptions {
 struct Inner {
     workspace: Arc<Workspace>,
     dirs: Dirs,
+    config_path: Option<PathBuf>,
     auth: Auth,
     overrides: Vec<Arc<dyn LlmProvider>>,
     sandbox_exe: Option<PathBuf>,
@@ -170,6 +175,7 @@ impl Agent {
             inner: Arc::new_cyclic(|inner| Inner {
                 workspace,
                 dirs: options.dirs,
+                config_path: options.config_path,
                 auth,
                 overrides: options.providers,
                 sandbox_exe: options.sandbox_exe,
@@ -269,6 +275,50 @@ impl Agent {
             restart_required: restart.clone(),
         });
         Ok(restart)
+    }
+
+    /// Reads the agent's configuration file again and applies it; see
+    /// [`Agent::reload_config_from`].
+    pub async fn reload_config(&self) -> Result<ConfigReload> {
+        let path = self
+            .inner
+            .config_path
+            .clone()
+            .ok_or(CoreError::NoConfigFile)?;
+        let dirs = self.inner.dirs.clone();
+        self.reload_config_from(&path, &dirs).await
+    }
+
+    /// Reads the configuration at `path` and applies it unless it is the one
+    /// in use. Clients hear of a change with a `ConfigReloaded` notice, and
+    /// of a rejected file with a `ConfigRejected` notice; the agent then
+    /// keeps the configuration it has.
+    pub async fn reload_config_from(&self, path: &Path, dirs: &Dirs) -> Result<ConfigReload> {
+        let (load_path, load_dirs) = (path.to_path_buf(), dirs.clone());
+        let loaded = tokio::task::spawn_blocking(move || AgentConfig::load(&load_path, &load_dirs))
+            .await
+            .map_err(|err| {
+                tracing::warn!(error = %err, "configuration reload failed");
+                CoreError::ConfigRejected(format!("could not read the configuration: {err}"))
+            })?;
+        let applied = match loaded {
+            Ok(config) if *self.config() == config => return Ok(ConfigReload::Unchanged),
+            Ok(config) => self.apply_config(config).map_err(|err| err.to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        match applied {
+            Ok(restart_required) => {
+                tracing::info!(restart = ?restart_required, "configuration reloaded");
+                Ok(ConfigReload::Applied { restart_required })
+            }
+            Err(message) => {
+                tracing::warn!(error = %message, "configuration rejected");
+                self.notify(AgentNotice::ConfigRejected {
+                    message: message.clone(),
+                });
+                Err(CoreError::ConfigRejected(message))
+            }
+        }
     }
 
     pub fn create_session(&self, model: Option<&str>) -> Result<Session> {

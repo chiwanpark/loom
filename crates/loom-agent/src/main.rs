@@ -12,11 +12,15 @@ use loom_agent_core::data_dir;
 use loom_config::{AgentConfig, CONFIG_ENV, Dirs, telemetry_from_claude_code};
 use loom_crypto::{AuthorizedClients, HostIdentity, PairingUri, Pairings, encode_key};
 use loom_llm::{Auth, CredentialStore, ProviderId, ProviderSet, http_client};
+use loom_proto::{
+    ClientHello, ClientMessage, Command, ConfigReload, PROTOCOL_VERSION, Payload, ServerMessage,
+};
 use loom_transport::{AgentEntry, Registry};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Parser)]
 #[command(name = "loom-agent", version = loom_version::VERSION, about = "Loom agent daemon")]
@@ -35,7 +39,9 @@ enum CliCommand {
         #[arg(long)]
         json: bool,
     },
-    Stop(StopArgs),
+    Stop(SelectArgs),
+    /// Asks running agents to read their configuration file again.
+    Reload(SelectArgs),
     #[command(subcommand)]
     Config(ConfigCommand),
     Host {
@@ -105,7 +111,7 @@ struct StdioArgs {
 
 #[derive(Args)]
 #[group(required = true, multiple = false)]
-struct StopArgs {
+struct SelectArgs {
     #[arg(long)]
     workspace: Option<PathBuf>,
     #[arg(long)]
@@ -243,29 +249,15 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             init_logging("warn");
             let config = ctx.load()?;
             let registry = ctx.registry(&config);
-            let entries = registry.list()?;
-            let targets: Vec<AgentEntry> = if args.all {
-                entries
-            } else if let Some(id) = args.instance {
-                let found: Vec<_> = entries.into_iter().filter(|e| e.instance == id).collect();
-                if found.is_empty() {
-                    bail!("no agent with instance {id} is running");
-                }
-                found
-            } else if let Some(path) = args.workspace {
-                let workspace = canonical_workspace(&path, &ctx.dirs)?;
-                let found: Vec<_> = entries
-                    .into_iter()
-                    .filter(|e| e.workspace == workspace)
-                    .collect();
-                if found.is_empty() {
-                    bail!("no agent is running for {}", workspace.display());
-                }
-                found
-            } else {
-                Vec::new()
-            };
+            let targets = select_agents(&registry, args, &ctx.dirs)?;
             stop_agents(&registry, &targets).await
+        }
+        CliCommand::Reload(args) => {
+            init_logging("warn");
+            let config = ctx.load()?;
+            let registry = ctx.registry(&config);
+            let targets = select_agents(&registry, args, &ctx.dirs)?;
+            Ok(reload_agents(&targets).await)
         }
         CliCommand::Config(ConfigCommand::FetchTelemetry { raw }) => {
             init_logging("warn");
@@ -416,6 +408,107 @@ fn print_agents(entries: &[AgentEntry], json: bool) -> anyhow::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The running agents that `args` names; an error when it names none.
+fn select_agents(
+    registry: &Registry,
+    args: SelectArgs,
+    dirs: &Dirs,
+) -> anyhow::Result<Vec<AgentEntry>> {
+    let entries = registry.list()?;
+    if args.all {
+        return Ok(entries);
+    }
+    if let Some(id) = args.instance {
+        let found: Vec<_> = entries.into_iter().filter(|e| e.instance == id).collect();
+        if found.is_empty() {
+            bail!("no agent with instance {id} is running");
+        }
+        return Ok(found);
+    }
+    if let Some(path) = args.workspace {
+        let workspace = canonical_workspace(&path, dirs)?;
+        let found: Vec<_> = entries
+            .into_iter()
+            .filter(|e| e.workspace == workspace)
+            .collect();
+        if found.is_empty() {
+            bail!("no agent is running for {}", workspace.display());
+        }
+        return Ok(found);
+    }
+    Ok(Vec::new())
+}
+
+/// Asks each agent to reload its configuration and prints what it did.
+/// Returns 1 when an agent could not be reached or rejected the file.
+async fn reload_agents(targets: &[AgentEntry]) -> i32 {
+    let mut code = 0;
+    for entry in targets {
+        let name = format!("{} ({})", entry.instance, entry.workspace.display());
+        match reload_agent(entry).await {
+            Ok(ConfigReload::Unchanged) => println!("{name}: unchanged"),
+            Ok(ConfigReload::Applied { restart_required }) if restart_required.is_empty() => {
+                println!("{name}: reloaded")
+            }
+            Ok(ConfigReload::Applied { restart_required }) => println!(
+                "{name}: reloaded; restart it to apply {}",
+                restart_required.join(", ")
+            ),
+            Err(err) => {
+                eprintln!("{name}: {err}");
+                code = 1;
+            }
+        }
+    }
+    code
+}
+
+async fn reload_agent(entry: &AgentEntry) -> anyhow::Result<ConfigReload> {
+    tokio::time::timeout(RELOAD_TIMEOUT, ask_reload(entry))
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for the agent"))?
+}
+
+/// Says hello to the agent over its socket and sends it one
+/// `ReloadConfig`, skipping the notices that come before the reply.
+async fn ask_reload(entry: &AgentEntry) -> anyhow::Result<ConfigReload> {
+    let mut stream = loom_transport::connect_unix(&entry.socket)
+        .await
+        .with_context(|| format!("could not connect to {}", entry.socket.display()))?;
+    let hello = ClientMessage::Hello(ClientHello {
+        version: PROTOCOL_VERSION,
+        client: "loom-agent reload".into(),
+    });
+    stream.send(loom_proto::encode(&hello)?.into()).await?;
+    let request = ClientMessage::Request {
+        id: 1,
+        command: Command::ReloadConfig,
+    };
+    let mut sent = false;
+    loop {
+        let Some(frame) = stream.recv().await? else {
+            bail!("the agent closed the connection");
+        };
+        match loom_proto::decode::<ServerMessage>(&frame)? {
+            ServerMessage::Hello(_) if !sent => {
+                stream.send(loom_proto::encode(&request)?.into()).await?;
+                sent = true;
+            }
+            ServerMessage::Rejected(err) => {
+                bail!("the agent rejected the connection: {}", err.message)
+            }
+            ServerMessage::Response { id: 1, result } => {
+                return match result {
+                    Ok(Payload::ConfigReloaded(reload)) => Ok(reload),
+                    Ok(other) => bail!("unexpected reply from the agent: {other:?}"),
+                    Err(err) => bail!("{}", err.message),
+                };
+            }
+            _ => {}
+        }
+    }
 }
 
 async fn stop_agents(registry: &Registry, targets: &[AgentEntry]) -> anyhow::Result<i32> {

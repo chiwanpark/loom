@@ -10,7 +10,7 @@ use crate::auth::{
 use crate::relay::HostId;
 use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
 
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -140,6 +140,11 @@ pub enum Command {
     StopAgent {
         instance: InstanceId,
     },
+    /// Reads the agent's configuration file again and applies it, as the
+    /// agent does on its own when it sees the file change. Answered with
+    /// [`Payload::ConfigReloaded`]. Fails with [`ErrorCode::Config`] when the
+    /// file is rejected; the agent then keeps the configuration it has.
+    ReloadConfig,
     OpenTerminal {
         cols: u16,
         rows: u16,
@@ -277,6 +282,7 @@ pub enum Payload {
     Session(SessionInfo),
     Interrupted(bool),
     Agents(Vec<AgentInfo>),
+    ConfigReloaded(ConfigReload),
     Terminal(TerminalId),
     HostKey(HostKeyInfo),
     Clients(Vec<AuthorizedClient>),
@@ -294,6 +300,17 @@ pub enum Payload {
     /// The version of the notes after a write.
     NotesWritten(FileVersion),
     Tasks(TasksContent),
+}
+
+/// What a [`Command::ReloadConfig`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfigReload {
+    /// The file differed from the configuration in use, which it replaced.
+    /// The sections in `restart_required`, such as `socket`, keep their old
+    /// settings until the agent restarts.
+    Applied { restart_required: Vec<String> },
+    /// The file holds the configuration already in use.
+    Unchanged,
 }
 
 /// A session's notes.

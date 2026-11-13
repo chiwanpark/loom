@@ -28,6 +28,10 @@ pub enum CoreError {
     NoSuchTask { id: u32 },
     #[error("a task's text must not be empty")]
     EmptyTask,
+    #[error("the configuration was rejected: {0}")]
+    ConfigRejected(String),
+    #[error("this agent was started without a configuration file to reload")]
+    NoConfigFile,
     #[error(transparent)]
     Llm(#[from] loom_llm::LlmError),
     #[error(transparent)]

@@ -69,6 +69,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
     let (telemetry, report) = start_telemetry(&config, &instance, &workspace);
     let mut options = AgentOptions::new(&workspace, config, dirs.clone());
+    options.config_path = Some(config_path.clone());
     options.sandbox_exe = std::env::current_exe().ok();
     options.observer = telemetry.as_ref().map(Telemetry::observer);
     options.telemetry = report;

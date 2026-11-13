@@ -176,6 +176,18 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
+            Command::ReloadConfig => {
+                let agent = self.agent.clone();
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = agent
+                        .reload_config()
+                        .await
+                        .map(Payload::ConfigReloaded)
+                        .map_err(|e| convert::api_error(&e));
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
             Command::GetHostKey
             | Command::AuthorizeClient { .. }
             | Command::ListClients
@@ -510,6 +522,7 @@ impl Connection {
             | Command::ListAgents
             | Command::SpawnAgent { .. }
             | Command::StopAgent { .. }
+            | Command::ReloadConfig
             | Command::OpenTerminal { .. }
             | Command::TerminalInput { .. }
             | Command::ResizeTerminal { .. }

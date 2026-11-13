@@ -512,3 +512,49 @@ async fn fetch_telemetry_prints_the_organization_settings() {
     let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(raw["env"]["OTEL_LOGS_EXPORTER"], "otlp");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_asks_agents_to_read_their_config_again() {
+    let env = Env::new();
+    // The agent reads its own file; the reload command only needs the
+    // registry, so a broken agent file does not stop it from asking.
+    let agent_config = env.root.join("agent.yaml");
+    std::fs::write(&agent_config, "allowed_roots:\n- ~/work\n").unwrap();
+    let mut server = env
+        .command(&[
+            "serve",
+            "--config",
+            &path_arg(&agent_config),
+            "--workspace",
+            "~/work/ws1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let agents = env.wait_for_agents(1).await;
+
+    let output = env.run(&["reload", "--all"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(output.status.success(), "{output:?}");
+    assert!(stdout.contains(&agents[0].instance), "{stdout}");
+    assert!(stdout.contains("unchanged"), "{stdout}");
+
+    std::fs::write(&agent_config, "allowed_roots:\n- ~/work\nbogus: 1\n").unwrap();
+    let output = env.run(&["reload", "--workspace", "~/work/ws1"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(stderr(&output).contains("bogus"), "{}", stderr(&output));
+
+    let output = env.run(&["reload", "--workspace", "~/work/ws2"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr(&output).contains("no agent is running"),
+        "{}",
+        stderr(&output)
+    );
+
+    let stopped = env.run(&["stop", "--all"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    assert!(server.wait().unwrap().success());
+}

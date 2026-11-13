@@ -193,6 +193,7 @@ mod tests {
             Command::ClearSession {
                 session: session.clone(),
             },
+            Command::ReloadConfig,
             Command::GetNotes {
                 session: session.clone(),
             },
@@ -362,6 +363,17 @@ mod tests {
             id: 11,
             result: Ok(Payload::NotesWritten(FileVersion([5; 32]))),
         });
+        for reload in [
+            ConfigReload::Applied {
+                restart_required: vec!["socket".into()],
+            },
+            ConfigReload::Unchanged,
+        ] {
+            message_roundtrip(ServerMessage::Response {
+                id: 13,
+                result: Ok(Payload::ConfigReloaded(reload)),
+            });
+        }
         message_roundtrip(ServerMessage::Notice(Notice::NotesChanged {
             session: SessionId("s2".into()),
             version: FileVersion([6; 32]),

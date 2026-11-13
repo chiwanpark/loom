@@ -19,7 +19,8 @@ use gpui_component::{
     resizable_panel, v_flex, v_resizable,
 };
 use loom_client::proto::{
-    ChangeStatus, FileChange as GitChange, SessionId, SessionInfo, WorkspaceChanges,
+    ChangeStatus, Command, ConfigReload, ErrorCode, FileChange as GitChange, Notice, Payload,
+    SessionId, SessionInfo, WorkspaceChanges,
 };
 use loom_config::{ClientConfig, HostEntry};
 
@@ -1163,7 +1164,17 @@ impl Workspace {
             window,
             |this, conn, event: &ConnectionEvent, window, cx| match event {
                 ConnectionEvent::Notice(notice) => {
-                    notify::info(window, cx, format!("{notice:?}"));
+                    let (kind, message) = notice_toast(&conn.read(cx).title(), notice);
+                    match kind {
+                        Toast::Info => notify::info(window, cx, message),
+                        Toast::Success => notify::success(window, cx, message),
+                        Toast::Error => {
+                            if let Notice::ConfigRejected { message } = notice {
+                                tracing::warn!("{message}");
+                            }
+                            notify::error(window, cx, message)
+                        }
+                    }
                 }
                 ConnectionEvent::Closed => {
                     if this.connections.contains(conn) {
@@ -2113,6 +2124,42 @@ impl Workspace {
                     this.activate_group(gix, window, cx);
                 }
                 Some(Err(err)) => notify::error(window, cx, err.to_string()),
+                None => {}
+            });
+        })
+        .detach();
+    }
+
+    /// Asks the agent to read its configuration file again. The agent tells
+    /// every client of an applied or rejected file with a notice, so only
+    /// the other outcomes are reported here.
+    fn reload_config(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let read = conn.read(cx);
+        let client = read.client.clone();
+        let title = read.title();
+        let task = read
+            .backend
+            .run(async move { client.request(Command::ReloadConfig).await });
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let result = task.await;
+            let _ = this.update_in(cx, |_, window, cx| match result {
+                Some(Ok(Payload::ConfigReloaded(ConfigReload::Unchanged))) => notify::info(
+                    window,
+                    cx,
+                    format!("{title}: the configuration file has not changed"),
+                ),
+                Some(Ok(_)) => {}
+                Some(Err(loom_client::ClientError::Api(err))) if err.code == ErrorCode::Config => {}
+                Some(Err(err)) => notify::error(
+                    window,
+                    cx,
+                    format!("{title}: could not reload the configuration: {err}"),
+                ),
                 None => {}
             });
         })
@@ -3641,6 +3688,11 @@ impl Workspace {
                             }),
                         ));
                         let c = conn.clone();
+                        menu = menu.item(item(
+                            "Reload configuration",
+                            Rc::new(move |ws, window, cx| ws.reload_config(c.clone(), window, cx)),
+                        ));
+                        let c = conn.clone();
                         menu.item(item(
                             "Stop agent",
                             Rc::new(move |ws, window, cx| ws.stop_agent(c.clone(), window, cx)),
@@ -4386,6 +4438,41 @@ impl ChangeRow<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Toast {
+    Info,
+    Success,
+    Error,
+}
+
+/// How to tell the user of a notice from the agent at `title`.
+fn notice_toast(title: &str, notice: &Notice) -> (Toast, String) {
+    match notice {
+        Notice::ConfigReloaded { restart_required } if restart_required.is_empty() => (
+            Toast::Success,
+            format!("{title}: reloaded the configuration"),
+        ),
+        Notice::ConfigReloaded { restart_required } => (
+            Toast::Info,
+            format!(
+                "{title}: reloaded the configuration; restart the agent to apply {}",
+                restart_required.join(", ")
+            ),
+        ),
+        // The rest of the message points at the line in the file, which a
+        // toast has no room for.
+        Notice::ConfigRejected { message } => (
+            Toast::Error,
+            format!(
+                "{title}: the configuration was rejected, so the agent keeps its old one: {}",
+                message.lines().next().unwrap_or_default()
+            ),
+        ),
+        Notice::ShuttingDown => (Toast::Info, format!("{title}: the agent is shutting down")),
+        other => (Toast::Info, format!("{title}: {other:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -4404,6 +4491,31 @@ mod tests {
         path: &str,
         cx: &'a mut TestAppContext,
     ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        let (ws, conn, cx) = connected(agent, cx);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_session(conn.clone(), window, cx)
+        });
+        wait_until(cx, |cx| ws.read(cx).active_group.is_some());
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_file(conn.clone(), path.into(), window, cx)
+        });
+        wait_until(cx, |cx| {
+            file_view(&ws, cx).is_some_and(|view| view.read(cx).is_editable())
+        });
+        ws.update_in(cx, |ws, window, cx| ws.focus_active_panel(window, cx));
+        cx.run_until_parked();
+        (ws, cx)
+    }
+
+    /// A workspace in a window, connected to `agent`.
+    fn connected<'a>(
+        agent: &TestAgent,
+        cx: &'a mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Entity<AgentConnection>,
+        &'a mut VisualTestContext,
+    ) {
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::ui::bind_keys(&Default::default(), cx);
@@ -4445,18 +4557,105 @@ mod tests {
             ws.connections.push(conn.clone());
             ws.watch_connection(&conn, window, cx);
             ws.active_connection = Some(conn.clone());
-            ws.new_session(conn.clone(), window, cx);
         });
-        wait_until(cx, |cx| ws.read(cx).active_group.is_some());
-        ws.update_in(cx, |ws, window, cx| {
-            ws.open_file(conn.clone(), path.into(), window, cx)
-        });
-        wait_until(cx, |cx| {
-            file_view(&ws, cx).is_some_and(|view| view.read(cx).is_editable())
-        });
-        ws.update_in(cx, |ws, window, cx| ws.focus_active_panel(window, cx));
-        cx.run_until_parked();
-        (ws, cx)
+        (ws, conn, cx)
+    }
+
+    #[test]
+    fn config_notices_read_as_sentences() {
+        let title = "local · /work";
+        assert_eq!(
+            notice_toast(
+                title,
+                &Notice::ConfigReloaded {
+                    restart_required: vec![]
+                }
+            ),
+            (
+                Toast::Success,
+                "local · /work: reloaded the configuration".into()
+            )
+        );
+        assert_eq!(
+            notice_toast(
+                title,
+                &Notice::ConfigReloaded {
+                    restart_required: vec!["socket".into(), "storage".into()]
+                }
+            ),
+            (
+                Toast::Info,
+                "local · /work: reloaded the configuration; \
+                 restart the agent to apply socket, storage"
+                    .into()
+            )
+        );
+        assert_eq!(
+            notice_toast(
+                title,
+                &Notice::ConfigRejected {
+                    message: "agent.yaml: error: unknown field `bogus`\n --> <input>:3:1".into()
+                }
+            ),
+            (
+                Toast::Error,
+                "local · /work: the configuration was rejected, so the agent keeps its \
+                 old one: agent.yaml: error: unknown field `bogus`"
+                    .into()
+            )
+        );
+        assert_eq!(
+            notice_toast(title, &Notice::ShuttingDown).1,
+            "local · /work: the agent is shutting down"
+        );
+    }
+
+    /// Each reload shows one toast: the agent's notice for an applied or
+    /// rejected file, the reply for an unchanged one.
+    #[gpui::test]
+    fn reloading_the_configuration_reports_each_outcome_once(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, conn, cx) = connected(&agent, cx);
+        let toasts =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.notifications(cx).len());
+        let reload = |cx: &mut VisualTestContext, expected: usize| {
+            ws.update_in(cx, |ws, window, cx| {
+                ws.reload_config(conn.clone(), window, cx)
+            });
+            let mut settled = 0;
+            for _ in 0..1000 {
+                cx.run_until_parked();
+                if toasts(cx) >= expected {
+                    // Give a second toast the time to turn up.
+                    settled += 1;
+                    if settled == 30 {
+                        assert_eq!(toasts(cx), expected);
+                        return;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("timed out waiting for toast {expected}");
+        };
+        let allow = "policy:\n  default: allow\n";
+
+        std::fs::write(&agent.config_path, allow).unwrap();
+        reload(cx, 1);
+        assert_eq!(
+            agent.config().policy.default,
+            loom_config::PolicyAction::Allow
+        );
+        reload(cx, 2);
+
+        std::fs::write(&agent.config_path, format!("{allow}bogus: 1\n")).unwrap();
+        reload(cx, 3);
+        assert_eq!(
+            agent.config().policy.default,
+            loom_config::PolicyAction::Allow
+        );
+
+        std::fs::write(&agent.config_path, allow).unwrap();
+        reload(cx, 4);
     }
 
     fn file_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<FileView>> {
