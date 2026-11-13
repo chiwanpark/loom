@@ -57,6 +57,28 @@ actions!(
         ArchiveSession,
         NextTab,
         PreviousTab,
+        /// Shows the first tab of the active pane.
+        ActivateTab1,
+        /// Shows the second tab of the active pane.
+        ActivateTab2,
+        /// Shows the third tab of the active pane.
+        ActivateTab3,
+        /// Shows the fourth tab of the active pane.
+        ActivateTab4,
+        /// Shows the fifth tab of the active pane.
+        ActivateTab5,
+        /// Shows the sixth tab of the active pane.
+        ActivateTab6,
+        /// Shows the seventh tab of the active pane.
+        ActivateTab7,
+        /// Shows the eighth tab of the active pane.
+        ActivateTab8,
+        /// Shows the last tab of the active pane.
+        ActivateLastTab,
+        /// Moves the active tab one place to the left in its pane.
+        MoveTabLeft,
+        /// Moves the active tab one place to the right in its pane.
+        MoveTabRight,
         ShowProviders,
         ChooseModel,
         AddSshHost,
@@ -78,6 +100,8 @@ actions!(
         RenameSession,
         ShowChanges,
         ShowFiles,
+        /// Shows the Agents tab of the right panel.
+        ShowAgents,
         /// Shows the active session's operation thread in the right panel.
         ShowThread,
         /// Wraps long lines in the focused file or diff view, or stops
@@ -111,6 +135,21 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-`", NewTerminal, Some(CONTEXT)),
         KeyBinding::new("ctrl-pagedown", NextTab, Some(CONTEXT)),
         KeyBinding::new("ctrl-pageup", PreviousTab, Some(CONTEXT)),
+        KeyBinding::new("ctrl-tab", NextTab, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(CONTEXT)),
+        KeyBinding::new("alt-1", ActivateTab1, Some(CONTEXT)),
+        KeyBinding::new("alt-2", ActivateTab2, Some(CONTEXT)),
+        KeyBinding::new("alt-3", ActivateTab3, Some(CONTEXT)),
+        KeyBinding::new("alt-4", ActivateTab4, Some(CONTEXT)),
+        KeyBinding::new("alt-5", ActivateTab5, Some(CONTEXT)),
+        KeyBinding::new("alt-6", ActivateTab6, Some(CONTEXT)),
+        KeyBinding::new("alt-7", ActivateTab7, Some(CONTEXT)),
+        KeyBinding::new("alt-8", ActivateTab8, Some(CONTEXT)),
+        KeyBinding::new("alt-9", ActivateLastTab, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-pageup", MoveTabLeft, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-pagedown", MoveTabRight, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-b", ShowAgents, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-t", ShowThread, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-m", ChooseModel, Some(CONTEXT)),
         KeyBinding::new("ctrl-k left", SplitLeft, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-k right", SplitRight, Some(OUTSIDE_TERMINAL)),
@@ -282,8 +321,13 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: close tab", Box::new(CloseTab)),
         ("workspace: next tab", Box::new(NextTab)),
         ("workspace: previous tab", Box::new(PreviousTab)),
+        ("workspace: first tab", Box::new(ActivateTab1)),
+        ("workspace: last tab", Box::new(ActivateLastTab)),
+        ("workspace: move tab left", Box::new(MoveTabLeft)),
+        ("workspace: move tab right", Box::new(MoveTabRight)),
         ("workspace: toggle agents", Box::new(ToggleAgents)),
         ("workspace: toggle right panel", Box::new(ToggleRightDock)),
+        ("panel: agents", Box::new(ShowAgents)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
         ("panel: thread", Box::new(ShowThread)),
@@ -2256,6 +2300,12 @@ impl Workspace {
         cx.notify();
     }
 
+    fn on_show_agents(&mut self, _: &ShowAgents, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = true;
+        self.right_tab = RightTab::Agents;
+        cx.notify();
+    }
+
     fn on_toggle_right(&mut self, _: &ToggleRightDock, _: &mut Window, cx: &mut Context<Self>) {
         self.show_right = !self.show_right;
         cx.notify();
@@ -2444,7 +2494,7 @@ impl Workspace {
                     .small()
                     .label("Agents")
                     .selected(tab == RightTab::Agents)
-                    .tooltip("Agents and their sessions (ctrl-b)")
+                    .tooltip("Agents and their sessions (ctrl-shift-b)")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.right_tab = RightTab::Agents;
                         cx.notify();
@@ -2481,7 +2531,7 @@ impl Workspace {
                     .small()
                     .label("Thread")
                     .selected(tab == RightTab::Thread)
-                    .tooltip("The session's operation thread: the agent's notes")
+                    .tooltip("The session's operation thread: the agent's notes (ctrl-shift-t)")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.right_tab = RightTab::Thread;
                         cx.notify();
@@ -2829,6 +2879,42 @@ impl Workspace {
     fn on_previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
             pane.tabs.activate_previous();
+            self.focus_active_panel(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Shows the tab at `ix` of the active pane, or its last tab for `None`.
+    /// Does nothing when the pane has no tab there.
+    fn activate_tab_in_active_pane(
+        &mut self,
+        ix: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.active_group().and_then(|g| g.active()) else {
+            return;
+        };
+        let Some(ix) = ix.or_else(|| pane.tabs.len().checked_sub(1)) else {
+            return;
+        };
+        let id = pane.id;
+        self.activate_tab(id, ix, window, cx);
+    }
+
+    fn on_move_tab_left(&mut self, _: &MoveTabLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut())
+            && pane.tabs.move_active_left()
+        {
+            self.focus_active_panel(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn on_move_tab_right(&mut self, _: &MoveTabRight, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut())
+            && pane.tabs.move_active_right()
+        {
             self.focus_active_panel(window, cx);
             cx.notify();
         }
@@ -4055,6 +4141,36 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_show_thread))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))
+            .on_action(cx.listener(|this, _: &ActivateTab1, window, cx| {
+                this.activate_tab_in_active_pane(Some(0), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab2, window, cx| {
+                this.activate_tab_in_active_pane(Some(1), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab3, window, cx| {
+                this.activate_tab_in_active_pane(Some(2), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab4, window, cx| {
+                this.activate_tab_in_active_pane(Some(3), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab5, window, cx| {
+                this.activate_tab_in_active_pane(Some(4), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab6, window, cx| {
+                this.activate_tab_in_active_pane(Some(5), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab7, window, cx| {
+                this.activate_tab_in_active_pane(Some(6), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateTab8, window, cx| {
+                this.activate_tab_in_active_pane(Some(7), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ActivateLastTab, window, cx| {
+                this.activate_tab_in_active_pane(None, window, cx)
+            }))
+            .on_action(cx.listener(Self::on_move_tab_left))
+            .on_action(cx.listener(Self::on_move_tab_right))
+            .on_action(cx.listener(Self::on_show_agents))
             .on_action(cx.listener(Self::on_providers))
             .on_action(cx.listener(Self::on_choose_model))
             .on_action(cx.listener(Self::on_add_ssh))
@@ -4550,5 +4666,134 @@ mod tests {
         assert!(has_dialog(cx));
         click("unsaved-cancel", cx);
         assert!(!has_dialog(cx));
+    }
+
+    /// The panel ids of the active pane's tabs, and the active tab's index.
+    fn active_tabs(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (Vec<PanelId>, usize) {
+        ws.read_with(cx, |ws, _| {
+            let pane = ws.active_group().unwrap().active().unwrap();
+            (
+                pane.tabs.iter().map(|(id, _)| id).collect(),
+                pane.tabs.active_index(),
+            )
+        })
+    }
+
+    /// A workspace whose active pane has the conversation and three file
+    /// tabs, with the last file focused.
+    fn open_three_files<'a>(
+        agent: &TestAgent,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            agent.write(name, "one\n");
+        }
+        let (ws, cx) = open_file(agent, "a.txt", cx);
+        for name in ["b.txt", "c.txt"] {
+            ws.update_in(cx, |ws, window, cx| {
+                let conn = ws.active_group().unwrap().connection.clone();
+                ws.open_file(conn, name.into(), window, cx)
+            });
+        }
+        cx.run_until_parked();
+        assert_eq!(active_tabs(&ws, cx).0.len(), 4);
+        (ws, cx)
+    }
+
+    #[gpui::test]
+    fn tab_shortcuts_switch_and_move_tabs(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, cx) = open_three_files(&agent, cx);
+        let (ids, active) = active_tabs(&ws, cx);
+        assert_eq!(active, 3);
+
+        let active_after = |keys: &str, cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(keys);
+            cx.run_until_parked();
+            active_tabs(&ws, cx).1
+        };
+        assert_eq!(active_after("alt-1", cx), 0);
+        assert_eq!(active_after("alt-9", cx), 3);
+        assert_eq!(active_after("alt-2", cx), 1);
+        // There is no fifth tab, so alt-5 leaves the active one alone.
+        assert_eq!(active_after("alt-5", cx), 1);
+        assert_eq!(active_after("ctrl-tab", cx), 2);
+        assert_eq!(active_after("ctrl-shift-tab", cx), 1);
+        assert_eq!(active_after("ctrl-shift-tab", cx), 0);
+        assert_eq!(active_after("ctrl-shift-tab", cx), 3);
+        assert_eq!(active_after("ctrl-tab", cx), 0);
+
+        assert_eq!(active_after("alt-2", cx), 1);
+        assert_eq!(active_after("ctrl-shift-pagedown", cx), 2);
+        assert_eq!(active_tabs(&ws, cx).0, [ids[0], ids[2], ids[1], ids[3]]);
+        assert_eq!(active_after("ctrl-shift-pageup", cx), 1);
+        assert_eq!(active_after("ctrl-shift-pageup", cx), 0);
+        assert_eq!(active_tabs(&ws, cx).0, [ids[1], ids[0], ids[2], ids[3]]);
+        // At the start already: nothing moves.
+        assert_eq!(active_after("ctrl-shift-pageup", cx), 0);
+        assert_eq!(active_tabs(&ws, cx).0, [ids[1], ids[0], ids[2], ids[3]]);
+    }
+
+    #[gpui::test]
+    fn tab_shortcuts_work_in_a_terminal(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, cx) = open_three_files(&agent, cx);
+        ws.update_in(cx, |ws, window, cx| ws.new_terminal(None, window, cx));
+        wait_until(cx, |cx| {
+            matches!(
+                ws.read(cx).active_group().and_then(|g| g.active_panel()),
+                Some(Panel::Terminal(_))
+            )
+        });
+        cx.run_until_parked();
+        let terminal = active_tabs(&ws, cx).1;
+        assert_eq!(terminal, 4);
+        assert!(cx.update(|window, cx| {
+            let ws = ws.read(cx);
+            let Some(Panel::Terminal(view)) = ws.active_group().and_then(|g| g.active_panel())
+            else {
+                return false;
+            };
+            view.read(cx).focus_handle(cx).is_focused(window)
+        }));
+
+        cx.simulate_keystrokes("alt-1");
+        cx.run_until_parked();
+        assert_eq!(active_tabs(&ws, cx).1, 0);
+
+        ws.update_in(cx, |ws, window, cx| {
+            ws.activate_tab_in_active_pane(Some(terminal), window, cx)
+        });
+        cx.simulate_keystrokes("ctrl-tab");
+        cx.run_until_parked();
+        assert_eq!(active_tabs(&ws, cx).1, 0);
+
+        ws.update_in(cx, |ws, window, cx| {
+            ws.activate_tab_in_active_pane(Some(terminal), window, cx)
+        });
+        cx.simulate_keystrokes("ctrl-shift-pageup");
+        cx.run_until_parked();
+        assert_eq!(active_tabs(&ws, cx).1, terminal - 1);
+    }
+
+    #[gpui::test]
+    fn panel_shortcuts_show_the_agents_and_thread_tabs(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("a.txt", "one\n");
+        let (ws, cx) = open_file(&agent, "a.txt", cx);
+        let right =
+            |cx: &mut VisualTestContext| ws.read_with(cx, |ws, _| (ws.show_right, ws.right_tab));
+        cx.simulate_keystrokes("ctrl-shift-t");
+        cx.run_until_parked();
+        assert!(right(cx) == (true, RightTab::Thread));
+        assert!(cx.update(|_, cx| thread_view(&ws, cx)).is_some());
+
+        cx.simulate_keystrokes("ctrl-shift-b");
+        cx.run_until_parked();
+        assert!(right(cx) == (true, RightTab::Agents));
+        // Showing is not toggling: a second press keeps the panel.
+        cx.simulate_keystrokes("ctrl-shift-b");
+        cx.run_until_parked();
+        assert!(right(cx) == (true, RightTab::Agents));
     }
 }

@@ -209,11 +209,18 @@ Useful default key bindings:
 | `ctrl-shift-m` | Choose the model |
 | `` ctrl-` `` | New terminal |
 | `ctrl-b` | Show or hide the agents panel |
+| `ctrl-shift-b` / `ctrl-shift-t` | Agents panel / the session's operation thread |
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
+| `ctrl-tab` / `ctrl-shift-tab` (or `ctrl-pagedown` / `ctrl-pageup`) | Next / previous tab in the pane |
+| `alt-1` … `alt-8` / `alt-9` | Tab 1 to 8 / the last tab in the pane |
+| `ctrl-shift-pagedown` / `ctrl-shift-pageup` | Move the tab right / left |
+| `ctrl-w` | Close the tab |
 | `ctrl-k` then an arrow | Split the pane |
 | `ctrl-k ctrl-t` | Select a theme |
 | `ctrl-s` | Save the file being edited in a file view, or the thread in the Thread tab |
 | `alt-z` | Wrap long lines in a file or diff view, or stop wrapping them |
+
+The tab and panel keys work in terminals too, so a terminal program does not see them (for example `alt-1` in readline). `ctrl-w`, `ctrl-b`, and `ctrl-p` go to the terminal.
 
 To copy a workspace file to your machine, right-click it in the files panel and choose **Download…**, or use the download button in its file view. Downloads work over local and SSH connections, not through a relay yet.
 

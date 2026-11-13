@@ -71,6 +71,28 @@ impl<T> TabList<T> {
         }
     }
 
+    /// Swaps the active tab with its left neighbour. Returns false at the
+    /// start of the list.
+    pub fn move_active_left(&mut self) -> bool {
+        if self.active == 0 || self.active >= self.items.len() {
+            return false;
+        }
+        self.items.swap(self.active, self.active - 1);
+        self.active -= 1;
+        true
+    }
+
+    /// Swaps the active tab with its right neighbour. Returns false at the
+    /// end of the list.
+    pub fn move_active_right(&mut self) -> bool {
+        if self.active + 1 >= self.items.len() {
+            return false;
+        }
+        self.items.swap(self.active, self.active + 1);
+        self.active += 1;
+        true
+    }
+
     pub fn add(&mut self, id: PanelId, item: T, destination: Option<usize>) -> usize {
         let index = cmp::min(
             destination.unwrap_or(if self.items.is_empty() {
@@ -194,5 +216,27 @@ mod tests {
         assert_eq!(tabs.active(), Some(&"a"));
         tabs.activate_previous();
         assert_eq!(tabs.active(), Some(&"c"));
+    }
+
+    #[test]
+    fn moves_the_active_tab_until_it_reaches_an_end() {
+        let mut tabs = list(&["a", "b", "c"]);
+        tabs.activate(1);
+        assert!(tabs.move_active_left());
+        assert_eq!(names(&tabs), ["b", "a", "c"]);
+        assert_eq!(tabs.active(), Some(&"b"));
+        assert!(!tabs.move_active_left());
+        assert_eq!(names(&tabs), ["b", "a", "c"]);
+
+        assert!(tabs.move_active_right());
+        assert!(tabs.move_active_right());
+        assert_eq!(names(&tabs), ["a", "c", "b"]);
+        assert_eq!(tabs.active_index(), 2);
+        assert!(!tabs.move_active_right());
+        assert_eq!(names(&tabs), ["a", "c", "b"]);
+
+        let mut empty = list(&[]);
+        assert!(!empty.move_active_left());
+        assert!(!empty.move_active_right());
     }
 }
