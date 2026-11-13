@@ -1,0 +1,61 @@
+# Runs the Loom relay as a system service, as an unprivileged user that
+# systemd creates for it.
+#
+# `scripts/install.sh relay --systemd`, run as root, installs it pointed at the
+# loom-relay it installs, and starts it. To install it by hand:
+#   sudo install -m755 loom-relay /usr/local/bin/
+#   sudo loom-relay --config /etc/loom/relay.yaml config init
+#   sudo install -m644 contrib/systemd/loom-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now loom-relay.service
+#
+# The service can't read files that only root may read, such as a TLS key
+# from Let's Encrypt. Hand it one as a credential instead, with a drop-in
+# (`sudo systemctl edit loom-relay.service`):
+#   [Service]
+#   LoadCredential=tls.key:/etc/letsencrypt/live/relay.example.com/privkey.pem
+# and set tls.key in relay.yaml to /run/credentials/loom-relay.service/tls.key.
+
+[Unit]
+Description=Loom relay
+Documentation=https://github.com/chiwanpark/loom#through-a-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/loom-relay --config /etc/loom/relay.yaml serve
+DynamicUser=yes
+# loom-relay needs a home directory to start, though it keeps nothing there.
+Environment=HOME=/
+# Plain log lines for the journal.
+Environment=NO_COLOR=1
+# It may listen on a port below 1024, such as 443, and may do nothing else
+# that needs privileges.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectHome=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

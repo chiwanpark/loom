@@ -6,7 +6,9 @@ Loom's binaries are published as archives on [GitHub releases](https://github.co
 | --- | --- | --- |
 | `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` | `loom` (GUI) and `loom-agent` | x86-64 Linux with glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, Wayland, and a Vulkan driver |
 | `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any x86-64 Linux; statically linked |
-| `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-relay` | any x86-64 Linux; statically linked |
+| `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-relay` and its systemd unit | any x86-64 Linux; statically linked |
+
+`scripts/install.sh` downloads the agent and relay archives and `SHA256SUMS` from the latest published release, so keep those names when changing the build. Drafts are not visible to it, and until a release is published it can only build from source (`--source`).
 
 Every crate shares the version in `[workspace.package]` of `Cargo.toml`. The binaries print it with `--version`, followed by the commit they were built from: `loom-agent 0.1.0 (b89ff2d9f 2026-11-11)`.
 
@@ -33,7 +35,7 @@ Leaving `0.x` is a deliberate decision: set the version to `1.0.0` by hand in a 
 ## Repository settings
 
 - `Settings` → `Actions` → `General`: allow GitHub Actions to create and approve pull requests, so the version pull request can be opened.
-- Protect `main` and require the `CI` checks (`Format and lint`, `Test`, `Check licenses and sources`, and the two `Release build` jobs).
+- Protect `main` and require the `CI` checks (`Format and lint`, `Test`, `Check licenses and sources`, `Scripts`, and the two `Release build` jobs).
 - Pull requests opened with the workflow's `GITHUB_TOKEN` do not trigger other workflows, so CI does not run on the version pull request by itself. Close and reopen it, or push an empty commit to `release-next`, to run the checks before merging. Its changes are only the version and changelog.
 
 ## Manual fallback

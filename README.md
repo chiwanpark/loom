@@ -27,6 +27,36 @@ The [releases page](https://github.com/chiwanpark/loom/releases) has prebuilt ar
 
 Unpack an archive and put its binaries on your `PATH`, for example in `~/.local/bin`. `SHA256SUMS` on the release page lists the archive checksums. Every binary prints its version and the commit it was built from with `--version`. [RELEASING.md](RELEASING.md) describes how releases are made.
 
+### Installing the agent or relay
+
+`scripts/install.sh agent` installs `loom-agent` for the current user. It downloads the static binary from the latest release, checks it against `SHA256SUMS`, puts it in `~/.local/bin`, and writes `~/.config/loom/agent.yaml` if there is none. Run it again to upgrade.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiwanpark/loom/main/scripts/install.sh | sh -s agent
+```
+
+To install on a host you reach over SSH, run it there from a checkout:
+
+```sh
+ssh devbox sh -s agent < scripts/install.sh
+```
+
+`scripts/install.sh relay` installs `loom-relay` the same way. Run as root, it installs for the whole system instead: the binary in `/usr/local/bin` and the configuration in `/etc/loom/relay.yaml`. With `--systemd` it also installs and starts the `loom-relay` system service, which runs the relay as an unprivileged user that systemd creates for it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiwanpark/loom/main/scripts/install.sh | sudo sh -s relay --systemd
+```
+
+Options go after the component, for example `| sh -s agent --version 0.2.0`:
+
+- `--version <version>` installs that release instead of the latest.
+- `--bin-dir <dir>` installs somewhere other than `~/.local/bin` (or `/usr/local/bin`).
+- `--source` builds the binary with Cargo instead, for hosts without a prebuilt binary (anything but x86-64 Linux). Without `--version` it builds the `main` branch.
+- `--systemd` also installs and starts the systemd service: for the agent, the user service described under [Through a relay](#through-a-relay); for the relay, the system service, which needs root.
+- `--no-config` leaves the configuration alone.
+
+Agents and relays that are already running keep their version until you restart them (`loom-agent stop --all`, `systemctl restart loom-relay`); the installer says when that is the case, and restarts the services it installed. Non-interactive SSH commands often run without `~/.local/bin` on `PATH`, so set `remote_bin` for the host in `client.yaml` (see [Remote hosts over SSH](#remote-hosts-over-ssh)).
+
 ## Building
 
 You need a recent stable Rust toolchain (edition 2024).
@@ -51,7 +81,7 @@ cargo install --path crates/loom-gui      # installs `loom`
 cargo install --path crates/loom-relay    # only if you run a relay
 ```
 
-Install `loom-agent` on every machine where you want an agent to run, including remote hosts you reach over SSH.
+Install `loom-agent` on every machine where you want an agent to run, including remote hosts you reach over SSH. [`scripts/install.sh agent --source`](#installing-the-agent-or-relay) does this with Cargo, too.
 
 ## Getting started
 
@@ -93,14 +123,14 @@ The client runs `ssh <destination> loom-agent ps --json` to list agents and `loo
 
 A relay lets clients reach agents that have no inbound SSH access. Both sides dial out to the relay, and the traffic between client and agent is end-to-end encrypted.
 
-1. Run `loom-relay serve` somewhere both sides can reach (`loom-relay config init` writes a starting configuration).
+1. Run `loom-relay serve` somewhere both sides can reach (`loom-relay config init` writes a starting configuration). `sudo scripts/install.sh relay --systemd` installs it as a system service with its configuration in `/etc/loom/relay.yaml`. Set `allowed_hosts` there to the `host_id` that `loom-agent host` prints on each agent's host, then `systemctl restart loom-relay`.
 2. In the agent's `agent.yaml`, set `relay.enabled: true` and `relay.url`.
 3. On the agent's host, run `loom-agent pair`. It prints a one-time `loom://` link (and a QR code) that expires after 10 minutes by default.
 4. In the client, use **Pair through a relay** and paste the link.
 
 `loom-agent clients list` shows the paired clients, and `loom-agent clients revoke <label>` removes one.
 
-To keep an agent running for the relay, `contrib/systemd/loom-agent.service` starts `loom-agent serve --default` (the `lifecycle.default_workspace` directory) as a systemd user service. Installation steps are in the file.
+To keep an agent running for the relay, `contrib/systemd/loom-agent.service` starts `loom-agent serve --default` (the `lifecycle.default_workspace` directory) as a systemd user service. `scripts/install.sh agent --systemd` installs and starts it; manual steps are in the file. To keep it running after you log out, run `loginctl enable-linger`.
 
 ## Model providers
 

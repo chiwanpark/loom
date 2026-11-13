@@ -1,7 +1,8 @@
 # Starts a Loom agent for `lifecycle.default_workspace` at login, so the
 # relay path has an agent to reach.
 #
-# Install:
+# `scripts/install.sh agent --systemd` installs it, pointed at the loom-agent it
+# installs, and starts it. To install it by hand:
 #   install -Dm644 contrib/systemd/loom-agent.service ~/.config/systemd/user/loom-agent.service
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now loom-agent.service

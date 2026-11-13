@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Packs release binaries built with `cargo build --release --target <target>`
 # into dist/<name>-<version>-<target>.tar.gz, together with the README,
-# license, and notice (and the systemd unit when loom-agent is included).
+# license, and notice (and the systemd unit of loom-agent and loom-relay
+# when they are included).
 #
 # Usage: scripts/package-release.sh <target> <name> <binary>...
 # Example: scripts/package-release.sh x86_64-unknown-linux-musl loom-agent loom-agent
@@ -25,8 +26,8 @@ mkdir "$stage/$stem"
 
 for binary in "$@"; do
     install -m 755 "$target_dir/$target/release/$binary" "$stage/$stem/"
-    if [ "$binary" = loom-agent ]; then
-        install -m 644 contrib/systemd/loom-agent.service "$stage/$stem/"
+    if [ -f "contrib/systemd/$binary.service" ]; then
+        install -m 644 "contrib/systemd/$binary.service" "$stage/$stem/"
     fi
 done
 install -m 644 README.md LICENSE NOTICE CHANGELOG.md "$stage/$stem/"
