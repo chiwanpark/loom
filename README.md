@@ -168,8 +168,8 @@ The main sections:
 
 - `allowed_roots`: directories an agent may serve as a workspace (default `~`).
 - `llm`: the default model and provider settings.
-- `tools`: output limits for the `read` and `shell` tools, the shell program, and the `search_web` tool (its model, source limits, and timeout). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it.
-- `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`.
+- `tools`: output limits for the `read` and `shell` tools, the shell program, the `search_web` tool (its model, source limits, and timeout), and `thread.max_bytes`, the largest [operation thread](#operation-thread) (64 KiB by default). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it.
+- `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The operation thread tools are allowed unless a rule says otherwise.
 - `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths.
 - `context`: tool output limits and when to compact a long conversation.
 - `instructions`: extra instructions for the model. `AGENTS.md` files in the workspace are included too.
@@ -212,12 +212,18 @@ Useful default key bindings:
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
 | `ctrl-k` then an arrow | Split the pane |
 | `ctrl-k ctrl-t` | Select a theme |
-| `ctrl-s` | Save the file being edited in a file view |
+| `ctrl-s` | Save the file being edited in a file view, or the thread in the Thread tab |
 | `alt-z` | Wrap long lines in a file or diff view, or stop wrapping them |
 
 To copy a workspace file to your machine, right-click it in the files panel and choose **Download…**, or use the download button in its file view. Downloads work over local and SSH connections, not through a relay yet.
 
-To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, and the tool approvals you gave it.
+To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its operation thread, and the tool approvals you gave it.
+
+### Operation thread
+
+Each session has an operation thread: a text board where the agent keeps its notes on the work, such as the plan, progress, decisions, and open questions. The agent reads and changes it with the `thread_read`, `thread_edit`, and `thread_write` tools, and its instructions tell it to read the thread again after a long conversation is compacted. The thread stays when the conversation is compacted or cleared, and is deleted with the session. It is not a file in the workspace, and its text is not added to the model's instructions; the agent reads it when it needs to.
+
+The **Thread** tab of the right panel (also **panel: thread** in the command palette) shows the active session's thread, and you can edit it there too: **Save** (`ctrl-s`) stores your text, **Revert** throws your changes away, and **Clear thread** empties it. When the agent changes the thread while you have unsaved changes, yours stay and the tab offers to reload the agent's text or overwrite it with yours. So that your edits are not lost unseen, `thread_write` refuses to replace a non-empty thread the agent has not read since you last changed it or since its conversation was compacted or cleared.
 
 ## Development
 
