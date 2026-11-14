@@ -16,12 +16,14 @@ Each architecture is built natively, the arm64 archives on GitHub's `ubuntu-24.0
 
 Every crate shares the version in `[workspace.package]` of `Cargo.toml`. The binaries print it with `--version`, followed by the commit they were built from: `loom-agent 0.1.0 (b89ff2d9f 2026-11-11)`.
 
-The version and changelog come from the commit messages, which follow [Conventional Commits](https://www.conventionalcommits.org) (`type(scope): summary`). [git-cliff](https://git-cliff.org) reads them with the rules in `cliff.toml`, and `scripts/release-version.sh` applies the result.
+The version comes from the commit messages, which follow [Conventional Commits](https://www.conventionalcommits.org) (`type(scope): summary`). [git-cliff](https://git-cliff.org) reads them with the rules in `cliff.toml`, and `scripts/release-version.sh` applies the result.
+
+The changelog is written by hand: a user-facing change adds an entry for users to the `## Unreleased` list at the top of `CHANGELOG.md`, starting that list if there is none. At release time, `scripts/release-version.sh` renames that heading to the version. If there is no such list, git-cliff writes the section from the summaries of the changelog commits instead.
 
 ## Day-to-day flow
 
-1. Merge changes into `main` with conventional commit messages. Only `feat`, `fix`, and `perf` commits and breaking changes (`feat!:`, or a `BREAKING CHANGE:` footer) reach the changelog; `docs`, `test`, `refactor`, `build`, `ci`, and `chore` commits ship without an entry.
-2. The `Release` workflow collects the commits since the last release tag into a `chore(release): vX.Y.Z` pull request from the `release-next` branch. It bumps the version in `Cargo.toml` and `Cargo.lock` and adds the version's section to `CHANGELOG.md`. Later pushes to `main` update the same pull request. Edit the changelog in the pull request if an entry needs better wording.
+1. Merge changes into `main` with conventional commit messages, and with their `## Unreleased` entries when users notice them. Only `feat`, `fix`, and `perf` commits and breaking changes (`feat!:`, or a `BREAKING CHANGE:` footer) call for a release; `docs`, `test`, `refactor`, `build`, `ci`, and `chore` commits ship with the next one.
+2. The `Release` workflow turns the commits since the last release tag into a `chore(release): vX.Y.Z` pull request from the `release-next` branch. It bumps the version in `Cargo.toml` and `Cargo.lock` and gives the `## Unreleased` list the version's heading in `CHANGELOG.md`. Later pushes to `main` rebuild the same pull request from `main`, so fix the wording of an entry on `main`; an edit made only in the pull request is lost on the next push.
 3. Merge that pull request when you want to ship. The same workflow builds the archives on the merge commit and creates a draft GitHub release with them, a `SHA256SUMS` file, and the changelog section as notes. The run summary shows the commands for the next step.
 4. Download and try the archives (`gh release download vX.Y.Z`), then publish the draft from the releases page or with `gh release edit vX.Y.Z --draft=false --latest`. Publishing creates the `vX.Y.Z` tag on the merge commit.
 

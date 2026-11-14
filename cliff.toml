@@ -1,9 +1,11 @@
 # git-cliff configuration: https://git-cliff.org/docs/configuration
 #
 # scripts/release-version.sh uses it to pick the next version from the commits
-# since the last release tag and to write that version's CHANGELOG.md section.
-# Only feat, fix, and perf commits, and breaking changes of any type, are
-# listed; the rest (docs, tests, refactors, CI, chores) ship silently.
+# since the last release tag. The version's CHANGELOG.md section is normally
+# the hand-written "## Unreleased" list; only without one does git-cliff write
+# it from the commits. Only feat, fix, and perf commits, and breaking changes
+# of any type, call for a release and are listed; the rest (docs, tests,
+# refactors, CI, chores) ship silently.
 
 [changelog]
 body = """

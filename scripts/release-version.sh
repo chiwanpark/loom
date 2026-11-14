@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Prepares the next release from the commits since the last release tag: picks
 # the version (cliff.toml has the rules), sets it in Cargo.toml and Cargo.lock,
-# and adds its section to CHANGELOG.md.
+# and gives it a section in CHANGELOG.md.
+#
+# That section is the hand-written list under "## Unreleased", which user-facing
+# changes add to as they land; its heading becomes the version. Without such a
+# list, git-cliff writes the section from the commit summaries.
 #
 # Prints the new version, or nothing when there is nothing to release: the
 # current version is not tagged yet (it is still waiting to be released), or
@@ -33,12 +37,29 @@ next=${next#v}
 sed -i "/^\[workspace\.package\]/,/^\[/s/^version = \".*\"$/version = \"$next\"/" Cargo.toml
 cargo update --workspace --quiet
 
-# The new section goes above the newest one, after the file's introduction.
-{
-    sed '/^## /,$d' CHANGELOG.md
-    printf '%s\n\n' "$section"
-    sed -n '/^## /,$p' CHANGELOG.md
-} >CHANGELOG.md.new
-mv CHANGELOG.md.new CHANGELOG.md
+# What is under "## Unreleased", up to the next section.
+unreleased=$(awk '
+    $0 == "## Unreleased" { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+' CHANGELOG.md)
+
+if grep -q '[^[:space:]]' <<<"$unreleased"; then
+    sed -i "s/^## Unreleased\$/## $next/" CHANGELOG.md
+else
+    # An empty "## Unreleased" goes; the new section goes above the newest
+    # one, after the file's introduction.
+    awk '
+        $0 == "## Unreleased" { skip = 1; next }
+        skip && /^## / { skip = 0 }
+        !skip
+    ' CHANGELOG.md >CHANGELOG.md.new
+    {
+        sed '/^## /,$d' CHANGELOG.md.new
+        printf '%s\n\n' "$section"
+        sed -n '/^## /,$p' CHANGELOG.md.new
+    } >CHANGELOG.md
+    rm CHANGELOG.md.new
+fi
 
 echo "$next"

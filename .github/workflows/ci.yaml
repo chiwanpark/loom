@@ -68,6 +68,7 @@ jobs:
     # The installer runs as `sh` on other hosts, so it is checked as POSIX sh.
     - run: shellcheck scripts/*.sh && shellcheck --shell=sh scripts/install.sh
     - run: scripts/test-install.sh
+    - run: scripts/test-release-version.sh
 
   build:
     name: Release build
