@@ -1,0 +1,169 @@
+{
+  "$schema": "https://github.com/longbridge/gpui-kit/raw/refs/heads/main/.theme-schema.json",
+  "name": "Tender",
+  "author": "jacoborus",
+  "url": "https://github.com/jacoborus/tender.vim",
+  "themes": [
+    {
+      "name": "Tender",
+      "mode": "dark",
+      "colors": {
+        "accent.background": "#3a3a3a",
+        "accent.foreground": "#eeeeee",
+        "background": "#282828",
+        "border": "#484848",
+        "caret": "#eeeeee",
+        "danger.background": "#f43753",
+        "danger.foreground": "#282828",
+        "foreground": "#eeeeee",
+        "info.background": "#b3deef",
+        "info.foreground": "#282828",
+        "input.border": "#484848",
+        "link.active.foreground": "#eeeeee",
+        "link.foreground": "#b3deef",
+        "link.hover.foreground": "#b3deef",
+        "list.active.background": "#ffc24b33",
+        "list.active.border": "#ffc24b",
+        "list.even.background": "#323232",
+        "list.head.background": "#323232",
+        "muted.background": "#323232",
+        "muted.foreground": "#959595",
+        "panel.background": "#323232",
+        "popover.background": "#323232",
+        "popover.foreground": "#eeeeee",
+        "primary.background": "#ffc24b",
+        "primary.foreground": "#282828",
+        "ring": "#ffc24b",
+        "scrollbar.background": "#28282800",
+        "scrollbar.thumb.background": "#484848",
+        "secondary.active.background": "#444444",
+        "secondary.background": "#323232",
+        "secondary.foreground": "#eeeeee",
+        "secondary.hover.background": "#3a3a3a",
+        "selection.background": "#293b44",
+        "success.background": "#c9d05c",
+        "success.foreground": "#282828",
+        "tab.active.background": "#282828",
+        "tab.active.foreground": "#eeeeee",
+        "tab.background": "#28282800",
+        "tab.foreground": "#959595",
+        "tab_bar.background": "#323232",
+        "title_bar.background": "#323232",
+        "title_bar.border": "#484848",
+        "status_bar.background": "#323232",
+        "warning.background": "#ffc24b",
+        "warning.foreground": "#282828",
+        "base.red": "#f43753",
+        "base.red.light": "#f43753",
+        "base.green": "#c9d05c",
+        "base.green.light": "#c9d05c",
+        "base.yellow": "#ffc24b",
+        "base.yellow.light": "#ffc24b",
+        "base.blue": "#b3deef",
+        "base.blue.light": "#b3deef",
+        "base.magenta": "#d3b987",
+        "base.magenta.light": "#d3b987",
+        "base.cyan": "#73cef4",
+        "base.cyan.light": "#73cef4"
+      },
+      "highlight": {
+        "editor.foreground": "#eeeeee",
+        "editor.background": "#282828",
+        "editor.active_line.background": "#303030",
+        "editor.line_number": "#6f6f6f",
+        "editor.active_line_number": "#959595",
+        "editor.invisible": "#6f6f6f66",
+        "conflict": "#f43753",
+        "created": "#c9d05c",
+        "deleted": "#f43753",
+        "error": "#f43753",
+        "hidden": "#6f6f6f",
+        "hint": "#959595",
+        "ignored": "#6f6f6f",
+        "info": "#b3deef",
+        "modified": "#ffc24b",
+        "predictive": "#6f6f6f",
+        "renamed": "#73cef4",
+        "success": "#c9d05c",
+        "unreachable": "#6f6f6f",
+        "warning": "#ffc24b",
+        "syntax": {
+          "attribute": {
+            "color": "#73cef4"
+          },
+          "boolean": {
+            "color": "#f43753"
+          },
+          "comment": {
+            "color": "#959595",
+            "font_style": "italic"
+          },
+          "comment.doc": {
+            "color": "#959595",
+            "font_style": "italic"
+          },
+          "constant": {
+            "color": "#f43753"
+          },
+          "constructor": {
+            "color": "#ffc24b"
+          },
+          "embedded": {
+            "color": "#eeeeee"
+          },
+          "function": {
+            "color": "#b3deef"
+          },
+          "keyword": {
+            "color": "#d3b987"
+          },
+          "link_text": {
+            "color": "#b3deef",
+            "font_style": "normal"
+          },
+          "link_uri": {
+            "color": "#73cef4",
+            "font_style": "italic"
+          },
+          "number": {
+            "color": "#f43753"
+          },
+          "string": {
+            "color": "#c9d05c"
+          },
+          "string.escape": {
+            "color": "#73cef4"
+          },
+          "string.regex": {
+            "color": "#73cef4"
+          },
+          "string.special": {
+            "color": "#ffc24b"
+          },
+          "string.special.symbol": {
+            "color": "#ffc24b"
+          },
+          "tag": {
+            "color": "#f43753"
+          },
+          "text.literal": {
+            "color": "#c9d05c"
+          },
+          "title": {
+            "color": "#b3deef",
+            "font_weight": 600
+          },
+          "type": {
+            "color": "#ffc24b"
+          },
+          "property": {
+            "color": "#eeeeee"
+          },
+          "variable.special": {
+            "color": "#f43753"
+          }
+        }
+      }
+    }
+  ]
+}

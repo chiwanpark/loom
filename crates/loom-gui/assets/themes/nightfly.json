@@ -1,0 +1,169 @@
+{
+  "$schema": "https://github.com/longbridge/gpui-kit/raw/refs/heads/main/.theme-schema.json",
+  "name": "Nightfly",
+  "author": "Dennis B",
+  "url": "https://github.com/bluz71/vim-nightfly-colors",
+  "themes": [
+    {
+      "name": "Nightfly",
+      "mode": "dark",
+      "colors": {
+        "accent.background": "#122535",
+        "accent.foreground": "#bdc1c6",
+        "background": "#011627",
+        "border": "#1f3140",
+        "caret": "#9ca1aa",
+        "danger.background": "#fc514e",
+        "danger.foreground": "#011627",
+        "foreground": "#bdc1c6",
+        "info.background": "#82aaff",
+        "info.foreground": "#011627",
+        "input.border": "#1f3140",
+        "link.active.foreground": "#bdc1c6",
+        "link.foreground": "#82aaff",
+        "link.hover.foreground": "#82aaff",
+        "list.active.background": "#80a0ff33",
+        "list.active.border": "#80a0ff",
+        "list.even.background": "#0a1f2f",
+        "list.head.background": "#0a1f2f",
+        "muted.background": "#0a1f2f",
+        "muted.foreground": "#7c8f8f",
+        "panel.background": "#0a1f2f",
+        "popover.background": "#0a1f2f",
+        "popover.foreground": "#bdc1c6",
+        "primary.background": "#80a0ff",
+        "primary.foreground": "#011627",
+        "ring": "#80a0ff",
+        "scrollbar.background": "#01162700",
+        "scrollbar.thumb.background": "#1f3140",
+        "secondary.active.background": "#1b2e3d",
+        "secondary.background": "#0a1f2f",
+        "secondary.foreground": "#bdc1c6",
+        "secondary.hover.background": "#122535",
+        "selection.background": "#364d63",
+        "success.background": "#a1cd5e",
+        "success.foreground": "#011627",
+        "tab.active.background": "#011627",
+        "tab.active.foreground": "#bdc1c6",
+        "tab.background": "#01162700",
+        "tab.foreground": "#7c8f8f",
+        "tab_bar.background": "#0a1f2f",
+        "title_bar.background": "#0a1f2f",
+        "title_bar.border": "#1f3140",
+        "status_bar.background": "#0a1f2f",
+        "warning.background": "#e7d37a",
+        "warning.foreground": "#011627",
+        "base.red": "#fc514e",
+        "base.red.light": "#ff5874",
+        "base.green": "#a1cd5e",
+        "base.green.light": "#21c7a8",
+        "base.yellow": "#e7d37a",
+        "base.yellow.light": "#ecc48d",
+        "base.blue": "#82aaff",
+        "base.blue.light": "#82aaff",
+        "base.magenta": "#c792ea",
+        "base.magenta.light": "#ae81ff",
+        "base.cyan": "#7fdbca",
+        "base.cyan.light": "#7fdbca"
+      },
+      "highlight": {
+        "editor.foreground": "#bdc1c6",
+        "editor.background": "#011627",
+        "editor.active_line.background": "#091d2d",
+        "editor.line_number": "#51656b",
+        "editor.active_line_number": "#7c8f8f",
+        "editor.invisible": "#51656b66",
+        "conflict": "#ff5874",
+        "created": "#a1cd5e",
+        "deleted": "#fc514e",
+        "error": "#fc514e",
+        "hidden": "#51656b",
+        "hint": "#7c8f8f",
+        "ignored": "#51656b",
+        "info": "#82aaff",
+        "modified": "#e7d37a",
+        "predictive": "#51656b",
+        "renamed": "#7fdbca",
+        "success": "#a1cd5e",
+        "unreachable": "#51656b",
+        "warning": "#e7d37a",
+        "syntax": {
+          "attribute": {
+            "color": "#7fdbca"
+          },
+          "boolean": {
+            "color": "#ff5874"
+          },
+          "comment": {
+            "color": "#7c8f8f",
+            "font_style": "italic"
+          },
+          "comment.doc": {
+            "color": "#7c8f8f",
+            "font_style": "italic"
+          },
+          "constant": {
+            "color": "#ff5874"
+          },
+          "constructor": {
+            "color": "#e7d37a"
+          },
+          "embedded": {
+            "color": "#bdc1c6"
+          },
+          "function": {
+            "color": "#82aaff"
+          },
+          "keyword": {
+            "color": "#c792ea"
+          },
+          "link_text": {
+            "color": "#82aaff",
+            "font_style": "normal"
+          },
+          "link_uri": {
+            "color": "#7fdbca",
+            "font_style": "italic"
+          },
+          "number": {
+            "color": "#ff5874"
+          },
+          "string": {
+            "color": "#a1cd5e"
+          },
+          "string.escape": {
+            "color": "#7fdbca"
+          },
+          "string.regex": {
+            "color": "#7fdbca"
+          },
+          "string.special": {
+            "color": "#e7d37a"
+          },
+          "string.special.symbol": {
+            "color": "#e7d37a"
+          },
+          "tag": {
+            "color": "#fc514e"
+          },
+          "text.literal": {
+            "color": "#a1cd5e"
+          },
+          "title": {
+            "color": "#82aaff",
+            "font_weight": 600
+          },
+          "type": {
+            "color": "#e7d37a"
+          },
+          "property": {
+            "color": "#bdc1c6"
+          },
+          "variable.special": {
+            "color": "#fc514e"
+          }
+        }
+      }
+    }
+  ]
+}

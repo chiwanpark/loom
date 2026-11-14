@@ -11,7 +11,7 @@ Portions of crates/loom-gui and crates/loom-vt are adapted from Zed (https://git
 - crates/loom-gui/src/ui/tab.rs: the tab element from crates/ui/src/components/tab.rs.
 - crates/loom-gui/src/ui/tabs.rs and the tab bar in crates/loom-gui/src/ui/workspace.rs: tab insertion, reordering, and drag-and-drop handling from crates/workspace/src/pane.rs and crates/workspace/src/workspace.rs.
 
-Except for gotham.json, the theme files in crates/loom-gui/assets/themes are copied unmodified from gpui-component (https://github.com/longbridge/gpui-component, tag v0.9.1, themes/), Copyright Longbridge, licensed under Apache-2.0. Each file names the original color scheme and its author:
+These theme files in crates/loom-gui/assets/themes are copied unmodified from gpui-component (https://github.com/longbridge/gpui-component, tag v0.9.1, themes/), Copyright Longbridge, licensed under Apache-2.0. Each file names the original color scheme and its author:
 
 - ayu.json: Ayu, adapted by Zed Industries from https://github.com/ayu-theme.
 - catppuccin.json: Catppuccin (https://github.com/catppuccin/catppuccin).
@@ -21,3 +21,38 @@ Except for gotham.json, the theme files in crates/loom-gui/assets/themes are cop
 - tokyonight.json: Tokyo Night by Folke Lemaitre (https://github.com/folke/tokyonight.nvim).
 
 crates/loom-gui/assets/themes/gotham.json is written for Loom from the Gotham color scheme by Andrea Leopardi (https://github.com/whatyouhide/vim-gotham, MIT license). Its colors follow the Gotham Default palette published at https://terminalcolors.com/themes/gotham/default/.
+
+The other theme files in crates/loom-gui/assets/themes are generated for Loom by scripts/themes/generate.py from the terminal palettes published at https://terminalcolors.com/, which scripts/themes/terminalcolors.json records. Each file names the original color scheme, its author, and its URL:
+
+- apprentice.json: Apprentice by Romain Lafourcade (https://github.com/romainl/Apprentice, MIT license).
+- ayu-mirage.json: Ayu Mirage by Ike Ku (https://github.com/ayu-theme/ayu-colors, MIT license).
+- cobalt2.json: Cobalt2 by Wes Bos (https://github.com/wesbos/cobalt2-vscode, MIT license).
+- deus.json: Deus by Avery Wagar (https://github.com/ajmwagar/vim-deus, MIT license).
+- dracula.json: Dracula by Zeno Rocha (https://github.com/dracula/dracula-theme, MIT license).
+- github.json: the GitHub themes by GitHub (https://github.com/primer/github-vscode-theme, MIT license).
+- gruvbox-contrast.json: the Gruvbox hard and soft contrast variants by Pavel Pertsev (https://github.com/morhetz/gruvbox, MIT license).
+- iceberg.json: Iceberg by Hiroki Kokubun (https://github.com/cocopon/iceberg.vim, MIT license).
+- jellybeans.json: Jellybeans by NanoTech (https://github.com/nanotech/jellybeans.vim, MIT license).
+- kanagawa.json: Kanagawa by Tommaso Laurenzi (https://github.com/rebelot/kanagawa.nvim, MIT license).
+- lucario.json: Lucario by Raphael Amorim (https://github.com/raphamorim/lucario, MIT license).
+- miasma.json: Miasma by xero harrison (https://github.com/xero/miasma.nvim, CC0-1.0).
+- moonfly.json: Moonfly by Dennis B (https://github.com/bluz71/vim-moonfly-colors, MIT license).
+- night-owl.json: Night Owl by Sarah Drasner (https://github.com/sdras/night-owl-vscode-theme, MIT license).
+- nightfly.json: Nightfly by Dennis B (https://github.com/bluz71/vim-nightfly-colors, MIT license).
+- nightfox.json: Nightfox and its variants by EdenEast (https://github.com/EdenEast/nightfox.nvim, MIT license).
+- noctis.json: Noctis by Liviu Schera (https://github.com/liviuschera/noctis, MIT license).
+- nord.json: Nord by Sven Greb (https://github.com/nordtheme/nord, MIT license).
+- nordic.json: Nordic by AlexvZyl (https://github.com/AlexvZyl/nordic.nvim, MIT license).
+- one-half.json: One Half by sonph (https://github.com/sonph/onehalf, MIT license).
+- one.json: One Dark and One Light from Atom by GitHub (https://github.com/atom/one-dark-syntax and https://github.com/atom/one-light-syntax, MIT license).
+- panda.json: Panda Syntax by Siamak Mokhtari (https://github.com/siamak/atom-panda-syntax, MIT license).
+- posterpole.json: Posterpole by ilof2 (https://github.com/ilof2/posterpole.nvim, MIT license).
+- rose-pine.json: Rosé Pine (https://github.com/rose-pine/rose-pine-theme, MIT license).
+- seoul256.json: Seoul256 by Junegunn Choi (https://github.com/junegunn/seoul256.vim, MIT license).
+- shades-of-purple.json: Shades of Purple by Ahmad Awais (https://github.com/ahmadawais/shades-of-purple-vscode, MIT license).
+- sonokai.json: Sonokai by sainnhe (https://github.com/sainnhe/sonokai, MIT license).
+- srcery.json: Srcery by Daniel Berg (https://github.com/srcery-colors/srcery-vim, MIT license).
+- tender.json: Tender by jacoborus (https://github.com/jacoborus/tender.vim, MIT license).
+- tokyonight-day.json: Tokyo Night Day by Folke Lemaitre (https://github.com/folke/tokyonight.nvim, Apache-2.0).
+- tomorrow.json: Tomorrow by Chris Kempson (https://github.com/chriskempson/tomorrow-theme, MIT license).
+- zenbones.json: Zenbones and its variants by mcchrish (https://github.com/zenbones-theme/zenbones.nvim, MIT license).

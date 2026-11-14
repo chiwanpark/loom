@@ -1,0 +1,1673 @@
+{
+  "source": "https://terminalcolors.com/",
+  "families": [
+    {
+      "id": "apprentice",
+      "name": "Apprentice",
+      "author": "Romain Lafourcade",
+      "url": "https://github.com/romainl/Apprentice",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#262626",
+          "foreground": "#bcbcbc",
+          "cursor": "#bcbcbc",
+          "cursor_text": "#262626",
+          "selection_background": "#87afd7",
+          "selection_foreground": "#262626",
+          "accent": "#5f875f",
+          "palette": ["#1c1c1c", "#af5f5f", "#5f875f", "#87875f", "#5f87af", "#5f5f87", "#5f8787", "#6c6c6c", "#444444", "#ff8700", "#87af87", "#ffffaf", "#87afd7", "#8787af", "#5fafaf", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "ayu",
+      "name": "Ayu",
+      "author": "Ike Ku",
+      "url": "https://github.com/ayu-theme/ayu-colors",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#0b0e14",
+          "foreground": "#bfbdb6",
+          "cursor": "#bfbdb6",
+          "cursor_text": "#0b0e14",
+          "selection_background": "#1b3a5b",
+          "selection_foreground": "#bfbdb6",
+          "accent": "#e6b450",
+          "palette": ["#1e232b", "#ea6c73", "#7fd962", "#f9af4f", "#53bdfa", "#cda1fa", "#90e1c6", "#c7c7c7", "#686868", "#f07178", "#aad94c", "#ffb454", "#59c2ff", "#d2a6ff", "#95e6cb", "#ffffff"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#f8f9fa",
+          "foreground": "#5c6166",
+          "cursor": "#5c6166",
+          "cursor_text": "#f8f9fa",
+          "selection_background": "#d3e1f5",
+          "selection_foreground": "#5c6166",
+          "accent": "#ffaa33",
+          "palette": ["#000000", "#ea6c6d", "#6cbf43", "#eca944", "#3199e1", "#9e75c7", "#46ba94", "#c7c7c7", "#686868", "#f07171", "#86b300", "#f2ae49", "#399ee6", "#a37acc", "#4cbf99", "#d1d1d1"]
+        },
+        {
+          "id": "mirage",
+          "name": "Mirage",
+          "background": "#1f2430",
+          "foreground": "#cccac2",
+          "cursor": "#cccac2",
+          "cursor_text": "#1f2430",
+          "selection_background": "#274364",
+          "selection_foreground": "#cccac2",
+          "accent": "#ffcc66",
+          "palette": ["#171b24", "#ed8274", "#87d96c", "#facc6e", "#6dcbfa", "#dabafa", "#90e1c6", "#c7c7c7", "#686868", "#f28779", "#d5ff80", "#ffd173", "#73d0ff", "#dfbfff", "#95e6cb", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "catppuccin",
+      "name": "Catppuccin",
+      "author": "Catppuccin",
+      "url": "https://github.com/catppuccin/catppuccin",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "mocha",
+          "name": "Mocha",
+          "background": "#1e1e2e",
+          "foreground": "#cdd6f4",
+          "cursor": "#f5e0dc",
+          "cursor_text": "#11111b",
+          "selection_background": "#353748",
+          "selection_foreground": "#cdd6f4",
+          "accent": "#b4befe",
+          "palette": ["#45475a", "#f38ba8", "#a6e3a1", "#f9e2af", "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8", "#585b70", "#f37799", "#89d88b", "#ebd391", "#74a8fc", "#f2aede", "#6bd7ca", "#bac2de"]
+        },
+        {
+          "id": "macchiato",
+          "name": "Macchiato",
+          "background": "#24273a",
+          "foreground": "#cad3f5",
+          "cursor": "#f4dbd6",
+          "cursor_text": "#181926",
+          "selection_background": "#3a3e53",
+          "selection_foreground": "#cad3f5",
+          "accent": "#b7bdf8",
+          "palette": ["#494d64", "#ed8796", "#a6da95", "#eed49f", "#8aadf4", "#f5bde6", "#8bd5ca", "#a5adcb", "#5b6078", "#ec7486", "#8ccf7f", "#e1c682", "#78a1f6", "#f2a9dd", "#63cbc0", "#b8c0e0"]
+        },
+        {
+          "id": "frappe",
+          "name": "Frappé",
+          "background": "#303446",
+          "foreground": "#c6d0f5",
+          "cursor": "#f2d5cf",
+          "cursor_text": "#232634",
+          "selection_background": "#44495d",
+          "selection_foreground": "#c6d0f5",
+          "accent": "#babbf1",
+          "palette": ["#51576d", "#e78284", "#a6d189", "#e5c890", "#8caaee", "#f4b8e4", "#81c8be", "#a5adce", "#626880", "#e67172", "#8ec772", "#d9ba73", "#7b9ef0", "#f2a4db", "#5abfb5", "#b5bfe2"]
+        },
+        {
+          "id": "latte",
+          "name": "Latte",
+          "background": "#eff1f5",
+          "foreground": "#4c4f69",
+          "cursor": "#dc8a78",
+          "cursor_text": "#eff1f5",
+          "selection_background": "#d8dae1",
+          "selection_foreground": "#4c4f69",
+          "accent": "#7287fd",
+          "palette": ["#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#acb0be", "#6c6f85", "#de293e", "#49af3d", "#eea02d", "#456eff", "#fe85d8", "#2d9fa8", "#bcc0cc"]
+        }
+      ]
+    },
+    {
+      "id": "cobalt2",
+      "name": "Cobalt2",
+      "author": "Wes Bos",
+      "url": "https://github.com/wesbos/cobalt2-vscode",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#122738",
+          "foreground": "#ffffff",
+          "cursor": "#ffffff",
+          "cursor_text": "#122738",
+          "selection_background": "#0050a4",
+          "selection_foreground": "#ffffff",
+          "accent": "#ffc600",
+          "palette": ["#000000", "#ff628c", "#3ad900", "#ffc600", "#0088ff", "#fb94ff", "#80fcff", "#ffffff", "#0050a4", "#ff628c", "#3ad900", "#ffc600", "#0088ff", "#fb94ff", "#80fcff", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "deus",
+      "name": "Deus",
+      "author": "Avery Wagar",
+      "url": "https://github.com/ajmwagar/vim-deus",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#2c323b",
+          "foreground": "#eaeaea",
+          "cursor": "#eaeaea",
+          "cursor_text": "#2c323b",
+          "selection_background": "#eaeaea",
+          "selection_foreground": "#2c323b",
+          "accent": "#98c379",
+          "palette": ["#242a32", "#d54e53", "#98c379", "#e5c07b", "#83a598", "#c678dd", "#70c0ba", "#eaeaea", "#666666", "#ec3e45", "#90c966", "#edbf69", "#73ba9f", "#c858e9", "#2bcec2", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "dracula",
+      "name": "Dracula",
+      "author": "Zeno Rocha",
+      "url": "https://github.com/dracula/dracula-theme",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#282a36",
+          "foreground": "#f8f8f2",
+          "cursor": "#f8f8f2",
+          "cursor_text": "#282a36",
+          "selection_background": "#44475a",
+          "selection_foreground": "#f8f8f2",
+          "accent": "#ff79c6",
+          "palette": ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2", "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]
+        },
+        {
+          "id": "soft",
+          "name": "Soft",
+          "background": "#282a36",
+          "foreground": "#f6f6f4",
+          "cursor": "#f6f6f4",
+          "cursor_text": "#282a36",
+          "selection_background": "#44475a",
+          "selection_foreground": "#f6f6f4",
+          "accent": "#f286c4",
+          "palette": ["#262626", "#ee6666", "#62e884", "#e7ee98", "#bf9eee", "#f286c4", "#97e1f1", "#f6f6f4", "#7b7f8b", "#f07c7c", "#78f09a", "#f6f6ae", "#d6b4f7", "#f49dda", "#adf6f6", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "everforest",
+      "name": "Everforest",
+      "author": "sainnhe",
+      "url": "https://github.com/sainnhe/everforest",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#2d353b",
+          "foreground": "#d3c6aa",
+          "cursor": "#d3c6aa",
+          "cursor_text": "#2d353b",
+          "selection_background": "#414b51",
+          "selection_foreground": "#d3c6aa",
+          "accent": "#83c092",
+          "palette": ["#343f44", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#d3c6aa", "#859289", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#d3c6aa"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#fdf6e3",
+          "foreground": "#5c6a72",
+          "cursor": "#5c6a72",
+          "cursor_text": "#fdf6e3",
+          "selection_background": "#efe9d5",
+          "selection_foreground": "#5c6a72",
+          "accent": "#35a77c",
+          "palette": ["#5c6a72", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#939f91", "#5c6a72", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#f4f0d9"]
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "author": "GitHub",
+      "url": "https://github.com/primer/github-vscode-theme",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#010409",
+          "foreground": "#e6edf3",
+          "cursor": "#e6edf3",
+          "cursor_text": "#010409",
+          "selection_background": "#264f78",
+          "selection_foreground": "#e6edf3",
+          "accent": "#f78166",
+          "palette": ["#484f58", "#ff7b72", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#b1bac4", "#6e7681", "#ffa198", "#56d364", "#e3b341", "#79c0ff", "#d2a8ff", "#56d4dd", "#ffffff"]
+        },
+        {
+          "id": "dark-dimmed",
+          "name": "Dark Dimmed",
+          "background": "#1c2128",
+          "foreground": "#adbac7",
+          "cursor": "#adbac7",
+          "cursor_text": "#1c2128",
+          "selection_background": "#264f78",
+          "selection_foreground": "#adbac7",
+          "accent": "#ec775c",
+          "palette": ["#545d68", "#f47067", "#57ab5a", "#c69026", "#539bf5", "#b083f0", "#39c5cf", "#909dab", "#636e7b", "#ff938a", "#6bc46d", "#daaa3f", "#6cb6ff", "#dcbdfb", "#56d4dd", "#cdd9e5"]
+        },
+        {
+          "id": "dark-high-contrast",
+          "name": "Dark High Contrast",
+          "background": "#010409",
+          "foreground": "#f0f3f6",
+          "cursor": "#f0f3f6",
+          "cursor_text": "#010409",
+          "selection_background": "#ffffff",
+          "selection_foreground": "#f0f3f6",
+          "accent": "#ff967d",
+          "palette": ["#7a828e", "#ff9492", "#26cd4d", "#f0b72f", "#71b7ff", "#cb9eff", "#39c5cf", "#d9dee3", "#9ea7b3", "#ffb1af", "#4ae168", "#f7c843", "#91cbff", "#dbb7ff", "#56d4dd", "#ffffff"]
+        },
+        {
+          "id": "dark-colorblind",
+          "name": "Dark Colorblind",
+          "background": "#010409",
+          "foreground": "#c9d1d9",
+          "cursor": "#c9d1d9",
+          "cursor_text": "#010409",
+          "selection_background": "#264f78",
+          "selection_foreground": "#c9d1d9",
+          "accent": "#f78166",
+          "palette": ["#484f58", "#ec8e2c", "#58a6ff", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#b1bac4", "#6e7681", "#fdac54", "#79c0ff", "#e3b341", "#79c0ff", "#d2a8ff", "#56d4dd", "#ffffff"]
+        },
+        {
+          "id": "dark-legacy",
+          "name": "Dark (Legacy)",
+          "background": "#1f2428",
+          "foreground": "#d1d5da",
+          "cursor": "#d1d5da",
+          "cursor_text": "#1f2428",
+          "selection_background": "#244262",
+          "selection_foreground": "#d1d5da",
+          "accent": "#f9826c",
+          "palette": ["#586069", "#ea4a5a", "#34d058", "#ffea7f", "#2188ff", "#b392f0", "#39c5cf", "#d1d5da", "#959da5", "#f97583", "#85e89d", "#ffea7f", "#79b8ff", "#b392f0", "#56d4dd", "#fafbfc"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#f6f8fa",
+          "foreground": "#1f2328",
+          "cursor": "#1f2328",
+          "cursor_text": "#f6f8fa",
+          "selection_background": "#264f78",
+          "selection_foreground": "#1f2328",
+          "accent": "#fd8c73",
+          "palette": ["#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df", "#1b7c83", "#6e7781", "#57606a", "#a40e26", "#1a7f37", "#633c01", "#218bff", "#a475f9", "#3192aa", "#8c959f"]
+        },
+        {
+          "id": "light-high-contrast",
+          "name": "Light High Contrast",
+          "background": "#ffffff",
+          "foreground": "#0e1116",
+          "cursor": "#0e1116",
+          "cursor_text": "#ffffff",
+          "selection_background": "#0e1116",
+          "selection_foreground": "#0e1116",
+          "accent": "#ef5b48",
+          "palette": ["#0e1116", "#a0111f", "#024c1a", "#3f2200", "#0349b4", "#622cbc", "#1b7c83", "#66707b", "#4b535d", "#86061d", "#055d20", "#4e2c00", "#1168e3", "#844ae7", "#3192aa", "#88929d"]
+        },
+        {
+          "id": "light-colorblind",
+          "name": "Light Colorblind",
+          "background": "#f6f8fa",
+          "foreground": "#24292f",
+          "cursor": "#24292f",
+          "cursor_text": "#f6f8fa",
+          "selection_background": "#264f78",
+          "selection_foreground": "#24292f",
+          "accent": "#fd8c73",
+          "palette": ["#24292f", "#b35900", "#0550ae", "#4d2d00", "#0969da", "#8250df", "#1b7c83", "#6e7781", "#57606a", "#8a4600", "#0969da", "#633c01", "#218bff", "#a475f9", "#3192aa", "#8c959f"]
+        },
+        {
+          "id": "light-legacy",
+          "name": "Light (Legacy)",
+          "background": "#f6f8fa",
+          "foreground": "#586069",
+          "cursor": "#586069",
+          "cursor_text": "#f6f8fa",
+          "selection_background": "#d2e2f5",
+          "selection_foreground": "#586069",
+          "accent": "#f9826c",
+          "palette": ["#24292e", "#d73a49", "#28a745", "#dbab09", "#0366d6", "#5a32a3", "#1b7c83", "#6a737d", "#959da5", "#cb2431", "#22863a", "#b08800", "#005cc5", "#5a32a3", "#3192aa", "#d1d5da"]
+        }
+      ]
+    },
+    {
+      "id": "gotham",
+      "name": "Gotham",
+      "author": "Andrea Leopardi",
+      "url": "https://github.com/whatyouhide/vim-gotham",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#0c1014",
+          "foreground": "#99d1ce",
+          "cursor": "#99d1ce",
+          "cursor_text": "#11151c",
+          "selection_background": "#0a3749",
+          "selection_foreground": "#99d1ce",
+          "accent": "#2aa889",
+          "palette": ["#0c1014", "#c23127", "#2aa889", "#edb443", "#195466", "#4e5166", "#33859e", "#99d1ce", "#0c1014", "#c23127", "#2aa889", "#edb443", "#195466", "#4e5166", "#33859e", "#99d1ce"]
+        }
+      ]
+    },
+    {
+      "id": "gruvbox",
+      "name": "Gruvbox",
+      "author": "Pavel Pertsev",
+      "url": "https://github.com/morhetz/gruvbox",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#282828",
+          "foreground": "#ebdbb2",
+          "cursor": "#ebdbb2",
+          "cursor_text": "#282828",
+          "selection_background": "#ebdbb2",
+          "selection_foreground": "#282828",
+          "accent": "#d65d0e",
+          "palette": ["#282828", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]
+        },
+        {
+          "id": "dark-hard-contrast",
+          "name": "Dark Hard Contrast",
+          "background": "#1d2021",
+          "foreground": "#ebdbb2",
+          "cursor": "#ebdbb2",
+          "cursor_text": "#1d2021",
+          "selection_background": "#ebdbb2",
+          "selection_foreground": "#1d2021",
+          "accent": "#d65d0e",
+          "palette": ["#1d2021", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]
+        },
+        {
+          "id": "dark-soft-contrast",
+          "name": "Dark Soft Contrast",
+          "background": "#32302f",
+          "foreground": "#ebdbb2",
+          "cursor": "#ebdbb2",
+          "cursor_text": "#32302f",
+          "selection_background": "#ebdbb2",
+          "selection_foreground": "#32302f",
+          "accent": "#fe8019",
+          "palette": ["#32302f", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984", "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#fbf1c7",
+          "foreground": "#3c3836",
+          "cursor": "#3c3836",
+          "cursor_text": "#fbf1c7",
+          "selection_background": "#3c3836",
+          "selection_foreground": "#fbf1c7",
+          "accent": "#d65d0e",
+          "palette": ["#fbf1c7", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#7c6f64", "#928374", "#9d0006", "#79740e", "#b57614", "#076678", "#8f3f71", "#427b58", "#3c3836"]
+        },
+        {
+          "id": "light-hard-contrast",
+          "name": "Light Hard Contrast",
+          "background": "#f9f5d7",
+          "foreground": "#3c3836",
+          "cursor": "#3c3836",
+          "cursor_text": "#f9f5d7",
+          "selection_background": "#3c3836",
+          "selection_foreground": "#f9f5d7",
+          "accent": "#d65d0e",
+          "palette": ["#f9f5d7", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#7c6f64", "#928374", "#9d0006", "#79740e", "#b57614", "#076678", "#8f3f71", "#427b58", "#3c3836"]
+        },
+        {
+          "id": "light-soft-contrast",
+          "name": "Light Soft Contrast",
+          "background": "#f2e5bc",
+          "foreground": "#3c3836",
+          "cursor": "#3c3836",
+          "cursor_text": "#f2e5bc",
+          "selection_background": "#3c3836",
+          "selection_foreground": "#f2e5bc",
+          "accent": "#af3a03",
+          "palette": ["#f2e5bc", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#7c6f64", "#928374", "#9d0006", "#79740e", "#b57614", "#076678", "#8f3f71", "#427b58", "#3c3836"]
+        }
+      ]
+    },
+    {
+      "id": "iceberg",
+      "name": "Iceberg",
+      "author": "Hiroki Kokubun",
+      "url": "https://github.com/cocopon/iceberg.vim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#161821",
+          "foreground": "#c6c8d1",
+          "cursor": "#c6c8d1",
+          "cursor_text": "#161821",
+          "selection_background": "#272c42",
+          "selection_foreground": "#c6c8d1",
+          "accent": "#89b8c2",
+          "palette": ["#1e2132", "#e27878", "#b4be82", "#e2a478", "#84a0c6", "#a093c7", "#89b8c2", "#c6c8d1", "#6b7089", "#e98989", "#c0ca8e", "#e9b189", "#91acd1", "#ada0d3", "#95c4ce", "#d2d4de"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#e8e9ec",
+          "foreground": "#33374c",
+          "cursor": "#33374c",
+          "cursor_text": "#e8e9ec",
+          "selection_background": "#cacdd7",
+          "selection_foreground": "#33374c",
+          "accent": "#3f83a6",
+          "palette": ["#dcdfe7", "#cc517a", "#668e3d", "#c57339", "#2d539e", "#7759b4", "#3f83a6", "#33374c", "#8389a3", "#cc3768", "#598030", "#b6662d", "#22478e", "#6845ad", "#327698", "#262a3f"]
+        }
+      ]
+    },
+    {
+      "id": "jellybeans",
+      "name": "Jellybeans",
+      "author": "NanoTech",
+      "url": "https://github.com/nanotech/jellybeans.vim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#121212",
+          "foreground": "#dedede",
+          "cursor": "#ffa560",
+          "cursor_text": "#ffffff",
+          "selection_background": "#474e91",
+          "selection_foreground": "#f4f4f4",
+          "accent": "#ffba7b",
+          "palette": ["#929292", "#e27373", "#94b979", "#ffba7b", "#97bedc", "#e1c0fa", "#00988e", "#dedede", "#bdbdbd", "#ffa1a1", "#bddeab", "#ffdca0", "#b1d8f6", "#fbdaff", "#1ab2a8", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "kanagawa",
+      "name": "Kanagawa",
+      "author": "Tommaso Laurenzi",
+      "url": "https://github.com/rebelot/kanagawa.nvim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "wave",
+          "name": "Wave",
+          "background": "#1f1f28",
+          "foreground": "#dcd7ba",
+          "cursor": "#dcd7ba",
+          "cursor_text": "#1f1f28",
+          "selection_background": "#2d4f67",
+          "selection_foreground": "#c8c093",
+          "accent": "#dcd7ba",
+          "palette": ["#16161d", "#c34043", "#76946a", "#c0a36e", "#7e9cd8", "#957fb8", "#6a9589", "#c8c093", "#727169", "#e82424", "#98bb6c", "#e6c384", "#7fb4ca", "#938aa9", "#7aa89f", "#dcd7ba"]
+        },
+        {
+          "id": "dragon",
+          "name": "Dragon",
+          "background": "#181616",
+          "foreground": "#c5c9c5",
+          "cursor": "#c5c9c5",
+          "cursor_text": "#181616",
+          "selection_background": "#2d4f67",
+          "selection_foreground": "#c8c093",
+          "accent": "#c5c9c5",
+          "palette": ["#0d0c0c", "#c4746e", "#8a9a7b", "#c4b28a", "#8ba4b0", "#a292a3", "#8ea4a2", "#c8c093", "#a6a69c", "#e46876", "#87a987", "#e6c384", "#7fb4ca", "#938aa9", "#7aa89f", "#c5c9c5"]
+        },
+        {
+          "id": "lotus",
+          "name": "Lotus",
+          "background": "#f2ecbc",
+          "foreground": "#545464",
+          "cursor": "#545464",
+          "cursor_text": "#f2ecbc",
+          "selection_background": "#c9cbd1",
+          "selection_foreground": "#43436c",
+          "accent": "#545464",
+          "palette": ["#1f1f28", "#c84053", "#6f894e", "#77713f", "#4d699b", "#b35b79", "#597b75", "#545464", "#8a8980", "#d7474b", "#6e915f", "#836f4a", "#6693bf", "#624c83", "#5e857a", "#43436c"]
+        }
+      ]
+    },
+    {
+      "id": "lucario",
+      "name": "Lucario",
+      "author": "Raphael Amorim",
+      "url": "https://github.com/raphamorim/lucario",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#2b3e50",
+          "foreground": "#f8f8f2",
+          "cursor": "#f8f8f2",
+          "cursor_text": "#2b3e50",
+          "selection_background": "#f8f8f2",
+          "selection_foreground": "#2b3e50",
+          "accent": "#f0cc04",
+          "palette": ["#19242f", "#e94b35", "#199c4b", "#f0cc04", "#5c98cd", "#ca94ff", "#8be0fd", "#f8f8f2", "#2f3943", "#ff6541", "#72cc5a", "#ffffa5", "#d6acff", "#d4a9ff", "#b9ecfd", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "miasma",
+      "name": "Miasma",
+      "author": "xero harrison",
+      "url": "https://github.com/xero/miasma.nvim",
+      "license": "CC0-1.0",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#222222",
+          "foreground": "#c2c2b0",
+          "cursor": "#c7c7c7",
+          "cursor_text": "#eeeeee",
+          "selection_background": "#e5c47b",
+          "selection_foreground": "#000000",
+          "accent": "#b36d43",
+          "palette": ["#000000", "#685742", "#5f875f", "#b36d43", "#78824b", "#bb7744", "#c9a554", "#d7c483", "#666666", "#685742", "#5f875f", "#b36d43", "#78824b", "#bb7744", "#c9a554", "#d7c483"]
+        }
+      ]
+    },
+    {
+      "id": "moonfly",
+      "name": "Moonfly",
+      "author": "Dennis B",
+      "url": "https://github.com/bluz71/vim-moonfly-colors",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#080808",
+          "foreground": "#bdbdbd",
+          "cursor": "#9e9e9e",
+          "cursor_text": "#080808",
+          "selection_background": "#b2ceee",
+          "selection_foreground": "#080808",
+          "accent": "#80a0ff",
+          "palette": ["#323437", "#ff5454", "#8cc85f", "#e3c78a", "#80a0ff", "#cf87e8", "#79dac8", "#c6c6c6", "#949494", "#ff5189", "#36c692", "#c6c684", "#74b2ff", "#ae81ff", "#85dc85", "#e4e4e4"]
+        }
+      ]
+    },
+    {
+      "id": "night-owl",
+      "name": "Night Owl",
+      "author": "Sarah Drasner",
+      "url": "https://github.com/sdras/night-owl-vscode-theme",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#011627",
+          "foreground": "#cccccc",
+          "cursor": "#cccccc",
+          "cursor_text": "#011627",
+          "selection_background": "#093b5e",
+          "selection_foreground": "#cccccc",
+          "accent": "#5f7e97",
+          "palette": ["#011627", "#ef5350", "#22da6e", "#c5e478", "#82aaff", "#c792ea", "#21c7a8", "#ffffff", "#575656", "#ef5350", "#22da6e", "#ffeb95", "#82aaff", "#c792ea", "#7fdbca", "#ffffff"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#f6f6f6",
+          "foreground": "#403f53",
+          "cursor": "#403f53",
+          "cursor_text": "#f6f6f6",
+          "selection_background": "#e0e0e0",
+          "selection_foreground": "#403f53",
+          "accent": "#2aa298",
+          "palette": ["#403f53", "#de3d3b", "#08916a", "#e0af02", "#288ed7", "#d6438a", "#2aa298", "#93a1a1", "#403f53", "#de3d3b", "#08916a", "#daaa01", "#288ed7", "#d6438a", "#2aa298", "#93a1a1"]
+        }
+      ]
+    },
+    {
+      "id": "nightfly",
+      "name": "Nightfly",
+      "author": "Dennis B",
+      "url": "https://github.com/bluz71/vim-nightfly-colors",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#011627",
+          "foreground": "#bdc1c6",
+          "cursor": "#9ca1aa",
+          "cursor_text": "#080808",
+          "selection_background": "#b2ceee",
+          "selection_foreground": "#080808",
+          "accent": "#80a0ff",
+          "palette": ["#1d3b53", "#fc514e", "#a1cd5e", "#e7d37a", "#82aaff", "#c792ea", "#7fdbca", "#a1aab8", "#7c8f8f", "#ff5874", "#21c7a8", "#ecc48d", "#82aaff", "#ae81ff", "#7fdbca", "#d6deeb"]
+        }
+      ]
+    },
+    {
+      "id": "nightfox",
+      "name": "Nightfox",
+      "author": "EdenEast",
+      "url": "https://github.com/EdenEast/nightfox.nvim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#192330",
+          "foreground": "#cdcecf",
+          "cursor": "#cdcecf",
+          "cursor_text": "#192330",
+          "selection_background": "#2b3b51",
+          "selection_foreground": "#cdcecf",
+          "accent": "#63cdcf",
+          "palette": ["#393b44", "#c94f6d", "#81b29a", "#dbc074", "#719cd6", "#9d79d6", "#63cdcf", "#dfdfe0", "#575860", "#d16983", "#8ebaa4", "#e0c989", "#86abdc", "#baa1e2", "#7ad5d6", "#e4e4e5"]
+        },
+        {
+          "id": "dayfox",
+          "name": "Dayfox",
+          "background": "#f6f2ee",
+          "foreground": "#3d2b5a",
+          "cursor": "#3d2b5a",
+          "cursor_text": "#f6f2ee",
+          "selection_background": "#e7d2be",
+          "selection_foreground": "#3d2b5a",
+          "accent": "#287980",
+          "palette": ["#352c24", "#a5222f", "#396847", "#ac5402", "#2848a9", "#6e33ce", "#287980", "#f2e9e1", "#534c45", "#b3434e", "#577f63", "#b86e28", "#4863b6", "#8452d5", "#488d93", "#f4ece6"]
+        },
+        {
+          "id": "dawnfox",
+          "name": "Dawnfox",
+          "background": "#faf4ed",
+          "foreground": "#575279",
+          "cursor": "#575279",
+          "cursor_text": "#faf4ed",
+          "selection_background": "#d0d8d8",
+          "selection_foreground": "#575279",
+          "accent": "#56949f",
+          "palette": ["#575279", "#b4637a", "#618774", "#ea9d34", "#286983", "#907aa9", "#56949f", "#e5e9f0", "#5f5695", "#c26d85", "#629f81", "#eea846", "#2d81a3", "#9a80b9", "#5ca7b4", "#e6ebf3"]
+        },
+        {
+          "id": "duskfox",
+          "name": "Duskfox",
+          "background": "#232136",
+          "foreground": "#e0def4",
+          "cursor": "#e0def4",
+          "cursor_text": "#232136",
+          "selection_background": "#433c59",
+          "selection_foreground": "#e0def4",
+          "accent": "#9ccfd8",
+          "palette": ["#393552", "#eb6f92", "#a3be8c", "#f6c177", "#569fba", "#c4a7e7", "#9ccfd8", "#e0def4", "#47407d", "#f083a2", "#b1d196", "#f9cb8c", "#65b1cd", "#ccb1ed", "#a6dae3", "#e2e0f7"]
+        },
+        {
+          "id": "nordfox",
+          "name": "Nordfox",
+          "background": "#2e3440",
+          "foreground": "#cdcecf",
+          "cursor": "#cdcecf",
+          "cursor_text": "#2e3440",
+          "selection_background": "#3e4a5b",
+          "selection_foreground": "#cdcecf",
+          "accent": "#88c0d0",
+          "palette": ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#465780", "#d06f79", "#b1d196", "#f0d399", "#8cafd2", "#c895bf", "#93ccdc", "#e7ecf4"]
+        },
+        {
+          "id": "terafox",
+          "name": "Terafox",
+          "background": "#152528",
+          "foreground": "#e6eaea",
+          "cursor": "#e6eaea",
+          "cursor_text": "#152528",
+          "selection_background": "#293e40",
+          "selection_foreground": "#e6eaea",
+          "accent": "#a1cdd8",
+          "palette": ["#2f3239", "#e85c51", "#7aa4a1", "#fda47f", "#5a93aa", "#ad5c7c", "#a1cdd8", "#ebebeb", "#4e5157", "#eb746b", "#8eb2af", "#fdb292", "#73a3b7", "#b97490", "#afd4de", "#eeeeee"]
+        },
+        {
+          "id": "carbonfox",
+          "name": "Carbonfox",
+          "background": "#161616",
+          "foreground": "#f2f4f8",
+          "cursor": "#f2f4f8",
+          "cursor_text": "#161616",
+          "selection_background": "#2a2a2a",
+          "selection_foreground": "#f2f4f8",
+          "accent": "#33b1ff",
+          "palette": ["#282828", "#ee5396", "#25be6a", "#08bdba", "#78a9ff", "#be95ff", "#33b1ff", "#dfdfe0", "#484848", "#f16da6", "#46c880", "#2dc7c4", "#8cb6ff", "#c8a5ff", "#52bdff", "#e4e4e5"]
+        }
+      ]
+    },
+    {
+      "id": "noctis",
+      "name": "Noctis",
+      "author": "Liviu Schera",
+      "url": "https://github.com/liviuschera/noctis",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#03191b",
+          "foreground": "#b2cacd",
+          "cursor": "#b2cacd",
+          "cursor_text": "#03191b",
+          "selection_background": "#083d44",
+          "selection_foreground": "#b2cacd",
+          "accent": "#40d4e7",
+          "palette": ["#324a4d", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#b2cacd", "#47686c", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#c1d4d7"]
+        },
+        {
+          "id": "azureus",
+          "name": "Azureus",
+          "background": "#051b29",
+          "foreground": "#becfda",
+          "cursor": "#becfda",
+          "cursor_text": "#051b29",
+          "selection_background": "#0b3a58",
+          "selection_foreground": "#becfda",
+          "accent": "#49ace9",
+          "palette": ["#28353e", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#aec3d0", "#475e6c", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#becfda"]
+        },
+        {
+          "id": "bordo",
+          "name": "Bordo",
+          "background": "#272022",
+          "foreground": "#cbbec2",
+          "cursor": "#cbbec2",
+          "cursor_text": "#272022",
+          "selection_background": "#4d3c42",
+          "selection_foreground": "#cbbec2",
+          "accent": "#f18eb0",
+          "palette": ["#47393e", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#b9acb0", "#69545b", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#cbbec2"]
+        },
+        {
+          "id": "minimus",
+          "name": "Minimus",
+          "background": "#0e1920",
+          "foreground": "#c5cdd3",
+          "cursor": "#c5cdd3",
+          "cursor_text": "#0e1920",
+          "selection_background": "#213541",
+          "selection_foreground": "#c5cdd3",
+          "accent": "#5998c0",
+          "palette": ["#182a35", "#c08872", "#72c09f", "#c8a984", "#6196b8", "#c28097", "#72b7c0", "#c5cdd3", "#425866", "#ca8468", "#84c8ab", "#d1aa7b", "#68a4ca", "#c88da2", "#84c0c8", "#c5d1d3"]
+        },
+        {
+          "id": "uva",
+          "name": "Uva",
+          "background": "#1f1d30",
+          "foreground": "#c5c2d6",
+          "cursor": "#c5c2d6",
+          "cursor_text": "#1f1d30",
+          "selection_background": "#393558",
+          "selection_foreground": "#c5c2d6",
+          "accent": "#998ef1",
+          "palette": ["#302f3d", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#b6b3cc", "#504e65", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#c5c2d6"]
+        },
+        {
+          "id": "viola",
+          "name": "Viola",
+          "background": "#291d35",
+          "foreground": "#ccbfd9",
+          "cursor": "#ccbfd9",
+          "cursor_text": "#291d35",
+          "selection_background": "#48355b",
+          "selection_foreground": "#ccbfd9",
+          "accent": "#bf8ef1",
+          "palette": ["#362f3d", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#bfafcf", "#594e65", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#ccbfd9"]
+        },
+        {
+          "id": "lux",
+          "name": "Lux",
+          "background": "#f6edda",
+          "foreground": "#005661",
+          "cursor": "#005661",
+          "cursor_text": "#f6edda",
+          "selection_background": "#d4e8e2",
+          "selection_foreground": "#005661",
+          "accent": "#00c6e0",
+          "palette": ["#003b42", "#e34e1c", "#00b368", "#f49725", "#0094f0", "#ff5792", "#00bdd6", "#8ca6a6", "#004d57", "#ff4000", "#00d17a", "#ff8c00", "#0fa3ff", "#ff6b9f", "#00cbe6", "#bbc3c4"]
+        },
+        {
+          "id": "lilac",
+          "name": "Lilac",
+          "background": "#e9e7f3",
+          "foreground": "#0c006b",
+          "cursor": "#0c006b",
+          "cursor_text": "#e9e7f3",
+          "selection_background": "#d0ccef",
+          "selection_foreground": "#0c006b",
+          "accent": "#00c6e0",
+          "palette": ["#0c006b", "#e34e1c", "#00b368", "#f49725", "#0094f0", "#ff5792", "#00bdd6", "#8ca6a6", "#0f0080", "#ff4000", "#00d17a", "#ff8c00", "#0fa3ff", "#ff6b9f", "#00cbe6", "#bbc3c4"]
+        },
+        {
+          "id": "hibernus",
+          "name": "Hibernus",
+          "background": "#e1eeef",
+          "foreground": "#005661",
+          "cursor": "#005661",
+          "cursor_text": "#e1eeef",
+          "selection_background": "#c9e8ed",
+          "selection_foreground": "#005661",
+          "accent": "#00c6e0",
+          "palette": ["#003b42", "#e34e1c", "#00b368", "#f49725", "#0094f0", "#ff5792", "#00bdd6", "#8ca6a6", "#004d57", "#ff4000", "#00d17a", "#ff8c00", "#0fa3ff", "#ff6b9f", "#00cbe6", "#bbc3c4"]
+        },
+        {
+          "id": "obscuro",
+          "name": "Obscuro",
+          "background": "#020c0e",
+          "foreground": "#b2cacd",
+          "cursor": "#b2cacd",
+          "cursor_text": "#020c0e",
+          "selection_background": "#07343a",
+          "selection_foreground": "#b2cacd",
+          "accent": "#40d4e7",
+          "palette": ["#324a4d", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#b2cacd", "#47686c", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#c1d4d7"]
+        },
+        {
+          "id": "sereno",
+          "name": "Sereno",
+          "background": "#041d20",
+          "foreground": "#b2cacd",
+          "cursor": "#b2cacd",
+          "cursor_text": "#041d20",
+          "selection_background": "#094047",
+          "selection_foreground": "#b2cacd",
+          "accent": "#40d4e7",
+          "palette": ["#324a4d", "#e66533", "#49e9a6", "#e4b781", "#49ace9", "#df769b", "#49d6e9", "#b2cacd", "#47686c", "#e97749", "#60ebb1", "#e69533", "#60b6eb", "#e798b3", "#60dbeb", "#c1d4d7"]
+        }
+      ]
+    },
+    {
+      "id": "nord",
+      "name": "Nord",
+      "author": "Sven Greb",
+      "url": "https://github.com/nordtheme/nord",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#2e3440",
+          "foreground": "#d8dee9",
+          "cursor": "#d8dee9",
+          "cursor_text": "#2e3440",
+          "selection_background": "#3f4758",
+          "selection_foreground": "#d8dee9",
+          "accent": "#88c0d0",
+          "palette": ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0", "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"]
+        }
+      ]
+    },
+    {
+      "id": "nordic",
+      "name": "Nordic",
+      "author": "AlexvZyl",
+      "url": "https://github.com/AlexvZyl/nordic.nvim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#242933",
+          "foreground": "#bbc3d4",
+          "cursor": "#bbc3d4",
+          "cursor_text": "#191d24",
+          "selection_background": "#1b1f26",
+          "selection_foreground": "#bbc3d4",
+          "accent": "#ebcb8b",
+          "palette": ["#191d24", "#bf616a", "#a3be8c", "#ebcb8b", "#5e81ac", "#b48ead", "#8fbcbb", "#bbc3d4", "#3b4252", "#c5727a", "#b1c89d", "#efd49f", "#88c0d0", "#be9d88", "#9fc6c5", "#d8dee9"]
+        }
+      ]
+    },
+    {
+      "id": "one-half",
+      "name": "One Half",
+      "author": "sonph",
+      "url": "https://github.com/sonph/onehalf",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#282c34",
+          "foreground": "#dcdfe4",
+          "cursor": "#a3b3cc",
+          "cursor_text": "#dcdfe4",
+          "selection_background": "#474e5d",
+          "selection_foreground": "#dcdfe4",
+          "accent": "#98c379",
+          "palette": ["#282c34", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#dcdfe4", "#282c34", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#dcdfe4"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#fafafa",
+          "foreground": "#383a42",
+          "cursor": "#bfceff",
+          "cursor_text": "#383a42",
+          "selection_background": "#bfceff",
+          "selection_foreground": "#383a42",
+          "accent": "#50a14f",
+          "palette": ["#383a42", "#e45649", "#50a14f", "#c18401", "#0184bc", "#a626a4", "#0997b3", "#fafafa", "#4f525e", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "one",
+      "name": "One",
+      "author": "GitHub",
+      "url": "https://github.com/atom/one-dark-syntax",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#282c34",
+          "foreground": "#abb2bf",
+          "cursor": "#abb2bf",
+          "cursor_text": "#282c34",
+          "selection_background": "#abb2bf",
+          "selection_foreground": "#282c34",
+          "accent": "#61afef",
+          "palette": ["#1e2127", "#e06c75", "#98c379", "#d19a66", "#61afef", "#c678dd", "#56b6c2", "#abb2bf", "#5c6370", "#e06c75", "#98c379", "#d19a66", "#61afef", "#c678dd", "#56b6c2", "#ffffff"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#f8f8f8",
+          "foreground": "#2a2b33",
+          "cursor": "#2a2b33",
+          "cursor_text": "#f8f8f8",
+          "selection_background": "#2a2b33",
+          "selection_foreground": "#f8f8f8",
+          "accent": "#2f5af3",
+          "palette": ["#000000", "#de3d35", "#3e953a", "#d2b67b", "#2f5af3", "#a00095", "#3e953a", "#bbbbbb", "#000000", "#de3d35", "#3e953a", "#d2b67b", "#2f5af3", "#a00095", "#3e953a", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "panda",
+      "name": "Panda",
+      "author": "Siamak Mokhtari",
+      "url": "https://github.com/siamak/atom-panda-syntax",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#292a2b",
+          "foreground": "#cccccc",
+          "cursor": "#cccccc",
+          "cursor_text": "#292a2b",
+          "selection_background": "#5f4e3b",
+          "selection_foreground": "#cccccc",
+          "accent": "#19f9d8",
+          "palette": ["#000000", "#ff2c6d", "#19f9d8", "#ffb86c", "#45a9f9", "#ff75b5", "#b084eb", "#cdcdcd", "#757575", "#ff2c6d", "#19f9d8", "#ffcc95", "#6fc1ff", "#ff9ac1", "#bcaafe", "#e6e6e6"]
+        }
+      ]
+    },
+    {
+      "id": "posterpole",
+      "name": "Posterpole",
+      "author": "ilof2",
+      "url": "https://github.com/ilof2/posterpole.nvim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#25222a",
+          "foreground": "#c6c0b9",
+          "cursor": "#c6c0b9",
+          "cursor_text": "#25222a",
+          "selection_background": "#4d4d4d",
+          "selection_foreground": "#25222a",
+          "accent": "#778c73",
+          "palette": ["#2c2c30", "#a97070", "#778c73", "#cc9166", "#6c7f93", "#b894af", "#8ea4a2", "#afa79d", "#a5a59c", "#bc8f8f", "#92a38f", "#d9ac8c", "#8a99a8", "#ccb3c6", "#aabbba", "#c6c0b9"]
+        },
+        {
+          "id": "gray",
+          "name": "Gray",
+          "background": "#1f1f1f",
+          "foreground": "#c6c0b9",
+          "cursor": "#c6c0b9",
+          "cursor_text": "#1f1f1f",
+          "selection_background": "#4d4d4d",
+          "selection_foreground": "#1f1f1f",
+          "accent": "#778c73",
+          "palette": ["#2c2c30", "#a97070", "#778c73", "#cc9166", "#6c7f93", "#b894af", "#8ea4a2", "#afa79d", "#a5a59c", "#bc8f8f", "#92a38f", "#d9ac8c", "#8a99a8", "#ccb3c6", "#aabbba", "#c6c0b9"]
+        }
+      ]
+    },
+    {
+      "id": "rose-pine",
+      "name": "Rosé Pine",
+      "author": "Rosé Pine",
+      "url": "https://github.com/rose-pine/rose-pine-theme",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#1f1d2e",
+          "foreground": "#e0def4",
+          "cursor": "#e0def4",
+          "cursor_text": "#1f1d2e",
+          "selection_background": "#2f2c40",
+          "selection_foreground": "#e0def4",
+          "accent": "#e0def4",
+          "palette": ["#26233a", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4", "#908caa", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4"]
+        },
+        {
+          "id": "moon",
+          "name": "Moon",
+          "background": "#2a273f",
+          "foreground": "#e0def4",
+          "cursor": "#e0def4",
+          "cursor_text": "#2a273f",
+          "selection_background": "#37344d",
+          "selection_foreground": "#e0def4",
+          "accent": "#e0def4",
+          "palette": ["#393552", "#eb6f92", "#3e8fb0", "#f6c177", "#9ccfd8", "#c4a7e7", "#ea9a97", "#e0def4", "#908caa", "#eb6f92", "#3e8fb0", "#f6c177", "#9ccfd8", "#c4a7e7", "#ea9a97", "#e0def4"]
+        },
+        {
+          "id": "dawn",
+          "name": "Dawn",
+          "background": "#fffaf3",
+          "foreground": "#575279",
+          "cursor": "#575279",
+          "cursor_text": "#fffaf3",
+          "selection_background": "#f3eeea",
+          "selection_foreground": "#575279",
+          "accent": "#575279",
+          "palette": ["#f2e9e1", "#b4637a", "#286983", "#ea9d34", "#56949f", "#907aa9", "#d7827e", "#575279", "#797593", "#b4637a", "#286983", "#ea9d34", "#56949f", "#907aa9", "#d7827e", "#575279"]
+        }
+      ]
+    },
+    {
+      "id": "seoul256",
+      "name": "Seoul256",
+      "author": "Junegunn Choi",
+      "url": "https://github.com/junegunn/seoul256.vim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#3a3a3a",
+          "foreground": "#d0d0d0",
+          "cursor": "#d0d0d0",
+          "cursor_text": "#3a3a3a",
+          "selection_background": "#005f5f",
+          "selection_foreground": "#d0d0d0",
+          "accent": "#d8af5f",
+          "palette": ["#4e4e4e", "#d68787", "#5f865f", "#d8af5f", "#85add4", "#d7afaf", "#87afaf", "#d0d0d0", "#626262", "#d75f87", "#87af87", "#ffd787", "#add4fb", "#ffafaf", "#87d7d7", "#e4e4e4"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#dadada",
+          "foreground": "#4e4e4e",
+          "cursor": "#4e4e4e",
+          "cursor_text": "#dadada",
+          "selection_background": "#afd7d7",
+          "selection_foreground": "#4e4e4e",
+          "accent": "#5f885f",
+          "palette": ["#4e4e4e", "#af5f5f", "#5f885f", "#af8760", "#5f87ae", "#875f87", "#5f8787", "#e4e4e4", "#3a3a3a", "#870100", "#005f00", "#d8865f", "#0087af", "#87025f", "#008787", "#eeeeee"]
+        }
+      ]
+    },
+    {
+      "id": "shades-of-purple",
+      "name": "Shades of Purple",
+      "author": "Ahmad Awais",
+      "url": "https://github.com/ahmadawais/shades-of-purple-vscode",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#1e1e3f",
+          "foreground": "#ffffff",
+          "cursor": "#ffffff",
+          "cursor_text": "#1e1e3f",
+          "selection_background": "#6d42a5",
+          "selection_foreground": "#ffffff",
+          "accent": "#fad000",
+          "palette": ["#000000", "#e43937", "#3ad900", "#fad000", "#7857fe", "#ff2c70", "#80fcff", "#ffffff", "#5c5c61", "#e43937", "#3ad900", "#fad000", "#6943ff", "#fb94ff", "#80fcff", "#ffffff"]
+        },
+        {
+          "id": "super-dark",
+          "name": "Super Dark",
+          "background": "#15152b",
+          "foreground": "#ffffff",
+          "cursor": "#ffffff",
+          "cursor_text": "#15152b",
+          "selection_background": "#380d6a",
+          "selection_foreground": "#ffffff",
+          "accent": "#fad000",
+          "palette": ["#000000", "#e33937", "#3ad900", "#fad000", "#7857fe", "#ff2c70", "#80fcff", "#ffffff", "#5c5c61", "#e33937", "#3ad900", "#fad000", "#6943ff", "#fb94ff", "#80fcff", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "solarized",
+      "name": "Solarized",
+      "author": "Ethan Schoonover",
+      "url": "https://github.com/altercation/solarized",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "dark",
+          "name": "Dark",
+          "background": "#002b36",
+          "foreground": "#839496",
+          "cursor": "#839496",
+          "cursor_text": "#002b36",
+          "selection_background": "#073642",
+          "selection_foreground": "#93a1a1",
+          "accent": "#b58900",
+          "palette": ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"]
+        },
+        {
+          "id": "light",
+          "name": "Light",
+          "background": "#fdf6e3",
+          "foreground": "#657b83",
+          "cursor": "#657b83",
+          "cursor_text": "#fdf6e3",
+          "selection_background": "#eee8d5",
+          "selection_foreground": "#586e75",
+          "accent": "#2aa198",
+          "palette": ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5", "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"]
+        }
+      ]
+    },
+    {
+      "id": "sonokai",
+      "name": "Sonokai",
+      "author": "sainnhe",
+      "url": "https://github.com/sainnhe/sonokai",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#2c2e34",
+          "foreground": "#e2e2e3",
+          "cursor": "#e2e2e3",
+          "cursor_text": "#2c2e34",
+          "selection_background": "#3b3e48",
+          "selection_foreground": "#e2e2e3",
+          "accent": "#e7c664",
+          "palette": ["#181819", "#fc5d7c", "#9ed072", "#e7c664", "#76cce0", "#b39df3", "#f39660", "#e2e2e3", "#7f8490", "#fc5d7c", "#9ed072", "#e7c664", "#76cce0", "#b39df3", "#f39660", "#e2e2e3"]
+        },
+        {
+          "id": "atlantis",
+          "name": "Atlantis",
+          "background": "#2a2f38",
+          "foreground": "#e1e3e4",
+          "cursor": "#e1e3e4",
+          "cursor_text": "#2a2f38",
+          "selection_background": "#3d4455",
+          "selection_foreground": "#e1e3e4",
+          "accent": "#eacb64",
+          "palette": ["#181a1c", "#ff6578", "#9dd274", "#eacb64", "#72cce8", "#ba9cf3", "#f69c5e", "#e1e3e4", "#828a9a", "#ff6578", "#9dd274", "#eacb64", "#72cce8", "#ba9cf3", "#f69c5e", "#e1e3e4"]
+        },
+        {
+          "id": "andromeda",
+          "name": "Andromeda",
+          "background": "#2b2d3a",
+          "foreground": "#e1e3e4",
+          "cursor": "#e1e3e4",
+          "cursor_text": "#2b2d3a",
+          "selection_background": "#393e53",
+          "selection_foreground": "#e1e3e4",
+          "accent": "#edc763",
+          "palette": ["#181a1c", "#fb617e", "#9ed06c", "#edc763", "#6dcae8", "#bb97ee", "#f89860", "#e1e3e4", "#7e8294", "#fb617e", "#9ed06c", "#edc763", "#6dcae8", "#bb97ee", "#f89860", "#e1e3e4"]
+        },
+        {
+          "id": "shusia",
+          "name": "Shusia",
+          "background": "#2d2a2e",
+          "foreground": "#e3e1e4",
+          "cursor": "#e3e1e4",
+          "cursor_text": "#2d2a2e",
+          "selection_background": "#423f46",
+          "selection_foreground": "#e3e1e4",
+          "accent": "#e5c463",
+          "palette": ["#1a181a", "#f85e84", "#9ecd6f", "#e5c463", "#7accd7", "#ab9df2", "#ef9062", "#e3e1e4", "#848089", "#f85e84", "#9ecd6f", "#e5c463", "#7accd7", "#ab9df2", "#ef9062", "#e3e1e4"]
+        },
+        {
+          "id": "maia",
+          "name": "Maia",
+          "background": "#273136",
+          "foreground": "#e1e2e3",
+          "cursor": "#e1e2e3",
+          "cursor_text": "#273136",
+          "selection_background": "#3a444b",
+          "selection_foreground": "#e1e2e3",
+          "accent": "#e3d367",
+          "palette": ["#1c1e1f", "#f76c7c", "#9cd57b", "#e3d367", "#78cee9", "#baa0f8", "#f3a96a", "#e1e2e3", "#82878b", "#f76c7c", "#9cd57b", "#e3d367", "#78cee9", "#baa0f8", "#f3a96a", "#e1e2e3"]
+        },
+        {
+          "id": "espresso",
+          "name": "Espresso",
+          "background": "#312c2b",
+          "foreground": "#e4e3e1",
+          "cursor": "#e4e3e1",
+          "cursor_text": "#312c2b",
+          "selection_background": "#49403c",
+          "selection_foreground": "#e4e3e1",
+          "accent": "#f0c66f",
+          "palette": ["#1f1e1c", "#f86882", "#a6cd77", "#f0c66f", "#81d0c9", "#9fa0e1", "#f08d71", "#e4e3e1", "#90817b", "#f86882", "#a6cd77", "#f0c66f", "#81d0c9", "#9fa0e1", "#f08d71", "#e4e3e1"]
+        }
+      ]
+    },
+    {
+      "id": "srcery",
+      "name": "Srcery",
+      "author": "Daniel Berg",
+      "url": "https://github.com/srcery-colors/srcery-vim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#1c1b19",
+          "foreground": "#fce8c3",
+          "cursor": "#fbb829",
+          "cursor_text": "#1c1b19",
+          "selection_background": "#fce8c3",
+          "selection_foreground": "#1c1b19",
+          "accent": "#fbb829",
+          "palette": ["#1c1b19", "#ef2f27", "#519f50", "#fbb829", "#2c78bf", "#e02c6d", "#0aaeb3", "#baa67f", "#918175", "#f75341", "#98bc37", "#fed06e", "#68a8e4", "#ff5c8f", "#2be4d0", "#fce8c3"]
+        }
+      ]
+    },
+    {
+      "id": "tender",
+      "name": "Tender",
+      "author": "jacoborus",
+      "url": "https://github.com/jacoborus/tender.vim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#282828",
+          "foreground": "#eeeeee",
+          "cursor": "#eeeeee",
+          "cursor_text": "#282828",
+          "selection_background": "#293b44",
+          "selection_foreground": "#eeeeee",
+          "accent": "#ffc24b",
+          "palette": ["#282828", "#f43753", "#c9d05c", "#ffc24b", "#b3deef", "#d3b987", "#73cef4", "#eeeeee", "#1d1d1d", "#f43753", "#c9d05c", "#ffc24b", "#b3deef", "#d3b987", "#73cef4", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "tokyo-night",
+      "name": "Tokyo Night",
+      "author": "Folke Lemaitre",
+      "url": "https://github.com/folke/tokyonight.nvim",
+      "license": "Apache-2.0",
+      "variants": [
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#1a1b26",
+          "foreground": "#c0caf5",
+          "cursor": "#c0caf5",
+          "cursor_text": "#1a1b26",
+          "selection_background": "#283457",
+          "selection_foreground": "#c0caf5",
+          "accent": "#7aa2f7",
+          "palette": ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6", "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"]
+        },
+        {
+          "id": "day",
+          "name": "Day",
+          "background": "#e1e2e7",
+          "foreground": "#3760bf",
+          "cursor": "#3760bf",
+          "cursor_text": "#e1e2e7",
+          "selection_background": "#b7c1e3",
+          "selection_foreground": "#3760bf",
+          "accent": "#2e7de9",
+          "palette": ["#b4b5b9", "#f52a65", "#587539", "#8c6c3e", "#2e7de9", "#9854f1", "#007197", "#6172b0", "#a1a6c5", "#f52a65", "#587539", "#8c6c3e", "#2e7de9", "#9854f1", "#007197", "#3760bf"]
+        },
+        {
+          "id": "storm",
+          "name": "Storm",
+          "background": "#24283b",
+          "foreground": "#c0caf5",
+          "cursor": "#c0caf5",
+          "cursor_text": "#24283b",
+          "selection_background": "#2e3c64",
+          "selection_foreground": "#c0caf5",
+          "accent": "#7aa2f7",
+          "palette": ["#1d202f", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6", "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"]
+        },
+        {
+          "id": "moon",
+          "name": "Moon",
+          "background": "#222436",
+          "foreground": "#c8d3f5",
+          "cursor": "#c8d3f5",
+          "cursor_text": "#222436",
+          "selection_background": "#2d3f76",
+          "selection_foreground": "#c8d3f5",
+          "accent": "#82aaff",
+          "palette": ["#1b1d2b", "#ff757f", "#c3e88d", "#ffc777", "#82aaff", "#c099ff", "#86e1fc", "#828bb8", "#444a73", "#ff757f", "#c3e88d", "#ffc777", "#82aaff", "#c099ff", "#86e1fc", "#c8d3f5"]
+        }
+      ]
+    },
+    {
+      "id": "tomorrow",
+      "name": "Tomorrow",
+      "author": "Chris Kempson",
+      "url": "https://github.com/chriskempson/tomorrow-theme",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "night",
+          "name": "Night",
+          "background": "#1d1f21",
+          "foreground": "#c5c8c6",
+          "cursor": "#c5c8c6",
+          "cursor_text": "#1d1f21",
+          "selection_background": "#373b41",
+          "selection_foreground": "#c5c8c6",
+          "accent": "#f0c674",
+          "palette": ["#000000", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#ffffff", "#000000", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb", "#8abeb7", "#ffffff"]
+        },
+        {
+          "id": "default",
+          "name": "Default",
+          "background": "#ffffff",
+          "foreground": "#4d4d4c",
+          "cursor": "#4d4d4c",
+          "cursor_text": "#ffffff",
+          "selection_background": "#d6d6d6",
+          "selection_foreground": "#4d4d4c",
+          "accent": "#eab700",
+          "palette": ["#000000", "#c82829", "#718c00", "#eab700", "#4271ae", "#8959a8", "#3e999f", "#ffffff", "#000000", "#c82829", "#718c00", "#eab700", "#4271ae", "#8959a8", "#3e999f", "#ffffff"]
+        },
+        {
+          "id": "night-eighties",
+          "name": "Night Eighties",
+          "background": "#2d2d2d",
+          "foreground": "#cccccc",
+          "cursor": "#cccccc",
+          "cursor_text": "#2d2d2d",
+          "selection_background": "#515151",
+          "selection_foreground": "#cccccc",
+          "accent": "#ffcc66",
+          "palette": ["#000000", "#f2777a", "#99cc99", "#ffcc66", "#6699cc", "#cc99cc", "#66cccc", "#ffffff", "#000000", "#f2777a", "#99cc99", "#ffcc66", "#6699cc", "#cc99cc", "#66cccc", "#ffffff"]
+        },
+        {
+          "id": "night-blue",
+          "name": "Night Blue",
+          "background": "#002451",
+          "foreground": "#ffffff",
+          "cursor": "#ffffff",
+          "cursor_text": "#003f8e",
+          "selection_background": "#003f8e",
+          "selection_foreground": "#ffffff",
+          "accent": "#ffeead",
+          "palette": ["#000000", "#ff9da4", "#d1f1a9", "#ffeead", "#bbdaff", "#ebbbff", "#99ffff", "#ffffff", "#000000", "#ff9da4", "#d1f1a9", "#ffeead", "#bbdaff", "#ebbbff", "#99ffff", "#ffffff"]
+        },
+        {
+          "id": "night-bright",
+          "name": "Night Bright",
+          "background": "#000000",
+          "foreground": "#eaeaea",
+          "cursor": "#eaeaea",
+          "cursor_text": "#000000",
+          "selection_background": "#424242",
+          "selection_foreground": "#eaeaea",
+          "accent": "#e7c547",
+          "palette": ["#000000", "#d54e53", "#b9ca4a", "#e7c547", "#7aa6da", "#c397d8", "#70c0b1", "#ffffff", "#000000", "#d54e53", "#b9ca4a", "#e7c547", "#7aa6da", "#c397d8", "#70c0b1", "#ffffff"]
+        }
+      ]
+    },
+    {
+      "id": "zenbones",
+      "name": "Zenbones",
+      "author": "mcchrish",
+      "url": "https://github.com/zenbones-theme/zenbones.nvim",
+      "license": "MIT",
+      "variants": [
+        {
+          "id": "zenwritten-dark",
+          "name": "Zenwritten Dark",
+          "background": "#191919",
+          "foreground": "#bbbbbb",
+          "cursor": "#c9c9c9",
+          "cursor_text": "#191919",
+          "selection_background": "#404040",
+          "selection_foreground": "#bbbbbb",
+          "accent": "#b77e64",
+          "palette": ["#191919", "#de6e7c", "#819b69", "#b77e64", "#6099c0", "#b279a7", "#66a5ad", "#bbbbbb", "#3d3839", "#e8838f", "#8bae68", "#d68c67", "#61abda", "#cf86c1", "#65b8c1", "#8e8e8e"]
+        },
+        {
+          "id": "zenwritten-light",
+          "name": "Zenwritten Light",
+          "background": "#eeeeee",
+          "foreground": "#353535",
+          "cursor": "#353535",
+          "cursor_text": "#eeeeee",
+          "selection_background": "#d7d7d7",
+          "selection_foreground": "#353535",
+          "accent": "#944927",
+          "palette": ["#eeeeee", "#a8334c", "#4f6c31", "#944927", "#286486", "#88507d", "#3b8992", "#353535", "#c6c3c3", "#94253e", "#3f5a22", "#803d1c", "#1d5573", "#7b3b70", "#2b747c", "#5c5c5c"]
+        },
+        {
+          "id": "neobones-dark",
+          "name": "Neobones Dark",
+          "background": "#0f191f",
+          "foreground": "#c6d5cf",
+          "cursor": "#ceddd7",
+          "cursor_text": "#0f191f",
+          "selection_background": "#3a3e3d",
+          "selection_foreground": "#c6d5cf",
+          "accent": "#b77e64",
+          "palette": ["#0f191f", "#de6e7c", "#90ff6b", "#b77e64", "#8190d4", "#b279a7", "#66a5ad", "#c6d5cf", "#263945", "#e8838f", "#a0ff85", "#d68c67", "#92a0e2", "#cf86c1", "#65b8c1", "#98a39e"]
+        },
+        {
+          "id": "neobones-light",
+          "name": "Neobones Light",
+          "background": "#e5ede6",
+          "foreground": "#202e18",
+          "cursor": "#202e18",
+          "cursor_text": "#e5ede6",
+          "selection_background": "#ade48c",
+          "selection_foreground": "#202e18",
+          "accent": "#944927",
+          "palette": ["#e5ede6", "#a8334c", "#567a30", "#944927", "#286486", "#88507d", "#3b8992", "#202e18", "#b3c6b6", "#94253e", "#3f5a22", "#803d1c", "#1d5573", "#7b3b70", "#2b747c", "#415934"]
+        },
+        {
+          "id": "vimbones",
+          "name": "Vimbones",
+          "background": "#f0f0ca",
+          "foreground": "#353535",
+          "cursor": "#353535",
+          "cursor_text": "#f0f0ca",
+          "selection_background": "#d7d7d7",
+          "selection_foreground": "#353535",
+          "accent": "#944927",
+          "palette": ["#f0f0ca", "#a8334c", "#4f6c31", "#944927", "#286486", "#88507d", "#3b8992", "#353535", "#c6c6a3", "#94253e", "#3f5a22", "#803d1c", "#1d5573", "#7b3b70", "#2b747c", "#5c5c5c"]
+        },
+        {
+          "id": "rosebones-dark",
+          "name": "Rosebones Dark",
+          "background": "#1a1825",
+          "foreground": "#e1d4d4",
+          "cursor": "#e7dddd",
+          "cursor_text": "#1a1825",
+          "selection_background": "#523a39",
+          "selection_foreground": "#e1d4d4",
+          "accent": "#f6c074",
+          "palette": ["#1a1825", "#eb7193", "#317490", "#f6c074", "#9ccfd8", "#c4a7e7", "#9ccfd8", "#e1d4d4", "#3a3651", "#f289a4", "#358daf", "#f9ca8e", "#94dae6", "#ceb3ef", "#94dae6", "#bf9b99"]
+        },
+        {
+          "id": "rosebones-light",
+          "name": "Rosebones Light",
+          "background": "#fbf6f0",
+          "foreground": "#724341",
+          "cursor": "#724341",
+          "cursor_text": "#fbf6f0",
+          "selection_background": "#eadddc",
+          "selection_foreground": "#724341",
+          "accent": "#ec9d33",
+          "palette": ["#fbf6f0", "#b5637a", "#286a84", "#ec9d33", "#5795a0", "#917ba9", "#5795a0", "#724341", "#e8c48b", "#a54a66", "#1c5970", "#c68223", "#407d88", "#855aac", "#407d88", "#a4635f"]
+        },
+        {
+          "id": "forestbones-dark",
+          "name": "Forestbones Dark",
+          "background": "#2c343a",
+          "foreground": "#e7dcc4",
+          "cursor": "#ebe2cf",
+          "cursor_text": "#2c343a",
+          "selection_background": "#615b51",
+          "selection_foreground": "#e7dcc4",
+          "accent": "#ddbd7f",
+          "palette": ["#2c343a", "#e67c7f", "#a9c181", "#ddbd7f", "#7fbcb4", "#d69ab7", "#83c193", "#e7dcc4", "#45525c", "#ed9294", "#b0ce7b", "#edc77a", "#7ac9c0", "#e5a7c4", "#7dd093", "#b2a790"]
+        },
+        {
+          "id": "forestbones-light",
+          "name": "Forestbones Light",
+          "background": "#faf3e1",
+          "foreground": "#4f5b62",
+          "cursor": "#4f5b62",
+          "cursor_text": "#faf3e1",
+          "selection_background": "#d3dfe6",
+          "selection_foreground": "#4f5b62",
+          "accent": "#dea000",
+          "palette": ["#faf3e1", "#f85550", "#8da200", "#dea000", "#3a94c4", "#df69ba", "#36a87e", "#4f5b62", "#dbc988", "#e6271c", "#758700", "#b98500", "#297ca6", "#ca43a3", "#258c67", "#6e7f88"]
+        },
+        {
+          "id": "nordbones",
+          "name": "Nordbones",
+          "background": "#2f3541",
+          "foreground": "#ebeef3",
+          "cursor": "#eef1f5",
+          "cursor_text": "#2f3541",
+          "selection_background": "#545f70",
+          "selection_foreground": "#ebeef3",
+          "accent": "#cf866f",
+          "palette": ["#2f3541", "#c1616a", "#a4be8d", "#cf866f", "#8fbcba", "#b38dac", "#87bfce", "#ebeef3", "#475063", "#d6787f", "#a8cc86", "#e09680", "#89cac8", "#cf97c5", "#82cce0", "#a5b4cd"]
+        },
+        {
+          "id": "tokyobones-dark",
+          "name": "Tokyobones Dark",
+          "background": "#1a1b26",
+          "foreground": "#c0caf5",
+          "cursor": "#ced6f7",
+          "cursor_text": "#1a1b26",
+          "selection_background": "#2c4075",
+          "selection_foreground": "#c0caf5",
+          "accent": "#e1b068",
+          "palette": ["#1a1b26", "#f77890", "#74dbcb", "#e1b068", "#7ba2f7", "#bb9bf7", "#2bc4de", "#c0caf5", "#36384d", "#f98ea0", "#6de5d3", "#f2ba64", "#90affa", "#c6acfa", "#74dbcb", "#7e98eb"]
+        },
+        {
+          "id": "tokyobones-light",
+          "name": "Tokyobones Light",
+          "background": "#d6d7dc",
+          "foreground": "#333a57",
+          "cursor": "#333a57",
+          "cursor_text": "#d6d7dc",
+          "selection_background": "#bbc0d8",
+          "selection_foreground": "#333a57",
+          "accent": "#8f5e14",
+          "palette": ["#d6d7dc", "#8b4351", "#34645d", "#8f5e14", "#34548c", "#5a4a79", "#176775", "#333a57", "#adb0bd", "#7e3242", "#26554f", "#794e0d", "#26467a", "#503875", "#34645d", "#56618d"]
+        },
+        {
+          "id": "seoulbones-dark",
+          "name": "Seoulbones Dark",
+          "background": "#4b4b4b",
+          "foreground": "#dddddd",
+          "cursor": "#e2e2e2",
+          "cursor_text": "#4b4b4b",
+          "selection_background": "#777777",
+          "selection_foreground": "#dddddd",
+          "accent": "#ffdf9b",
+          "palette": ["#4b4b4b", "#e388a3", "#98bd99", "#ffdf9b", "#97bdde", "#a5a6c5", "#6fbdbe", "#dddddd", "#6c6465", "#eb99b1", "#8fcd92", "#ffe5b3", "#a2c8e9", "#b2b3da", "#6bcacb", "#a8a8a8"]
+        },
+        {
+          "id": "seoulbones-light",
+          "name": "Seoulbones Light",
+          "background": "#e2e2e2",
+          "foreground": "#555555",
+          "cursor": "#555555",
+          "cursor_text": "#e2e2e2",
+          "selection_background": "#cccccc",
+          "selection_foreground": "#555555",
+          "accent": "#c48562",
+          "palette": ["#e2e2e2", "#dc5284", "#628562", "#c48562", "#0084a3", "#896788", "#008586", "#555555", "#bfbabb", "#be3c6d", "#487249", "#a76b48", "#006f89", "#7f4c7e", "#006f70", "#777777"]
+        },
+        {
+          "id": "duckbones",
+          "name": "Duckbones",
+          "background": "#0e101a",
+          "foreground": "#ebefc0",
+          "cursor": "#edf2c2",
+          "cursor_text": "#0e101a",
+          "selection_background": "#37382d",
+          "selection_foreground": "#ebefc0",
+          "accent": "#e39500",
+          "palette": ["#0e101a", "#e03600", "#5dcd97", "#e39500", "#00a3cb", "#795ccc", "#00a3cb", "#ebefc0", "#2b2f46", "#ff4821", "#58db9e", "#f6a100", "#00b4e0", "#b3a1e6", "#00b4e0", "#b3b692"]
+        },
+        {
+          "id": "zenburned",
+          "name": "Zenburned",
+          "background": "#404040",
+          "foreground": "#f0e4cf",
+          "cursor": "#f3eadb",
+          "cursor_text": "#404040",
+          "selection_background": "#746956",
+          "selection_foreground": "#f0e4cf",
+          "accent": "#b77e64",
+          "palette": ["#404040", "#e3716e", "#819b69", "#b77e64", "#6099c0", "#b279a7", "#66a5ad", "#f0e4cf", "#625a5b", "#ec8685", "#8bae68", "#d68c67", "#61abda", "#cf86c1", "#65b8c1", "#c0ab86"]
+        },
+        {
+          "id": "kanagawabones",
+          "name": "Kanagawabones",
+          "background": "#1f1f28",
+          "foreground": "#ddd8bb",
+          "cursor": "#e6e0c2",
+          "cursor_text": "#1f1f28",
+          "selection_background": "#49473e",
+          "selection_foreground": "#ddd8bb",
+          "accent": "#e5c283",
+          "palette": ["#1f1f28", "#e46a78", "#98bc6d", "#e5c283", "#7eb3c9", "#957fb8", "#7eb3c9", "#ddd8bb", "#3c3c51", "#ec818c", "#9ec967", "#f1c982", "#7bc2df", "#a98fd2", "#7bc2df", "#a8a48d"]
+        }
+      ]
+    }
+  ]
+}
