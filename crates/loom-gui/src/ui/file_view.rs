@@ -11,6 +11,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, h_flex, v_flex,
 };
 use loom_client::proto::{ErrorCode, FileContent, FileVersion};
+use loom_view_model::tool_details::language;
 
 use crate::state::AgentConnection;
 use crate::ui::workspace::{Save, ToggleLineWrap};
@@ -65,32 +66,6 @@ fn readonly_reason(content: &FileContent) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-pub(crate) fn language(path: &str) -> String {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let lower = name.to_lowercase();
-    match lower.as_str() {
-        "makefile" | "gnumakefile" => return "make".into(),
-        "dockerfile" => return "dockerfile".into(),
-        "cargo.lock" => return "toml".into(),
-        _ => {}
-    }
-    let ext = match lower.rsplit_once('.') {
-        Some((_, ext)) => ext,
-        None => return "text".into(),
-    };
-    match ext {
-        "h" => "c",
-        "hpp" | "hh" | "cc" | "cxx" => "cpp",
-        "jsx" | "mjs" | "cjs" => "javascript",
-        "mts" | "cts" => "typescript",
-        "zsh" | "bash" => "bash",
-        "htm" => "html",
-        "txt" | "log" => "text",
-        other => other,
-    }
-    .to_string()
 }
 
 pub(crate) fn human_size(size: u64) -> String {
