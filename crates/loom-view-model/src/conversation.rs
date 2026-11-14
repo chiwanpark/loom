@@ -666,18 +666,25 @@ pub fn tool_summary(call: &ToolCall) -> String {
                 _ => path,
             }
         }),
-        "write" | "edit" => field("path"),
+        "write" => field("path"),
+        "edit" => field("path").or_else(|| {
+            field("patch").and_then(|patch| crate::tool_details::patch_summary(&patch))
+        }),
         "notes_read" | "tasks_read" => Some(String::new()),
         "notes_edit" => {
-            let edits = args
-                .get("edits")
-                .and_then(|edits| edits.as_array())
-                .map_or(0, Vec::len)
-                + usize::from(
-                    args.get("old_text")
-                        .or_else(|| args.get("oldText"))
-                        .is_some(),
-                );
+            let edits = match field("patch") {
+                Some(patch) => patch.lines().filter(|line| line.starts_with("@@")).count(),
+                None => {
+                    args.get("edits")
+                        .and_then(|edits| edits.as_array())
+                        .map_or(0, Vec::len)
+                        + usize::from(
+                            args.get("old_text")
+                                .or_else(|| args.get("oldText"))
+                                .is_some(),
+                        )
+                }
+            };
             Some(match edits {
                 1 => "1 edit".into(),
                 n => format!("{n} edits"),
@@ -1085,6 +1092,21 @@ mod tests {
             summary("notes_edit", r#"{"old_text":"a","new_text":"b"}"#),
             "notes_edit 1 edit"
         );
+        assert_eq!(
+            summary(
+                "notes_edit",
+                r#"{"patch":"@@\n-a\n+b\n@@ -9 +9 @@\n-c\n+d\n"}"#
+            ),
+            "notes_edit 2 edits"
+        );
+        assert_eq!(
+            summary(
+                "edit",
+                r#"{"patch":"--- a/x.rs\n+++ b/x.rs\n@@\n-a\n+b\n--- /dev/null\n+++ b/y.rs\n@@\n+c\n"}"#
+            ),
+            "edit x.rs, y.rs"
+        );
+        assert_eq!(summary("edit", r#"{"path":"old.rs"}"#), "edit old.rs");
         assert_eq!(
             summary("notes_write", r##"{"text":"# Plan\n- one\n- two\n"}"##),
             "notes_write 3 lines"

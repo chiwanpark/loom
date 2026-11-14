@@ -1,6 +1,7 @@
 mod edit;
 mod error;
 mod fsutil;
+pub mod patch;
 pub mod pty;
 mod read;
 mod registry;
@@ -12,7 +13,7 @@ pub mod vtext;
 mod workspace;
 mod write;
 
-pub use edit::{EditTool, Replacement, apply_edits};
+pub use edit::EditTool;
 pub use error::{Result, ToolError};
 pub use fsutil::write_file;
 pub use read::ReadTool;

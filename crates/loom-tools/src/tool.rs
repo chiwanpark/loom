@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use loom_proto::{Task, TaskChange};
+use loom_proto::{PatchedFile, Task, TaskChange};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -140,6 +140,16 @@ impl ToolContext {
         locks.lock_file(path, access).await
     }
 
+    /// Locks several files at once, in an order that cannot deadlock.
+    pub async fn lock_files(&self, paths: &[&std::path::Path], access: FileAccess) -> FileGuard {
+        let locks = self.workspace.locks();
+        if let Some(guard) = locks.try_lock_files(paths, access) {
+            return guard;
+        }
+        let _notice = self.notice_wait();
+        locks.lock_files(paths, access).await
+    }
+
     pub async fn lock_workspace(&self) -> WorkspaceGuard {
         let locks = self.workspace.locks();
         if let Some(guard) = locks.try_lock_workspace() {
@@ -196,10 +206,9 @@ pub enum ToolDetails {
         total_lines: usize,
         truncated: bool,
     },
-    Edit {
-        path: PathBuf,
-        diff: String,
-        first_changed_line: Option<usize>,
+    /// The files a patch changed.
+    Patch {
+        files: Vec<PatchedFile>,
     },
     Write {
         path: PathBuf,

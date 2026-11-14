@@ -783,7 +783,7 @@ async fn notes_are_read_and_written_through_the_client() {
         vec![AssistantContent::ToolCall(ToolCall {
             call_id: "call-1".into(),
             name: "notes_edit".into(),
-            arguments: json!({"old_text": "- plan", "new_text": "- plan\n- step done"}),
+            arguments: json!({"patch": "@@\n - plan\n+- step done\n"}),
             provider_data: None,
         })],
         StopReason::ToolUse,

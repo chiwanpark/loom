@@ -135,9 +135,10 @@ pub enum FileAccess {
     Write,
 }
 
+/// Locks on one or more files, and a shared lock on the workspace.
 #[derive(Debug)]
 pub struct FileGuard {
-    _file: FileLockGuard,
+    _files: Vec<FileLockGuard>,
     _workspace: OwnedRwLockReadGuard<()>,
 }
 
@@ -152,16 +153,33 @@ pub struct WorkspaceGuard {
     _workspace: OwnedRwLockWriteGuard<()>,
 }
 
+/// The distinct paths, in the one order every caller locks them in, so that
+/// two callers locking several files cannot deadlock.
+fn lock_order(paths: &[&Path]) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = paths.iter().map(|path| path.to_path_buf()).collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 impl LockManager {
     pub async fn lock_file(&self, path: &Path, access: FileAccess) -> FileGuard {
+        self.lock_files(&[path], access).await
+    }
+
+    /// Locks several files at once, under one shared workspace lock.
+    pub async fn lock_files(&self, paths: &[&Path], access: FileAccess) -> FileGuard {
         let workspace = self.workspace.clone().read_owned().await;
-        let lock = self.file_lock(path);
-        let file = match access {
-            FileAccess::Read => FileLockGuard::Read(lock.read_owned().await),
-            FileAccess::Write => FileLockGuard::Write(lock.write_owned().await),
-        };
+        let mut files = Vec::with_capacity(paths.len());
+        for path in lock_order(paths) {
+            let lock = self.file_lock(&path);
+            files.push(match access {
+                FileAccess::Read => FileLockGuard::Read(lock.read_owned().await),
+                FileAccess::Write => FileLockGuard::Write(lock.write_owned().await),
+            });
+        }
         FileGuard {
-            _file: file,
+            _files: files,
             _workspace: workspace,
         }
     }
@@ -173,14 +191,21 @@ impl LockManager {
     }
 
     pub fn try_lock_file(&self, path: &Path, access: FileAccess) -> Option<FileGuard> {
+        self.try_lock_files(&[path], access)
+    }
+
+    pub fn try_lock_files(&self, paths: &[&Path], access: FileAccess) -> Option<FileGuard> {
         let workspace = self.workspace.clone().try_read_owned().ok()?;
-        let lock = self.file_lock(path);
-        let file = match access {
-            FileAccess::Read => FileLockGuard::Read(lock.try_read_owned().ok()?),
-            FileAccess::Write => FileLockGuard::Write(lock.try_write_owned().ok()?),
-        };
+        let mut files = Vec::with_capacity(paths.len());
+        for path in lock_order(paths) {
+            let lock = self.file_lock(&path);
+            files.push(match access {
+                FileAccess::Read => FileLockGuard::Read(lock.try_read_owned().ok()?),
+                FileAccess::Write => FileLockGuard::Write(lock.try_write_owned().ok()?),
+            });
+        }
         Some(FileGuard {
-            _file: file,
+            _files: files,
             _workspace: workspace,
         })
     }

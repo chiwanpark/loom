@@ -163,6 +163,10 @@ fn line_counts(track: &ToolTrack, result: &ToolResult) -> Option<(u64, u64)> {
         Some(
             ToolResultDetails::Edit { diff, .. } | ToolResultDetails::WriteWithDiff { diff, .. },
         ) => Some(mappers::diff_line_counts(diff)),
+        Some(ToolResultDetails::Patch { files }) => Some(files.iter().fold((0, 0), |sum, file| {
+            let (added, removed) = mappers::diff_line_counts(&file.diff);
+            (sum.0 + added, sum.1 + removed)
+        })),
         Some(ToolResultDetails::Write { .. }) => mappers::string_arg(&track.arguments, "content")
             .filter(|content| !content.is_empty())
             .map(|content| (content.lines().count() as u64, 0)),
@@ -274,8 +278,7 @@ impl Recorder {
                 kv("source", source),
                 kv("tool_name", tool),
             ]);
-            if let Some(language) =
-                mappers::string_arg(&track.arguments, "path").and_then(mappers::language)
+            if let Some(language) = mappers::file_arg(&track.arguments).and_then(mappers::language)
             {
                 attributes.push(kv("language", language));
             }

@@ -3,13 +3,13 @@
 
 use loom_client::proto::{
     self, AgentInfo, ModelInfo, NotesContent, ReasoningEffort, SessionInfo, SessionState,
-    TaskChange, TaskStatus, ToolResultDetails,
+    TaskChange, TaskStatus,
 };
 use loom_view_model::conversation::{
     self, Attachment, Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label,
     tool_summary,
 };
-use loom_view_model::tool_details::{CallDetails, call_details};
+use loom_view_model::tool_details::{CallDetails, call_details, result_diff};
 use serde::{Deserialize, Serialize};
 
 /// The most bytes of a tool's output sent to the app, from its end.
@@ -326,12 +326,7 @@ fn image(attachment: &Attachment) -> ImageData {
 
 fn tool_item(tool: &ToolItem) -> ConversationItem {
     let start = tool.output.len().saturating_sub(MAX_OUTPUT);
-    let diff = match tool.result.as_ref().and_then(|r| r.details.as_ref()) {
-        Some(
-            ToolResultDetails::Edit { diff, .. } | ToolResultDetails::WriteWithDiff { diff, .. },
-        ) => Some(diff.clone()),
-        _ => None,
-    };
+    let diff = result_diff(tool.result.as_ref().and_then(|r| r.details.as_ref()));
     ConversationItem::Tool {
         call_id: tool.call.call_id.clone(),
         name: tool.call.name.clone(),
@@ -611,6 +606,8 @@ pub fn notice_message(notice: &proto::Notice) -> Option<(NoticeLevel, String)> {
 
 #[cfg(test)]
 mod tests {
+    use loom_client::proto::ToolResultDetails;
+
     use super::*;
 
     #[test]

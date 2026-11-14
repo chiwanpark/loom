@@ -98,6 +98,30 @@ pub enum ToolResultDetails {
         created: bool,
         diff: String,
     },
+    /// The files a patch changed, in the patch's order.
+    Patch { files: Vec<PatchedFile> },
+}
+
+/// One file a patch changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchedFile {
+    /// The file's path after the change; for a deleted file, its old path.
+    pub path: PathBuf,
+    pub change: FileChangeKind,
+    /// A unified diff of the change.
+    pub diff: String,
+    pub first_changed_line: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileChangeKind {
+    Created,
+    Modified,
+    Deleted,
+    /// Moved from `from`, maybe with changes too.
+    Moved {
+        from: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

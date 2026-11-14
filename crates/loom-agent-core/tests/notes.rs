@@ -125,7 +125,7 @@ async fn the_agent_reads_edits_and_writes_the_notes_without_asking() {
                 (
                     "e",
                     "notes_edit",
-                    json!({"edits": [{"old_text": "- todo", "new_text": "- done"}]}),
+                    json!({"patch": "@@ -1,2 +1,2 @@\n - plan\n-- todo\n+- done\n"}),
                 ),
                 ("r2", "notes_read", json!({})),
             ]),
@@ -186,7 +186,7 @@ async fn writing_all_the_notes_needs_them_read_first() {
                 write("w2", "lost"),
                 (
                     "e1".into(),
-                    json!({"old_text": "user", "new_text": "the user's"}),
+                    json!({"patch": "@@\n-user notes\n+the user's notes\n"}),
                 ),
                 // An edit shows the agent only what it replaced.
                 write("w2b", "lost too"),
@@ -252,12 +252,12 @@ async fn notes_changes_are_checked() {
                 (
                     "missing",
                     "notes_edit",
-                    json!({"old_text": "absent", "new_text": "x"}),
+                    json!({"patch": "@@\n-absent\n+x\n"}),
                 ),
                 (
                     "large-edit",
                     "notes_edit",
-                    json!({"old_text": "9", "new_text": "9abcdefghi"}),
+                    json!({"patch": "@@\n-0123456789\n+0123456789abcdefghi\n"}),
                 ),
                 ("read", "notes_read", json!({})),
                 (
@@ -277,9 +277,7 @@ async fn notes_changes_are_checked() {
     let missing = result(&results, "missing");
     assert!(missing.is_error);
     assert!(
-        missing
-            .content
-            .contains("could not find old_text in the notes"),
+        missing.content.contains("does not match the notes"),
         "{}",
         missing.content
     );

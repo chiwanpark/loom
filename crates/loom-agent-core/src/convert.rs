@@ -78,15 +78,7 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
             total_lines: total_lines as u64,
             truncated,
         }),
-        ToolDetails::Edit {
-            path,
-            diff,
-            first_changed_line,
-        } => Some(ToolResultDetails::Edit {
-            path,
-            diff,
-            first_changed_line: first_changed_line.map(|l| l as u64),
-        }),
+        ToolDetails::Patch { files } => Some(ToolResultDetails::Patch { files }),
         ToolDetails::Write {
             path,
             bytes,

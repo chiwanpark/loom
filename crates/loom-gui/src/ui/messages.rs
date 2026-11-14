@@ -27,7 +27,7 @@ use crate::conversation::{
 };
 use crate::ui::code::{self, Highlighted};
 use loom_view_model::tool_details::{
-    CallDetails, MAX_BLOCK_LINES, call_details, head, language, split_read_note,
+    CallDetails, MAX_BLOCK_LINES, call_details, head, language, result_diff, split_read_note,
 };
 
 const OUTPUT_COLS: u16 = 120;
@@ -347,7 +347,11 @@ impl MessageList {
             ToolStatus::WaitingApproval | ToolStatus::Running | ToolStatus::Failed
         ) || matches!(
             tool.result.as_ref().and_then(|r| r.details.as_ref()),
-            Some(ToolResultDetails::Edit { .. } | ToolResultDetails::WriteWithDiff { .. })
+            Some(
+                ToolResultDetails::Edit { .. }
+                    | ToolResultDetails::WriteWithDiff { .. }
+                    | ToolResultDetails::Patch { .. }
+            )
         )
     }
 
@@ -614,13 +618,7 @@ impl MessageList {
                         .child(reason.clone()),
                 );
             }
-            let diff = match tool.result.as_ref().and_then(|r| r.details.as_ref()) {
-                Some(
-                    ToolResultDetails::Edit { diff, .. }
-                    | ToolResultDetails::WriteWithDiff { diff, .. },
-                ) => Some(diff.clone()),
-                _ => None,
-            };
+            let diff = result_diff(tool.result.as_ref().and_then(|r| r.details.as_ref()));
             match call_details(&tool.call, diff.is_some()) {
                 CallDetails::None => {}
                 CallDetails::Diff(text) => {

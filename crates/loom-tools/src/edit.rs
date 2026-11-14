@@ -1,165 +1,118 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use loom_proto::{FileChangeKind, PatchedFile};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use similar::TextDiff;
 
 use crate::error::{Result, ToolError};
 use crate::fsutil::{current_stamp, write_file};
+use crate::patch::{FilePatch, Hunk, apply_hunks, parse_patch};
 use crate::tool::{Risk, Tool, ToolContext, ToolDetails, ToolOutput, ToolSpec, parse_args};
-use crate::workspace::FileAccess;
+use crate::workspace::{FileAccess, FileStamp, Workspace};
 
 const BOM: &str = "\u{feff}";
+const MAX_DIFF: usize = 256 * 1024;
 
 #[derive(Debug, Default, Clone)]
 pub struct EditTool;
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Replacement {
-    #[serde(alias = "oldText")]
-    pub old_text: String,
-    #[serde(alias = "newText")]
-    pub new_text: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct EditArgs {
-    path: String,
-    #[serde(default)]
-    edits: Vec<Replacement>,
-    #[serde(default, alias = "oldText")]
-    old_text: Option<String>,
-    #[serde(default, alias = "newText")]
-    new_text: Option<String>,
+    patch: String,
 }
 
-impl EditArgs {
-    fn replacements(self) -> Result<(String, Vec<Replacement>)> {
-        let mut edits = self.edits;
-        match (self.old_text, self.new_text) {
-            (Some(old_text), Some(new_text)) => edits.push(Replacement { old_text, new_text }),
-            (None, None) => {}
-            _ => {
-                return Err(ToolError::InvalidArguments(
-                    "old_text and new_text must be given together".into(),
-                ));
-            }
-        }
-        if edits.is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "edits must contain at least one replacement".into(),
-            ));
-        }
-        Ok((self.path, edits))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Create,
+    Modify,
+    Delete,
+    Move,
+}
+
+/// One file section of the patch, with its paths resolved.
+#[derive(Debug)]
+struct Planned {
+    kind: Kind,
+    /// The file the change reads: none for a created file.
+    source: Option<PathBuf>,
+    /// The file the change writes: none for a deleted file.
+    target: Option<PathBuf>,
+    hunks: Vec<Hunk>,
+}
+
+impl Planned {
+    fn paths(&self) -> impl Iterator<Item = &Path> {
+        let target = self
+            .target
+            .iter()
+            .filter(|target| self.source.as_ref() != Some(target));
+        self.source.iter().chain(target).map(PathBuf::as_path)
     }
 }
 
-#[async_trait]
-impl Tool for EditTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "edit".into(),
-            description: "Edit a text file in the workspace with exact text replacement. Each edits[].old_text must match exactly one region of the original file, including whitespace and newlines, and edits must not overlap. Merge nearby changes into one edit. Read the file first.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file, relative to the workspace root or absolute"
-                    },
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "description": "Replacements matched against the original file, not applied incrementally",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_text": {
-                                    "type": "string",
-                                    "description": "Exact text to replace; must be unique in the file"
-                                },
-                                "new_text": {
-                                    "type": "string",
-                                    "description": "Replacement text"
-                                }
-                            },
-                            "required": ["old_text", "new_text"]
-                        }
-                    }
-                },
-                "required": ["path", "edits"]
-            }),
-        }
+/// A planned change with its old and new text, ready to be written.
+#[derive(Debug)]
+struct Prepared {
+    planned: Planned,
+    old_text: String,
+    new_text: String,
+    /// The bytes to write, with the original BOM and line endings.
+    bytes: Vec<u8>,
+}
+
+fn invalid(message: String) -> ToolError {
+    ToolError::InvalidArguments(message)
+}
+
+/// Resolves a path from a file header. Git-style `a/` and `b/` prefixes are
+/// dropped, unless only the path with the prefix exists.
+fn resolve_header(workspace: &Workspace, raw: &str) -> Result<PathBuf> {
+    let stripped = raw
+        .strip_prefix("a/")
+        .or_else(|| raw.strip_prefix("b/"))
+        .filter(|rest| !rest.is_empty());
+    let Some(stripped) = stripped else {
+        return workspace.resolve(raw);
+    };
+    let path = workspace.resolve(stripped)?;
+    if !path.exists()
+        && let Ok(whole) = workspace.resolve(raw)
+        && whole.exists()
+    {
+        return Ok(whole);
     }
+    Ok(path)
+}
 
-    fn risk(&self, _args: &Value) -> Risk {
-        Risk::Write
-    }
-
-    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput> {
-        let (path, edits) = parse_args::<EditArgs>(args)?.replacements()?;
-        ctx.ensure_not_cancelled()?;
-        let path = ctx.workspace.resolve(&path)?;
-        let display = ctx.workspace.display_path(&path);
-        let _guard = ctx.lock_file(&path, FileAccess::Write).await;
-
-        let stamp = current_stamp(&path)
-            .map_err(|err| ToolError::io(format!("cannot inspect {display}"), err))?;
-        if stamp.is_none() {
-            return Err(ToolError::NotFound(PathBuf::from(display)));
-        }
-        ctx.files.ensure_fresh(&path, stamp)?;
-
-        let edit_path = path.clone();
-        let edit_display = display.clone();
-        let edit_count = edits.len();
-        let outcome = tokio::task::spawn_blocking(move || {
-            let bytes = std::fs::read(&edit_path)
-                .map_err(|err| ToolError::io(format!("cannot read {edit_display}"), err))?;
-            let original = String::from_utf8(bytes).map_err(|_| {
-                ToolError::failed(format!("{edit_display} is not valid UTF-8 text"))
-            })?;
-            let (bom, body) = match original.strip_prefix(BOM) {
-                Some(body) => (BOM, body),
-                None => ("", original.as_str()),
-            };
-            let crlf = uses_crlf(body);
-            let old_content = normalize_to_lf(body);
-            let new_content = apply_edits(&old_content, &edits, &edit_display)?;
-            let mut output = String::with_capacity(bom.len() + new_content.len());
-            output.push_str(bom);
-            if crlf {
-                output.push_str(&new_content.replace('\n', "\r\n"));
-            } else {
-                output.push_str(&new_content);
-            }
-            let (stamp, _) = write_file(&edit_path, output.as_bytes())
-                .map_err(|err| ToolError::io(format!("cannot write {edit_display}"), err))?;
-            Ok::<_, ToolError>((old_content, new_content, stamp))
-        })
-        .await
-        .map_err(|err| ToolError::failed(format!("edit task failed: {err}")))?;
-        let (old_content, new_content, stamp) = outcome?;
-        ctx.files.record(&path, stamp);
-
-        let diff = TextDiff::from_lines(&old_content, &new_content)
-            .unified_diff()
-            .context_radius(3)
-            .header(&display, &display)
-            .to_string();
-        let first_changed_line = first_changed_line(&old_content, &new_content);
-        let blocks = if edit_count == 1 { "block" } else { "blocks" };
-        Ok(ToolOutput {
-            content: format!("Edited {display}: replaced {edit_count} {blocks}."),
-            is_error: false,
-            details: ToolDetails::Edit {
-                path,
-                diff,
-                first_changed_line,
-            },
-        })
-    }
+fn plan(workspace: &Workspace, file: FilePatch) -> Result<Planned> {
+    let source = file
+        .old_path
+        .as_deref()
+        .map(|raw| resolve_header(workspace, raw))
+        .transpose()?;
+    let target = file
+        .new_path
+        .as_deref()
+        .map(|raw| resolve_header(workspace, raw))
+        .transpose()?;
+    let kind = match (&source, &target) {
+        (None, Some(_)) => Kind::Create,
+        (Some(_), None) => Kind::Delete,
+        (Some(source), Some(target)) if source == target => Kind::Modify,
+        _ => Kind::Move,
+    };
+    let (source, target) = match kind {
+        Kind::Modify => (source.clone(), source),
+        _ => (source, target),
+    };
+    Ok(Planned {
+        kind,
+        source,
+        target,
+        hunks: file.hunks,
+    })
 }
 
 fn uses_crlf(text: &str) -> bool {
@@ -169,77 +122,287 @@ fn uses_crlf(text: &str) -> bool {
     }
 }
 
-fn normalize_to_lf(text: &str) -> String {
-    text.replace("\r\n", "\n")
+/// Reads a text file as `(bom, crlf, text with \n line endings)`.
+fn read_text(path: &Path, display: &str) -> Result<(&'static str, bool, String)> {
+    let bytes =
+        std::fs::read(path).map_err(|err| ToolError::io(format!("cannot read {display}"), err))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ToolError::failed(format!("{display} is not valid UTF-8 text")))?;
+    let (bom, body) = match text.strip_prefix(BOM) {
+        Some(body) => (BOM, body),
+        None => ("", text.as_str()),
+    };
+    let crlf = uses_crlf(body);
+    Ok((bom, crlf, body.replace("\r\n", "\n")))
 }
 
-pub fn apply_edits(content: &str, edits: &[Replacement], display: &str) -> Result<String> {
-    let total = edits.len();
-    let label = |index: usize| {
-        if total == 1 {
-            "old_text".to_string()
-        } else {
-            format!("edits[{index}].old_text")
-        }
+fn prepare(workspace: &Workspace, planned: Planned) -> Result<Prepared> {
+    let display = |path: &Option<PathBuf>| {
+        path.as_deref()
+            .map(|path| workspace.display_path(path))
+            .unwrap_or_default()
     };
+    let (bom, crlf, old_text) = match &planned.source {
+        Some(source) => read_text(source, &display(&planned.source))?,
+        None => ("", false, String::new()),
+    };
+    let label = display(&planned.target.clone().or(planned.source.clone()));
+    let new_text = if planned.hunks.is_empty() {
+        old_text.clone()
+    } else {
+        apply_hunks(&old_text, &planned.hunks, &label)?
+    };
+    let new_text = match planned.kind {
+        Kind::Delete => String::new(),
+        _ => new_text,
+    };
+    let mut bytes = String::with_capacity(bom.len() + new_text.len());
+    bytes.push_str(bom);
+    if crlf {
+        bytes.push_str(&new_text.replace('\n', "\r\n"));
+    } else {
+        bytes.push_str(&new_text);
+    }
+    Ok(Prepared {
+        planned,
+        old_text,
+        new_text,
+        bytes: bytes.into_bytes(),
+    })
+}
 
-    let mut matches = Vec::with_capacity(total);
-    for (index, edit) in edits.iter().enumerate() {
-        let old_text = normalize_to_lf(&edit.old_text);
-        if old_text.is_empty() {
-            return Err(ToolError::InvalidArguments(format!(
-                "{} must not be empty",
-                label(index)
-            )));
+/// What one written file leaves behind: the stamps to record and the paths
+/// to forget in the file tracker.
+#[derive(Debug, Default)]
+struct Written {
+    record: Vec<(PathBuf, FileStamp)>,
+    forget: Vec<PathBuf>,
+}
+
+fn write_one(prepared: &Prepared, written: &mut Written) -> std::io::Result<()> {
+    let planned = &prepared.planned;
+    if let Some(target) = &planned.target {
+        let (stamp, _) = write_file(target, &prepared.bytes)?;
+        written.record.push((target.clone(), stamp));
+    }
+    if matches!(planned.kind, Kind::Delete | Kind::Move)
+        && let Some(source) = &planned.source
+    {
+        std::fs::remove_file(source)?;
+        written.forget.push(source.clone());
+    }
+    Ok(())
+}
+
+fn diff_text(old_name: &str, new_name: &str, old: &str, new: &str) -> String {
+    let diff = TextDiff::from_lines(old, new)
+        .unified_diff()
+        .context_radius(3)
+        .header(old_name, new_name)
+        .to_string();
+    if diff.len() <= MAX_DIFF {
+        return diff;
+    }
+    format!(
+        "--- {old_name}\n+++ {new_name}\n\\ The diff is too large to show ({} bytes).\n",
+        diff.len()
+    )
+}
+
+fn patched_file(workspace: &Workspace, prepared: &Prepared) -> PatchedFile {
+    let planned = &prepared.planned;
+    let name = |path: &Option<PathBuf>| match path {
+        Some(path) => workspace.display_path(path),
+        None => crate::patch::DEV_NULL.to_owned(),
+    };
+    let diff = diff_text(
+        &name(&planned.source),
+        &name(&planned.target),
+        &prepared.old_text,
+        &prepared.new_text,
+    );
+    let first_changed_line =
+        first_changed_line(&prepared.old_text, &prepared.new_text).map(|line| line as u64);
+    let (path, change) = match (planned.kind, &planned.source, &planned.target) {
+        (Kind::Create, _, Some(target)) => (target.clone(), FileChangeKind::Created),
+        (Kind::Delete, Some(source), _) => (source.clone(), FileChangeKind::Deleted),
+        (Kind::Move, Some(source), Some(target)) => (
+            target.clone(),
+            FileChangeKind::Moved {
+                from: source.clone(),
+            },
+        ),
+        (_, _, target) => (target.clone().unwrap_or_default(), FileChangeKind::Modified),
+    };
+    let first_changed_line = match change {
+        FileChangeKind::Deleted => None,
+        _ => first_changed_line,
+    };
+    PatchedFile {
+        path,
+        change,
+        diff,
+        first_changed_line,
+    }
+}
+
+fn summary(workspace: &Workspace, file: &PatchedFile) -> String {
+    let path = workspace.display_path(&file.path);
+    let (added, removed) = count_changes(&file.diff);
+    match &file.change {
+        FileChangeKind::Created => format!("created {path} (+{added})"),
+        FileChangeKind::Deleted => format!("deleted {path}"),
+        FileChangeKind::Modified => format!("modified {path} (+{added} -{removed})"),
+        FileChangeKind::Moved { from } => format!(
+            "moved {} to {path} (+{added} -{removed})",
+            workspace.display_path(from)
+        ),
+    }
+}
+
+fn count_changes(diff: &str) -> (usize, usize) {
+    diff.lines().fold((0, 0), |(added, removed), line| {
+        if line.starts_with('+') && !line.starts_with("+++") {
+            (added + 1, removed)
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            (added, removed + 1)
+        } else {
+            (added, removed)
         }
-        let mut found = content.match_indices(old_text.as_str());
-        let Some((start, _)) = found.next() else {
-            return Err(ToolError::failed(format!(
-                "could not find {} in {display}; it must match exactly, including whitespace and newlines",
-                label(index)
-            )));
+    })
+}
+
+#[async_trait]
+impl Tool for EditTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "edit".into(),
+            description: "Change files in the workspace with a patch in unified diff format. One patch can change several files: each file starts with `--- a/<path>` and `+++ b/<path>` lines, then its hunks. `--- /dev/null` creates a file, `+++ /dev/null` deletes one, and two different paths move a file. Each hunk starts with an `@@ -<line>,<count> +<line>,<count> @@` line, and each of its lines starts with ' ' (unchanged), '-' (removed) or '+' (added). Hunks are placed by their unchanged and removed lines, which must match the file, so include about 3 unchanged lines around each change and keep a file's hunks in file order; line numbers only help choose between several matching places. Read a file before changing it. Nothing is changed unless the whole patch applies.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "The patch, in unified diff format, for one or more files"
+                    }
+                },
+                "required": ["patch"]
+            }),
+        }
+    }
+
+    fn risk(&self, _args: &Value) -> Risk {
+        Risk::Write
+    }
+
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput> {
+        let args: EditArgs = parse_args(args)?;
+        let files = parse_patch(&args.patch)?;
+        ctx.ensure_not_cancelled()?;
+        let workspace = ctx.workspace.clone();
+        let planned = files
+            .into_iter()
+            .map(|file| plan(&workspace, file))
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut paths: Vec<&Path> = Vec::new();
+        for path in planned.iter().flat_map(Planned::paths) {
+            if paths.contains(&path) {
+                return Err(invalid(format!(
+                    "{} appears more than once in the patch; put all of its hunks under one file header",
+                    workspace.display_path(path)
+                )));
+            }
+            paths.push(path);
+        }
+        let _guard = ctx.lock_files(&paths, FileAccess::Write).await;
+
+        for planned in &planned {
+            if let Some(source) = &planned.source {
+                let display = workspace.display_path(source);
+                let stamp = current_stamp(source)
+                    .map_err(|err| ToolError::io(format!("cannot inspect {display}"), err))?;
+                if stamp.is_none() {
+                    return Err(ToolError::NotFound(PathBuf::from(display)));
+                }
+                ctx.files.ensure_fresh(source, stamp)?;
+            }
+            if let Some(target) = &planned.target
+                && planned.kind != Kind::Modify
+                && target.exists()
+            {
+                return Err(ToolError::failed(format!(
+                    "{} already exists; change it with `--- a/<path>` and `+++ b/<path>` headers instead",
+                    workspace.display_path(target)
+                )));
+            }
+        }
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            let prepared = planned
+                .into_iter()
+                .map(|planned| prepare(&workspace, planned))
+                .collect::<Result<Vec<_>>>()
+                .map_err(|err| (err, Written::default()))?;
+            let mut written = Written::default();
+            for (index, file) in prepared.iter().enumerate() {
+                if let Err(err) = write_one(file, &mut written) {
+                    let path = file
+                        .planned
+                        .target
+                        .as_ref()
+                        .or(file.planned.source.as_ref());
+                    let display = path
+                        .map(|path| workspace.display_path(path))
+                        .unwrap_or_default();
+                    let done: Vec<String> = prepared[..index]
+                        .iter()
+                        .map(|file| summary(&workspace, &patched_file(&workspace, file)))
+                        .collect();
+                    let message = if done.is_empty() {
+                        format!("cannot write {display}")
+                    } else {
+                        format!(
+                            "cannot write {display}, after the patch already {}",
+                            done.join(", ")
+                        )
+                    };
+                    return Err((ToolError::io(message, err), written));
+                }
+            }
+            let files: Vec<PatchedFile> = prepared
+                .iter()
+                .map(|file| patched_file(&workspace, file))
+                .collect();
+            let summaries: Vec<String> =
+                files.iter().map(|file| summary(&workspace, file)).collect();
+            Ok((files, summaries, written))
+        })
+        .await
+        .map_err(|err| ToolError::failed(format!("edit task failed: {err}")))?;
+
+        let record = |written: Written| {
+            for (path, stamp) in written.record {
+                ctx.files.record(&path, stamp);
+            }
+            for path in written.forget {
+                ctx.files.forget(&path);
+            }
         };
-        let occurrences = 1 + found.count();
-        if occurrences > 1 {
-            return Err(ToolError::failed(format!(
-                "found {occurrences} occurrences of {} in {display}; add more surrounding context to make it unique",
-                label(index)
-            )));
-        }
-        matches.push((
-            start,
-            old_text.len(),
-            normalize_to_lf(&edit.new_text),
-            index,
-        ));
+        let (files, summaries, written) = match outcome {
+            Ok(done) => done,
+            Err((err, written)) => {
+                record(written);
+                return Err(err);
+            }
+        };
+        record(written);
+        Ok(ToolOutput {
+            content: format!("Applied the patch: {}.", summaries.join(", ")),
+            is_error: false,
+            details: ToolDetails::Patch { files },
+        })
     }
-
-    matches.sort_by_key(|(start, ..)| *start);
-    for pair in matches.windows(2) {
-        let (start, len, _, first) = &pair[0];
-        let (next_start, _, _, second) = &pair[1];
-        if start + len > *next_start {
-            return Err(ToolError::InvalidArguments(format!(
-                "edits[{first}] and edits[{second}] overlap in {display}; merge them into one edit"
-            )));
-        }
-    }
-
-    let mut output = String::with_capacity(content.len());
-    let mut cursor = 0;
-    for (start, len, new_text, _) in &matches {
-        output.push_str(&content[cursor..*start]);
-        output.push_str(new_text);
-        cursor = start + len;
-    }
-    output.push_str(&content[cursor..]);
-
-    if output == content {
-        return Err(ToolError::failed(format!(
-            "no changes made to {display}; the replacement produced identical content"
-        )));
-    }
-    Ok(output)
 }
 
 fn first_changed_line(old: &str, new: &str) -> Option<usize> {
@@ -271,38 +434,15 @@ mod tests {
         (dir, ToolContext::new(workspace))
     }
 
-    fn replacement(old_text: &str, new_text: &str) -> Replacement {
-        Replacement {
-            old_text: old_text.into(),
-            new_text: new_text.into(),
-        }
+    async fn edit(ctx: &ToolContext, patch: &str) -> Result<ToolOutput> {
+        EditTool.call(ctx, json!({ "patch": patch })).await
     }
 
-    #[test]
-    fn applies_multiple_disjoint_edits() {
-        let output = apply_edits(
-            "a\nb\nc\n",
-            &[replacement("c", "C"), replacement("a", "A")],
-            "f",
-        )
-        .unwrap();
-        assert_eq!(output, "A\nb\nC\n");
-    }
-
-    #[test]
-    fn rejects_missing_duplicate_and_overlapping_edits() {
-        assert!(apply_edits("abc", &[replacement("x", "y")], "f").is_err());
-        assert!(apply_edits("aa", &[replacement("a", "b")], "f").is_err());
-        assert!(
-            apply_edits(
-                "abcdef",
-                &[replacement("abc", "x"), replacement("cde", "y")],
-                "f"
-            )
-            .is_err()
-        );
-        assert!(apply_edits("abc", &[replacement("", "y")], "f").is_err());
-        assert!(apply_edits("abc", &[replacement("b", "b")], "f").is_err());
+    fn patched(output: ToolOutput) -> Vec<PatchedFile> {
+        let ToolDetails::Patch { files } = output.details else {
+            panic!("unexpected details");
+        };
+        files
     }
 
     #[test]
@@ -313,47 +453,129 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edits_file_and_reports_diff() {
+    async fn edits_a_file_and_reports_its_diff() {
         let (dir, ctx) = context();
         let path = dir.path().join("main.rs");
         std::fs::write(&path, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
-        let output = EditTool
-            .call(
-                &ctx,
-                json!({"path": "main.rs", "edits": [{"old_text": "\"hi\"", "new_text": "\"안녕\""}]}),
-            )
-            .await
-            .unwrap();
+        let patch = "--- a/main.rs\n+++ b/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hi\");\n+    println!(\"안녕\");\n }\n";
+        let output = edit(&ctx, patch).await.unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "fn main() {\n    println!(\"안녕\");\n}\n"
         );
-        let ToolDetails::Edit {
-            diff,
-            first_changed_line,
-            ..
-        } = output.details
-        else {
-            panic!("unexpected details");
-        };
-        assert_eq!(first_changed_line, Some(2));
-        assert!(diff.contains("-    println!(\"hi\");"));
-        assert!(diff.contains("+    println!(\"안녕\");"));
+        assert_eq!(
+            output.content,
+            "Applied the patch: modified main.rs (+1 -1)."
+        );
+        let files = patched(output);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, path.canonicalize().unwrap());
+        assert_eq!(files[0].change, FileChangeKind::Modified);
+        assert_eq!(files[0].first_changed_line, Some(2));
+        assert!(files[0].diff.contains("-    println!(\"hi\");"));
+        assert!(files[0].diff.contains("+    println!(\"안녕\");"));
     }
 
     #[tokio::test]
-    async fn accepts_single_edit_shorthand() {
+    async fn changes_creates_deletes_and_moves_files_in_one_patch() {
         let (dir, ctx) = context();
-        let path = dir.path().join("a.txt");
-        std::fs::write(&path, "hello world").unwrap();
-        EditTool
-            .call(
-                &ctx,
-                json!({"path": "a.txt", "oldText": "world", "newText": "loom"}),
-            )
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(root.join("gone.txt"), "bye\n").unwrap();
+        std::fs::write(root.join("old.txt"), "keep\nme\n").unwrap();
+        let patch = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ one
+-two
++2
+--- /dev/null
++++ b/src/new.txt
+@@ -0,0 +1,2 @@
++hello
++world
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-bye
+--- a/old.txt
++++ b/moved/new.txt
+@@ -1,2 +1,2 @@
+ keep
+-me
++you
+";
+        let output = edit(&ctx, patch).await.unwrap();
+        assert_eq!(
+            output.content,
+            "Applied the patch: modified a.txt (+1 -1), created src/new.txt (+2), deleted gone.txt, moved old.txt to moved/new.txt (+1 -1)."
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "one\n2\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/new.txt")).unwrap(),
+            "hello\nworld\n"
+        );
+        assert!(!root.join("gone.txt").exists());
+        assert!(!root.join("old.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("moved/new.txt")).unwrap(),
+            "keep\nyou\n"
+        );
+        let changes: Vec<FileChangeKind> = patched(output).into_iter().map(|f| f.change).collect();
+        assert_eq!(changes[0], FileChangeKind::Modified);
+        assert_eq!(changes[1], FileChangeKind::Created);
+        assert_eq!(changes[2], FileChangeKind::Deleted);
+        assert!(matches!(changes[3], FileChangeKind::Moved { .. }));
+    }
+
+    #[tokio::test]
+    async fn changes_nothing_unless_every_file_applies() {
+        let (dir, ctx) = context();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        std::fs::write(root.join("b.txt"), "two\n").unwrap();
+        let patch =
+            "--- a/a.txt\n+++ b/a.txt\n@@\n-one\n+1\n--- a/b.txt\n+++ b/b.txt\n@@\n-three\n+3\n";
+        let error = edit(&ctx, patch).await.unwrap_err().to_string();
+        assert!(error.contains("does not match b.txt"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "one\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_creating_an_existing_file_and_repeated_files() {
+        let (dir, ctx) = context();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let error = edit(&ctx, "--- /dev/null\n+++ b/a.txt\n@@\n+x\n")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("already exists"), "{error}");
+        let patch =
+            "--- a/a.txt\n+++ b/a.txt\n@@\n-one\n+1\n--- a/a.txt\n+++ b/a.txt\n@@\n-1\n+2\n";
+        let error = edit(&ctx, patch).await.unwrap_err().to_string();
+        assert!(error.contains("more than once"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn keeps_paths_whose_first_directory_is_a_or_b() {
+        let (dir, ctx) = context();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::fs::write(dir.path().join("a/x.txt"), "one\n").unwrap();
+        edit(&ctx, "--- a/x.txt\n+++ a/x.txt\n@@\n-one\n+1\n")
             .await
             .unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello loom");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/x.txt")).unwrap(),
+            "1\n"
+        );
     }
 
     #[tokio::test]
@@ -361,11 +583,7 @@ mod tests {
         let (dir, ctx) = context();
         let path = dir.path().join("a.txt");
         std::fs::write(&path, "\u{feff}one\r\ntwo\r\n").unwrap();
-        EditTool
-            .call(
-                &ctx,
-                json!({"path": "a.txt", "edits": [{"old_text": "one\ntwo", "new_text": "1\n2"}]}),
-            )
+        edit(&ctx, "--- a/a.txt\n+++ b/a.txt\n@@\n-one\n-two\n+1\n+2\n")
             .await
             .unwrap();
         assert_eq!(
@@ -384,12 +602,7 @@ mod tests {
             .await
             .unwrap();
         std::fs::write(&path, "one\ntwo\n").unwrap();
-        let result = EditTool
-            .call(
-                &ctx,
-                json!({"path": "a.txt", "edits": [{"old_text": "one", "new_text": "1"}]}),
-            )
-            .await;
+        let result = edit(&ctx, "--- a/a.txt\n+++ b/a.txt\n@@\n-one\n+1\n").await;
         assert!(matches!(result, Err(ToolError::StaleFile { .. })));
     }
 
@@ -397,28 +610,25 @@ mod tests {
     async fn allows_consecutive_edits_by_same_session() {
         let (dir, ctx) = context();
         let path = dir.path().join("a.txt");
-        std::fs::write(&path, "a b c").unwrap();
-        for (old_text, new_text) in [("a", "A"), ("b", "B"), ("c", "C")] {
-            EditTool
-                .call(
-                    &ctx,
-                    json!({"path": "a.txt", "edits": [{"old_text": old_text, "new_text": new_text}]}),
-                )
-                .await
-                .unwrap();
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        for (old, new) in [("a", "A"), ("b", "B"), ("c", "C")] {
+            let patch = format!("--- a/a.txt\n+++ b/a.txt\n@@\n-{old}\n+{new}\n");
+            edit(&ctx, &patch).await.unwrap();
         }
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "A B C");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "A\nB\nC\n");
     }
 
     #[tokio::test]
     async fn reports_missing_file() {
         let (_dir, ctx) = context();
-        let result = EditTool
-            .call(
-                &ctx,
-                json!({"path": "missing.txt", "edits": [{"old_text": "a", "new_text": "b"}]}),
-            )
-            .await;
+        let result = edit(&ctx, "--- a/missing.txt\n+++ b/missing.txt\n@@\n-a\n+b\n").await;
         assert!(matches!(result, Err(ToolError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_paths_outside_the_workspace() {
+        let (_dir, ctx) = context();
+        let result = edit(&ctx, "--- /dev/null\n+++ /etc/loom-test\n@@\n+x\n").await;
+        assert!(matches!(result, Err(ToolError::OutsideWorkspace(_))));
     }
 }

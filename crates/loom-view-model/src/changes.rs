@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use loom_proto::ToolResultDetails;
+use loom_proto::{FileChangeKind, ToolResultDetails};
 
 use crate::conversation::{Item, ToolStatus};
 
@@ -49,43 +49,60 @@ pub fn session_changes<I>(items: &[Item<I>]) -> Vec<FileChange> {
         let Some(details) = tool.result.as_ref().and_then(|r| r.details.as_ref()) else {
             continue;
         };
-        let (path, created, entry) = match details {
+        let entries: Vec<(&Path, bool, ChangeEntry)> = match details {
             ToolResultDetails::Edit { path, diff, .. } => {
-                (path, false, ChangeEntry::Diff(diff.clone()))
+                vec![(path, false, ChangeEntry::Diff(diff.clone()))]
             }
             ToolResultDetails::WriteWithDiff {
                 path,
                 created,
                 diff,
                 ..
-            } => (path, *created, ChangeEntry::Diff(diff.clone())),
+            } => vec![(path, *created, ChangeEntry::Diff(diff.clone()))],
             ToolResultDetails::Write {
                 path,
                 created,
                 bytes,
-            } => (path, *created, ChangeEntry::Opaque { bytes: *bytes }),
+            } => vec![(path, *created, ChangeEntry::Opaque { bytes: *bytes })],
+            ToolResultDetails::Patch { files } => files
+                .iter()
+                .map(|file| {
+                    let created = file.change == FileChangeKind::Created;
+                    (
+                        file.path.as_path(),
+                        created,
+                        ChangeEntry::Diff(file.diff.clone()),
+                    )
+                })
+                .collect(),
             _ => continue,
         };
-        let (added, removed) = match &entry {
-            ChangeEntry::Diff(diff) => count_lines(diff),
-            ChangeEntry::Opaque { .. } => (0, 0),
-        };
-        match changes.iter_mut().find(|c| &c.path == path) {
-            Some(change) => {
-                change.added += added;
-                change.removed += removed;
-                change.entries.push(entry);
-            }
-            None => changes.push(FileChange {
-                path: path.clone(),
-                created,
-                added,
-                removed,
-                entries: vec![entry],
-            }),
+        for (path, created, entry) in entries {
+            add_entry(&mut changes, path, created, entry);
         }
     }
     changes
+}
+
+fn add_entry(changes: &mut Vec<FileChange>, path: &Path, created: bool, entry: ChangeEntry) {
+    let (added, removed) = match &entry {
+        ChangeEntry::Diff(diff) => count_lines(diff),
+        ChangeEntry::Opaque { .. } => (0, 0),
+    };
+    match changes.iter_mut().find(|c| c.path == path) {
+        Some(change) => {
+            change.added += added;
+            change.removed += removed;
+            change.entries.push(entry);
+        }
+        None => changes.push(FileChange {
+            path: path.to_path_buf(),
+            created,
+            added,
+            removed,
+            entries: vec![entry],
+        }),
+    }
 }
 
 pub fn count_lines(diff: &str) -> (usize, usize) {
@@ -298,6 +315,38 @@ mod tests {
         assert_eq!((changes[1].added, changes[1].removed), (1, 1));
         assert_eq!(changes[1].entries.len(), 2);
         assert_eq!(display_path(&changes[1].path, Path::new("/ws")), "a.rs");
+    }
+
+    #[test]
+    fn a_patch_counts_each_of_its_files() {
+        use loom_proto::{FileChangeKind, PatchedFile};
+        let items = vec![tool(
+            ToolStatus::Succeeded,
+            ToolResultDetails::Patch {
+                files: vec![
+                    PatchedFile {
+                        path: "/ws/a.rs".into(),
+                        change: FileChangeKind::Modified,
+                        diff: DIFF.into(),
+                        first_changed_line: Some(3),
+                    },
+                    PatchedFile {
+                        path: "/ws/n.rs".into(),
+                        change: FileChangeKind::Created,
+                        diff: "--- /dev/null\n+++ n.rs\n@@ -0,0 +1,2 @@\n+a\n+b\n".into(),
+                        first_changed_line: Some(1),
+                    },
+                ],
+            },
+        )];
+        let changes = session_changes(&items);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].path, PathBuf::from("/ws/a.rs"));
+        assert!(!changes[0].created);
+        assert_eq!((changes[0].added, changes[0].removed), (1, 1));
+        assert_eq!(changes[1].path, PathBuf::from("/ws/n.rs"));
+        assert!(changes[1].created);
+        assert_eq!((changes[1].added, changes[1].removed), (2, 0));
     }
 
     #[test]

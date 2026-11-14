@@ -24,6 +24,27 @@ pub fn string_arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
     arguments.get(key).and_then(Value::as_str)
 }
 
+/// The file a call works on: its `path`, or the first file an edit's patch
+/// changes.
+pub fn file_arg(arguments: &Value) -> Option<&str> {
+    if let Some(path) = string_arg(arguments, "path") {
+        return Some(path);
+    }
+    string_arg(arguments, "patch")?
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("+++ ")
+                .or_else(|| line.strip_prefix("--- "))
+        })
+        .map(|path| path.split('\t').next().unwrap_or_default().trim())
+        .find(|path| *path != "/dev/null")
+        .map(|path| {
+            path.strip_prefix("a/")
+                .or_else(|| path.strip_prefix("b/"))
+                .unwrap_or(path)
+        })
+}
+
 /// Added and removed lines in a unified diff, without the file headers.
 pub fn diff_line_counts(diff: &str) -> (u64, u64) {
     let (mut added, mut removed) = (0, 0);
@@ -168,7 +189,11 @@ pub fn tool_parameters(name: &str, arguments: &Value) -> Value {
         if let Some(timeout) = arguments.get("timeout") {
             params.insert("timeout".into(), timeout.clone());
         }
-    } else if let Some(path) = string_arg(arguments, "path") {
+    } else if let Some(path) = if name == "edit" {
+        file_arg(arguments)
+    } else {
+        string_arg(arguments, "path")
+    } {
         params.insert("file_path".into(), path.into());
     }
     Value::Object(params)
@@ -231,6 +256,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn an_edit_patch_names_its_first_file() {
+        let patch = json!({"patch": "--- /dev/null\n+++ b/src/new.rs\t2026\n@@\n+x\n--- a/b.py\n+++ b/b.py\n"});
+        assert_eq!(file_arg(&patch), Some("src/new.rs"));
+        assert_eq!(file_arg(&json!({"path": "a.rs"})), Some("a.rs"));
+        assert_eq!(
+            tool_parameters("edit", &patch)["file_path"],
+            json!("src/new.rs")
+        );
+    }
 
     #[test]
     fn counts_diff_lines() {

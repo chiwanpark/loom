@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use loom_proto::FileVersion;
+use loom_tools::patch::{apply_hunks, parse_hunks};
 use loom_tools::{
-    NotesAccess, Replacement, Risk, Tool, ToolContext, ToolDetails, ToolError, ToolOutput,
-    ToolSpec, apply_edits,
+    NotesAccess, Risk, Tool, ToolContext, ToolDetails, ToolError, ToolOutput, ToolSpec,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -80,33 +80,7 @@ pub struct NotesEditTool;
 
 #[derive(Deserialize)]
 struct EditArgs {
-    #[serde(default)]
-    edits: Vec<Replacement>,
-    #[serde(default, alias = "oldText")]
-    old_text: Option<String>,
-    #[serde(default, alias = "newText")]
-    new_text: Option<String>,
-}
-
-impl EditArgs {
-    fn replacements(self) -> Result<Vec<Replacement>, ToolError> {
-        let mut edits = self.edits;
-        match (self.old_text, self.new_text) {
-            (Some(old_text), Some(new_text)) => edits.push(Replacement { old_text, new_text }),
-            (None, None) => {}
-            _ => {
-                return Err(ToolError::InvalidArguments(
-                    "old_text and new_text must be given together".into(),
-                ));
-            }
-        }
-        if edits.is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "edits must contain at least one replacement".into(),
-            ));
-        }
-        Ok(edits)
-    }
+    patch: String,
 }
 
 #[async_trait]
@@ -114,31 +88,16 @@ impl Tool for NotesEditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: NOTES_EDIT_TOOL.into(),
-            description: "Edit this session's notes with exact text replacement. Each edits[].old_text must match exactly one region of the current notes, including whitespace and newlines, and edits must not overlap.".into(),
+            description: "Change a part of this session's notes with a patch in unified diff format, without file headers. Each hunk starts with an `@@ -<line>,<count> +<line>,<count> @@` line, and each of its lines starts with ' ' (unchanged), '-' (removed) or '+' (added). Hunks are placed by their unchanged and removed lines, which must match the current notes, so include a few unchanged lines around each change; line numbers only help choose between several matching places.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "edits": {
-                        "type": "array",
-                        "minItems": 1,
-                        "description": "Replacements matched against the current notes, not applied incrementally",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_text": {
-                                    "type": "string",
-                                    "description": "Exact text to replace; must be unique in the notes"
-                                },
-                                "new_text": {
-                                    "type": "string",
-                                    "description": "Replacement text"
-                                }
-                            },
-                            "required": ["old_text", "new_text"]
-                        }
+                    "patch": {
+                        "type": "string",
+                        "description": "The hunks to apply to the notes, in unified diff format"
                     }
                 },
-                "required": ["edits"]
+                "required": ["patch"]
             }),
         }
     }
@@ -148,8 +107,8 @@ impl Tool for NotesEditTool {
     }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
-        let edits = self::args::<EditArgs>(args)?.replacements()?;
-        let text = notes(ctx)?.edit(&mut |current| apply_edits(current, &edits, LABEL))?;
+        let hunks = parse_hunks(&self::args::<EditArgs>(args)?.patch)?;
+        let text = notes(ctx)?.edit(&mut |current| apply_hunks(current, &hunks, LABEL))?;
         Ok(output(
             format!("Edited the notes; they are {} bytes now.", text.len()),
             text.len(),

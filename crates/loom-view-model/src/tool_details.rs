@@ -1,7 +1,7 @@
 //! How clients show a tool call's arguments and results: the shell command,
 //! the content to write, or the edits as a diff, rather than raw JSON.
 
-use loom_proto::ToolCall;
+use loom_proto::{ToolCall, ToolResultDetails};
 
 /// The most lines of arguments a client shows; the rest are counted.
 pub const MAX_BLOCK_LINES: usize = 400;
@@ -82,6 +82,9 @@ pub fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
         "search_web" if field("query").is_some() => return CallDetails::None,
         "edit" if has_result_diff => return CallDetails::None,
         "edit" => {
+            if let Some(patch) = field("patch") {
+                return CallDetails::Diff(patch.to_owned());
+            }
             if let Some(diff) = args.as_ref().and_then(edit_preview) {
                 return CallDetails::Diff(diff);
             }
@@ -94,6 +97,9 @@ pub fn call_details(call: &ToolCall, has_result_diff: bool) -> CallDetails {
         }
         "notes_read" | "tasks_read" => return CallDetails::None,
         "notes_edit" => {
+            if let Some(patch) = field("patch") {
+                return CallDetails::Diff(patch.to_owned());
+            }
             if let Some(diff) = args.as_ref().and_then(edit_preview) {
                 return CallDetails::Diff(diff);
             }
@@ -150,6 +156,62 @@ pub fn task_changes_preview(args: &serde_json::Value) -> Option<String> {
         });
     }
     Some(lines.join("\n") + "\n")
+}
+
+/// The diff of the files a tool call changed, from its result: one file's,
+/// or several files' one after another.
+pub fn result_diff(details: Option<&ToolResultDetails>) -> Option<String> {
+    match details? {
+        ToolResultDetails::Edit { diff, .. } | ToolResultDetails::WriteWithDiff { diff, .. } => {
+            Some(diff.clone())
+        }
+        ToolResultDetails::Patch { files } if !files.is_empty() => {
+            Some(files.iter().map(|file| file.diff.as_str()).collect())
+        }
+        _ => None,
+    }
+}
+
+/// The files a patch names, by their new paths (old paths for deleted
+/// files), without git's `a/` and `b/` prefixes.
+pub fn patch_files(patch: &str) -> Vec<String> {
+    let header = |line: &str| {
+        let path = line.split('\t').next().unwrap_or_default().trim();
+        let path = path.trim_matches('"');
+        (path != "/dev/null").then(|| {
+            path.strip_prefix("a/")
+                .or_else(|| path.strip_prefix("b/"))
+                .unwrap_or(path)
+                .to_owned()
+        })
+    };
+    let lines: Vec<&str> = patch.lines().collect();
+    let mut files = Vec::new();
+    for pair in lines.windows(2) {
+        if let (Some(old), Some(new)) = (pair[0].strip_prefix("--- "), pair[1].strip_prefix("+++ "))
+            && let Some(path) = header(new).or_else(|| header(old))
+            && !files.contains(&path)
+        {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// Names the files of a patch in a short line: `a.rs`, `a.rs, b.rs`, or
+/// `a.rs, b.rs, c.rs and 2 more`.
+pub fn patch_summary(patch: &str) -> Option<String> {
+    const SHOWN: usize = 3;
+    let files = patch_files(patch);
+    match files.len() {
+        0 => None,
+        n if n <= SHOWN + 1 => Some(files.join(", ")),
+        n => Some(format!(
+            "{} and {} more",
+            files[..SHOWN].join(", "),
+            n - SHOWN
+        )),
+    }
 }
 
 /// The replacements of an edit call as a diff: removed lines, then added.
@@ -276,6 +338,63 @@ mod tests {
         );
         let single = serde_json::json!({"path": "a.rs", "old_text": "a", "new_text": "b"});
         assert_eq!(edit_preview(&single).as_deref(), Some("-a\n+b"));
+    }
+
+    #[test]
+    fn a_patch_shows_as_it_is_until_the_result_has_a_diff() {
+        let patch = "--- a/a.rs\n+++ b/a.rs\n@@\n-a\n+b\n";
+        let edit = call("edit", serde_json::json!({ "patch": patch }));
+        assert_eq!(call_details(&edit, true), CallDetails::None);
+        assert_eq!(call_details(&edit, false), CallDetails::Diff(patch.into()));
+        let notes = call("notes_edit", serde_json::json!({"patch": "@@\n-a\n+b\n"}));
+        assert_eq!(
+            call_details(&notes, false),
+            CallDetails::Diff("@@\n-a\n+b\n".into())
+        );
+    }
+
+    #[test]
+    fn patches_name_their_files() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@\n-a\n+b\n--- /dev/null\n+++ b/new.rs\t2026\n@@\n+x\n--- a/gone.rs\n+++ /dev/null\n@@\n-y\n";
+        assert_eq!(patch_files(patch), ["src/a.rs", "new.rs", "gone.rs"]);
+        assert_eq!(
+            patch_summary(patch).as_deref(),
+            Some("src/a.rs, new.rs, gone.rs")
+        );
+        let many: String = (1..=6)
+            .map(|n| format!("--- a/{n}.rs\n+++ b/{n}.rs\n@@\n-a\n+b\n"))
+            .collect();
+        assert_eq!(
+            patch_summary(&many).as_deref(),
+            Some("1.rs, 2.rs, 3.rs and 3 more")
+        );
+        assert_eq!(patch_summary("@@\n-a\n+b\n"), None);
+    }
+
+    #[test]
+    fn result_diffs_join_the_files_of_a_patch() {
+        use loom_proto::{FileChangeKind, PatchedFile};
+        let file = |name: &str, change| PatchedFile {
+            path: name.into(),
+            change,
+            diff: format!("--- {name}\n+++ {name}\n"),
+            first_changed_line: None,
+        };
+        let details = ToolResultDetails::Patch {
+            files: vec![
+                file("a", FileChangeKind::Modified),
+                file("b", FileChangeKind::Created),
+            ],
+        };
+        assert_eq!(
+            result_diff(Some(&details)).as_deref(),
+            Some("--- a\n+++ a\n--- b\n+++ b\n")
+        );
+        assert_eq!(
+            result_diff(Some(&ToolResultDetails::Patch { files: vec![] })),
+            None
+        );
+        assert_eq!(result_diff(None), None);
     }
 
     #[test]
