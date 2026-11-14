@@ -21,6 +21,7 @@ image = { version = "0.25.10", default-features = false, features = ["gif", "jpe
 loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-version = { path = "../loom-version" }
+loom-view-model = { path = "../loom-view-model" }
 loom-vt = { path = "../loom-vt" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

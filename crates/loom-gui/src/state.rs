@@ -318,7 +318,7 @@ impl AgentConnection {
         if let Some(conv) = self.conversations.get(&info.id) {
             return conv.clone();
         }
-        let conv = cx.new(|_| Conversation::new(info.clone()));
+        let conv = cx.new(|_| crate::conversation::new(info.clone()));
         self.conversations.insert(info.id.clone(), conv.clone());
         self.subscribe(info.id.clone(), None, cx);
         conv

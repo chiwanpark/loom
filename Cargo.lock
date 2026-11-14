@@ -4399,6 +4399,7 @@ dependencies = [
  "loom-client",
  "loom-config",
  "loom-version",
+ "loom-view-model",
  "loom-vt",
  "serde",
  "serde_json",
@@ -4537,6 +4538,14 @@ dependencies = [
 [[package]]
 name = "loom-version"
 version = "0.2.0"
+
+[[package]]
+name = "loom-view-model"
+version = "0.2.0"
+dependencies = [
+ "loom-proto",
+ "serde_json",
+]
 
 [[package]]
 name = "loom-vt"

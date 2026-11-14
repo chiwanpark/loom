@@ -551,7 +551,6 @@ mod view_tests {
     use loom_client::proto::{SessionId, SessionInfo, SessionState};
 
     use super::{DiffLine, DiffLineKind, DiffView, ROW_HEIGHT};
-    use crate::conversation::Conversation;
 
     const LINES: usize = 200;
     /// Lines 3 and 4 are far wider than any window: one of words, one a single
@@ -590,7 +589,7 @@ mod view_tests {
 
     fn open(wrap: bool, cx: &mut TestAppContext) -> (Entity<DiffView>, &mut VisualTestContext) {
         cx.update(gpui_component::init);
-        let conversation = cx.new(|_| Conversation::new(info()));
+        let conversation = cx.new(|_| crate::conversation::new(info()));
         let (view, cx) = cx.add_window_view(|_, cx| {
             let mut view = DiffView::session(
                 conversation,

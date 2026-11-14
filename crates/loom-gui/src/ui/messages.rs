@@ -1542,7 +1542,7 @@ mod view_tests {
     ) {
         cx.update(gpui_component::init);
         let conversation = cx.new(|_| {
-            let mut conversation = Conversation::new(info());
+            let mut conversation = crate::conversation::new(info());
             add_turns(&mut conversation, turns);
             conversation
         });
