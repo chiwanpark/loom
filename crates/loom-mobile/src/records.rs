@@ -3,11 +3,13 @@
 
 use loom_client::proto::{
     self, AgentInfo, ModelInfo, NotesContent, ReasoningEffort, SessionInfo, SessionState,
-    TaskChange, TaskStatus,
+    TaskChange, TaskStatus, ToolResultDetails,
 };
 use loom_view_model::conversation::{
-    Attachment, Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label, tool_summary,
+    self, Attachment, Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label,
+    tool_summary,
 };
+use loom_view_model::tool_details::{CallDetails, call_details};
 use serde::{Deserialize, Serialize};
 
 /// The most bytes of a tool's output sent to the app, from its end.
@@ -180,6 +182,60 @@ impl From<ToolStatus> for ToolState {
     }
 }
 
+/// A tool call's arguments in the form that says the most about them.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ToolArguments {
+    /// Nothing beyond what the summary says, as for a read.
+    None,
+    /// Text such as a shell command or the content to write, in `language`
+    /// (an extension such as `rs`, or `bash`, `json`, `text`).
+    Code { text: String, language: String },
+    /// The changes of an edit, as unified diff lines.
+    Diff { text: String },
+}
+
+impl From<CallDetails> for ToolArguments {
+    fn from(details: CallDetails) -> Self {
+        match details {
+            CallDetails::None => Self::None,
+            CallDetails::Code { text, language } => Self::Code { text, language },
+            CallDetails::Diff(text) => Self::Diff { text },
+        }
+    }
+}
+
+/// What a busy session is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Activity {
+    /// The model is thinking, before its answer streams in.
+    Thinking,
+    /// The model is streaming its answer.
+    Responding,
+    /// Tool calls are running.
+    RunningTools { count: u32 },
+    /// Tool calls wait for the user's approval.
+    WaitingApproval { count: u32 },
+    /// The session waits for another one to release the workspace.
+    WaitingLock,
+}
+
+impl From<conversation::Activity> for Activity {
+    fn from(activity: conversation::Activity) -> Self {
+        use conversation::Activity as A;
+        match activity {
+            A::Thinking => Self::Thinking,
+            A::Responding => Self::Responding,
+            A::RunningTools(tools) => Self::RunningTools {
+                count: tools.len() as u32,
+            },
+            A::WaitingApproval(count) => Self::WaitingApproval {
+                count: count as u32,
+            },
+            A::WaitingLock => Self::WaitingLock,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum NoticeLevel {
     Info,
@@ -216,6 +272,9 @@ pub enum ConversationItem {
         summary: String,
         /// The tool's name with its timeout, if any.
         label: String,
+        /// The arguments, to show with the output; the diff replaces them
+        /// once there is one.
+        arguments: ToolArguments,
         state: ToolState,
         approval_reason: Option<String>,
         /// The end of the output, at most [`MAX_OUTPUT`] bytes.
@@ -223,6 +282,8 @@ pub enum ConversationItem {
         output_truncated: bool,
         /// What the tool returned to the model.
         result: Option<String>,
+        /// The change an edit or an overwrite made, as unified diff lines.
+        diff: Option<String>,
         is_error: bool,
     },
     Notice {
@@ -265,16 +326,24 @@ fn image(attachment: &Attachment) -> ImageData {
 
 fn tool_item(tool: &ToolItem) -> ConversationItem {
     let start = tool.output.len().saturating_sub(MAX_OUTPUT);
+    let diff = match tool.result.as_ref().and_then(|r| r.details.as_ref()) {
+        Some(
+            ToolResultDetails::Edit { diff, .. } | ToolResultDetails::WriteWithDiff { diff, .. },
+        ) => Some(diff.clone()),
+        _ => None,
+    };
     ConversationItem::Tool {
         call_id: tool.call.call_id.clone(),
         name: tool.call.name.clone(),
         summary: tool_summary(&tool.call),
         label: tool_label(&tool.call),
+        arguments: call_details(&tool.call, diff.is_some()).into(),
         state: tool.status.into(),
         approval_reason: tool.approval_reason.clone(),
         output: String::from_utf8_lossy(&tool.output[start..]).into_owned(),
         output_truncated: tool.output_truncated || start > 0,
         result: tool.result.as_ref().map(|r| r.content.clone()),
+        diff,
         is_error: tool.result.as_ref().is_some_and(|r| r.is_error),
     }
 }
@@ -295,8 +364,8 @@ pub struct ConversationUpdate {
     pub session: String,
     pub title: String,
     pub status: SessionStatus,
-    /// What a busy session is doing, as in "Running shell cargo test…".
-    pub activity: Option<String>,
+    /// What a busy session is doing.
+    pub activity: Option<Activity>,
     pub model: Option<String>,
     pub reasoning: Option<Reasoning>,
     /// Tokens in the context after the last response.
@@ -331,7 +400,7 @@ impl ConversationUpdate {
             session: conversation.info.id.0.clone(),
             title: conversation.title(),
             status: conversation.state.into(),
-            activity: conversation.activity().map(|a| a.label()),
+            activity: conversation.activity().map(Activity::from),
             model: conversation.info.model.clone(),
             reasoning: conversation.info.reasoning.map(Reasoning::from),
             context_tokens: conversation.last_usage.map(|u| u.context_tokens()),
@@ -586,5 +655,56 @@ mod tests {
         assert_eq!(output.len(), MAX_OUTPUT);
         assert!(!output.contains('a') && output_truncated);
         assert!(summary.contains("yes"), "{summary}");
+    }
+
+    /// An edit shows its replacements until its result brings the diff of
+    /// the file, which takes their place.
+    #[test]
+    fn an_edit_shows_its_arguments_until_the_diff_arrives() {
+        let call = proto::ToolCall {
+            call_id: "c".into(),
+            name: "edit".into(),
+            arguments: r#"{"path":"a.rs","old_text":"a","new_text":"b"}"#.into(),
+            risk: None,
+        };
+        let mut tool = ToolItem {
+            call,
+            status: ToolStatus::Running,
+            approval_reason: None,
+            decision: None,
+            output: Vec::new(),
+            output_truncated: false,
+            result: None,
+        };
+        let parts = |tool: &ToolItem| match ConversationItem::from(&Item::Tool(tool.clone())) {
+            ConversationItem::Tool {
+                arguments, diff, ..
+            } => (arguments, diff),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            parts(&tool),
+            (
+                ToolArguments::Diff {
+                    text: "-a\n+b".into()
+                },
+                None
+            )
+        );
+
+        tool.status = ToolStatus::Succeeded;
+        tool.result = Some(proto::ToolResult {
+            content: "edited a.rs".into(),
+            is_error: false,
+            details: Some(ToolResultDetails::Edit {
+                path: "a.rs".into(),
+                diff: "@@ -1 +1 @@\n-a\n+b\n".into(),
+                first_changed_line: Some(1),
+            }),
+        });
+        assert_eq!(
+            parts(&tool),
+            (ToolArguments::None, Some("@@ -1 +1 @@\n-a\n+b\n".into()))
+        );
     }
 }
