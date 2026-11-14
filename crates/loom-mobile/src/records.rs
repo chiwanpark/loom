@@ -1,0 +1,590 @@
+//! The plain data that crosses into Kotlin, and its conversions from the
+//! protocol and view-model types.
+
+use loom_client::proto::{
+    self, AgentInfo, ModelInfo, NotesContent, ReasoningEffort, SessionInfo, SessionState,
+    TaskChange, TaskStatus,
+};
+use loom_view_model::conversation::{
+    Attachment, Conversation, Item, NoticeKind, ToolItem, ToolStatus, tool_label, tool_summary,
+};
+use serde::{Deserialize, Serialize};
+
+/// The most bytes of a tool's output sent to the app, from its end.
+pub const MAX_OUTPUT: usize = 32 * 1024;
+
+/// A host paired through a relay; every agent on it is reachable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct Host {
+    /// The name the app shows; unique among the hosts.
+    pub name: String,
+    pub relay_url: String,
+    pub host_id: String,
+    pub host_key: String,
+    /// The agent the pairing link was for.
+    pub instance: Option<String>,
+}
+
+/// An agent on a host. Only `instance` is known for an agent that has not
+/// been reached yet.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Agent {
+    pub instance: String,
+    pub workspace: Option<String>,
+    pub version: Option<String>,
+    pub default_model: Option<String>,
+}
+
+impl From<&AgentInfo> for Agent {
+    fn from(info: &AgentInfo) -> Self {
+        Self {
+            instance: info.instance.to_string(),
+            workspace: Some(info.workspace.display().to_string()),
+            version: Some(info.version.clone()),
+            default_model: info.default_model.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SessionStatus {
+    Idle,
+    Thinking,
+    RunningTool,
+    WaitingApproval,
+    WaitingLock,
+}
+
+impl From<SessionState> for SessionStatus {
+    fn from(state: SessionState) -> Self {
+        match state {
+            SessionState::Idle => Self::Idle,
+            SessionState::Thinking => Self::Thinking,
+            SessionState::RunningTool => Self::RunningTool,
+            SessionState::WaitingApproval => Self::WaitingApproval,
+            SessionState::WaitingLock => Self::WaitingLock,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Reasoning {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl From<ReasoningEffort> for Reasoning {
+    fn from(effort: ReasoningEffort) -> Self {
+        match effort {
+            ReasoningEffort::None => Self::None,
+            ReasoningEffort::Minimal => Self::Minimal,
+            ReasoningEffort::Low => Self::Low,
+            ReasoningEffort::Medium => Self::Medium,
+            ReasoningEffort::High => Self::High,
+            ReasoningEffort::Xhigh => Self::Xhigh,
+        }
+    }
+}
+
+impl From<Reasoning> for ReasoningEffort {
+    fn from(reasoning: Reasoning) -> Self {
+        match reasoning {
+            Reasoning::None => Self::None,
+            Reasoning::Minimal => Self::Minimal,
+            Reasoning::Low => Self::Low,
+            Reasoning::Medium => Self::Medium,
+            Reasoning::High => Self::High,
+            Reasoning::Xhigh => Self::Xhigh,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SessionSummary {
+    pub id: String,
+    /// The title, or the start of the session ID while it has none.
+    pub title: String,
+    pub model: Option<String>,
+    pub reasoning: Option<Reasoning>,
+    pub status: SessionStatus,
+    pub archived: bool,
+    /// Seconds since the Unix epoch.
+    pub created_at: u64,
+}
+
+impl From<&SessionInfo> for SessionSummary {
+    fn from(info: &SessionInfo) -> Self {
+        Self {
+            id: info.id.0.clone(),
+            title: info
+                .title
+                .clone()
+                .unwrap_or_else(|| loom_view_model::conversation::short_id(&info.id.0)),
+            model: info.model.clone(),
+            reasoning: info.reasoning.map(Reasoning::from),
+            status: info.state.into(),
+            archived: info.archived,
+            created_at: info.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Model {
+    /// What to pass to `set_model`, as in `anthropic/claude-sonnet-4-5`.
+    pub model_ref: String,
+    pub display_name: String,
+    pub provider: String,
+}
+
+impl From<&ModelInfo> for Model {
+    fn from(model: &ModelInfo) -> Self {
+        Self {
+            model_ref: model.model_ref(),
+            display_name: model.display_name.clone(),
+            provider: model.provider.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ImageData {
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ToolState {
+    Requested,
+    WaitingApproval,
+    Running,
+    Succeeded,
+    Failed,
+    Denied,
+}
+
+impl From<ToolStatus> for ToolState {
+    fn from(status: ToolStatus) -> Self {
+        match status {
+            ToolStatus::Requested => Self::Requested,
+            ToolStatus::WaitingApproval => Self::WaitingApproval,
+            ToolStatus::Running => Self::Running,
+            ToolStatus::Succeeded => Self::Succeeded,
+            ToolStatus::Failed => Self::Failed,
+            ToolStatus::Denied => Self::Denied,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NoticeLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+impl From<NoticeKind> for NoticeLevel {
+    fn from(kind: NoticeKind) -> Self {
+        match kind {
+            NoticeKind::Info => Self::Info,
+            NoticeKind::Warning => Self::Warning,
+            NoticeKind::Error => Self::Error,
+        }
+    }
+}
+
+/// A block of a conversation.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ConversationItem {
+    User {
+        text: String,
+        images: Vec<ImageData>,
+    },
+    Assistant {
+        text: String,
+        reasoning: String,
+        streaming: bool,
+    },
+    Tool {
+        call_id: String,
+        name: String,
+        /// One line on what the call does, as in `shell cargo test`.
+        summary: String,
+        /// The tool's name with its timeout, if any.
+        label: String,
+        state: ToolState,
+        approval_reason: Option<String>,
+        /// The end of the output, at most [`MAX_OUTPUT`] bytes.
+        output: String,
+        output_truncated: bool,
+        /// What the tool returned to the model.
+        result: Option<String>,
+        is_error: bool,
+    },
+    Notice {
+        level: NoticeLevel,
+        text: String,
+    },
+}
+
+impl From<&Item> for ConversationItem {
+    fn from(item: &Item) -> Self {
+        match item {
+            Item::User { text, images } => Self::User {
+                text: text.clone(),
+                images: images.iter().map(image).collect(),
+            },
+            Item::Assistant {
+                text,
+                reasoning,
+                streaming,
+            } => Self::Assistant {
+                text: text.clone(),
+                reasoning: reasoning.clone(),
+                streaming: *streaming,
+            },
+            Item::Tool(tool) => tool_item(tool),
+            Item::Notice { kind, text } => Self::Notice {
+                level: (*kind).into(),
+                text: text.clone(),
+            },
+        }
+    }
+}
+
+fn image(attachment: &Attachment) -> ImageData {
+    ImageData {
+        mime_type: attachment.mime_type.clone(),
+        data: attachment.data.to_vec(),
+    }
+}
+
+fn tool_item(tool: &ToolItem) -> ConversationItem {
+    let start = tool.output.len().saturating_sub(MAX_OUTPUT);
+    ConversationItem::Tool {
+        call_id: tool.call.call_id.clone(),
+        name: tool.call.name.clone(),
+        summary: tool_summary(&tool.call),
+        label: tool_label(&tool.call),
+        state: tool.status.into(),
+        approval_reason: tool.approval_reason.clone(),
+        output: String::from_utf8_lossy(&tool.output[start..]).into_owned(),
+        output_truncated: tool.output_truncated || start > 0,
+        result: tool.result.as_ref().map(|r| r.content.clone()),
+        is_error: tool.result.as_ref().is_some_and(|r| r.is_error),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ChangedItem {
+    pub index: u32,
+    /// Stays the same for the item when older items are put before it.
+    pub key: u64,
+    pub item: ConversationItem,
+}
+
+/// What changed in an open conversation since the last update. With
+/// `reset`, `items` holds every item and replaces the list; otherwise the
+/// app cuts its list to `len` items and replaces or appends `items`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConversationUpdate {
+    pub session: String,
+    pub title: String,
+    pub status: SessionStatus,
+    /// What a busy session is doing, as in "Running shell cargo test…".
+    pub activity: Option<String>,
+    pub model: Option<String>,
+    pub reasoning: Option<Reasoning>,
+    /// Tokens in the context after the last response.
+    pub context_tokens: Option<u64>,
+    pub pending_approvals: u32,
+    /// Whether the session has items before these, which `load_earlier`
+    /// fetches.
+    pub has_older: bool,
+    pub reset: bool,
+    pub len: u32,
+    pub items: Vec<ChangedItem>,
+}
+
+impl ConversationUpdate {
+    /// The update for the items that changed after `revision`; all of them
+    /// with `reset`.
+    pub fn of(conversation: &Conversation, revision: u64, reset: bool) -> Self {
+        let revisions = conversation.item_revisions();
+        let keys = conversation.item_keys();
+        let items = conversation
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(ix, _)| reset || revisions.get(*ix).is_none_or(|r| *r > revision))
+            .map(|(ix, item)| ChangedItem {
+                index: ix as u32,
+                key: keys.get(ix).copied().unwrap_or_default(),
+                item: item.into(),
+            })
+            .collect();
+        Self {
+            session: conversation.info.id.0.clone(),
+            title: conversation.title(),
+            status: conversation.state.into(),
+            activity: conversation.activity().map(|a| a.label()),
+            model: conversation.info.model.clone(),
+            reasoning: conversation.info.reasoning.map(Reasoning::from),
+            context_tokens: conversation.last_usage.map(|u| u.context_tokens()),
+            pending_approvals: conversation.pending_approvals().count() as u32,
+            has_older: conversation.has_older,
+            reset,
+            len: conversation.items.len() as u32,
+            items,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ApprovalDecision {
+    Allow,
+    /// Allow this call, and calls like it for the rest of the session.
+    AllowForSession,
+    Deny,
+}
+
+impl From<ApprovalDecision> for proto::Decision {
+    fn from(decision: ApprovalDecision) -> Self {
+        match decision {
+            ApprovalDecision::Allow => Self::Allow,
+            ApprovalDecision::AllowForSession => Self::AllowForSession,
+            ApprovalDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Notes {
+    pub text: String,
+    /// Pass it back to `write_notes`, which fails if the notes changed since.
+    pub version: String,
+    pub max_bytes: u64,
+}
+
+impl From<NotesContent> for Notes {
+    fn from(notes: NotesContent) -> Self {
+        Self {
+            text: notes.text,
+            version: version_text(&notes.version),
+            max_bytes: notes.max_bytes,
+        }
+    }
+}
+
+pub fn version_text(version: &proto::FileVersion) -> String {
+    version.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn parse_version(text: &str) -> Option<proto::FileVersion> {
+    if text.len() != 64 || !text.is_ascii() {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (ix, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[ix * 2..ix * 2 + 2], 16).ok()?;
+    }
+    Some(proto::FileVersion(bytes))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TaskState {
+    Created,
+    InProgress,
+    Done,
+}
+
+impl From<TaskStatus> for TaskState {
+    fn from(status: TaskStatus) -> Self {
+        match status {
+            TaskStatus::Created => Self::Created,
+            TaskStatus::InProgress => Self::InProgress,
+            TaskStatus::Done => Self::Done,
+        }
+    }
+}
+
+impl From<TaskState> for TaskStatus {
+    fn from(state: TaskState) -> Self {
+        match state {
+            TaskState::Created => Self::Created,
+            TaskState::InProgress => Self::InProgress,
+            TaskState::Done => Self::Done,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TaskItem {
+    /// The number the agent calls the task by, as in `#3`.
+    pub id: u32,
+    pub text: String,
+    pub state: TaskState,
+}
+
+impl From<&proto::Task> for TaskItem {
+    fn from(task: &proto::Task) -> Self {
+        Self {
+            id: task.id,
+            text: task.text.clone(),
+            state: task.status.into(),
+        }
+    }
+}
+
+pub fn task_items(tasks: &[proto::Task]) -> Vec<TaskItem> {
+    tasks.iter().map(TaskItem::from).collect()
+}
+
+/// A change to a task list; a batch of them applies all or none.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TaskEdit {
+    Add {
+        text: String,
+        state: TaskState,
+    },
+    Update {
+        id: u32,
+        text: Option<String>,
+        state: Option<TaskState>,
+    },
+    Remove {
+        id: u32,
+    },
+}
+
+impl From<TaskEdit> for TaskChange {
+    fn from(edit: TaskEdit) -> Self {
+        match edit {
+            TaskEdit::Add { text, state } => Self::Add {
+                text,
+                status: state.into(),
+            },
+            TaskEdit::Update { id, text, state } => Self::Update {
+                id,
+                text,
+                status: state.map(TaskStatus::from),
+            },
+            TaskEdit::Remove { id } => Self::Remove { id },
+        }
+    }
+}
+
+/// Something the app should show, from [`crate::AgentConnection::next_updates`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentUpdate {
+    /// The link to the agent came up or went down.
+    Link {
+        connected: bool,
+        error: Option<String>,
+    },
+    /// The agent's sessions, all of them.
+    Sessions {
+        sessions: Vec<SessionSummary>,
+    },
+    Conversation {
+        update: ConversationUpdate,
+    },
+    /// A session's notes changed; read them again if they are shown.
+    NotesChanged {
+        session: String,
+        version: String,
+    },
+    TasksChanged {
+        session: String,
+        tasks: Vec<TaskItem>,
+    },
+    /// A message from the agent for the user, such as a rejected
+    /// configuration.
+    Notice {
+        level: NoticeLevel,
+        message: String,
+    },
+}
+
+/// The message for a notice the agent sends every client, or `None` for
+/// the notices the core handles itself.
+pub fn notice_message(notice: &proto::Notice) -> Option<(NoticeLevel, String)> {
+    Some(match notice {
+        proto::Notice::ConfigReloaded { restart_required } if restart_required.is_empty() => (
+            NoticeLevel::Info,
+            "The agent reloaded its configuration.".into(),
+        ),
+        proto::Notice::ConfigReloaded { restart_required } => (
+            NoticeLevel::Info,
+            format!(
+                "The agent reloaded its configuration; restart it to apply {}.",
+                restart_required.join(", ")
+            ),
+        ),
+        proto::Notice::ConfigRejected { message } => (
+            NoticeLevel::Error,
+            format!(
+                "The agent rejected its configuration and keeps the old one: {}",
+                message.lines().next().unwrap_or_default()
+            ),
+        ),
+        proto::Notice::ShuttingDown => (NoticeLevel::Warning, "The agent is shutting down.".into()),
+        proto::Notice::SessionUpdated(_)
+        | proto::Notice::SessionRemoved(_)
+        | proto::Notice::NotesChanged { .. }
+        | proto::Notice::TasksChanged { .. } => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notes_versions_round_trip_as_text() {
+        let version = proto::FileVersion(std::array::from_fn(|i| i as u8 * 7));
+        let text = version_text(&version);
+        assert_eq!(text.len(), 64);
+        assert_eq!(parse_version(&text), Some(version));
+        assert_eq!(parse_version("abc"), None);
+        assert_eq!(parse_version(&"zz".repeat(32)), None);
+        assert_eq!(parse_version(&"é".repeat(32)), None);
+    }
+
+    #[test]
+    fn long_tool_output_is_cut_from_the_start() {
+        let call = proto::ToolCall {
+            call_id: "c".into(),
+            name: "shell".into(),
+            arguments: r#"{"command":"yes"}"#.into(),
+            risk: None,
+        };
+        let mut output = vec![b'a'; 10];
+        output.extend(vec![b'b'; MAX_OUTPUT]);
+        let item = Item::Tool(ToolItem {
+            call,
+            status: ToolStatus::Running,
+            approval_reason: None,
+            decision: None,
+            output,
+            output_truncated: false,
+            result: None,
+        });
+        let ConversationItem::Tool {
+            output,
+            output_truncated,
+            summary,
+            ..
+        } = ConversationItem::from(&item)
+        else {
+            panic!();
+        };
+        assert_eq!(output.len(), MAX_OUTPUT);
+        assert!(!output.contains('a') && output_truncated);
+        assert!(summary.contains("yes"), "{summary}");
+    }
+}
