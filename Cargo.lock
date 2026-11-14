@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "loom-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4309,7 +4309,7 @@ dependencies = [
 
 [[package]]
 name = "loom-agent-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4334,7 +4334,7 @@ dependencies = [
 
 [[package]]
 name = "loom-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "loom-config",
@@ -4350,7 +4350,7 @@ dependencies = [
 
 [[package]]
 name = "loom-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "humantime",
  "insta",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "loom-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -4385,7 +4385,7 @@ dependencies = [
 
 [[package]]
 name = "loom-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -4412,7 +4412,7 @@ dependencies = [
 
 [[package]]
 name = "loom-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4438,7 +4438,7 @@ dependencies = [
 
 [[package]]
 name = "loom-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "postcard",
  "serde",
@@ -4447,7 +4447,7 @@ dependencies = [
 
 [[package]]
 name = "loom-relay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4477,7 +4477,7 @@ dependencies = [
 
 [[package]]
 name = "loom-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "http",
  "humantime",
@@ -4496,7 +4496,7 @@ dependencies = [
 
 [[package]]
 name = "loom-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "landlock",
@@ -4515,7 +4515,7 @@ dependencies = [
 
 [[package]]
 name = "loom-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -4536,11 +4536,11 @@ dependencies = [
 
 [[package]]
 name = "loom-version"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "loom-vt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
 ]
