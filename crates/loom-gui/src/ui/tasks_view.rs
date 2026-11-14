@@ -317,7 +317,14 @@ impl TasksView {
         }
     }
 
-    fn render_task(&self, task: &Task, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// A task's row; `width` is the width of the widest task number, so that
+    /// the texts line up.
+    fn render_task(
+        &self,
+        task: &Task,
+        width: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let id = task.id;
         let (icon, color, tooltip) = match task.status {
@@ -356,14 +363,33 @@ impl TasksView {
             .py_0p5()
             .gap_1()
             .hover(|el| el.bg(theme.list_hover))
+            // The buttons are as tall as a line of text, and padded like the
+            // text, so that they line up with the first line of a long task.
             .child(
-                Button::new(SharedString::from(format!("task-status-{id}")))
-                    .debug_selector(move || format!("task-status-{id}"))
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(icon).text_color(color))
-                    .tooltip(tooltip)
-                    .on_click(cx.listener(move |this, _, window, cx| this.cycle(id, window, cx))),
+                div().flex_none().py_0p5().child(
+                    Button::new(SharedString::from(format!("task-status-{id}")))
+                        .debug_selector(move || format!("task-status-{id}"))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(icon).text_color(color))
+                        .tooltip(tooltip)
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.cycle(id, window, cx)),
+                        ),
+                ),
+            )
+            // The number the agent calls the task by, as in "#3".
+            .child(
+                div()
+                    .debug_selector(move || format!("task-number-{id}"))
+                    .flex_none()
+                    .py_0p5()
+                    .font_family(theme.mono_font_family.clone())
+                    .text_sm()
+                    .line_height(LINE_HEIGHT)
+                    .text_color(theme.muted_foreground)
+                    .whitespace_nowrap()
+                    .child(task_number(id, width)),
             )
             .child(match editing {
                 Some(input) => div()
@@ -379,6 +405,7 @@ impl TasksView {
                     .min_w_0()
                     .py_0p5()
                     .text_sm()
+                    .line_height(LINE_HEIGHT)
                     .text_color(text_color)
                     .when(done, |el| el.line_through())
                     .cursor_text()
@@ -389,13 +416,17 @@ impl TasksView {
                     .into_any_element(),
             })
             .child(
-                Button::new(SharedString::from(format!("task-remove-{id}")))
-                    .debug_selector(move || format!("task-remove-{id}"))
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(gpui_kit_assets::IconName::Trash))
-                    .tooltip("Remove the task")
-                    .on_click(cx.listener(move |this, _, window, cx| this.remove(id, window, cx))),
+                div().flex_none().py_0p5().child(
+                    Button::new(SharedString::from(format!("task-remove-{id}")))
+                        .debug_selector(move || format!("task-remove-{id}"))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(gpui_kit_assets::IconName::Trash))
+                        .tooltip("Remove the task")
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.remove(id, window, cx)),
+                        ),
+                ),
             )
     }
 }
@@ -419,6 +450,11 @@ impl Render for TasksView {
             (Some(_), 0) => "No tasks".to_owned(),
             (Some(_), n) => format!("{done} of {n} done"),
         };
+        let width = number_width(&tasks);
+        let rows: Vec<_> = tasks
+            .iter()
+            .map(|task| self.render_task(task, width, cx))
+            .collect();
         v_flex()
             .size_full()
             .key_context(CONTEXT)
@@ -495,7 +531,7 @@ impl Render for TasksView {
                                         ),
                                 )
                             })
-                            .children(tasks.iter().map(|task| self.render_task(task, cx))),
+                            .children(rows),
                     )
                     .child(
                         div()
@@ -512,6 +548,25 @@ impl Render for TasksView {
                     ),
             })
     }
+}
+
+/// The line height of a task's text: the height of an extra-small button,
+/// so that the buttons beside a task line up with its first line.
+const LINE_HEIGHT: gpui::Rems = gpui::Rems(1.25);
+
+/// A task's number as the agent writes it, `#3`, right-aligned in `width`
+/// characters.
+fn task_number(id: u32, width: usize) -> String {
+    format!("{:>width$}", format!("#{id}"))
+}
+
+/// The width of the widest task number in `tasks`.
+fn number_width(tasks: &[Task]) -> usize {
+    tasks
+        .iter()
+        .map(|task| task.id.to_string().len() + 1)
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -636,6 +691,97 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert_eq!(agent_tasks(&view, &other, cx).len(), 1);
+    }
+
+    #[test]
+    fn task_numbers_are_written_as_the_agent_writes_them() {
+        let task = |id| Task {
+            id,
+            text: "t".into(),
+            status: TaskStatus::Created,
+        };
+        assert_eq!(number_width(&[]), 0);
+        assert_eq!(number_width(&[task(3)]), 2);
+        assert_eq!(number_width(&[task(3), task(12)]), 3);
+        assert_eq!(task_number(3, 2), "#3");
+        assert_eq!(task_number(3, 3), " #3");
+        assert_eq!(task_number(12, 3), "#12");
+    }
+
+    /// Each task shows the number the agent calls it by, which stays when
+    /// earlier tasks go, and the texts line up whatever the numbers' widths.
+    #[gpui::test]
+    fn tasks_show_their_numbers(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (view, other, cx) = open(&agent, cx);
+        let add = |text: String| TaskChange::Add {
+            text,
+            status: TaskStatus::Created,
+        };
+        change_elsewhere(
+            &view,
+            &other,
+            (1..=10).map(|n| add(format!("t{n}"))).collect(),
+            cx,
+        );
+        change_elsewhere(
+            &view,
+            &other,
+            (2..=9).map(|id| TaskChange::Remove { id }).collect(),
+            cx,
+        );
+        wait_until(cx, |cx| view.read(cx).tasks().is_some_and(|t| t.len() == 2));
+        cx.run_until_parked();
+
+        assert!(cx.debug_bounds("task-number-2").is_none());
+        let mut bounds = |selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("no {selector}"))
+        };
+        let (one, ten) = (bounds("task-number-1"), bounds("task-number-10"));
+        let (text_one, text_ten) = (bounds("task-text-1"), bounds("task-text-10"));
+        let status = bounds("task-status-1");
+        let remove = bounds("task-remove-1");
+        // The numbers sit between the status and the text, padded to one width.
+        assert!(status.right() <= one.left());
+        assert!(one.right() <= text_one.left());
+        assert_eq!(one.size.width, ten.size.width);
+        assert_eq!(text_one.left(), text_ten.left());
+        // The buttons line up with the first line of the text.
+        let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
+        assert_eq!(middle(status), middle(one));
+        assert_eq!(middle(remove), middle(one));
+        assert_eq!(one.top(), text_one.top());
+    }
+
+    /// A task that wraps keeps its buttons by its first line.
+    #[gpui::test]
+    fn buttons_line_up_with_the_first_line_of_a_long_task(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (view, other, cx) = open(&agent, cx);
+        change_elsewhere(
+            &view,
+            &other,
+            vec![TaskChange::Add {
+                text: "a long task ".repeat(40),
+                status: TaskStatus::Done,
+            }],
+            cx,
+        );
+        wait_until(cx, |cx| view.read(cx).tasks().is_some_and(|t| t.len() == 1));
+        cx.run_until_parked();
+        let mut bounds = |selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("no {selector}"))
+        };
+        let (status, number, text) = (
+            bounds("task-status-1"),
+            bounds("task-number-1"),
+            bounds("task-text-1"),
+        );
+        assert!(text.size.height > number.size.height * 2., "{text:?}");
+        let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
+        assert_eq!(middle(status), middle(number));
     }
 
     #[gpui::test]
