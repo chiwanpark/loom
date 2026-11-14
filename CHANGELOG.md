@@ -2,7 +2,7 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
-## Unreleased
+## 0.2.0
 
 - Each session has notes and a task list, which stay when the conversation is compacted or cleared. The notes are a text scratchpad for the agent's findings and decisions; the agent uses them through the new `notes_read`, `notes_edit`, and `notes_write` tools, and you can read and edit them in the client's new **Notes** tab. The task list is the plan of the work, as tasks that are created, in progress, or done; the agent uses it through the new `tasks_read` and `tasks_update` tools, and you can add, edit, check off, and remove tasks in the new **Tasks** tab, which shows each task's number (`#3`) as the agent refers to it. `tools.notes.max_bytes` and `tools.tasks.max_items` in `agent.yaml` limit their size (64 KiB and 100 tasks by default). See [Notes and tasks](README.md#notes-and-tasks).
 - The protocol version is now 9. Agents and clients of 0.1.0 (protocol 6) cannot connect to these, so upgrade both. Running agents keep their old version until you restart them.
