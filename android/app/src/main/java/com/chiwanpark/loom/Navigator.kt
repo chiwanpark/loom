@@ -15,7 +15,8 @@ sealed interface Screen {
 
     data class Conversation(val host: String, val instance: String, val session: String) : Screen
 
-    data class Notes(val host: String, val instance: String, val session: String) : Screen
+    /** The agent's notes, which its sessions share. */
+    data class Notes(val host: String, val instance: String) : Screen
 
     data class Tasks(val host: String, val instance: String, val session: String) : Screen
 }

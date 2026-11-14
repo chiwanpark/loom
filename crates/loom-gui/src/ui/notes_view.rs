@@ -1,6 +1,6 @@
-//! The Notes tab of the right panel: a session's notes, the scratchpad the
-//! agent keeps for the session with its notes tools. The user reads and
-//! edits the same text here.
+//! The Notes tab of the right panel: an agent's notes, the scratchpad its
+//! sessions share and keep with their notes tools. The user reads and edits
+//! the same text here.
 
 use gpui::{
     App, AppContext, AsyncWindowContext, Context, Entity, FocusHandle, Focusable, FontWeight,
@@ -10,7 +10,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Editor, EditorState, InputEvent};
 use gpui_component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
-use loom_client::proto::{ErrorCode, FileVersion, NotesContent, SessionId};
+use loom_client::proto::{ErrorCode, FileVersion, NotesContent};
 
 use crate::state::{AgentConnection, ConnectionEvent};
 use crate::ui::file_view::human_size;
@@ -28,7 +28,6 @@ struct Saved {
 
 pub struct NotesView {
     connection: Entity<AgentConnection>,
-    session: SessionId,
     editor: Entity<EditorState>,
     /// `None` until the notes are first read.
     saved: Option<Saved>,
@@ -53,7 +52,6 @@ pub struct NotesView {
 impl NotesView {
     pub fn new(
         connection: Entity<AgentConnection>,
-        session: SessionId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -63,7 +61,7 @@ impl NotesView {
                 .line_number(false)
                 .searchable(true)
                 .soft_wrap(true)
-                .placeholder("Notes the agent and you keep for this session")
+                .placeholder("Notes the agent's sessions and you keep for this workspace")
         });
         let subscriptions = vec![
             cx.subscribe(&editor, |this: &mut Self, _, event, cx| {
@@ -73,9 +71,8 @@ impl NotesView {
             }),
             cx.subscribe_in(&connection, window, |this, _, event, window, cx| {
                 match event {
-                    ConnectionEvent::NotesChanged { session, version }
-                        if *session == this.session
-                            && this.saved.as_ref().is_none_or(|s| s.version != *version) =>
+                    ConnectionEvent::NotesChanged { version }
+                        if this.saved.as_ref().is_none_or(|s| s.version != *version) =>
                     {
                         this.load(false, window, cx)
                     }
@@ -87,7 +84,6 @@ impl NotesView {
         ];
         let mut this = Self {
             connection,
-            session,
             editor,
             saved: None,
             max_bytes: 0,
@@ -102,10 +98,6 @@ impl NotesView {
         };
         this.load(false, window, cx);
         this
-    }
-
-    pub fn session(&self) -> &SessionId {
-        &self.session
     }
 
     pub fn connection(&self) -> &Entity<AgentConnection> {
@@ -154,7 +146,7 @@ impl NotesView {
             return;
         }
         self.loading = true;
-        let task = self.connection.read(cx).read_notes(self.session.clone());
+        let task = self.connection.read(cx).read_notes();
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -248,10 +240,7 @@ impl NotesView {
         }
         self.saving = true;
         cx.notify();
-        let task =
-            self.connection
-                .read(cx)
-                .write_notes(self.session.clone(), text.clone(), expected);
+        let task = self.connection.read(cx).write_notes(text.clone(), expected);
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -313,10 +302,9 @@ impl NotesView {
 
     /// Empties the notes, for the agent too, after asking.
     fn clear_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut description =
-            "The notes of this session are deleted, for the agent too. The conversation \
-             stays."
-                .to_string();
+        let mut description = "The notes are deleted for the agent and all of its sessions. The \
+             conversations stay."
+            .to_string();
         if self.dirty {
             description.push_str(" Your changes that are not saved are thrown away too.");
         }
@@ -530,7 +518,7 @@ mod tests {
     use super::*;
     use crate::test_agent::{TestAgent, wait_until};
 
-    /// A notes view on a new session, with its editor focused, and a second
+    /// A notes view on an agent, with its editor focused, and a second
     /// connection that stands in for another client changing the notes.
     fn open<'a>(
         agent: &TestAgent,
@@ -546,20 +534,11 @@ mod tests {
         });
         let conn = agent.connect(cx);
         let other = agent.connect(cx);
-        let client = conn.read_with(cx, |conn, _| conn.client.clone());
-        let session = futures::executor::block_on(
-            agent
-                .backend
-                .run(async move { client.create_session(None).await }),
-        )
-        .unwrap()
-        .unwrap()
-        .id;
         let slot = Rc::new(RefCell::new(None));
         let (_, cx) = cx.add_window_view({
             let slot = slot.clone();
             move |window, cx| {
-                let view = cx.new(|cx| NotesView::new(conn, session, window, cx));
+                let view = cx.new(|cx| NotesView::new(conn, window, cx));
                 *slot.borrow_mut() = Some(view.clone());
                 Root::new(view, window, cx)
             }
@@ -578,28 +557,15 @@ mod tests {
     }
 
     /// The notes on the agent, read over the other connection.
-    fn notes(
-        view: &Entity<NotesView>,
-        other: &Entity<AgentConnection>,
-        cx: &mut VisualTestContext,
-    ) -> NotesContent {
-        let session = view.read_with(cx, |view, _| view.session.clone());
-        let task = other.read_with(cx, |conn, _| conn.read_notes(session));
+    fn notes(other: &Entity<AgentConnection>, cx: &mut VisualTestContext) -> NotesContent {
+        let task = other.read_with(cx, |conn, _| conn.read_notes());
         futures::executor::block_on(task).unwrap().unwrap()
     }
 
     /// Replaces the notes from the other connection.
-    fn write_elsewhere(
-        view: &Entity<NotesView>,
-        other: &Entity<AgentConnection>,
-        text: &str,
-        cx: &mut VisualTestContext,
-    ) {
-        let current = notes(view, other, cx).version;
-        let session = view.read_with(cx, |view, _| view.session.clone());
-        let task = other.read_with(cx, |conn, _| {
-            conn.write_notes(session, text.into(), current)
-        });
+    fn write_elsewhere(other: &Entity<AgentConnection>, text: &str, cx: &mut VisualTestContext) {
+        let current = notes(other, cx).version;
+        let task = other.read_with(cx, |conn, _| conn.write_notes(text.into(), current));
         futures::executor::block_on(task).unwrap().unwrap();
     }
 
@@ -624,25 +590,25 @@ mod tests {
         assert!(view.read_with(cx, |view, _| view.is_dirty()));
         cx.simulate_keystrokes("ctrl-s");
         wait_until(cx, |cx| !view.read(cx).is_dirty());
-        assert_eq!(notes(&view, &other, cx).text, "plan");
+        assert_eq!(notes(&other, cx).text, "plan");
         // A second save builds on the first.
         cx.simulate_input(" two");
         assert!(save(&view, cx));
-        assert_eq!(notes(&view, &other, cx).text, "plan two");
+        assert_eq!(notes(&other, cx).text, "plan two");
     }
 
     #[gpui::test]
     fn a_change_elsewhere_shows_up_when_there_are_no_edits(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
-        write_elsewhere(&view, &other, "from the agent", cx);
+        write_elsewhere(&other, "from the agent", cx);
         wait_until(cx, |cx| view.read(cx).text(cx) == "from the agent");
         assert!(!view.read_with(cx, |view, _| view.is_dirty()));
         assert!(cx.debug_bounds("notes-stale").is_none());
         // The view saves over the new text, not the one it first read.
         cx.simulate_input("x");
         assert!(save(&view, cx));
-        assert_eq!(notes(&view, &other, cx).text, "xfrom the agent");
+        assert_eq!(notes(&other, cx).text, "xfrom the agent");
     }
 
     #[gpui::test]
@@ -650,20 +616,20 @@ mod tests {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
         cx.simulate_input("mine");
-        write_elsewhere(&view, &other, "theirs", cx);
+        write_elsewhere(&other, "theirs", cx);
         wait_until(cx, |cx| view.read(cx).remote.is_some());
         assert_eq!(text(&view, cx), "mine");
         assert!(cx.debug_bounds("notes-stale").is_some());
 
         // Saving does not overwrite the other change.
         assert!(!save(&view, cx));
-        assert_eq!(notes(&view, &other, cx).text, "theirs");
+        assert_eq!(notes(&other, cx).text, "theirs");
         assert_eq!(text(&view, cx), "mine");
 
         // Overwriting does, on purpose.
         view.update_in(cx, |view, window, cx| view.overwrite(window, cx));
         wait_until(cx, |cx| !view.read(cx).saving);
-        assert_eq!(notes(&view, &other, cx).text, "mine");
+        assert_eq!(notes(&other, cx).text, "mine");
         assert!(!view.read_with(cx, |view, _| view.is_dirty()));
         assert!(cx.debug_bounds("notes-stale").is_none());
     }
@@ -673,7 +639,7 @@ mod tests {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
         cx.simulate_input("mine");
-        write_elsewhere(&view, &other, "theirs", cx);
+        write_elsewhere(&other, "theirs", cx);
         wait_until(cx, |cx| view.read(cx).remote.is_some());
         // Forget the change, as when the notice of it was missed.
         view.update(cx, |view, _| view.remote = None);
@@ -697,7 +663,7 @@ mod tests {
     fn a_reconnect_reads_the_notes_again(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
-        write_elsewhere(&view, &other, "theirs", cx);
+        write_elsewhere(&other, "theirs", cx);
         wait_until(cx, |cx| view.read(cx).text(cx) == "theirs");
         // Go back to the text from before, as if the notice never came.
         view.update_in(cx, |view, window, cx| {
@@ -719,16 +685,16 @@ mod tests {
     fn clearing_empties_the_notes_after_asking(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (view, other, cx) = open(&agent, cx);
-        write_elsewhere(&view, &other, "notes", cx);
+        write_elsewhere(&other, "notes", cx);
         wait_until(cx, |cx| view.read(cx).text(cx) == "notes");
 
         view.update_in(cx, |view, window, cx| view.clear_clicked(window, cx));
         assert!(has_dialog(cx));
-        assert_eq!(notes(&view, &other, cx).text, "notes");
+        assert_eq!(notes(&other, cx).text, "notes");
         cx.update(|window, cx| window.close_dialog(cx));
         view.update_in(cx, |view, window, cx| view.clear(window, cx));
         wait_until(cx, |cx| !view.read(cx).saving);
-        assert_eq!(notes(&view, &other, cx).text, "");
+        assert_eq!(notes(&other, cx).text, "");
         assert_eq!(text(&view, cx), "");
         assert!(!view.read_with(cx, |view, _| view.is_dirty()));
     }
@@ -749,10 +715,10 @@ mod tests {
         set(max + 1, cx);
         assert!(view.read_with(cx, |view, _| view.is_dirty()));
         assert!(!save(&view, cx));
-        assert_eq!(notes(&view, &other, cx).text, "");
+        assert_eq!(notes(&other, cx).text, "");
         // Exactly at the limit is fine.
         set(max, cx);
         assert!(save(&view, cx));
-        assert_eq!(notes(&view, &other, cx).text.len(), max);
+        assert_eq!(notes(&other, cx).text.len(), max);
     }
 }

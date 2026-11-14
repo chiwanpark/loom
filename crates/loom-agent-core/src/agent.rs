@@ -11,10 +11,11 @@ use tokio::sync::broadcast;
 
 use crate::error::{CoreError, Result};
 use crate::metrics::Metrics;
+use crate::notes::{AgentNotes, merge_session_notes};
 use crate::observer::{Observers, SessionObserver};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::session::{Session, SessionParams};
-use crate::store::{EventStore, store_path};
+use crate::store::{EventStore, Stored, store_path};
 use crate::terminals::Terminals;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +30,6 @@ pub enum AgentNotice {
     SessionUpdated(Box<SessionInfo>),
     SessionRemoved(SessionId),
     NotesChanged {
-        session: SessionId,
         version: FileVersion,
     },
     TasksChanged {
@@ -86,6 +86,7 @@ struct Inner {
     sessions: Mutex<BTreeMap<SessionId, Session>>,
     notices: broadcast::Sender<AgentNotice>,
     store: Option<EventStore>,
+    notes: Arc<AgentNotes>,
     metrics: Arc<Metrics>,
     observer: Arc<dyn SessionObserver>,
     telemetry: Option<TelemetryReport>,
@@ -164,12 +165,38 @@ impl Agent {
                 Ok((store, stored)) => (Some(store), stored),
                 Err(err) => {
                     tracing::error!(error = %err, "sessions will not be saved");
-                    (None, Vec::new())
+                    (None, Stored::default())
                 }
             }
         } else {
-            (None, Vec::new())
+            (None, Stored::default())
         };
+        let runtime = RuntimeCell::new(runtime);
+        let notes = match stored.notes {
+            Some(notes) => notes,
+            None => {
+                // A store from before the agent's notes: they start from the
+                // sessions' own notes.
+                let titled: Vec<(String, &str)> = stored
+                    .sessions
+                    .iter()
+                    .map(|session| (session_title(session), session.notes.as_str()))
+                    .collect();
+                let merged = merge_session_notes(
+                    titled.iter().map(|(title, notes)| (title.as_str(), *notes)),
+                );
+                if let Some(store) = &store {
+                    store.save_agent_notes(&merged);
+                }
+                merged
+            }
+        };
+        let notes = Arc::new(AgentNotes::new(
+            notes,
+            store.clone(),
+            Some(notices.clone()),
+            runtime.clone(),
+        ));
         let external = options.observer;
         let agent = Self {
             inner: Arc::new_cyclic(|inner| Inner {
@@ -179,10 +206,11 @@ impl Agent {
                 auth,
                 overrides: options.providers,
                 sandbox_exe: options.sandbox_exe,
-                runtime: RuntimeCell::new(runtime),
+                runtime,
                 sessions: Mutex::new(BTreeMap::new()),
                 notices,
                 store,
+                notes,
                 metrics: Arc::new(Metrics::default()),
                 observer: Arc::new(Observers(
                     std::iter::once(
@@ -195,7 +223,7 @@ impl Agent {
                 terminals: Terminals::default(),
             }),
         };
-        for stored in stored {
+        for stored in stored.sessions {
             let session = Session::restore(agent.session_params(None), stored);
             agent.insert(session);
         }
@@ -209,6 +237,7 @@ impl Agent {
             system_agents_md: self.inner.dirs.system_agents_md(),
             model,
             store: self.inner.store.clone(),
+            notes: self.inner.notes.clone(),
             metrics: self.inner.metrics.clone(),
             observer: Some(self.inner.observer.clone()),
             notices: Some(self.inner.notices.clone()),
@@ -340,6 +369,7 @@ impl Agent {
             .remove(id)
             .ok_or_else(|| CoreError::UnknownSession(id.0.clone()))?;
         session.mark_removed();
+        self.inner.notes.unsee(id);
         if let Some(store) = &self.inner.store {
             store.delete_session(id);
         }
@@ -361,6 +391,30 @@ impl Agent {
         let info = session.info();
         self.notify(AgentNotice::SessionUpdated(Box::new(info.clone())));
         Ok(info)
+    }
+
+    /// The agent's notes, which its sessions share.
+    pub fn notes(&self) -> String {
+        self.inner.notes.text()
+    }
+
+    /// The notes with their version and size limit, for clients.
+    pub fn notes_content(&self) -> loom_proto::NotesContent {
+        self.inner.notes.content()
+    }
+
+    /// Replaces the notes for the user, so a session's agent has to read
+    /// them again before replacing all of them. Refused when the text is
+    /// over `tools.notes.max_bytes`.
+    pub fn set_notes(&self, text: String) -> Result<()> {
+        self.inner.notes.set(text, None).map(drop)
+    }
+
+    /// Like [`Agent::set_notes`], but fails with [`CoreError::NotesChanged`]
+    /// unless the notes still have the `expected` version; returns the new
+    /// version.
+    pub fn write_notes(&self, text: String, expected: FileVersion) -> Result<FileVersion> {
+        self.inner.notes.set(text, Some(expected))
     }
 
     pub fn session(&self, id: &SessionId) -> Result<Session> {
@@ -427,9 +481,72 @@ impl Agent {
     }
 }
 
+/// A session's title for the heading of its notes in the agent's notes.
+fn session_title(session: &crate::store::StoredSession) -> String {
+    session
+        .state
+        .title
+        .clone()
+        .or_else(|| crate::session::title(&session.state.history))
+        .unwrap_or_else(|| session.id.0.clone())
+}
+
 #[cfg(test)]
 mod tests {
+    use loom_llm::{InputContent, Message};
+
     use super::*;
+    use crate::store::SessionState as StoredState;
+
+    /// An agent on a store from before the agent's notes starts from the
+    /// sessions' own notes, each under its session's title, and keeps its
+    /// notes from then on.
+    #[tokio::test]
+    async fn the_notes_start_from_the_sessions_notes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let dirs = Dirs {
+            home: dir.path().to_path_buf(),
+            config_home: dir.path().join("config"),
+            data_home: dir.path().join("data"),
+            state_home: dir.path().join("state"),
+            runtime_dir: None,
+        };
+        let config = AgentConfig::default();
+        let path = store_path(&data_dir(&config, &dirs), &workspace);
+        {
+            let (store, _) = EventStore::open(&path, &workspace).unwrap();
+            let titled = StoredState {
+                title: Some("Fix the parser".into()),
+                ..StoredState::default()
+            };
+            let untitled = StoredState {
+                history: vec![Message::User {
+                    content: vec![InputContent::text("\nAdd a CLI flag\nplease")],
+                }],
+                ..StoredState::default()
+            };
+            let id = |name: &str| SessionId(name.into());
+            store.save_session(&id("a"), 1, &titled);
+            store.save_session(&id("b"), 2, &untitled);
+            store.save_session(&id("c"), 3, &StoredState::default());
+            store.save_notes(&id("a"), "- parser plan\n");
+            store.save_notes(&id("b"), "- flag done");
+            store.flush().await;
+        }
+        let open = || Agent::new(AgentOptions::new(&workspace, config.clone(), dirs.clone()));
+        let agent = open().unwrap();
+        assert_eq!(
+            agent.notes(),
+            "## Session: Fix the parser\n\n- parser plan\n\n## Session: Add a CLI flag\n\n- flag done\n"
+        );
+        agent.set_notes("mine".into()).unwrap();
+        agent.flush().await;
+        drop(agent);
+        assert_eq!(open().unwrap().notes(), "mine");
+    }
 
     #[test]
     fn detects_restart_only_changes() {

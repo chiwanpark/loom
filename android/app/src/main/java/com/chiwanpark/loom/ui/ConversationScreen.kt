@@ -139,7 +139,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 IconButton(onClick = { app.navigator.push(Screen.Tasks(link.host, link.instance, session)) }) {
                     LoomIcon(LoomIcons.Tasks, "Tasks")
                 }
-                IconButton(onClick = { app.navigator.push(Screen.Notes(link.host, link.instance, session)) }) {
+                IconButton(onClick = { app.navigator.push(Screen.Notes(link.host, link.instance)) }) {
                     LoomIcon(LoomIcons.Notes, "Notes")
                 }
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
@@ -204,7 +204,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     if (clearing) {
         ConfirmDialog(
             title = "Clear the conversation?",
-            text = "The agent forgets the conversation. The session's notes and tasks stay.",
+            text = "The agent forgets the conversation. The session's tasks and the agent's notes stay.",
             confirm = "Clear",
             onConfirm = { scope.attempt(snackbar) { link.connection().clearSession(session) } },
             onDismiss = { clearing = false },

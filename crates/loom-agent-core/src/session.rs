@@ -8,12 +8,10 @@ use loom_llm::{
     ReasoningEffort, StopReason, ToolCall as LlmToolCall, ToolDefinition,
 };
 use loom_proto::{
-    ContentPart, Decision, FileVersion, NotesContent, SequencedEvent, SessionEvent, SessionId,
-    SessionInfo, SessionState, Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
+    ContentPart, Decision, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
+    Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
 };
-use loom_tools::{
-    FileTracker, LockWaitHook, NotesAccess, TasksAccess, ToolContext, ToolError, Workspace,
-};
+use loom_tools::{FileTracker, LockWaitHook, TasksAccess, ToolContext, ToolError, Workspace};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -25,7 +23,7 @@ use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
 use crate::instructions::{PromptInputs, build_system_prompt};
 use crate::metrics::Metrics;
-use crate::notes::{self, NOTES_READ_TOOL};
+use crate::notes::{AgentNotes, NOTES_READ_TOOL};
 use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
@@ -52,12 +50,6 @@ struct State {
     archived: bool,
     title: Option<String>,
     last_used: Option<UsedModel>,
-    /// The notes, saved apart from the rest of the state.
-    notes: String,
-    /// Whether the conversation holds the notes as they are: the agent read
-    /// or wrote them since the user last changed them and the context was
-    /// last cleared or compacted. Only then may the agent replace all of them.
-    notes_seen: bool,
     /// The task list, saved apart from the rest of the state.
     tasks: TaskList,
 }
@@ -66,6 +58,8 @@ struct Core {
     id: SessionId,
     created_at: u64,
     store: Option<EventStore>,
+    /// The agent's notes, which the session shares with the others.
+    notes: Arc<AgentNotes>,
     metrics: Arc<Metrics>,
     hub: EventHub,
     state: Mutex<State>,
@@ -88,9 +82,10 @@ pub(crate) struct SessionParams {
     pub system_agents_md: PathBuf,
     pub model: Option<ModelRef>,
     pub store: Option<EventStore>,
+    pub notes: Arc<AgentNotes>,
     pub metrics: Arc<Metrics>,
     pub observer: Option<Arc<dyn SessionObserver>>,
-    /// Where the session reports changes of its notes and tasks.
+    /// Where the session reports changes of its tasks.
     pub notices: Option<broadcast::Sender<AgentNotice>>,
 }
 
@@ -154,10 +149,6 @@ impl Core {
         }
     }
 
-    fn notes_limit(&self) -> u64 {
-        self.runtime.current().config.tools.notes.max_bytes.as_u64()
-    }
-
     fn tasks_limit(&self) -> u32 {
         self.runtime.current().config.tools.tasks.max_items
     }
@@ -169,46 +160,6 @@ impl Core {
         {
             let _ = notices.send(notice());
         }
-    }
-
-    /// Replaces the notes, refusing a text over `max` bytes, and tells
-    /// whether the text changed. The caller holds the lock, so the store and
-    /// clients get changes in the order they happen.
-    fn replace_notes(&self, state: &mut State, text: String, max: u64) -> Result<bool> {
-        if text.len() as u64 > max {
-            return Err(CoreError::NotesTooLarge {
-                size: text.len(),
-                max,
-            });
-        }
-        if text == state.notes {
-            return Ok(false);
-        }
-        if let Some(store) = &self.store {
-            store.save_notes(&self.id, &text);
-        }
-        self.notify(|| AgentNotice::NotesChanged {
-            session: self.id.clone(),
-            version: notes::version(&text),
-        });
-        state.notes = text;
-        Ok(true)
-    }
-
-    /// Replaces the notes for the user, during a turn too, and returns their
-    /// new version. Refused when the text is over `tools.notes.max_bytes`, or
-    /// when the notes no longer have the `expected` version.
-    fn set_notes(&self, text: String, expected: Option<FileVersion>) -> Result<FileVersion> {
-        let max = self.notes_limit();
-        let mut state = self.lock();
-        if expected.is_some_and(|expected| expected != notes::version(&state.notes)) {
-            return Err(CoreError::NotesChanged);
-        }
-        let version = notes::version(&text);
-        if self.replace_notes(&mut state, text, max)? {
-            state.notes_seen = false;
-        }
-        Ok(version)
     }
 
     /// Applies `changes` to the task list, all or none, during a turn too,
@@ -252,7 +203,6 @@ impl Session {
             now_unix(),
             StoredState::default(),
             Vec::new(),
-            String::new(),
             TaskList::default(),
         );
         session.core.persist();
@@ -266,8 +216,8 @@ impl Session {
             created_at,
             mut state,
             events,
-            notes,
             tasks,
+            ..
         } = stored;
         let model = state.model.as_deref().and_then(|m| ModelRef::parse(m).ok());
         let unfinished = turn_unfinished(&events);
@@ -281,7 +231,7 @@ impl Session {
             });
         }
         let observer = params.observer.clone();
-        let session = Self::build(params, id, created_at, state, events, notes, tasks);
+        let session = Self::build(params, id, created_at, state, events, tasks);
         if let Some(model) = model {
             session.core.lock().model = Some(model);
         }
@@ -315,7 +265,6 @@ impl Session {
         created_at: u64,
         state: StoredState,
         events: Vec<SequencedEvent>,
-        notes: String,
         tasks: TaskList,
     ) -> Self {
         let hub = EventHub::restore(params.store.clone().map(|s| (s, id.clone())), events);
@@ -324,6 +273,7 @@ impl Session {
                 id,
                 created_at,
                 store: params.store,
+                notes: params.notes,
                 metrics: params.metrics,
                 hub,
                 state: Mutex::new(State {
@@ -337,8 +287,6 @@ impl Session {
                     archived: state.archived,
                     title: state.title,
                     last_used: state.last_used,
-                    notes,
-                    notes_seen: false,
                     tasks,
                 }),
                 runtime: params.runtime,
@@ -396,35 +344,6 @@ impl Session {
     /// The events of about `items` conversation items before `before_seq`.
     pub fn older_events(&self, before_seq: u64, items: u32) -> loom_proto::History {
         self.core.hub.history(before_seq, items)
-    }
-
-    /// The session's notes.
-    pub fn notes(&self) -> String {
-        self.core.lock().notes.clone()
-    }
-
-    /// The notes with their version and size limit, for clients.
-    pub fn notes_content(&self) -> NotesContent {
-        let max_bytes = self.core.notes_limit();
-        let text = self.notes();
-        NotesContent {
-            version: notes::version(&text),
-            text,
-            max_bytes,
-        }
-    }
-
-    /// Replaces the notes for the user, so the agent has to read them again
-    /// before replacing all of them; see [`Core::set_notes`].
-    pub fn set_notes(&self, text: String) -> Result<()> {
-        self.core.set_notes(text, None).map(drop)
-    }
-
-    /// Like [`Session::set_notes`], but fails with
-    /// [`CoreError::NotesChanged`] unless the notes still have the
-    /// `expected` version. Returns the new version.
-    pub fn write_notes(&self, text: String, expected: FileVersion) -> Result<FileVersion> {
-        self.core.set_notes(text, Some(expected))
     }
 
     /// The session's tasks, in order.
@@ -571,7 +490,7 @@ impl Session {
         state.history.clear();
         state.context_tokens = None;
         state.last_used = None;
-        state.notes_seen = false;
+        self.core.notes.unsee(&self.core.id);
         self.core.files.clear();
         self.core.persist_state(&state);
         // Under the lock, like a prompt, so no prompt lands between the two.
@@ -858,7 +777,7 @@ async fn compact(
                 let removed = compaction::elide_tool_results(&mut state.history);
                 state.context_tokens = None;
                 // The notes' text may have been in the removed results.
-                state.notes_seen = false;
+                core.notes.unsee(&core.id);
                 core.persist_state(&state);
                 removed
             };
@@ -891,7 +810,7 @@ async fn compact(
                             );
                         }
                         state.context_tokens = None;
-                        state.notes_seen = false;
+                        core.notes.unsee(&core.id);
                         core.persist_state(&state);
                     }
                     core.emit(SessionEvent::ContextCompacted {
@@ -1052,7 +971,7 @@ async fn run_tool_call(
     let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL);
     let hook_core = core.clone();
     let ctx = ToolContext::new(core.workspace.clone())
-        .with_notes(Arc::new(SessionNotes(core.clone())))
+        .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_files(core.files.clone())
         .with_cancel(cancel.child_token())
@@ -1098,56 +1017,6 @@ async fn run_tool_call(
     }
 }
 
-/// A session's notes as the notes tools see them: what the agent reads or
-/// writes is in its conversation, so it counts as seen.
-struct SessionNotes(Arc<Core>);
-
-impl std::fmt::Debug for SessionNotes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SessionNotes").field(&self.0.id).finish()
-    }
-}
-
-impl NotesAccess for SessionNotes {
-    fn read(&self) -> String {
-        let mut state = self.0.lock();
-        state.notes_seen = true;
-        state.notes.clone()
-    }
-
-    fn edit(
-        &self,
-        change: &mut dyn FnMut(&str) -> loom_tools::Result<String>,
-    ) -> loom_tools::Result<String> {
-        let max = self.0.notes_limit();
-        let mut state = self.0.lock();
-        let text = change(&state.notes)?;
-        // The agent saw only what it replaced, so whether it holds the notes
-        // as they are stays as it was.
-        self.0
-            .replace_notes(&mut state, text.clone(), max)
-            .map_err(|err| ToolError::failed(err.to_string()))?;
-        Ok(text)
-    }
-
-    fn write(&self, text: String) -> loom_tools::Result<()> {
-        let max = self.0.notes_limit();
-        let mut state = self.0.lock();
-        if !state.notes_seen && !state.notes.is_empty() {
-            return Err(ToolError::failed(
-                "the notes have text you have not read since they last changed or the \
-                 conversation was compacted or cleared; read them with notes_read before \
-                 replacing them, or change a part of them with notes_edit",
-            ));
-        }
-        self.0
-            .replace_notes(&mut state, text, max)
-            .map_err(|err| ToolError::failed(err.to_string()))?;
-        state.notes_seen = true;
-        Ok(())
-    }
-}
-
 /// A session's task list as the tasks tools see it.
 struct SessionTasks(Arc<Core>);
 
@@ -1171,7 +1040,7 @@ impl TasksAccess for SessionTasks {
 
 const TITLE_CHARS: usize = 80;
 
-fn title(history: &[Message]) -> Option<String> {
+pub(crate) fn title(history: &[Message]) -> Option<String> {
     history.iter().find_map(|message| match message {
         Message::User { content } => content.iter().find_map(|part| match part {
             loom_llm::InputContent::Text { text } => {

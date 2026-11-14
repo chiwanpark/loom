@@ -45,9 +45,9 @@ import com.chiwanpark.loom.core.TaskItem
 import com.chiwanpark.loom.core.TaskState
 import com.chiwanpark.loom.userMessage
 
-/** A session's notes, which the agent keeps as its scratchpad; the user can edit them too. */
+/** The agent's notes: the scratchpad its sessions share. The user can edit them too. */
 @Composable
-fun NotesScreen(app: LoomApplication, link: AgentLink, session: String) {
+fun NotesScreen(app: LoomApplication, link: AgentLink) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf<String?>(null) }
@@ -60,7 +60,7 @@ fun NotesScreen(app: LoomApplication, link: AgentLink, session: String) {
     LaunchedEffect(connected, reload) {
         if (!connected) return@LaunchedEffect
         try {
-            val notes = link.connection().notes(session)
+            val notes = link.connection().notes()
             text = notes.text
             saved = notes.text
             version = notes.version
@@ -72,7 +72,7 @@ fun NotesScreen(app: LoomApplication, link: AgentLink, session: String) {
     }
     LaunchedEffect(link) {
         link.notesChanged.collect { changed ->
-            if (changed != session) return@collect
+            if (changed == version) return@collect
             // Unsaved edits stay; the user picks between them and the agent's.
             if (text == saved) reload++ else changedOnAgent = true
         }
@@ -81,13 +81,13 @@ fun NotesScreen(app: LoomApplication, link: AgentLink, session: String) {
     val dirty = text != null && text != saved
     Scaffold(
         topBar = {
-            LoomTopBar("Notes", subtitle = link.conversation(session).title, onBack = { app.navigator.pop() }) {
+            LoomTopBar("Notes", subtitle = link.workspace?.substringAfterLast('/'), onBack = { app.navigator.pop() }) {
                 TextButton(
                     enabled = dirty && connected,
                     onClick = {
                         val toSave = text ?: return@TextButton
                         scope.attempt(snackbar) {
-                            version = link.connection().writeNotes(session, toSave, version)
+                            version = link.connection().writeNotes(toSave, version)
                             saved = toSave
                             changedOnAgent = false
                         }
@@ -121,7 +121,7 @@ fun NotesScreen(app: LoomApplication, link: AgentLink, session: String) {
                     onValueChange = { text = it },
                     modifier = Modifier.fillMaxSize().padding(12.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    placeholder = { Text("No notes yet") },
+                    placeholder = { Text("No notes yet. All sessions of this agent share them.") },
                 )
             }
         }

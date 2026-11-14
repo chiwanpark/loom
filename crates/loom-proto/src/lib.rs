@@ -224,11 +224,8 @@ mod tests {
                 session: session.clone(),
             },
             Command::ReloadConfig,
-            Command::GetNotes {
-                session: session.clone(),
-            },
+            Command::GetNotes,
             Command::WriteNotes {
-                session: session.clone(),
                 text: "- plan\n".into(),
                 expected: FileVersion([3; 32]),
             },
@@ -431,7 +428,6 @@ mod tests {
             });
         }
         message_roundtrip(ServerMessage::Notice(Notice::NotesChanged {
-            session: SessionId("s2".into()),
             version: FileVersion([6; 32]),
         }));
         let tasks = vec![Task {

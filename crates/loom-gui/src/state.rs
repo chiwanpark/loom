@@ -28,10 +28,8 @@ pub enum ConnectionEvent {
     LoginFinished(Result<String, ApiError>),
     Failed(String),
     SessionRemoved(SessionId),
-    /// A session's notes changed on the agent; `version` is the hash of
-    /// their new text.
+    /// The agent's notes changed; `version` is the hash of their new text.
     NotesChanged {
-        session: SessionId,
         version: FileVersion,
     },
     /// A session's task list changed on the agent.
@@ -290,8 +288,8 @@ impl AgentConnection {
                 cx.emit(ConnectionEvent::SessionRemoved(id));
                 cx.notify();
             }
-            Notification::Notice(Notice::NotesChanged { session, version }) => {
-                cx.emit(ConnectionEvent::NotesChanged { session, version })
+            Notification::Notice(Notice::NotesChanged { version }) => {
+                cx.emit(ConnectionEvent::NotesChanged { version })
             }
             Notification::Notice(Notice::TasksChanged { session, tasks }) => {
                 cx.emit(ConnectionEvent::TasksChanged { session, tasks })
@@ -727,11 +725,9 @@ impl AgentConnection {
 
     pub fn read_notes(
         &self,
-        session: SessionId,
     ) -> impl Future<Output = Option<loom_client::Result<NotesContent>>> + use<> {
         let client = self.client.clone();
-        self.backend
-            .run(async move { client.notes(&session).await })
+        self.backend.run(async move { client.notes().await })
     }
 
     pub fn read_tasks(
@@ -755,13 +751,12 @@ impl AgentConnection {
 
     pub fn write_notes(
         &self,
-        session: SessionId,
         text: String,
         expected: FileVersion,
     ) -> impl Future<Output = Option<loom_client::Result<FileVersion>>> + use<> {
         let client = self.client.clone();
         self.backend
-            .run(async move { client.write_notes(&session, text, expected).await })
+            .run(async move { client.write_notes(text, expected).await })
     }
 
     pub fn register_terminal(

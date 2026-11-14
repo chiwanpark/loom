@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (session_id, seq)
 );
 -- Notes from before they had their name; read when a session has no row in
--- notes, and never written.
+-- notes, and never written. Both are from before the agent's notes, which
+-- start from them, and are only read for that.
 CREATE TABLE IF NOT EXISTS threads (
     session_id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 CREATE TABLE IF NOT EXISTS notes (
     session_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+-- The agent's notes, which its sessions share: one row once written.
+CREATE TABLE IF NOT EXISTS agent_notes (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
     text TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -87,13 +94,24 @@ pub struct StoredSession {
     pub created_at: u64,
     pub state: SessionState,
     pub events: Vec<SequencedEvent>,
-    /// The session's notes; empty when they were never written.
+    /// The session's own notes, from before the agent's notes; empty when
+    /// they were never written.
     pub notes: String,
     /// The session's task list; empty when it was never written.
     pub tasks: TaskList,
 }
 
+/// What a store holds when it is opened.
+#[derive(Debug, Clone, Default)]
+pub struct Stored {
+    pub sessions: Vec<StoredSession>,
+    /// The agent's notes; `None` when they were never written, as in a store
+    /// from before the agent had notes of its own.
+    pub notes: Option<String>,
+}
+
 enum Op {
+    AgentNotes(String),
     Event {
         session: SessionId,
         seq: u64,
@@ -104,6 +122,9 @@ enum Op {
         created_at: u64,
         state: String,
     },
+    /// A session's own notes, from before the agent's notes; only tests
+    /// write them now.
+    #[cfg(test)]
     Notes {
         session: SessionId,
         text: String,
@@ -156,7 +177,7 @@ fn open(path: &Path) -> Result<Connection, StoreError> {
 }
 
 impl EventStore {
-    pub fn open(path: &Path, workspace: &Path) -> Result<(Self, Vec<StoredSession>), StoreError> {
+    pub fn open(path: &Path, workspace: &Path) -> Result<(Self, Stored), StoreError> {
         let conn = open(path)?;
         let version: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
@@ -176,6 +197,11 @@ impl EventStore {
             params![SCHEMA_VERSION, workspace.to_string_lossy()],
         )?;
         let sessions = load(&conn)?;
+        let notes = conn
+            .query_row("SELECT text FROM agent_notes WHERE id = 1", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
         let (tx, rx) = std_mpsc::channel();
         let thread_path = path.to_path_buf();
         std::thread::Builder::new()
@@ -190,7 +216,7 @@ impl EventStore {
                 tx,
                 path: path.to_path_buf(),
             },
-            sessions,
+            Stored { sessions, notes },
         ))
     }
 
@@ -236,12 +262,18 @@ impl EventStore {
         }
     }
 
-    /// Replaces the session's notes.
+    /// Replaces the session's own notes, from before the agent's notes.
+    #[cfg(test)]
     pub fn save_notes(&self, session: &SessionId, text: &str) {
         let _ = self.tx.send(Op::Notes {
             session: session.clone(),
             text: text.to_owned(),
         });
+    }
+
+    /// Replaces the agent's notes.
+    pub fn save_agent_notes(&self, text: &str) {
+        let _ = self.tx.send(Op::AgentNotes(text.to_owned()));
     }
 
     /// Replaces the session's task list.
@@ -342,10 +374,18 @@ fn apply(
     match op {
         Op::Event { session, .. }
         | Op::Session { session, .. }
-        | Op::Notes { session, .. }
         | Op::Tasks { session, .. }
         | Op::Truncate { session, .. }
             if deleted.contains(&session) => {}
+        #[cfg(test)]
+        Op::Notes { session, .. } if deleted.contains(&session) => {}
+        Op::AgentNotes(text) => {
+            conn.execute(
+                "INSERT INTO agent_notes (id, text, updated_at) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+                params![text, now_unix() as i64],
+            )?;
+        }
         Op::Event { session, seq, data } => {
             conn.execute(
                 "INSERT OR REPLACE INTO events (session_id, seq, event) VALUES (?1, ?2, ?3)",
@@ -363,6 +403,7 @@ fn apply(
                 params![session.0, created_at as i64, now_unix() as i64, state],
             )?;
         }
+        #[cfg(test)]
         Op::Notes { session, text } => {
             conn.execute(
                 "INSERT INTO notes (session_id, text, updated_at) VALUES (?1, ?2, ?3)
@@ -468,7 +509,7 @@ mod tests {
         store.flush().await;
         drop(store);
 
-        let (_, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        let (_, Stored { sessions, .. }) = EventStore::open(&path, dir.path()).unwrap();
         let notes: Vec<_> = sessions
             .iter()
             .map(|s| (s.id.0.as_str(), s.notes.as_str()))
@@ -529,12 +570,12 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        let (store, Stored { sessions, .. }) = EventStore::open(&path, dir.path()).unwrap();
         assert_eq!(sessions[0].notes, "old notes");
         store.save_notes(&id("b"), "");
         store.flush().await;
         drop(store);
-        let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        let (store, Stored { sessions, .. }) = EventStore::open(&path, dir.path()).unwrap();
         assert_eq!(sessions[0].notes, "old notes");
         // Cleared notes stay cleared rather than going back to the thread.
         assert_eq!(sessions[1].notes, "");
@@ -561,7 +602,7 @@ mod tests {
             ))
             .unwrap();
 
-        let (store, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        let (store, Stored { sessions, .. }) = EventStore::open(&path, dir.path()).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].notes, "");
         assert_eq!(sessions[0].tasks, TaskList::default());
@@ -569,7 +610,7 @@ mod tests {
         store.flush().await;
         drop(store);
 
-        let (_, sessions) = EventStore::open(&path, dir.path()).unwrap();
+        let (_, Stored { sessions, .. }) = EventStore::open(&path, dir.path()).unwrap();
         assert_eq!(sessions[0].notes, "notes");
         // Older agents refuse any other version.
         assert_eq!(

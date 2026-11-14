@@ -557,9 +557,8 @@ pub enum AgentUpdate {
     Conversation {
         update: ConversationUpdate,
     },
-    /// A session's notes changed; read them again if they are shown.
+    /// The agent's notes changed; read them again if they are shown.
     NotesChanged {
-        session: String,
         version: String,
     },
     TasksChanged {

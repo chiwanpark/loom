@@ -297,11 +297,14 @@ impl Tool for TasksUpdateTool {
 pub(crate) const PROMPT_SECTION: &str = "\
 # Notes and tasks
 
-This session has notes and a task list, which stay when the conversation is \
-compacted or cleared. The user can read and change them too.
+This agent has notes, and this session has a task list. Both stay when the \
+conversation is compacted or cleared, and the user can read and change them \
+too.
 - The notes are a text scratchpad for findings, decisions, and open \
-questions. Read them with notes_read; notes_edit changes a part of them, \
-notes_write replaces all of them.
+questions about the work in this workspace. All sessions of this agent share \
+them, so other sessions may change them too; keep what each piece of work \
+needs under its own heading. Read them with notes_read; notes_edit changes a \
+part of them with a patch, notes_write replaces all of them.
 - The task list is the plan of the work: numbered tasks with a status of \
 created, in_progress, or done. Read it with tasks_read and change it with \
 tasks_update. For work with several steps, add the steps as tasks, mark a \

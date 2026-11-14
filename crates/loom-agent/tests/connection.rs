@@ -764,15 +764,16 @@ async fn sessions_can_be_renamed_and_files_browsed() {
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 }
 
-/// The next `NotesChanged` notice, skipping other notifications.
-async fn notes_changed(notes: &mut Notes) -> (SessionId, loom_client::proto::FileVersion) {
+/// The version of the next `NotesChanged` notice, skipping other
+/// notifications.
+async fn notes_changed(notes: &mut Notes) -> loom_client::proto::FileVersion {
     loop {
         let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
             .await
             .expect("timed out waiting for a notes notice")
             .expect("connection closed");
-        if let Notification::Notice(Notice::NotesChanged { session, version }) = note {
-            return (session, version);
+        if let Notification::Notice(Notice::NotesChanged { version }) = note {
+            return version;
         }
     }
 }
@@ -793,27 +794,27 @@ async fn notes_are_read_and_written_through_the_client() {
     let (other, mut other_notes) = connect(&setup).await;
     let session = client.create_session(None).await.unwrap().id;
 
-    let empty = client.notes(&session).await.unwrap();
+    let empty = client.notes().await.unwrap();
     assert_eq!(empty.text, "");
     assert_eq!(empty.max_bytes, 64 * 1024);
     let version = client
-        .write_notes(&session, "- plan".into(), empty.version)
+        .write_notes("- plan".into(), empty.version)
         .await
         .unwrap();
     for notes in [&mut notes, &mut other_notes] {
-        assert_eq!(notes_changed(notes).await, (session.clone(), version));
+        assert_eq!(notes_changed(notes).await, version);
     }
-    let read = other.notes(&session).await.unwrap();
+    let read = other.notes().await.unwrap();
     assert_eq!((read.text.as_str(), read.version), ("- plan", version));
 
     // A client that read the notes before the write is out of date.
     let err = other
-        .write_notes(&session, "lost".into(), empty.version)
+        .write_notes("lost".into(), empty.version)
         .await
         .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 
-    // The agent changes them during a turn, without asking.
+    // A session's agent changes them during a turn, without asking.
     client.subscribe(&session, None, None).await.unwrap();
     client
         .send_prompt(&session, vec![loom_client::proto::ContentPart::text("go")])
@@ -825,27 +826,23 @@ async fn notes_are_read_and_written_through_the_client() {
             .iter()
             .any(|e| matches!(e, SessionEvent::ApprovalRequired { .. }))
     );
-    let (changed, version) = notes_changed(&mut other_notes).await;
-    assert_eq!(changed, session);
-    let read = other.notes(&session).await.unwrap();
+    let version = notes_changed(&mut other_notes).await;
+    let read = other.notes().await.unwrap();
     assert_eq!(read.text, "- plan\n- step done");
     assert_eq!(read.version, version);
 
     let err = client
-        .write_notes(&session, "x".repeat(64 * 1024 + 1), version)
+        .write_notes("x".repeat(64 * 1024 + 1), version)
         .await
         .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
-    let cleared = client
-        .write_notes(&session, String::new(), version)
-        .await
-        .unwrap();
-    assert_eq!(cleared, empty.version);
-    assert_eq!(client.notes(&session).await.unwrap().text, "");
 
+    // The notes are the agent's: deleting the session keeps them.
     client.delete_session(&session).await.unwrap();
-    let err = client.notes(&session).await.unwrap_err();
-    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+    assert_eq!(client.notes().await.unwrap().text, "- plan\n- step done");
+    let cleared = client.write_notes(String::new(), version).await.unwrap();
+    assert_eq!(cleared, empty.version);
+    assert_eq!(client.notes().await.unwrap().text, "");
 }
 
 /// The next `TasksChanged` notice, skipping other notifications.

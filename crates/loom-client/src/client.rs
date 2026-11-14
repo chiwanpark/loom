@@ -676,32 +676,24 @@ impl Client {
         .await
     }
 
-    /// A session's notes. Every connection gets a `NotesChanged` notice when
-    /// they change.
-    pub async fn notes(&self, session: &SessionId) -> Result<loom_proto::NotesContent> {
-        let command = Command::GetNotes {
-            session: session.clone(),
-        };
-        match self.request(command).await? {
+    /// The agent's notes, which its sessions share. Every connection gets a
+    /// `NotesChanged` notice when they change.
+    pub async fn notes(&self) -> Result<loom_proto::NotesContent> {
+        match self.request(Command::GetNotes).await? {
             Payload::Notes(notes) => Ok(notes),
             other => Err(unexpected(other)),
         }
     }
 
-    /// Replaces a session's notes if they still have the `expected` version,
+    /// Replaces the agent's notes if they still have the `expected` version,
     /// and returns their new version. Fails with `Conflict` when the notes
     /// changed since the client read them.
     pub async fn write_notes(
         &self,
-        session: &SessionId,
         text: String,
         expected: loom_proto::FileVersion,
     ) -> Result<loom_proto::FileVersion> {
-        let command = Command::WriteNotes {
-            session: session.clone(),
-            text,
-            expected,
-        };
+        let command = Command::WriteNotes { text, expected };
         match self.request(command).await? {
             Payload::NotesWritten(version) => Ok(version),
             other => Err(unexpected(other)),

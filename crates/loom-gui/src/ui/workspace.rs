@@ -104,7 +104,7 @@ actions!(
         ShowFiles,
         /// Shows the Agents tab of the right panel.
         ShowAgents,
-        /// Shows the active session's notes in the right panel.
+        /// Shows the active agent's notes in the right panel.
         ShowNotes,
         /// Shows the active session's task list in the right panel.
         ShowTasks,
@@ -412,8 +412,6 @@ struct SessionGroup {
     panes: Vec<Pane>,
     layout: PaneGroup,
     active_pane: PaneId,
-    /// The session's notes, once the Notes tab has shown them.
-    notes: Option<Entity<NotesView>>,
     /// The session's task list, once the Tasks tab has shown it.
     tasks: Option<Entity<TasksView>>,
 }
@@ -429,17 +427,8 @@ impl SessionGroup {
             }],
             layout: PaneGroup::new(pane),
             active_pane: pane,
-            notes: None,
             tasks: None,
         }
-    }
-
-    /// The notes view, if it has changes that are not saved.
-    fn unsaved_notes(&self, cx: &App) -> Option<Unsaved> {
-        self.notes
-            .as_ref()
-            .filter(|view| view.read(cx).is_dirty())
-            .map(|view| Unsaved::Notes(view.clone()))
     }
 
     fn chat(&self) -> Option<Entity<SessionView>> {
@@ -566,6 +555,9 @@ pub struct Workspace {
     active_connection: Option<Entity<AgentConnection>>,
     groups: Vec<SessionGroup>,
     active_group: Option<usize>,
+    /// Each agent's notes, by its connection's entity, once the Notes tab
+    /// has shown them.
+    notes: HashMap<EntityId, Entity<NotesView>>,
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_right: bool,
@@ -640,6 +632,7 @@ impl Workspace {
             pending_active: saved_layout.active.clone(),
             saved_layout,
             restoring: HashMap::new(),
+            notes: HashMap::new(),
         };
         cx.on_app_quit(|this, cx| {
             this.save_layout(cx);
@@ -667,7 +660,7 @@ impl Workspace {
         let weak = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |ws, cx| {
-                if ws.unsaved_in(|_| true, cx).is_empty() {
+                if ws.unsaved_everywhere(cx).is_empty() {
                     true
                 } else {
                     ws.close_window(window, cx);
@@ -795,19 +788,29 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The active session's notes view, made the first time it is asked for.
+    /// The agent whose notes the Notes tab shows: the active session's, or
+    /// the active agent's when no session is open.
+    fn notes_connection(&self) -> Option<Entity<AgentConnection>> {
+        match self.active_group() {
+            Some(group) => Some(group.connection.clone()),
+            None => self.active_connection.clone(),
+        }
+    }
+
+    /// The notes view of the agent the Notes tab shows, made the first time
+    /// it is asked for.
     fn notes_view(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<NotesView>> {
-        let group = self.active_group_mut()?;
-        if let Some(view) = &group.notes {
+        let conn = self.notes_connection()?;
+        if let Some(view) = self.notes.get(&conn.entity_id()) {
             return Some(view.clone());
         }
-        let (conn, session) = (group.connection.clone(), group.session.clone());
-        let view = cx.new(|cx| NotesView::new(conn, session, window, cx));
-        self.active_group_mut()?.notes = Some(view.clone());
+        let id = conn.entity_id();
+        let view = cx.new(|cx| NotesView::new(conn, window, cx));
+        self.notes.insert(id, view.clone());
         Some(view)
     }
 
@@ -1383,7 +1386,6 @@ impl Workspace {
             layout: PaneGroup::from_root(root),
             active_pane: order.get(saved.active_pane).copied().unwrap_or(order[0]),
             panes,
-            notes: None,
             tasks: None,
         };
         let empty: Vec<PaneId> = group
@@ -1655,12 +1657,7 @@ impl Workspace {
         let Some((id, panel)) = group.pane(pane).and_then(|p| p.tabs.iter().nth(ix)) else {
             return;
         };
-        let mut unsaved: Vec<Unsaved> = panel.unsaved(cx).into_iter().collect();
-        // Closing the last tab closes the session's group, and its notes.
-        let tabs: usize = group.panes.iter().map(|p| p.tabs.len()).sum();
-        if tabs == 1 {
-            unsaved.extend(group.unsaved_notes(cx));
-        }
+        let unsaved: Vec<Unsaved> = panel.unsaved(cx).into_iter().collect();
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.close_panel(id, window, cx)
         });
@@ -1697,7 +1694,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// File and notes views with unsaved changes in the groups that match.
+    /// File views with unsaved changes in the groups that match.
     fn unsaved_in(&self, pred: impl Fn(&SessionGroup) -> bool, cx: &App) -> Vec<Unsaved> {
         self.groups
             .iter()
@@ -1707,9 +1704,26 @@ impl Workspace {
                     .iter()
                     .flat_map(|p| p.tabs.iter())
                     .filter_map(|(_, panel)| panel.unsaved(cx))
-                    .chain(g.unsaved_notes(cx))
             })
             .collect()
+    }
+
+    /// The notes view of `conn`, or of every agent, if it has unsaved
+    /// changes.
+    fn unsaved_notes(&self, conn: Option<&Entity<AgentConnection>>, cx: &App) -> Vec<Unsaved> {
+        self.notes
+            .iter()
+            .filter(|(id, _)| conn.is_none_or(|conn| conn.entity_id() == **id))
+            .filter(|(_, view)| view.read(cx).is_dirty())
+            .map(|(_, view)| Unsaved::Notes(view.clone()))
+            .collect()
+    }
+
+    /// Everything with unsaved changes: file views and notes.
+    fn unsaved_everywhere(&self, cx: &App) -> Vec<Unsaved> {
+        let mut unsaved = self.unsaved_in(|_| true, cx);
+        unsaved.extend(self.unsaved_notes(None, cx));
+        unsaved
     }
 
     /// Runs `then` once the unsaved changes in `views` are taken care of:
@@ -1736,7 +1750,7 @@ impl Workspace {
             ),
             [_] => (
                 "Save your changes to the notes?".to_string(),
-                "The session's notes have changes that are not saved.".to_string(),
+                "The agent's notes have changes that are not saved.".to_string(),
             ),
             many if files => (
                 format!("Save your changes to {} files?", many.len()),
@@ -1782,14 +1796,14 @@ impl Workspace {
 
     /// Ctrl+Q: quits once unsaved changes are saved or thrown away.
     fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let unsaved = self.unsaved_in(|_| true, cx);
+        let unsaved = self.unsaved_everywhere(cx);
         self.guard_unsaved(unsaved, window, cx, |_, _, cx| cx.quit());
     }
 
     /// The title bar's close button, or a close request from the window
     /// manager while there are unsaved changes.
     fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let unsaved = self.unsaved_in(|_| true, cx);
+        let unsaved = self.unsaved_everywhere(cx);
         self.guard_unsaved(unsaved, window, cx, |_, window, _| window.remove_window());
     }
 
@@ -2172,7 +2186,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let unsaved = self.unsaved_in(|g| g.connection == conn, cx);
+        let mut unsaved = self.unsaved_in(|g| g.connection == conn, cx);
+        unsaved.extend(self.unsaved_notes(Some(&conn), cx));
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.stop_agent_now(conn, window, cx)
         });
@@ -2218,6 +2233,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.remove_groups(window, cx, |g| g.connection == *conn);
+        self.notes.remove(&conn.entity_id());
         self.connections.retain(|c| c != conn);
         if self.active_connection.as_ref() == Some(conn) {
             self.active_connection = self.connections.first().cloned();
@@ -2232,7 +2248,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let unsaved = self.unsaved_in(|g| g.connection == conn, cx);
+        let mut unsaved = self.unsaved_in(|g| g.connection == conn, cx);
+        unsaved.extend(self.unsaved_notes(Some(&conn), cx));
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.remove_agent_now(conn, window, cx)
         });
@@ -2481,8 +2498,9 @@ impl Workspace {
     }
 
     /// The right panel: tabs for the agents list, the workspace's changes,
-    /// its files, and the active session's notes and tasks. Changes and files
-    /// need a connection, and notes and tasks a session; agents need neither.
+    /// its files, the agent's notes, and the active session's tasks.
+    /// Changes, files, and notes need a connection, and tasks a session;
+    /// agents need neither.
     fn render_right_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = self.changes_connection();
@@ -2557,7 +2575,7 @@ impl Workspace {
                     .p_3()
                     .text_sm()
                     .text_color(theme.muted_foreground)
-                    .child("Open a session to see its notes.")
+                    .child("Connect to an agent to see its notes.")
                     .into_any_element(),
             },
             (RightTab::Tasks, _) => match self.tasks_view(window, cx) {
@@ -2639,7 +2657,7 @@ impl Workspace {
                     .xsmall()
                     .label("Notes")
                     .selected(tab == RightTab::Notes)
-                    .tooltip("The session's notes, kept by the agent and you (ctrl-shift-n)")
+                    .tooltip("The agent's notes, kept by its sessions and you (ctrl-shift-n)")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.right_tab = RightTab::Notes;
                         cx.notify();
@@ -4822,9 +4840,11 @@ mod tests {
         assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 0);
     }
 
-    /// The active session's notes view, once the Notes tab has shown it.
+    /// The active agent's notes view, once the Notes tab has shown it.
     fn notes_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<NotesView>> {
-        ws.read(cx).active_group().and_then(|g| g.notes.clone())
+        let ws = ws.read(cx);
+        let conn = ws.notes_connection()?;
+        ws.notes.get(&conn.entity_id()).cloned()
     }
 
     /// The active session's tasks view, once the Tasks tab has shown it.
@@ -4852,7 +4872,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_notes_and_tasks_tabs_follow_the_active_session(cx: &mut TestAppContext) {
+    fn the_tasks_tab_follows_the_active_session_and_the_notes_tab_its_agent(
+        cx: &mut TestAppContext,
+    ) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
@@ -4866,8 +4888,8 @@ mod tests {
             (group.connection.clone(), group.session.clone())
         });
         assert_eq!(
-            first.read_with(cx, |view, _| view.session().clone()),
-            session
+            first.read_with(cx, |view, _| view.connection().clone()),
+            conn
         );
 
         ws.update_in(cx, |ws, window, cx| {
@@ -4879,15 +4901,13 @@ mod tests {
                 .is_some_and(|g| g.session != session)
         });
         cx.run_until_parked();
+        // The sessions of one agent share its notes, edits and all.
         let second = cx
             .update(|_, cx| notes_view(&ws, cx))
             .expect("no notes view");
-        assert_ne!(second, first);
+        assert_eq!(second, first);
+        assert!(first.read_with(cx, |view, _| view.is_dirty()));
         let other = ws.read_with(cx, |ws, _| ws.active_group().unwrap().session.clone());
-        assert_eq!(
-            second.read_with(cx, |view, _| view.session().clone()),
-            other
-        );
         click("right-tasks", cx);
         let second_tasks = cx
             .update(|_, cx| tasks_view(&ws, cx))
@@ -4901,12 +4921,10 @@ mod tests {
             first_tasks.read_with(cx, |view, _| view.session().clone()),
             session
         );
-        // The first session's view keeps its edits.
-        assert!(first.read_with(cx, |view, _| view.is_dirty()));
     }
 
     #[gpui::test]
-    fn closing_a_session_with_unsaved_notes_asks_first(cx: &mut TestAppContext) {
+    fn closing_a_session_keeps_the_agents_unsaved_notes(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
@@ -4916,30 +4934,21 @@ mod tests {
         assert!(has_dialog(cx));
         click("unsaved-cancel", cx);
 
-        // Closing a tab while others stay does not close the notes.
+        // Closing the session's tabs does not ask about the notes, which
+        // belong to the agent and stay.
         let pane = ws.read_with(cx, |ws, _| ws.active_group().unwrap().active_pane);
-        let (ix, total) = ws.read_with(cx, |ws, _| {
-            let group = ws.active_group().unwrap();
-            let tabs = &group.active().unwrap().tabs;
-            let ix = tabs
-                .iter()
-                .position(|(_, panel)| matches!(panel, Panel::File(_)))
-                .unwrap();
-            (ix, group.panes.iter().map(|p| p.tabs.len()).sum::<usize>())
-        });
-        assert_eq!(total, 2, "the chat and the file");
-        ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, ix, window, cx));
-        assert!(!has_dialog(cx));
-        // Closing the last one does.
-        ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, 0, window, cx));
-        assert!(has_dialog(cx));
-        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
-        click("unsaved-save", cx);
+        for _ in 0..2 {
+            ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, 0, window, cx));
+            assert!(!has_dialog(cx));
+        }
         wait_until(cx, |cx| ws.read(cx).groups.is_empty());
-        let (conn, session) = view.read_with(cx, |view, _| {
-            (view.connection().clone(), view.session().clone())
-        });
-        let task = conn.read_with(cx, |conn, _| conn.read_notes(session));
+        assert_eq!(cx.update(|_, cx| notes_view(&ws, cx)), Some(view.clone()));
+        assert!(view.read_with(cx, |view, _| view.is_dirty()));
+        let saved = view.update_in(cx, |view, window, cx| view.save(window, cx));
+        wait_until(cx, |cx| !view.read(cx).is_saving());
+        assert!(futures::executor::block_on(saved));
+        let conn = view.read_with(cx, |view, _| view.connection().clone());
+        let task = conn.read_with(cx, |conn, _| conn.read_notes());
         assert_eq!(
             futures::executor::block_on(task).unwrap().unwrap().text,
             "plan"

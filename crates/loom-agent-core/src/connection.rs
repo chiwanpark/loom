@@ -455,12 +455,8 @@ impl Connection {
             } => Ok(Payload::History(
                 session(&id)?.older_events(before_seq, items),
             )),
-            Command::GetNotes { session: id } => Ok(Payload::Notes(session(&id)?.notes_content())),
-            Command::WriteNotes {
-                session: id,
-                text,
-                expected,
-            } => session(&id)?
+            Command::GetNotes => Ok(Payload::Notes(agent.notes_content())),
+            Command::WriteNotes { text, expected } => agent
                 .write_notes(text, expected)
                 .map(Payload::NotesWritten)
                 .map_err(|e| convert::api_error(&e)),
@@ -732,9 +728,7 @@ async fn forward_notices(
             Ok(AgentNotice::ShuttingDown) => Notice::ShuttingDown,
             Ok(AgentNotice::SessionUpdated(info)) => Notice::SessionUpdated(*info),
             Ok(AgentNotice::SessionRemoved(id)) => Notice::SessionRemoved(id),
-            Ok(AgentNotice::NotesChanged { session, version }) => {
-                Notice::NotesChanged { session, version }
-            }
+            Ok(AgentNotice::NotesChanged { version }) => Notice::NotesChanged { version },
             Ok(AgentNotice::TasksChanged { session, tasks }) => {
                 Notice::TasksChanged { session, tasks }
             }

@@ -109,7 +109,7 @@ keyPassword=…
 
 Without it, debug builds are signed with the SDK's debug key. Keep the key and its password safe: an APK signed by another key installs only after you uninstall the app, which deletes its pairings.
 
-The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing, and you can start, rename, archive, and delete sessions there. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model and reasoning effort, compact or clear the conversation, and edit the session's notes and tasks. Scanning the QR code needs Google Play services; pasting the link works without them.
+The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing, and you can start, rename, archive, and delete sessions there. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model and reasoning effort, compact or clear the conversation, and edit the agent's notes and the session's tasks. Scanning the QR code needs Google Play services; pasting the link works without them.
 
 ## Getting started
 
@@ -245,7 +245,7 @@ Useful default key bindings:
 | `ctrl-shift-m` | Choose the model |
 | `` ctrl-` `` | New terminal |
 | `ctrl-b` | Show or hide the agents panel |
-| `ctrl-shift-b` / `ctrl-shift-n` / `ctrl-shift-t` | Agents panel / the session's notes / the session's tasks |
+| `ctrl-shift-b` / `ctrl-shift-n` / `ctrl-shift-t` | Agents panel / the agent's notes / the session's tasks |
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
 | `ctrl-tab` / `ctrl-shift-tab` (or `ctrl-pagedown` / `ctrl-pageup`) | Next / previous tab in the pane |
 | `alt-1` … `alt-8` / `alt-9` | Tab 1 to 8 / the last tab in the pane |
@@ -262,16 +262,16 @@ To copy a workspace file to your machine, right-click it in the files panel and 
 
 When you open a session, the client loads its latest 50 messages and tool calls, and loads earlier ones as you scroll to the top. The **Changes** panel loads the whole session, to list every file it changed.
 
-To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its notes and tasks, and the tool approvals you gave it.
+To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its tasks, and the tool approvals you gave it, and the agent's notes stay.
 
 ### Notes and tasks
 
-Each session has notes and a task list for the agent's work. Both stay when the conversation is compacted or cleared, and are deleted with the session. They are not files in the workspace, and their contents are not added to the model's instructions: the agent reads them when it needs to, and its instructions tell it to read them again after a long conversation is compacted.
+Each agent has notes, and each session has a task list, for the agent's work. Both stay when a conversation is compacted or cleared. They are not files in the workspace, and their contents are not added to the model's instructions: the agent reads them when it needs to, and its instructions tell it to read them again after a long conversation is compacted.
 
-- The **notes** are a text scratchpad for findings, decisions, and open questions. The agent reads and changes them with the `notes_read`, `notes_edit`, and `notes_write` tools.
+- The **notes** are a text scratchpad for findings, decisions, and open questions about the work in the agent's workspace. All sessions of the agent share them, so what one session finds is there for the next, and they stay when a session is deleted. The agent reads them with `notes_read`, changes a part of them with `notes_edit`, which takes a patch, and replaces them with `notes_write`. An agent upgraded from a version with notes per session starts with the old notes of all its sessions, each under a heading with the session's title.
 - The **task list** is the plan of the work: numbered tasks, each created, in progress, or done. The agent reads it with `tasks_read`, and adds, changes, and removes tasks with `tasks_update`, which applies a batch of changes all or none.
 
-The **Notes** tab of the right panel (`ctrl-shift-n`, or **panel: notes** in the command palette) shows the active session's notes, and you can edit them there too: **Save** (`ctrl-s`) stores your text, **Revert** throws your changes away, and **Clear notes** empties them. When the agent changes the notes while you have unsaved changes, yours stay and the tab offers to reload the agent's text or overwrite it with yours. So that your edits are not lost unseen, `notes_write` refuses to replace non-empty notes the agent has not read since you last changed them or since its conversation was compacted or cleared.
+The **Notes** tab of the right panel (`ctrl-shift-n`, or **panel: notes** in the command palette) shows the notes of the active session's agent, and you can edit them there too: **Save** (`ctrl-s`) stores your text, **Revert** throws your changes away, and **Clear notes** empties them. When a session changes the notes while you have unsaved changes, yours stay and the tab offers to reload the agent's text or overwrite it with yours. So that changes are not lost unseen, `notes_write` refuses to replace non-empty notes that a session has not read since you or another session last changed them, or since its conversation was compacted or cleared.
 
 The **Tasks** tab (`ctrl-shift-t`, or **panel: tasks**) shows the task list, with each task's number, such as `#3`, which the agent uses to refer to it. A task keeps its number when others are removed. Type a task in the box at the bottom and press `enter` to add it (`shift-enter` starts a new line). Click a task's circle to move it on from created to in progress to done, click its text to edit it (`enter` saves, `escape` cancels), and click the trash icon to remove it; **Clear done** removes the tasks that are done. Your changes apply at once, and when you and the agent change the list at the same time, the later change wins.
 

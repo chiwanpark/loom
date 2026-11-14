@@ -169,9 +169,8 @@ impl State {
                     self.open.remove(&id);
                     self.sessions_changed = true;
                 }
-                loom_client::proto::Notice::NotesChanged { session, version } => {
+                loom_client::proto::Notice::NotesChanged { version } => {
                     self.queue.push(AgentUpdate::NotesChanged {
-                        session: session.0,
                         version: version_text(&version),
                     });
                 }
@@ -646,7 +645,8 @@ impl AgentConnection {
         .await
     }
 
-    /// Empties the session's conversation; its notes and tasks stay.
+    /// Empties the session's conversation; its tasks and the agent's notes
+    /// stay.
     pub async fn clear_session(self: Arc<Self>, session: String) -> Result<()> {
         with_client(&self.shared, move |client| async move {
             Ok(client.clear_session(&session_id(session)).await?)
@@ -654,27 +654,21 @@ impl AgentConnection {
         .await
     }
 
-    pub async fn notes(self: Arc<Self>, session: String) -> Result<Notes> {
+    /// The agent's notes, which its sessions share.
+    pub async fn notes(self: Arc<Self>) -> Result<Notes> {
         with_client(&self.shared, move |client| async move {
-            Ok(client.notes(&session_id(session)).await?.into())
+            Ok(client.notes().await?.into())
         })
         .await
     }
 
-    /// Replaces the notes if they are still at `expected`, the version that
-    /// was read; returns the new version.
-    pub async fn write_notes(
-        self: Arc<Self>,
-        session: String,
-        text: String,
-        expected: String,
-    ) -> Result<String> {
+    /// Replaces the agent's notes if they are still at `expected`, the
+    /// version that was read; returns the new version.
+    pub async fn write_notes(self: Arc<Self>, text: String, expected: String) -> Result<String> {
         let expected =
             parse_version(&expected).ok_or_else(|| LoomError::invalid("not a notes version"))?;
         with_client(&self.shared, move |client| async move {
-            let version = client
-                .write_notes(&session_id(session), text, expected)
-                .await?;
+            let version = client.write_notes(text, expected).await?;
             Ok(version_text(&version))
         })
         .await

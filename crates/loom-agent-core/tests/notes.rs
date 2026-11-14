@@ -54,11 +54,11 @@ async fn the_notes_outlast_compaction_clearing_and_a_restart() {
         vec![text("one"), text("two"), text("SUMMARY: two turns")],
     );
     let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    assert_eq!(session.notes(), "");
-    session.set_notes("- plan".into()).unwrap();
+    assert_eq!(h.agent.notes(), "");
+    h.agent.set_notes("- plan".into()).unwrap();
     let mut sub = session.subscribe(None);
     run_turn(&session, &mut sub, "first").await;
-    session
+    h.agent
         .set_notes("- plan\n- first step done".into())
         .unwrap();
     run_turn(&session, &mut sub, "second").await;
@@ -75,11 +75,11 @@ async fn the_notes_outlast_compaction_clearing_and_a_restart() {
     })
     .await;
     session.wait_idle().await;
-    assert_eq!(session.notes(), "- plan\n- first step done");
+    assert_eq!(h.agent.notes(), "- plan\n- first step done");
 
     session.clear().unwrap();
     assert!(session.history().is_empty());
-    assert_eq!(session.notes(), "- plan\n- first step done");
+    assert_eq!(h.agent.notes(), "- plan\n- first step done");
     let id = session.id().clone();
     let other = h
         .agent
@@ -91,9 +91,9 @@ async fn the_notes_outlast_compaction_clearing_and_a_restart() {
     drop(session);
 
     let (agent, _) = h.reopen(config, vec![]);
-    let restored = agent.session(&id).unwrap();
-    assert_eq!(restored.notes(), "- plan\n- first step done");
-    assert_eq!(agent.session(&other).unwrap().notes(), "");
+    assert!(agent.session(&id).is_ok());
+    assert!(agent.session(&other).is_ok());
+    assert_eq!(agent.notes(), "- plan\n- first step done");
 }
 
 #[tokio::test]
@@ -101,15 +101,14 @@ async fn the_notes_have_a_size_limit() {
     let mut config = test_config(PolicyAction::Allow);
     config.tools.notes.max_bytes = ByteSize::bytes(8);
     let h = Harness::new(config, vec![]);
-    let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    session.set_notes("12345678".into()).unwrap();
-    let err = session.set_notes("123456789".into()).unwrap_err();
+    h.agent.set_notes("12345678".into()).unwrap();
+    let err = h.agent.set_notes("123456789".into()).unwrap_err();
     assert!(
         matches!(err, CoreError::NotesTooLarge { size: 9, max: 8 }),
         "{err}"
     );
     assert!(err.to_string().contains("tools.notes.max_bytes"));
-    assert_eq!(session.notes(), "12345678");
+    assert_eq!(h.agent.notes(), "12345678");
 }
 
 /// Under a policy that asks for everything else, the agent reads, edits, and
@@ -134,7 +133,7 @@ async fn the_agent_reads_edits_and_writes_the_notes_without_asking() {
         ],
     );
     let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    session.set_notes("- plan\n- todo".into()).unwrap();
+    h.agent.set_notes("- plan\n- todo".into()).unwrap();
     let mut sub = session.subscribe(None);
     let events = run_turn(&session, &mut sub, "go").await;
     assert!(
@@ -150,7 +149,7 @@ async fn the_agent_reads_edits_and_writes_the_notes_without_asking() {
     }
     assert_eq!(result(&results, "r1").content, "- plan\n- todo");
     assert_eq!(result(&results, "r2").content, "- plan\n- done");
-    assert_eq!(session.notes(), "rewritten");
+    assert_eq!(h.agent.notes(), "rewritten");
 }
 
 /// The agent may replace all of the notes only while its conversation holds
@@ -207,9 +206,9 @@ async fn writing_all_the_notes_needs_them_read_first() {
     let mut sub = session.subscribe(None);
     let first = results(&run_turn(&session, &mut sub, "one").await);
     assert!(!result(&first, "w1").is_error);
-    assert_eq!(session.notes(), "mine");
+    assert_eq!(h.agent.notes(), "mine");
 
-    session.set_notes("user notes".into()).unwrap();
+    h.agent.set_notes("user notes".into()).unwrap();
     let second = results(&run_turn(&session, &mut sub, "two").await);
     let refused = result(&second, "w2");
     assert!(refused.is_error);
@@ -222,12 +221,12 @@ async fn writing_all_the_notes_needs_them_read_first() {
     assert!(result(&second, "w2b").is_error);
     assert_eq!(result(&second, "r1").content, "the user's notes");
     assert!(!result(&second, "w3").is_error);
-    assert_eq!(session.notes(), "after reading");
+    assert_eq!(h.agent.notes(), "after reading");
 
     session.clear().unwrap();
     let third = results(&run_turn(&session, &mut sub, "three").await);
     assert!(result(&third, "w4").is_error);
-    assert_eq!(session.notes(), "after reading");
+    assert_eq!(h.agent.notes(), "after reading");
 
     run_turn(&session, &mut sub, "four").await;
     session.compact().unwrap();
@@ -238,7 +237,7 @@ async fn writing_all_the_notes_needs_them_read_first() {
     session.wait_idle().await;
     let fifth = results(&run_turn(&session, &mut sub, "five").await);
     assert!(result(&fifth, "w5").is_error);
-    assert_eq!(session.notes(), "after reading");
+    assert_eq!(h.agent.notes(), "after reading");
 }
 
 #[tokio::test]
@@ -271,7 +270,7 @@ async fn notes_changes_are_checked() {
         ],
     );
     let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    session.set_notes("0123456789".into()).unwrap();
+    h.agent.set_notes("0123456789".into()).unwrap();
     let mut sub = session.subscribe(None);
     let results = results(&run_turn(&session, &mut sub, "go").await);
     let missing = result(&results, "missing");
@@ -291,7 +290,7 @@ async fn notes_changes_are_checked() {
         );
     }
     assert!(result(&results, "bad").is_error);
-    assert_eq!(session.notes(), "0123456789");
+    assert_eq!(h.agent.notes(), "0123456789");
 }
 
 #[tokio::test]
@@ -315,7 +314,7 @@ async fn a_deny_rule_still_blocks_notes_tools() {
     let denied = result(&results, "w");
     assert!(denied.is_error);
     assert!(denied.content.starts_with(DENIED_BY_POLICY));
-    assert_eq!(session.notes(), "");
+    assert_eq!(h.agent.notes(), "");
 }
 
 /// A read returns all of the notes to the model, even where other tool output
@@ -337,7 +336,7 @@ async fn notes_reads_are_not_cut_off() {
     );
     std::fs::write(h.workspace.join("long.txt"), &long).unwrap();
     let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    session.set_notes(long.clone()).unwrap();
+    h.agent.set_notes(long.clone()).unwrap();
     let mut sub = session.subscribe(None);
     run_turn(&session, &mut sub, "go").await;
     assert_eq!(sent_result(&h, "notes_read"), long);
@@ -358,31 +357,29 @@ async fn notes_changes_are_announced() {
         ],
     );
     let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    let id = session.id().clone();
     let mut notices = h.agent.notices();
     let mut changes = move || {
         let mut versions = Vec::new();
         while let Ok(notice) = notices.try_recv() {
-            if let AgentNotice::NotesChanged { session, version } = notice {
-                assert_eq!(session, id);
+            if let AgentNotice::NotesChanged { version } = notice {
                 versions.push(version);
             }
         }
         versions
     };
 
-    let empty = session.notes_content();
+    let empty = h.agent.notes_content();
     assert_eq!(empty.version, version(""));
     // Any change makes another version, whitespace too.
     assert_ne!(version("a"), version("a\n"));
-    let v1 = session.write_notes("a".into(), empty.version).unwrap();
+    let v1 = h.agent.write_notes("a".into(), empty.version).unwrap();
     assert_eq!(v1, version("a"));
-    session.set_notes("b".into()).unwrap();
+    h.agent.set_notes("b".into()).unwrap();
     assert_eq!(changes(), [v1, version("b")]);
 
-    let err = session.write_notes("c".into(), v1).unwrap_err();
+    let err = h.agent.write_notes("c".into(), v1).unwrap_err();
     assert!(matches!(err, CoreError::NotesChanged), "{err}");
-    assert_eq!(session.notes(), "b");
+    assert_eq!(h.agent.notes(), "b");
     assert_eq!(changes(), []);
 
     // Saving the same text changes nothing: no notice, and the agent, which
@@ -390,7 +387,7 @@ async fn notes_changes_are_announced() {
     let mut sub = session.subscribe(None);
     run_turn(&session, &mut sub, "read").await;
     assert_eq!(
-        session.write_notes("b".into(), version("b")).unwrap(),
+        h.agent.write_notes("b".into(), version("b")).unwrap(),
         version("b")
     );
     assert_eq!(changes(), []);
@@ -398,7 +395,66 @@ async fn notes_changes_are_announced() {
     assert!(!result(&results, "w").is_error);
     assert_eq!(changes(), [version("by the agent")]);
 
+    // The notes are the agent's, so they outlast the session.
     h.agent.delete_session(session.id()).unwrap();
-    session.set_notes("after deletion".into()).unwrap();
-    assert_eq!(changes(), []);
+    assert_eq!(h.agent.notes(), "by the agent");
+    h.agent.set_notes("after deletion".into()).unwrap();
+    assert_eq!(changes(), [version("after deletion")]);
+}
+
+/// The sessions of an agent share its notes. A session may replace all of
+/// them only while its own conversation holds them as they are: not after
+/// another session changed them.
+#[tokio::test]
+async fn sessions_share_the_notes_and_see_each_others_changes() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(
+        config,
+        vec![
+            // First session: reads the notes.
+            calls(&[("a-read", "notes_read", json!({}))]),
+            text("ok"),
+            // Second session: adds a line, which the first has not seen.
+            calls(&[(
+                "b-edit",
+                "notes_edit",
+                json!({"patch": "@@\n - plan\n+- found by b\n"}),
+            )]),
+            text("ok"),
+            // First session: its write is refused until it reads again.
+            calls(&[
+                ("a-write", "notes_write", json!({"text": "a only"})),
+                ("a-read2", "notes_read", json!({})),
+                (
+                    "a-write2",
+                    "notes_write",
+                    json!({"text": "- plan\n- found by b\n- a"}),
+                ),
+            ]),
+            text("ok"),
+        ],
+    );
+    h.agent.set_notes("- plan".into()).unwrap();
+    let first = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let second = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let mut first_sub = first.subscribe(None);
+    let mut second_sub = second.subscribe(None);
+
+    let read = results(&run_turn(&first, &mut first_sub, "read").await);
+    assert_eq!(result(&read, "a-read").content, "- plan");
+    let edit = results(&run_turn(&second, &mut second_sub, "edit").await);
+    assert!(!result(&edit, "b-edit").is_error);
+    assert_eq!(h.agent.notes(), "- plan\n- found by b");
+
+    let third = results(&run_turn(&first, &mut first_sub, "write").await);
+    let refused = result(&third, "a-write");
+    assert!(refused.is_error);
+    assert!(
+        refused.content.contains("another session"),
+        "{}",
+        refused.content
+    );
+    assert_eq!(result(&third, "a-read2").content, "- plan\n- found by b");
+    assert!(!result(&third, "a-write2").is_error);
+    assert_eq!(h.agent.notes(), "- plan\n- found by b\n- a");
 }

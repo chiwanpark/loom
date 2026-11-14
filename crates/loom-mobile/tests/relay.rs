@@ -445,16 +445,16 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
     assert_eq!(tasks[0].text, "ship it");
     app.until(&conn, "the task notice", |app| app.tasks.is_some())
         .await;
-    let notes = conn.clone().notes(session.id.clone()).await.unwrap();
+    let notes = conn.clone().notes().await.unwrap();
     let version = conn
         .clone()
-        .write_notes(session.id.clone(), "remember".into(), notes.version.clone())
+        .write_notes("remember".into(), notes.version.clone())
         .await
         .unwrap();
     assert_ne!(version, notes.version);
     let stale = conn
         .clone()
-        .write_notes(session.id.clone(), "again".into(), notes.version)
+        .write_notes("again".into(), notes.version)
         .await
         .unwrap_err();
     assert!(matches!(stale, LoomError::Api { .. }), "{stale:?}");

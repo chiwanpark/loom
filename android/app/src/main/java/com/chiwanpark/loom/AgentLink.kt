@@ -130,7 +130,7 @@ class AgentLink(
     /** Task lists as the agent or another client changed them, by session. */
     val tasksChanged: SharedFlow<Pair<String, List<TaskItem>>> get() = tasksFlow
 
-    /** Sessions whose notes changed. */
+    /** The versions of the agent's notes as they change. */
     val notesChanged: SharedFlow<String> get() = notesFlow
 
     fun start() {
@@ -228,7 +228,7 @@ class AgentLink(
                     is AgentUpdate.Sessions -> sessions = update.sessions
                     is AgentUpdate.Conversation ->
                         conversations[update.update.session]?.apply(update.update)
-                    is AgentUpdate.NotesChanged -> notesFlow.tryEmit(update.session)
+                    is AgentUpdate.NotesChanged -> notesFlow.tryEmit(update.version)
                     is AgentUpdate.TasksChanged -> tasksFlow.tryEmit(update.session to update.tasks)
                     is AgentUpdate.Notice -> noticeFlow.tryEmit(AppNotice(update.level, update.message))
                 }

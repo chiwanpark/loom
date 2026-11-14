@@ -13,7 +13,7 @@ use crate::session::{
     UsageSoFar,
 };
 
-pub const PROTOCOL_VERSION: u16 = 10;
+pub const PROTOCOL_VERSION: u16 = 11;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -258,18 +258,15 @@ pub enum Command {
     ClearSession {
         session: SessionId,
     },
-    /// The session's notes: the agent's scratchpad for its work, which stays
-    /// when the conversation is compacted or cleared. Answered with
-    /// [`Payload::Notes`].
-    GetNotes {
-        session: SessionId,
-    },
-    /// Replaces the session's notes, during a turn too; an empty `text`
-    /// clears them. Fails with [`ErrorCode::Conflict`] when the notes no
-    /// longer have the `expected` version, that is, they changed since the
-    /// client read them. Answered with [`Payload::NotesWritten`].
+    /// The agent's notes: a scratchpad for the work in its workspace, which
+    /// all of its sessions share and which stays when a conversation is
+    /// compacted or cleared. Answered with [`Payload::Notes`].
+    GetNotes,
+    /// Replaces the agent's notes, during a turn too; an empty `text` clears
+    /// them. Fails with [`ErrorCode::Conflict`] when the notes no longer have
+    /// the `expected` version, that is, they changed since the client read
+    /// them. Answered with [`Payload::NotesWritten`].
     WriteNotes {
-        session: SessionId,
         text: String,
         expected: FileVersion,
     },
@@ -661,10 +658,9 @@ pub enum Notice {
     ShuttingDown,
     SessionUpdated(SessionInfo),
     SessionRemoved(SessionId),
-    /// A session's notes changed, by the agent or a client. The `version` is
+    /// The agent's notes changed, by a session or a client. The `version` is
     /// the hash of their new text, as in [`NotesContent`].
     NotesChanged {
-        session: SessionId,
         version: FileVersion,
     },
     /// A session's task list changed, by the agent or a client.
