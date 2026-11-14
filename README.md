@@ -232,6 +232,8 @@ The tab and panel keys work in terminals too, so a terminal program does not see
 
 To copy a workspace file to your machine, right-click it in the files panel and choose **Download…**, or use the download button in its file view. Downloads work over local and SSH connections, not through a relay yet.
 
+When you open a session, the client loads its latest 50 messages and tool calls, and loads earlier ones as you scroll to the top. The **Changes** panel loads the whole session, to list every file it changed.
+
 To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its notes and tasks, and the tool approvals you gave it.
 
 ### Notes and tasks

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use loom_config::HostEntry;
 use tokio::sync::mpsc;
 
 use crate::backend::{Backend, next};
-use crate::conversation::Conversation;
+use crate::conversation::{BULK_PAGE_ITEMS, Conversation, PAGE_ITEMS};
 use crate::term::{TerminalIo, TerminalView};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +129,10 @@ pub struct AgentConnection {
     pub status: LinkStatus,
     pub sessions: Vec<SessionInfo>,
     conversations: HashMap<SessionId, Entity<Conversation>>,
+    /// Sessions whose older events are being fetched.
+    loading_history: HashSet<SessionId>,
+    /// Sessions to fetch every older event of, as the Changes panel needs.
+    loading_all_history: HashSet<SessionId>,
     terminals: HashMap<TerminalId, TerminalEntry>,
     _pump: Option<Task<()>>,
 }
@@ -160,6 +164,8 @@ impl AgentConnection {
             status: LinkStatus::Connected,
             sessions: Vec::new(),
             conversations: HashMap::new(),
+            loading_history: HashSet::new(),
+            loading_all_history: HashSet::new(),
             terminals: HashMap::new(),
             _pump: None,
         };
@@ -232,13 +238,29 @@ impl AgentConnection {
 
     fn handle(&mut self, note: Notification, cx: &mut Context<Self>) {
         match note {
-            Notification::Event { session, event } => {
-                if let Some(conv) = self.conversations.get(&session) {
+            Notification::Events {
+                session,
+                events,
+                window,
+            } => {
+                if let Some(conv) = self.conversations.get(&session).cloned() {
                     conv.update(cx, |conv, cx| {
-                        if conv.apply(&event) {
+                        let mut changed = false;
+                        if let Some(window) = &window {
+                            conv.start_window(window);
+                            changed = true;
+                        }
+                        for event in &events {
+                            changed |= conv.apply(event);
+                        }
+                        if changed {
                             cx.notify();
                         }
                     });
+                    if window.is_some() && self.loading_all_history.contains(&session) {
+                        // A new window drops what was loaded; load it again.
+                        self.load_earlier(&session, BULK_PAGE_ITEMS, cx);
+                    }
                     let state = conv.read(cx).state;
                     let title = conv.read(cx).info.title.clone();
                     if let Some(info) = self.sessions.iter_mut().find(|s| s.id == session) {
@@ -324,7 +346,73 @@ impl AgentConnection {
         conv
     }
 
+    /// Fetches about `items` conversation items before the ones a session's
+    /// conversation holds, unless it holds them all or is fetching already.
+    pub fn load_earlier(&mut self, id: &SessionId, items: u32, cx: &mut Context<Self>) {
+        let Some(conv) = self.conversations.get(id) else {
+            return;
+        };
+        let conv = conv.read(cx);
+        let Some(before) = conv.first_seq().filter(|_| conv.has_older) else {
+            self.loading_all_history.remove(id);
+            return;
+        };
+        if !self.loading_history.insert(id.clone()) {
+            return;
+        }
+        let client = self.client.clone();
+        let session = id.clone();
+        let task = self
+            .backend
+            .run(async move { client.history(&session, before, items).await });
+        let id = id.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.loading_history.remove(&id);
+                match result {
+                    Some(Ok(history)) => {
+                        if let Some(conv) = this.conversations.get(&id) {
+                            conv.update(cx, |conv, cx| {
+                                if conv.prepend(history) {
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    }
+                    Some(Err(err)) => {
+                        tracing::warn!(session = %id, error = %err, "loading earlier events failed");
+                        this.loading_all_history.remove(&id);
+                    }
+                    None => {}
+                }
+                if this.loading_all_history.contains(&id) {
+                    this.load_earlier(&id, BULK_PAGE_ITEMS, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Fetches every older event of a session's conversation, page by page.
+    pub fn load_all_history(&mut self, id: &SessionId, cx: &mut Context<Self>) {
+        let has_older = self
+            .conversations
+            .get(id)
+            .is_some_and(|conv| conv.read(cx).has_older);
+        if has_older && self.loading_all_history.insert(id.clone()) {
+            self.load_earlier(id, BULK_PAGE_ITEMS, cx);
+        }
+    }
+
+    /// Whether older events of a session are being fetched.
+    pub fn is_loading_history(&self, id: &SessionId) -> bool {
+        self.loading_history.contains(id)
+    }
+
     pub fn release_conversation(&mut self, id: &SessionId) {
+        self.loading_all_history.remove(id);
         if self.conversations.remove(id).is_some() {
             let client = self.client.clone();
             let id = id.clone();
@@ -340,7 +428,7 @@ impl AgentConnection {
         let session = id.clone();
         let task = self
             .backend
-            .run(async move { client.subscribe(&session, since).await });
+            .run(async move { client.subscribe(&session, since, Some(PAGE_ITEMS)).await });
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             if let Some(Ok(info)) = task.await {
                 let _ = this.update(cx, |this, cx| {

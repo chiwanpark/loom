@@ -65,7 +65,12 @@ enum Part {
 }
 
 pub enum MessagesEvent {
-    Resolve { call_id: String, decision: Decision },
+    Resolve {
+        call_id: String,
+        decision: Decision,
+    },
+    /// The top of the list is in view and the session has older items.
+    LoadEarlier,
 }
 
 pub struct MessageList {
@@ -75,6 +80,11 @@ pub struct MessageList {
     synced: Vec<u64>,
     /// The conversation's generation at the last sync.
     generation: u64,
+    /// The conversation's prepended item count at the last sync.
+    prepended: usize,
+    /// The first event the conversation held when the list last asked for
+    /// earlier items, so it asks once for each.
+    asked_before: Option<u64>,
     expanded: HashSet<String>,
     collapsed: HashSet<String>,
     show_reasoning: HashSet<usize>,
@@ -115,6 +125,8 @@ impl MessageList {
             list,
             synced: Vec::new(),
             generation: 0,
+            prepended: 0,
+            asked_before: None,
             expanded: HashSet::new(),
             collapsed: HashSet::new(),
             show_reasoning: HashSet::new(),
@@ -147,6 +159,8 @@ impl MessageList {
         if conversation.generation != self.generation {
             // Cleared: nothing kept for the old items applies to the new ones.
             self.generation = conversation.generation;
+            self.prepended = 0;
+            self.asked_before = None;
             self.list.splice(0..self.synced.len(), 0);
             self.synced.clear();
             self.expanded.clear();
@@ -157,7 +171,22 @@ impl MessageList {
             self.markdown.clear();
             self.list.set_follow_mode(FollowMode::Tail);
         }
-        let revisions = self.conversation.read(cx).item_revisions();
+        let conversation = self.conversation.read(cx);
+        let revisions = conversation.item_revisions();
+        if conversation.prepended > self.prepended {
+            // Older items went before the others: insert their rows above the
+            // ones in view, which keeps the scroll position, and move what is
+            // kept by index along.
+            let added = conversation.prepended - self.prepended;
+            self.prepended = conversation.prepended;
+            self.list.splice(0..0, added);
+            self.synced.splice(0..0, revisions[..added].iter().copied());
+            self.show_reasoning = self.show_reasoning.drain().map(|ix| ix + added).collect();
+            self.markdown = std::mem::take(&mut self.markdown)
+                .into_iter()
+                .map(|((ix, part), parsed)| ((ix + added, part), parsed))
+                .collect();
+        }
         let common = self.synced.len().min(revisions.len());
         let mut ix = 0;
         while ix < common {
@@ -180,6 +209,17 @@ impl MessageList {
         self.list.remeasure_items(count..count + 1);
         self.markdown.retain(|(ix, _), _| *ix < count);
         self.synced = revisions.to_vec();
+    }
+
+    /// Asks for older items once the top row is shown, once for each first
+    /// event the conversation holds.
+    fn load_earlier_if_needed(&mut self, cx: &mut Context<Self>) {
+        let conversation = self.conversation.read(cx);
+        let first = conversation.first_seq();
+        if conversation.has_older && first.is_some() && self.asked_before != first {
+            self.asked_before = first;
+            cx.emit(MessagesEvent::LoadEarlier);
+        }
     }
 
     /// Parses the Markdown of an assistant message that is about to be shown,
@@ -225,6 +265,9 @@ impl MessageList {
         #[cfg(test)]
         {
             self.rendered_rows += 1;
+        }
+        if ix == 0 {
+            self.load_earlier_if_needed(cx);
         }
         self.prepare_markdown(ix, cx);
         let conversation = self.conversation.clone();
@@ -1876,6 +1919,84 @@ mod view_tests {
         messages.update(cx, |messages, cx| messages.follow(cx));
         cx.run_until_parked();
         assert!(last_row_visible(&messages, cx));
+    }
+
+    /// The events of `turns` turns from `seq` on, each a prompt and a reply.
+    fn turn_events(first_turn: usize, turns: usize, seq: u64) -> Vec<SequencedEvent> {
+        (0..turns)
+            .flat_map(|turn| {
+                let turn = first_turn + turn;
+                [
+                    SessionEvent::UserMessage {
+                        content: vec![ContentPart::text(format!("question {turn}"))],
+                    },
+                    SessionEvent::AssistantMessage {
+                        text: format!("answer {turn}"),
+                        reasoning: None,
+                        model: "test/model".into(),
+                    },
+                ]
+            })
+            .enumerate()
+            .map(|(ix, event)| SequencedEvent {
+                seq: seq + ix as u64,
+                event,
+            })
+            .collect()
+    }
+
+    /// A session opened at its latest items asks for earlier ones when its
+    /// top comes into view, and they go above the rows in view without
+    /// moving them.
+    #[gpui::test]
+    fn earlier_items_go_above_the_rows_in_view(cx: &mut TestAppContext) {
+        let (conversation, _, messages, cx) = open(0, cx);
+        conversation.update(cx, |conversation, cx| {
+            conversation.start_window(&loom_client::proto::EventWindow {
+                has_older: true,
+                usage: Default::default(),
+            });
+            for event in turn_events(10, 30, 21) {
+                conversation.apply(&event);
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let asked = |cx: &mut VisualTestContext| {
+            messages.read_with(cx, |messages, _| messages.asked_before)
+        };
+        // At the bottom, the top row is out of view.
+        assert_eq!(asked(cx), None);
+        messages.update(cx, |messages, cx| {
+            messages.list.scroll_to(gpui::ListOffset::default());
+            messages.show_reasoning.insert(1);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(asked(cx), Some(21));
+
+        conversation.update(cx, |conversation, cx| {
+            assert!(conversation.prepend(loom_client::proto::History {
+                events: turn_events(0, 10, 1),
+                has_older: false,
+                usage: Default::default(),
+            }));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        messages.read_with(cx, |messages, _| {
+            // Eighty items and the status row; the row in view stays.
+            assert_eq!(messages.list.item_count(), 81);
+            assert_eq!(messages.list.logical_scroll_top().item_ix, 20);
+            assert!(messages.show_reasoning.contains(&21));
+        });
+        // The session has no older items now; the list asks no more.
+        messages.update(cx, |messages, cx| {
+            messages.list.scroll_to(gpui::ListOffset::default());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(asked(cx), Some(21));
     }
 
     #[gpui::test]

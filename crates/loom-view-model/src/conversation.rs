@@ -4,11 +4,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use loom_proto::{
-    ContentPart, Decision, ReasoningEffort, SequencedEvent, SessionEvent, SessionInfo,
-    SessionState, ToolCall, ToolResult, TurnOutcome, Usage,
+    ContentPart, Decision, EventWindow, History, ReasoningEffort, SequencedEvent, SessionEvent,
+    SessionInfo, SessionState, ToolCall, ToolResult, TurnOutcome, Usage, UsageSoFar,
 };
 
 pub const MAX_TOOL_OUTPUT: usize = 256 * 1024;
+
+/// How many of the latest conversation items a client loads when it opens a
+/// session, and how many more each time it loads earlier ones.
+pub const PAGE_ITEMS: u32 = 50;
+
+/// How many items a client loads at a time when it needs a whole session.
+pub const BULK_PAGE_ITEMS: u32 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
@@ -142,13 +149,28 @@ pub struct Conversation<I = Attachment> {
     /// Bumped when a tool call finishes, the only event that can change the
     /// files the session has changed.
     pub changes_revision: u64,
-    /// Counts the times the conversation was cleared, so views can drop what
-    /// they keep for its items.
+    /// Counts the times the conversation was cleared or started over with a
+    /// new window, so views can drop what they keep for its items.
     pub generation: u64,
+    /// Whether the session has events before the ones this holds, which
+    /// [`Conversation::prepend`] adds.
+    pub has_older: bool,
+    /// How many items [`Conversation::prepend`] put before the others since
+    /// the generation changed, so views that keep state by item index can
+    /// shift it.
+    pub prepended: usize,
     /// The revision at which each item last changed, parallel to `items`, so
     /// views can tell which items to lay out again.
     item_revisions: Vec<u64>,
+    /// The sequence number of the event that made each item, parallel to
+    /// `items`: a key that stays when older items are put before it.
+    item_keys: Vec<u64>,
     tools: HashMap<String, usize>,
+    /// The events this was made from, compacted as the agent compacts its
+    /// log, to make the items again with older events before them.
+    events: Vec<SequencedEvent>,
+    /// The event being applied, whose sequence number keys new items.
+    current_seq: u64,
     decode: fn(&str, &[u8]) -> Option<I>,
 }
 
@@ -172,8 +194,13 @@ impl<I> Conversation<I> {
             revision: 0,
             changes_revision: 0,
             generation: 0,
+            has_older: false,
+            prepended: 0,
             item_revisions: Vec::new(),
+            item_keys: Vec::new(),
             tools: HashMap::new(),
+            events: Vec::new(),
+            current_seq: 0,
             decode,
         }
     }
@@ -183,14 +210,104 @@ impl<I> Conversation<I> {
         &self.item_revisions
     }
 
+    /// A key for each item that stays the same when older items are put
+    /// before it: the sequence number of the event that made it.
+    pub fn item_keys(&self) -> &[u64] {
+        &self.item_keys
+    }
+
+    /// The sequence number of the first event this holds, before which
+    /// [`loom_proto::Command::GetHistory`] asks for older ones.
+    pub fn first_seq(&self) -> Option<u64> {
+        self.events.first().map(|e| e.seq)
+    }
+
+    /// Drops everything for a new window of the session, whose events follow;
+    /// see [`loom_proto::ServerMessage::Events`].
+    pub fn start_window(&mut self, window: &EventWindow) {
+        self.clear_items();
+        self.events.clear();
+        self.total_usage = window.usage.total;
+        self.last_usage = window.usage.last;
+        self.has_older = window.has_older;
+        self.last_seq = 0;
+        self.revision += 1;
+    }
+
+    /// Puts older events before the ones this holds, as
+    /// [`loom_proto::Command::GetHistory`] returned them. Returns false and
+    /// changes nothing if they do not end before the first event held.
+    pub fn prepend(&mut self, history: History) -> bool {
+        let Some(first) = self.first_seq() else {
+            return false;
+        };
+        if history.events.last().is_some_and(|e| e.seq >= first) {
+            return false;
+        }
+        let mut all = Conversation::with_images(self.info.clone(), self.decode);
+        for event in history.events.iter().chain(&self.events) {
+            all.apply(event);
+        }
+        let Some(added) = all.items.len().checked_sub(self.items.len()) else {
+            return false;
+        };
+        self.revision += 1;
+        // The items held before keep their revisions: older events do not
+        // change them, and views need not lay them out again.
+        let mut revisions = vec![self.revision; added];
+        revisions.extend_from_slice(&self.item_revisions);
+        self.items = all.items;
+        self.item_revisions = revisions;
+        self.item_keys = all.item_keys;
+        self.tools = all.tools;
+        self.events = all.events;
+        self.has_older = history.has_older;
+        self.prepended += added;
+        self.changes_revision += 1;
+        true
+    }
+
     fn push(&mut self, item: Item<I>) {
         self.items.push(item);
         self.item_revisions.push(self.revision);
+        self.item_keys.push(self.current_seq);
     }
 
     fn pop(&mut self) {
         self.items.pop();
         self.item_revisions.pop();
+        self.item_keys.pop();
+    }
+
+    fn clear_items(&mut self) {
+        self.items.clear();
+        self.item_revisions.clear();
+        self.item_keys.clear();
+        self.tools.clear();
+        self.last_usage = None;
+        self.total_usage = Usage::default();
+        self.has_older = false;
+        self.prepended = 0;
+        self.generation += 1;
+    }
+
+    /// Keeps `event` for [`Conversation::prepend`], dropping what it makes
+    /// redundant as the agent does in its log.
+    fn record(&mut self, event: &SequencedEvent) {
+        match &event.event {
+            SessionEvent::AssistantMessage { .. } => self.events.retain(|e| {
+                !matches!(
+                    e.event,
+                    SessionEvent::AssistantDelta { .. } | SessionEvent::ReasoningDelta { .. }
+                )
+            }),
+            SessionEvent::ToolCallFinished { call_id, .. } => self.events.retain(|e| {
+                !matches!(&e.event, SessionEvent::ToolOutput { call_id: id, .. } if id == call_id)
+            }),
+            SessionEvent::Cleared => self.events.clear(),
+            _ => {}
+        }
+        self.events.push(event.clone());
     }
 
     fn touch(&mut self, index: usize) {
@@ -254,6 +371,15 @@ impl<I> Conversation<I> {
         }
         self.last_seq = self.last_seq.max(event.seq);
         self.revision += 1;
+        self.current_seq = event.seq;
+        self.record(event);
+        let mut usage = UsageSoFar {
+            total: self.total_usage,
+            last: self.last_usage,
+        };
+        usage.apply(&event.event);
+        self.total_usage = usage.total;
+        self.last_usage = usage.last;
         match &event.event {
             SessionEvent::UserMessage { content } => {
                 self.finish_streaming();
@@ -380,16 +506,8 @@ impl<I> Conversation<I> {
                 self.state = *state;
                 self.info.state = *state;
             }
-            SessionEvent::Usage { usage } => {
-                self.last_usage = Some(*usage);
-                let total = &mut self.total_usage;
-                total.input += usage.input;
-                total.output += usage.output;
-                total.cache_read += usage.cache_read;
-                total.cache_write += usage.cache_write;
-                total.reasoning += usage.reasoning;
-                total.total += usage.total;
-            }
+            // Counted above.
+            SessionEvent::Usage { .. } => {}
             SessionEvent::TurnFinished { outcome } => {
                 self.finish_streaming();
                 for (item, revision) in self.items.iter_mut().zip(&mut self.item_revisions) {
@@ -415,9 +533,6 @@ impl<I> Conversation<I> {
                 removed_messages,
                 summarized,
             } => {
-                // The last reported size predates the compaction; the next response
-                // reports the new one.
-                self.last_usage = None;
                 let how = if *summarized { "summarized" } else { "trimmed" };
                 self.notice(
                     NoticeKind::Info,
@@ -428,14 +543,7 @@ impl<I> Conversation<I> {
                 self.finish_streaming();
                 self.notice(NoticeKind::Info, model_changed(model, *reasoning));
             }
-            SessionEvent::Cleared => {
-                self.items.clear();
-                self.item_revisions.clear();
-                self.tools.clear();
-                self.last_usage = None;
-                self.total_usage = Usage::default();
-                self.generation += 1;
-            }
+            SessionEvent::Cleared => self.clear_items(),
         }
         true
     }
@@ -689,6 +797,158 @@ mod tests {
             arguments: args.into(),
             risk: None,
         }
+    }
+
+    /// A session with parallel tool calls whose request and finish fall on
+    /// both sides of a window's start, and usage before and after it.
+    fn session_events() -> Vec<SequencedEvent> {
+        let usage = SessionEvent::Usage {
+            usage: Usage {
+                input: 5,
+                output: 1,
+                total: 6,
+                ..Usage::default()
+            },
+        };
+        let finished = |id: &str| SessionEvent::ToolCallFinished {
+            call_id: id.into(),
+            result: ToolResult {
+                content: "done".into(),
+                is_error: false,
+                details: None,
+            },
+        };
+        let events = vec![
+            SessionEvent::UserMessage {
+                content: vec![ContentPart::text("first")],
+            },
+            usage.clone(),
+            SessionEvent::ToolCallRequested {
+                call: call("a", "shell", "{}"),
+            },
+            SessionEvent::ToolCallRequested {
+                call: call("b", "shell", "{}"),
+            },
+            SessionEvent::ToolCallStarted {
+                call_id: "a".into(),
+            },
+            finished("a"),
+            finished("b"),
+            usage.clone(),
+            SessionEvent::AssistantMessage {
+                text: "answer".into(),
+                reasoning: None,
+                model: "m".into(),
+            },
+            SessionEvent::UserMessage {
+                content: vec![ContentPart::text("second")],
+            },
+            usage,
+            SessionEvent::AssistantMessage {
+                text: "again".into(),
+                reasoning: None,
+                model: "m".into(),
+            },
+        ];
+        events
+            .into_iter()
+            .enumerate()
+            .map(|(ix, event)| SequencedEvent {
+                seq: ix as u64 + 1,
+                event,
+            })
+            .collect()
+    }
+
+    fn usage_before(events: &[SequencedEvent]) -> UsageSoFar {
+        let mut usage = UsageSoFar::default();
+        events.iter().for_each(|e| usage.apply(&e.event));
+        usage
+    }
+
+    /// A conversation loaded as its latest window and then older pages ends
+    /// up as the one built from every event, with the same item keys.
+    #[test]
+    fn a_window_and_older_pages_add_up_to_the_whole_conversation() {
+        let events = session_events();
+        let mut whole = Conversation::new(info());
+        events.iter().for_each(|e| {
+            whole.apply(e);
+        });
+
+        // The window starts at b's request: a finished inside it, but its
+        // request is older.
+        let mut conv = Conversation::new(info());
+        let generation = conv.generation;
+        conv.start_window(&EventWindow {
+            has_older: true,
+            usage: usage_before(&events[..3]),
+        });
+        assert_ne!(conv.generation, generation);
+        events[3..].iter().for_each(|e| {
+            conv.apply(e);
+        });
+        assert_eq!(conv.total_usage, whole.total_usage);
+        assert_eq!(conv.last_usage, whole.last_usage);
+        assert_eq!(conv.first_seq(), Some(4));
+        assert!(conv.has_older);
+        let held = conv.items.len();
+        let keys: Vec<u64> = conv.item_keys().to_vec();
+        let revisions = conv.item_revisions().to_vec();
+
+        // Overlapping pages are refused.
+        assert!(!conv.prepend(History {
+            events: events[..4].to_vec(),
+            has_older: false,
+            usage: UsageSoFar::default(),
+        }));
+
+        assert!(conv.prepend(History {
+            events: events[2..3].to_vec(),
+            has_older: true,
+            usage: usage_before(&events[..2]),
+        }));
+        assert_eq!(conv.prepended, 1);
+        // The items held before keep their keys and revisions.
+        assert_eq!(&conv.item_keys()[1..], &keys[..]);
+        assert_eq!(&conv.item_revisions()[1..], &revisions[..]);
+        let Item::Tool(a) = &conv.items[0] else {
+            panic!("{:?}", conv.items);
+        };
+        assert_eq!(a.status, ToolStatus::Succeeded);
+
+        assert!(conv.prepend(History {
+            events: events[..2].to_vec(),
+            has_older: false,
+            usage: UsageSoFar::default(),
+        }));
+        assert!(!conv.has_older);
+        assert_eq!(conv.prepended, conv.items.len() - held);
+        assert_eq!(conv.items, whole.items);
+        assert_eq!(conv.item_keys(), whole.item_keys());
+        assert_eq!(conv.total_usage, whole.total_usage);
+        assert_eq!(conv.first_seq(), Some(1));
+    }
+
+    #[test]
+    fn clearing_forgets_older_events() {
+        let mut conv = Conversation::new(info());
+        conv.start_window(&EventWindow {
+            has_older: true,
+            usage: UsageSoFar::default(),
+        });
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("hi")],
+                },
+                SessionEvent::Cleared,
+            ],
+        );
+        assert!(!conv.has_older);
+        assert!(conv.items.is_empty());
+        assert_eq!(conv.first_seq(), Some(2));
     }
 
     /// Images stay as they came unless the client decodes them; ones its

@@ -117,7 +117,7 @@ async fn main() -> AnyResult<()> {
         Some(id) => SessionId(id),
         None => client.create_session(model.as_deref()).await?.id,
     };
-    let info = client.subscribe(&session, None).await?;
+    let info = client.subscribe(&session, None, None).await?;
     println!(
         "session {} (model {})\n{HELP}",
         info.id,
@@ -159,20 +159,21 @@ async fn main() -> AnyResult<()> {
                     println!("\n[connection closed]");
                     break;
                 };
-                match render(note, &mut streamed) {
-                    Some(Approval::Required(call_id)) => {
-                        approvals.push_back(call_id);
-                        prompt_next(&approvals);
-                    }
-                    Some(Approval::Resolved(call_id)) => {
-                        let was_first = approvals.front() == Some(&call_id);
-                        approvals.retain(|id| *id != call_id);
-                        if was_first {
-                            println!();
+                for approval in render(note, &mut streamed) {
+                    match approval {
+                        Approval::Required(call_id) => {
+                            approvals.push_back(call_id);
                             prompt_next(&approvals);
                         }
+                        Approval::Resolved(call_id) => {
+                            let was_first = approvals.front() == Some(&call_id);
+                            approvals.retain(|id| *id != call_id);
+                            if was_first {
+                                println!();
+                                prompt_next(&approvals);
+                            }
+                        }
                     }
-                    None => {}
                 }
             }
         }
@@ -277,82 +278,15 @@ enum Approval {
     Resolved(String),
 }
 
-fn render(note: Notification, streamed: &mut bool) -> Option<Approval> {
+fn render(note: Notification, streamed: &mut bool) -> Vec<Approval> {
     let mut out = std::io::stdout().lock();
+    let mut approvals = Vec::new();
     match note {
-        Notification::Event { event, .. } => match event.event {
-            SessionEvent::UserMessage { .. } | SessionEvent::StateChanged { .. } => {}
-            SessionEvent::AssistantDelta { text } => {
-                *streamed = true;
-                let _ = write!(out, "{text}");
+        Notification::Events { events, .. } => {
+            for event in events {
+                approvals.extend(render_event(&mut out, event.event, streamed));
             }
-            SessionEvent::ReasoningDelta { text } => {
-                let _ = write!(out, "\x1b[2m{text}\x1b[0m");
-            }
-            SessionEvent::AssistantMessage { text, .. } => {
-                if *streamed {
-                    let _ = writeln!(out);
-                } else if !text.is_empty() {
-                    let _ = writeln!(out, "{text}");
-                }
-                *streamed = false;
-            }
-            SessionEvent::ToolCallRequested { call } => {
-                let _ = writeln!(out, "\x1b[36m[{}] {}\x1b[0m", call.name, call.arguments);
-            }
-            SessionEvent::ApprovalRequired { call_id, reason } => {
-                let _ = writeln!(out, "[approval needed] {reason}");
-                return Some(Approval::Required(call_id));
-            }
-            SessionEvent::ApprovalResolved { call_id, decision } => {
-                let _ = writeln!(out, "\x1b[2m[{decision:?}]\x1b[0m");
-                return Some(Approval::Resolved(call_id));
-            }
-            SessionEvent::ToolCallStarted { .. } => {}
-            SessionEvent::ToolOutput { chunk, .. } => {
-                let _ = out.write_all(&chunk.data);
-            }
-            SessionEvent::ToolCallFinished { result, .. } => {
-                let first = result.content.lines().next().unwrap_or_default();
-                let tag = if result.is_error { "error" } else { "done" };
-                let _ = writeln!(out, "\x1b[36m[{tag}] {first}\x1b[0m");
-            }
-            SessionEvent::Usage { usage } => {
-                let _ = writeln!(
-                    out,
-                    "\x1b[2m[tokens in {} out {}]\x1b[0m",
-                    usage.input, usage.output
-                );
-            }
-            SessionEvent::TurnFinished { outcome } => {
-                let tag = match outcome {
-                    TurnOutcome::Completed => "completed",
-                    TurnOutcome::Interrupted => "interrupted",
-                    TurnOutcome::Failed => "failed",
-                };
-                let _ = writeln!(out, "\x1b[2m[{tag}]\x1b[0m");
-            }
-            SessionEvent::Warning { message } => {
-                let _ = writeln!(out, "[warning] {message}");
-            }
-            SessionEvent::Error { message } => {
-                let _ = writeln!(out, "[error] {message}");
-            }
-            SessionEvent::ContextCompacted {
-                removed_messages,
-                summarized,
-            } => {
-                let how = if summarized { "summarized" } else { "trimmed" };
-                let _ = writeln!(out, "[context {how}: {removed_messages} messages]");
-            }
-            SessionEvent::ModelChanged { model, reasoning } => {
-                let effort = reasoning.map_or("default".into(), |e| format!("{e:?}"));
-                let _ = writeln!(out, "[model: {model}, reasoning effort: {effort}]");
-            }
-            SessionEvent::Cleared => {
-                let _ = writeln!(out, "[conversation cleared]");
-            }
-        },
+        }
         Notification::LoginFinished { result, .. } => match result {
             Ok(account) => {
                 let _ = writeln!(out, "[signed in to {}]", account.provider);
@@ -367,5 +301,86 @@ fn render(note: Notification, streamed: &mut bool) -> Option<Approval> {
         Notification::TerminalOutput { .. } | Notification::TerminalExited { .. } => {}
     }
     let _ = out.flush();
+    approvals
+}
+
+fn render_event(
+    out: &mut impl Write,
+    event: SessionEvent,
+    streamed: &mut bool,
+) -> Option<Approval> {
+    match event {
+        SessionEvent::UserMessage { .. } | SessionEvent::StateChanged { .. } => {}
+        SessionEvent::AssistantDelta { text } => {
+            *streamed = true;
+            let _ = write!(out, "{text}");
+        }
+        SessionEvent::ReasoningDelta { text } => {
+            let _ = write!(out, "\x1b[2m{text}\x1b[0m");
+        }
+        SessionEvent::AssistantMessage { text, .. } => {
+            if *streamed {
+                let _ = writeln!(out);
+            } else if !text.is_empty() {
+                let _ = writeln!(out, "{text}");
+            }
+            *streamed = false;
+        }
+        SessionEvent::ToolCallRequested { call } => {
+            let _ = writeln!(out, "\x1b[36m[{}] {}\x1b[0m", call.name, call.arguments);
+        }
+        SessionEvent::ApprovalRequired { call_id, reason } => {
+            let _ = writeln!(out, "[approval needed] {reason}");
+            return Some(Approval::Required(call_id));
+        }
+        SessionEvent::ApprovalResolved { call_id, decision } => {
+            let _ = writeln!(out, "\x1b[2m[{decision:?}]\x1b[0m");
+            return Some(Approval::Resolved(call_id));
+        }
+        SessionEvent::ToolCallStarted { .. } => {}
+        SessionEvent::ToolOutput { chunk, .. } => {
+            let _ = out.write_all(&chunk.data);
+        }
+        SessionEvent::ToolCallFinished { result, .. } => {
+            let first = result.content.lines().next().unwrap_or_default();
+            let tag = if result.is_error { "error" } else { "done" };
+            let _ = writeln!(out, "\x1b[36m[{tag}] {first}\x1b[0m");
+        }
+        SessionEvent::Usage { usage } => {
+            let _ = writeln!(
+                out,
+                "\x1b[2m[tokens in {} out {}]\x1b[0m",
+                usage.input, usage.output
+            );
+        }
+        SessionEvent::TurnFinished { outcome } => {
+            let tag = match outcome {
+                TurnOutcome::Completed => "completed",
+                TurnOutcome::Interrupted => "interrupted",
+                TurnOutcome::Failed => "failed",
+            };
+            let _ = writeln!(out, "\x1b[2m[{tag}]\x1b[0m");
+        }
+        SessionEvent::Warning { message } => {
+            let _ = writeln!(out, "[warning] {message}");
+        }
+        SessionEvent::Error { message } => {
+            let _ = writeln!(out, "[error] {message}");
+        }
+        SessionEvent::ContextCompacted {
+            removed_messages,
+            summarized,
+        } => {
+            let how = if summarized { "summarized" } else { "trimmed" };
+            let _ = writeln!(out, "[context {how}: {removed_messages} messages]");
+        }
+        SessionEvent::ModelChanged { model, reasoning } => {
+            let effort = reasoning.map_or("default".into(), |e| format!("{e:?}"));
+            let _ = writeln!(out, "[model: {model}, reasoning effort: {effort}]");
+        }
+        SessionEvent::Cleared => {
+            let _ = writeln!(out, "[conversation cleared]");
+        }
+    }
     None
 }

@@ -61,6 +61,12 @@ impl SessionView {
                     MessagesEvent::Resolve { call_id, decision } => {
                         this.resolve(call_id.clone(), *decision, window, cx)
                     }
+                    MessagesEvent::LoadEarlier => {
+                        let id = this.session_id(cx);
+                        this.connection.update(cx, |conn, cx| {
+                            conn.load_earlier(&id, crate::conversation::PAGE_ITEMS, cx)
+                        });
+                    }
                 },
             ),
         ];
@@ -898,13 +904,15 @@ mod tests {
             let agent = TestAgent::start();
             let (_, conversation, cx) = open(&agent, cx);
             say(&conversation, cx);
+            // Opening the session started its window: one generation already.
+            let before = generation(&conversation, cx);
             let button = cx.debug_bounds("clear-button").expect("no clear button");
             cx.simulate_click(button.center(), gpui::Modifiers::default());
             cx.run_until_parked();
             assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
-            assert_eq!(generation(&conversation, cx), 0);
+            assert_eq!(generation(&conversation, cx), before);
             cx.simulate_keystrokes("enter");
-            wait_until(cx, |cx| conversation.read(cx).generation == 1);
+            wait_until(cx, |cx| conversation.read(cx).generation == before + 1);
             assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
             assert!(conversation.read_with(cx, |c, _| c.items.is_empty()));
         }

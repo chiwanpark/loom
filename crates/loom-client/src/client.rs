@@ -6,9 +6,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use loom_proto::{
     AccountInfo, AgentInfo, ApiError, ClientHello, ClientMessage, Command, ContentPart, Decision,
-    LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo, Notice, PROTOCOL_VERSION, Payload,
-    PolicyAction, ProviderStatus, ReasoningEffort, RequestId, SequencedEvent, ServerMessage,
-    SessionId, SessionInfo, TerminalId, UsageLimits, decode, encode,
+    EventWindow, History, LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo, Notice,
+    PROTOCOL_VERSION, Payload, PolicyAction, ProviderStatus, ReasoningEffort, RequestId,
+    SequencedEvent, ServerMessage, SessionId, SessionInfo, TerminalId, UsageLimits, decode, encode,
 };
 use loom_transport::{Diagnostics, FrameReceiver, FrameSender, FrameStream};
 use tokio::sync::{mpsc, oneshot};
@@ -19,9 +19,11 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notification {
-    Event {
+    /// Events of a subscribed session; see [`ServerMessage::Events`].
+    Events {
         session: SessionId,
-        event: SequencedEvent,
+        events: Vec<SequencedEvent>,
+        window: Option<EventWindow>,
     },
     LoginFinished {
         login: LoginId,
@@ -153,9 +155,15 @@ impl Client {
                         }
                         continue;
                     }
-                    ServerMessage::Event { session, event } => {
-                        Notification::Event { session, event }
-                    }
+                    ServerMessage::Events {
+                        session,
+                        events,
+                        window,
+                    } => Notification::Events {
+                        session,
+                        events,
+                        window,
+                    },
                     ServerMessage::LoginFinished { login, result } => {
                         Notification::LoginFinished { login, result }
                     }
@@ -349,16 +357,40 @@ impl Client {
         .await
     }
 
+    /// Follows a session's events, which come as [`Notification::Events`];
+    /// see [`Command::Subscribe`] for `since_seq` and `tail`.
     pub async fn subscribe(
         &self,
         session: &SessionId,
         since_seq: Option<u64>,
+        tail: Option<u32>,
     ) -> Result<SessionInfo> {
         self.session(Command::Subscribe {
             session: session.clone(),
             since_seq,
+            tail,
         })
         .await
+    }
+
+    /// The events of about `items` conversation items before `before_seq`.
+    pub async fn history(
+        &self,
+        session: &SessionId,
+        before_seq: u64,
+        items: u32,
+    ) -> Result<History> {
+        match self
+            .request(Command::GetHistory {
+                session: session.clone(),
+                before_seq,
+                items,
+            })
+            .await?
+        {
+            Payload::History(history) => Ok(history),
+            other => Err(unexpected(other)),
+        }
     }
 
     pub async fn unsubscribe(&self, session: &SessionId) -> Result<()> {

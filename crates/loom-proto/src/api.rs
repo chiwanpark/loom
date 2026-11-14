@@ -8,9 +8,12 @@ use crate::auth::{
     ProviderStatus,
 };
 use crate::relay::HostId;
-use crate::session::{ContentPart, Decision, SequencedEvent, SessionId, SessionInfo, ToolCallId};
+use crate::session::{
+    ContentPart, Decision, EventWindow, SequencedEvent, SessionId, SessionInfo, ToolCallId,
+    UsageSoFar,
+};
 
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -102,9 +105,26 @@ pub enum Command {
     CreateSession {
         model: Option<String>,
     },
+    /// Follows a session's events. The agent answers with the session's
+    /// info, then sends its events in [`ServerMessage::Events`] batches.
+    ///
+    /// With `since_seq`, it sends the events after that one, the ones a
+    /// client that saw it missed. Without it, or when more than `tail` items
+    /// came since, it starts a new window instead: the first batch carries an
+    /// [`EventWindow`], and the client drops what it held for the session.
+    /// `tail` bounds a new window to the events of about that many of the
+    /// latest conversation items; `None` sends all of them.
     Subscribe {
         session: SessionId,
         since_seq: Option<u64>,
+        tail: Option<u32>,
+    },
+    /// The events of about `items` conversation items before `before_seq`,
+    /// for a client that loaded only the latest ones.
+    GetHistory {
+        session: SessionId,
+        before_seq: u64,
+        items: u32,
     },
     Unsubscribe {
         session: SessionId,
@@ -300,6 +320,17 @@ pub enum Payload {
     /// The version of the notes after a write.
     NotesWritten(FileVersion),
     Tasks(TasksContent),
+    History(History),
+}
+
+/// Older events of a session, from [`Command::GetHistory`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    pub events: Vec<SequencedEvent>,
+    /// Whether there are events before these.
+    pub has_older: bool,
+    /// The usage of the events before these.
+    pub usage: UsageSoFar,
 }
 
 /// What a [`Command::ReloadConfig`] did.
@@ -651,9 +682,13 @@ pub enum ServerMessage {
         id: RequestId,
         result: Result<Payload, ApiError>,
     },
-    Event {
+    /// Events of a subscribed session, in order. `window` is set on the
+    /// first batch of a subscription that starts a new window: the client
+    /// drops the events it held for the session and starts over with these.
+    Events {
         session: SessionId,
-        event: SequencedEvent,
+        events: Vec<SequencedEvent>,
+        window: Option<EventWindow>,
     },
     LoginFinished {
         login: LoginId,

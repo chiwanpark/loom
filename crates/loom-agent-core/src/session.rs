@@ -387,6 +387,17 @@ impl Session {
         self.core.hub.subscribe(since_seq)
     }
 
+    /// Like [`Session::subscribe`], with a new window bounded to the events of
+    /// about the last `tail` conversation items; see [`EventHub::subscribe_tail`].
+    pub fn subscribe_tail(&self, since_seq: Option<u64>, tail: Option<u32>) -> Subscription {
+        self.core.hub.subscribe_tail(since_seq, tail)
+    }
+
+    /// The events of about `items` conversation items before `before_seq`.
+    pub fn older_events(&self, before_seq: u64, items: u32) -> loom_proto::History {
+        self.core.hub.history(before_seq, items)
+    }
+
     /// The session's notes.
     pub fn notes(&self) -> String {
         self.core.lock().notes.clone()

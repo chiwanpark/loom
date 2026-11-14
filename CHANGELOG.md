@@ -5,6 +5,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ## Unreleased
 
 - 96 more bundled themes, from the color schemes at [TerminalColors](https://terminalcolors.com/): Apprentice, Ayu Mirage, Cobalt2, Deus, Dracula, GitHub, the Gruvbox contrast variants, Iceberg, Jellybeans, Kanagawa, Lucario, Miasma, Moonfly, Night Owl, Nightfly, Nightfox, Noctis, Nord, Nordic, One, One Half, Panda, Posterpole, Rosé Pine, Seoul256, Shades of Purple, Sonokai, Srcery, Tender, Tokyo Night Day, Tomorrow, and Zenbones, with their variants. Pick one with `ctrl-k ctrl-t`; terminals take their colors from it.
+- The protocol version is now 10. Agents and clients of 0.2.0 (protocol 9) cannot connect to these, so upgrade both; running agents keep their old version until you restart them. Opening a session now loads only its latest 50 messages and tool calls, sent in a few large messages instead of one message per event, and the client loads earlier ones as you scroll to the top. Long sessions open much faster, and opening one through a relay no longer exceeds the relay's message rate limit, which dropped the agent's link to the relay.
 
 ## 0.2.0
 

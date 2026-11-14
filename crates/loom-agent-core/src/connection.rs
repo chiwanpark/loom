@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use loom_llm::ProviderId;
 use loom_proto::{
     AgentInfo, ApiError, ClientHello, ClientMessage, Command, ErrorCode, LoginPrompt, ModelInfo,
-    Notice, PROTOCOL_VERSION, Payload, RequestId, ServerHello, ServerMessage, SessionId,
+    Notice, PROTOCOL_VERSION, Payload, RequestId, SequencedEvent, ServerHello, ServerMessage,
+    SessionId,
 };
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -262,9 +263,13 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
-            Command::Subscribe { session, since_seq } => match self.agent.session(&session) {
+            Command::Subscribe {
+                session,
+                since_seq,
+                tail,
+            } => match self.agent.session(&session) {
                 Ok(handle) => {
-                    let subscription = handle.subscribe(since_seq);
+                    let subscription = handle.subscribe_tail(since_seq, tail);
                     self.respond(id, Ok(Payload::Session(handle.info()))).await;
                     if let Some(old) = self.subscriptions.remove(&session) {
                         old.abort();
@@ -443,6 +448,13 @@ impl Connection {
                 session(&id)?.clear().map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Ok)
             }
+            Command::GetHistory {
+                session: id,
+                before_seq,
+                items,
+            } => Ok(Payload::History(
+                session(&id)?.older_events(before_seq, items),
+            )),
             Command::GetNotes { session: id } => Ok(Payload::Notes(session(&id)?.notes_content())),
             Command::WriteNotes {
                 session: id,
@@ -735,6 +747,13 @@ async fn forward_notices(
     }
 }
 
+/// The most bytes of events one [`ServerMessage::Events`] holds, unless a
+/// single event is larger. Batches keep a client that loads many events, as a
+/// whole session, from costing a message each.
+const MAX_BATCH_BYTES: usize = 256 * 1024;
+
+/// Sends a subscription's backlog, then its live events as they come, in
+/// batches of what is ready, so a burst of events costs a few messages.
 async fn forward_events(
     session: Session,
     mut subscription: Subscription,
@@ -744,11 +763,21 @@ async fn forward_events(
     let removed = session.removed();
     let mut last = 0;
     loop {
-        for event in std::mem::take(&mut subscription.backlog) {
+        let backlog = std::mem::take(&mut subscription.backlog);
+        let mut window = subscription.window.take();
+        if let Some(event) = backlog.last() {
             last = event.seq;
-            let message = ServerMessage::Event {
+        }
+        let mut batches = batches(backlog);
+        if batches.is_empty() && window.is_some() {
+            // A new window starts the client over, also when it is empty.
+            batches.push(Vec::new());
+        }
+        for events in batches {
+            let message = ServerMessage::Events {
                 session: id.clone(),
-                event,
+                events,
+                window: window.take(),
             };
             if out.send(message).await.is_err() {
                 return;
@@ -759,25 +788,84 @@ async fn forward_events(
                 _ = removed.cancelled() => return,
                 received = subscription.live.recv() => received,
             };
-            match received {
-                Ok(event) if event.seq <= last => {}
-                Ok(event) => {
-                    last = event.seq;
-                    let message = ServerMessage::Event {
-                        session: id.clone(),
-                        event,
-                    };
-                    if out.send(message).await.is_err() {
-                        return;
+            let mut events = Vec::new();
+            let mut bytes = 0;
+            let mut lagged = false;
+            let mut closed = false;
+            let mut next = Some(received);
+            while let Some(received) = next.take() {
+                match received {
+                    Ok(event) if event.seq <= last => {}
+                    Ok(event) => {
+                        last = event.seq;
+                        bytes += event_size(&event);
+                        events.push(event);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::debug!(session = %id, skipped, "subscriber lagged; resyncing");
+                        lagged = true;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        closed = true;
+                        break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::debug!(session = %id, skipped, "subscriber lagged; resyncing");
-                    subscription = session.subscribe(Some(last));
-                    break;
+                if bytes < MAX_BATCH_BYTES {
+                    // Takes what else is ready, without waiting for more.
+                    next = match subscription.live.try_recv() {
+                        Ok(event) => Some(Ok(event)),
+                        Err(broadcast::error::TryRecvError::Empty) => None,
+                        Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                            Some(Err(broadcast::error::RecvError::Lagged(n)))
+                        }
+                        Err(broadcast::error::TryRecvError::Closed) => {
+                            Some(Err(broadcast::error::RecvError::Closed))
+                        }
+                    };
                 }
-                Err(broadcast::error::RecvError::Closed) => return,
+            }
+            if !events.is_empty() {
+                let message = ServerMessage::Events {
+                    session: id.clone(),
+                    events,
+                    window: None,
+                };
+                if out.send(message).await.is_err() {
+                    return;
+                }
+            }
+            if closed {
+                return;
+            }
+            if lagged {
+                subscription = session.subscribe(Some(last));
+                break;
             }
         }
     }
+}
+
+/// Splits events into batches of at most [`MAX_BATCH_BYTES`].
+fn batches(events: Vec<SequencedEvent>) -> Vec<Vec<SequencedEvent>> {
+    let mut batches = Vec::new();
+    let mut batch = Vec::new();
+    let mut bytes = 0;
+    for event in events {
+        let size = event_size(&event);
+        if !batch.is_empty() && bytes + size > MAX_BATCH_BYTES {
+            batches.push(std::mem::take(&mut batch));
+            bytes = 0;
+        }
+        bytes += size;
+        batch.push(event);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    batches
+}
+
+fn event_size(event: &SequencedEvent) -> usize {
+    loom_proto::encode(event).map_or(0, |bytes| bytes.len())
 }

@@ -8,9 +8,9 @@ use futures::StreamExt;
 use loom_agent::server::{ServerContext, serve_stream};
 use loom_agent_core::{Agent, AgentOptions};
 use loom_client::proto::{
-    AgentInfo, ClientHello, ClientMessage, Command, Decision, ErrorCode, InstanceId, Notice,
-    PROTOCOL_VERSION, PolicyAction, ReasoningEffort, ServerMessage, SessionEvent, SessionId, Task,
-    TaskChange, TaskStatus, TurnOutcome, decode, encode,
+    AgentInfo, ClientHello, ClientMessage, Command, ContentPart, Decision, ErrorCode, EventWindow,
+    InstanceId, Notice, PROTOCOL_VERSION, PolicyAction, ReasoningEffort, ServerMessage,
+    SessionEvent, SessionId, Task, TaskChange, TaskStatus, TurnOutcome, decode, encode,
 };
 use loom_client::{Client, ClientError, Notification, Notifications, memory_pair};
 use loom_config::{AgentConfig, Dirs};
@@ -133,28 +133,71 @@ fn setup(replies: Vec<AssistantMessage>) -> Setup {
     Setup { agent, info, dir }
 }
 
-async fn connect(setup: &Setup) -> (Client, Notifications) {
+/// A connection's notifications with event batches split into one event
+/// each, so tests can wait for events one by one.
+struct Notes {
+    inner: Notifications,
+    split: VecDeque<Notification>,
+}
+
+impl Notes {
+    async fn recv(&mut self) -> Option<Notification> {
+        if let Some(note) = self.split.pop_front() {
+            return Some(note);
+        }
+        match self.inner.recv().await? {
+            Notification::Events {
+                session,
+                events,
+                mut window,
+            } if events.len() > 1 => {
+                for event in events {
+                    self.split.push_back(Notification::Events {
+                        session: session.clone(),
+                        events: vec![event],
+                        window: window.take(),
+                    });
+                }
+                self.split.pop_front()
+            }
+            note => Some(note),
+        }
+    }
+}
+
+async fn connect(setup: &Setup) -> (Client, Notes) {
     let (client_side, server_side) = memory_pair();
     tokio::spawn(serve_stream(
         ServerContext::new(setup.agent.clone(), setup.info.clone()),
         server_side,
     ));
-    Client::connect(client_side, "test").await.unwrap()
+    let (client, inner) = Client::connect(client_side, "test").await.unwrap();
+    (
+        client,
+        Notes {
+            inner,
+            split: VecDeque::new(),
+        },
+    )
 }
 
-async fn next_event(notes: &mut Notifications) -> (SessionId, u64, SessionEvent) {
+async fn next_event(notes: &mut Notes) -> (SessionId, u64, SessionEvent) {
     loop {
         let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
             .await
             .expect("timed out waiting for an event")
             .expect("connection closed");
-        if let Notification::Event { session, event } = note {
+        if let Notification::Events {
+            session, events, ..
+        } = note
+            && let Some(event) = events.into_iter().next()
+        {
             return (session, event.seq, event.event);
         }
     }
 }
 
-async fn until_turn_finished(notes: &mut Notifications) -> Vec<SessionEvent> {
+async fn until_turn_finished(notes: &mut Notes) -> Vec<SessionEvent> {
     let mut events = Vec::new();
     loop {
         let (_, _, event) = next_event(notes).await;
@@ -175,7 +218,7 @@ async fn prompt_turn_streams_events_to_subscribers() {
 
     let session = client.create_session(None).await.unwrap();
     assert_eq!(session.model, None);
-    let info = client.subscribe(&session.id, None).await.unwrap();
+    let info = client.subscribe(&session.id, None, None).await.unwrap();
     assert_eq!(info.id, session.id);
     client.send_text(&session.id, "hi").await.unwrap();
     let events = until_turn_finished(&mut notes).await;
@@ -195,7 +238,7 @@ async fn prompt_turn_streams_events_to_subscribers() {
     assert!(sessions[0].last_seq > 0);
 
     let (other, mut other_notes) = connect(&setup).await;
-    other.subscribe(&session.id, Some(1)).await.unwrap();
+    other.subscribe(&session.id, Some(1), None).await.unwrap();
     let (_, seq, _) = next_event(&mut other_notes).await;
     assert_eq!(seq, 2);
 
@@ -226,7 +269,7 @@ async fn approvals_round_trip_through_the_client() {
     let setup = setup(vec![write_call("out.txt"), text("written")]);
     let (client, mut notes) = connect(&setup).await;
     let session = client.create_session(None).await.unwrap();
-    client.subscribe(&session.id, None).await.unwrap();
+    client.subscribe(&session.id, None, None).await.unwrap();
     let info = client
         .set_policy(&session.id, Some(PolicyAction::Ask))
         .await
@@ -264,7 +307,7 @@ async fn sessions_are_cleared_through_the_client() {
     let setup = setup(vec![write_call("out.txt"), text("written")]);
     let (client, mut notes) = connect(&setup).await;
     let session = client.create_session(None).await.unwrap();
-    client.subscribe(&session.id, None).await.unwrap();
+    client.subscribe(&session.id, None, None).await.unwrap();
     client
         .set_policy(&session.id, Some(PolicyAction::Ask))
         .await
@@ -292,7 +335,7 @@ async fn sessions_are_cleared_through_the_client() {
         }
     };
     let (other, mut other_notes) = connect(&setup).await;
-    other.subscribe(&session.id, None).await.unwrap();
+    other.subscribe(&session.id, None, None).await.unwrap();
     let (_, first, event) = next_event(&mut other_notes).await;
     assert_eq!((first, event), (seq, SessionEvent::Cleared));
 
@@ -490,7 +533,7 @@ async fn dropped_connection_fails_pending_requests() {
     assert!(client.is_closed());
 }
 
-async fn terminal_text_until(notes: &mut Notifications, seen: &mut String, needle: &str) {
+async fn terminal_text_until(notes: &mut Notes, seen: &mut String, needle: &str) {
     while !seen.contains(needle) {
         let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
             .await
@@ -722,7 +765,7 @@ async fn sessions_can_be_renamed_and_files_browsed() {
 }
 
 /// The next `NotesChanged` notice, skipping other notifications.
-async fn notes_changed(notes: &mut Notifications) -> (SessionId, loom_client::proto::FileVersion) {
+async fn notes_changed(notes: &mut Notes) -> (SessionId, loom_client::proto::FileVersion) {
     loop {
         let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
             .await
@@ -771,7 +814,7 @@ async fn notes_are_read_and_written_through_the_client() {
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
 
     // The agent changes them during a turn, without asking.
-    client.subscribe(&session, None).await.unwrap();
+    client.subscribe(&session, None, None).await.unwrap();
     client
         .send_prompt(&session, vec![loom_client::proto::ContentPart::text("go")])
         .await
@@ -806,7 +849,7 @@ async fn notes_are_read_and_written_through_the_client() {
 }
 
 /// The next `TasksChanged` notice, skipping other notifications.
-async fn tasks_changed(notes: &mut Notifications) -> (SessionId, Vec<Task>) {
+async fn tasks_changed(notes: &mut Notes) -> (SessionId, Vec<Task>) {
     loop {
         let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
             .await
@@ -863,7 +906,7 @@ async fn tasks_are_read_and_changed_through_the_client() {
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
 
     // The agent changes it during a turn, without asking.
-    client.subscribe(&session, None).await.unwrap();
+    client.subscribe(&session, None, None).await.unwrap();
     client
         .send_prompt(&session, vec![loom_client::proto::ContentPart::text("go")])
         .await
@@ -1066,4 +1109,79 @@ async fn downloads_are_refused_through_a_relay() {
     assert!(!out.exists());
     // Reading files for the viewer still works.
     assert_eq!(client.read_file("a.txt").await.unwrap().text, "a");
+}
+
+/// Waits for the next batch of events, as the agent sent it.
+async fn next_batch(
+    notes: &mut Notifications,
+) -> (Vec<loom_client::proto::SequencedEvent>, Option<EventWindow>) {
+    loop {
+        let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
+            .await
+            .expect("timed out waiting for events")
+            .expect("connection closed");
+        if let Notification::Events { events, window, .. } = note {
+            return (events, window);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_tail_subscription_sends_the_latest_items_in_one_batch_and_pages_back() {
+    let setup = setup(Vec::new());
+    let (client, mut notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap();
+    client.subscribe(&session.id, None, None).await.unwrap();
+    for turn in 0..30 {
+        client
+            .send_text(&session.id, &format!("turn {turn}"))
+            .await
+            .unwrap();
+        until_turn_finished(&mut notes).await;
+    }
+
+    // This test looks at the batches as they come.
+    let (other, Notes { inner: mut raw, .. }) = connect(&setup).await;
+    // Everything, for comparison.
+    other.subscribe(&session.id, None, None).await.unwrap();
+    let (all, window) = next_batch(&mut raw).await;
+    assert!(!window.unwrap().has_older);
+    other.unsubscribe(&session.id).await.unwrap();
+
+    // Each turn is a prompt and a reply: ten items are the last five turns,
+    // in one message with the window.
+    other.subscribe(&session.id, None, Some(10)).await.unwrap();
+    let (mut seen, window) = next_batch(&mut raw).await;
+    let window = window.expect("a new window");
+    assert!(window.has_older);
+    assert!(
+        seen.len() < all.len() / 4,
+        "{} of {}",
+        seen.len(),
+        all.len()
+    );
+    assert_eq!(seen.last(), all.last());
+    assert!(matches!(
+        &seen[0].event,
+        SessionEvent::UserMessage { content } if content[0] == ContentPart::text("turn 25")
+    ));
+
+    let mut has_older = true;
+    while has_older {
+        let page = other.history(&session.id, seen[0].seq, 10).await.unwrap();
+        has_older = page.has_older;
+        seen.splice(0..0, page.events);
+    }
+    assert_eq!(seen, all);
+
+    // A short gap is caught up without a new window.
+    other.unsubscribe(&session.id).await.unwrap();
+    let since = all[all.len() - 3].seq;
+    other
+        .subscribe(&session.id, Some(since), Some(10))
+        .await
+        .unwrap();
+    let (caught_up, window) = next_batch(&mut raw).await;
+    assert!(window.is_none());
+    assert_eq!(caught_up, all[all.len() - 2..]);
 }

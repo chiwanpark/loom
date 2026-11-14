@@ -111,6 +111,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn usage_so_far_follows_compaction_and_clearing() {
+        let usage = Usage {
+            input: 10,
+            output: 2,
+            total: 12,
+            ..Usage::default()
+        };
+        let mut so_far = UsageSoFar::default();
+        so_far.apply(&SessionEvent::Usage { usage });
+        so_far.apply(&SessionEvent::Usage { usage });
+        assert_eq!(so_far.total.input, 20);
+        assert_eq!(so_far.total.total, 24);
+        assert_eq!(so_far.last, Some(usage));
+        so_far.apply(&SessionEvent::ContextCompacted {
+            removed_messages: 1,
+            summarized: false,
+        });
+        assert_eq!(so_far.last, None);
+        assert_eq!(so_far.total.output, 4);
+        so_far.apply(&SessionEvent::Cleared);
+        assert_eq!(so_far, UsageSoFar::default());
+    }
+
     fn message_roundtrip<T>(message: T)
     where
         T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -146,6 +170,12 @@ mod tests {
             Command::Subscribe {
                 session: session.clone(),
                 since_seq: Some(3),
+                tail: Some(50),
+            },
+            Command::GetHistory {
+                session: session.clone(),
+                before_seq: 40,
+                items: 50,
             },
             Command::SendPrompt {
                 session: session.clone(),
@@ -331,14 +361,40 @@ mod tests {
                 truncated: true,
             })),
         });
-        message_roundtrip(ServerMessage::Event {
-            session,
-            event: SequencedEvent {
+        message_roundtrip(ServerMessage::Events {
+            session: session.clone(),
+            events: vec![SequencedEvent {
                 seq: 1,
                 event: SessionEvent::TurnFinished {
                     outcome: TurnOutcome::Completed,
                 },
-            },
+            }],
+            window: Some(EventWindow {
+                has_older: true,
+                usage: UsageSoFar {
+                    total: Usage {
+                        input: 3,
+                        ..Usage::default()
+                    },
+                    last: None,
+                },
+            }),
+        });
+        message_roundtrip(ServerMessage::Events {
+            session,
+            events: Vec::new(),
+            window: None,
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 9,
+            result: Ok(Payload::History(History {
+                events: vec![SequencedEvent {
+                    seq: 2,
+                    event: SessionEvent::Cleared,
+                }],
+                has_older: false,
+                usage: UsageSoFar::default(),
+            })),
         });
         message_roundtrip(ServerMessage::LoginFinished {
             login: "l".into(),

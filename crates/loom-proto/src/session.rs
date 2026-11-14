@@ -234,6 +234,51 @@ pub struct SequencedEvent {
     pub event: SessionEvent,
 }
 
+/// The token usage a session's events add up to, so a client that loads
+/// only its latest events still knows the totals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageSoFar {
+    /// Every request's usage, summed.
+    pub total: Usage,
+    /// The last request's usage, for the size of the context; `None` after
+    /// a compaction until the next request reports it.
+    pub last: Option<Usage>,
+}
+
+impl UsageSoFar {
+    /// Adds what `event` changes.
+    pub fn apply(&mut self, event: &SessionEvent) {
+        match event {
+            SessionEvent::Usage { usage } => {
+                self.last = Some(*usage);
+                let total = &mut self.total;
+                total.input += usage.input;
+                total.output += usage.output;
+                total.cache_read += usage.cache_read;
+                total.cache_write += usage.cache_write;
+                total.reasoning += usage.reasoning;
+                total.total += usage.total;
+            }
+            // The last reported size predates the compaction; the next
+            // response reports the new one.
+            SessionEvent::ContextCompacted { .. } => self.last = None,
+            SessionEvent::Cleared => *self = Self::default(),
+            _ => {}
+        }
+    }
+}
+
+/// Where the events of an [`crate::ServerMessage::Events`] begin, on the
+/// first message of a subscription that starts a new window of the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventWindow {
+    /// Whether the session has events before the window, to fetch with
+    /// [`crate::Command::GetHistory`].
+    pub has_older: bool,
+    /// The usage of the events before the window.
+    pub usage: UsageSoFar,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: SessionId,

@@ -2395,9 +2395,18 @@ impl Workspace {
         cx.notify();
     }
 
-    fn session_changes(&mut self, cx: &App) -> Option<Rc<Vec<FileChange>>> {
+    fn session_changes(&mut self, cx: &mut Context<Self>) -> Option<Rc<Vec<FileChange>>> {
         let chat = self.active_group().and_then(SessionGroup::chat)?;
         let conversation = chat.read(cx).conversation.clone();
+        if conversation.read(cx).has_older {
+            // The session's changes come from all of its tool calls; fetch the
+            // ones before the latest items too.
+            let connection = chat.read(cx).connection.clone();
+            let id = conversation.read(cx).info.id.clone();
+            cx.defer(move |cx| {
+                connection.update(cx, |conn, cx| conn.load_all_history(&id, cx));
+            });
+        }
         let revision = conversation.read(cx).changes_revision;
         if let Some((id, cached, changes)) = &self.changes_cache
             && *id == conversation.entity_id()
