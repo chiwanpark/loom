@@ -12,6 +12,8 @@ pub enum CoreError {
     UnknownSession(String),
     #[error("no pending approval for tool call {0}")]
     UnknownApproval(String),
+    #[error("no message {0} waits to be delivered")]
+    UnknownPending(u64),
     #[error("prompt must not be empty")]
     EmptyPrompt,
     #[error("there is nothing to compact in this session yet")]

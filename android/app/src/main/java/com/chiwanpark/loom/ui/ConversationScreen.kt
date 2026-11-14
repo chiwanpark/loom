@@ -59,12 +59,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -80,6 +87,8 @@ import com.chiwanpark.loom.LoomApplication
 import com.chiwanpark.loom.Screen
 import com.chiwanpark.loom.core.Activity
 import com.chiwanpark.loom.core.ApprovalDecision
+import com.chiwanpark.loom.core.Delivery
+import com.chiwanpark.loom.core.WaitingMessage
 import com.chiwanpark.loom.core.ConversationItem
 import com.chiwanpark.loom.core.Model
 import com.chiwanpark.loom.core.NoticeLevel
@@ -102,6 +111,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var pickModel by remember { mutableStateOf(false) }
     var pickReasoning by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
+    var draft by rememberSaveable { mutableStateOf("") }
 
     // Follows the conversation while it is on the back stack, also after reconnecting.
     val connected = link.state == LinkState.Connected
@@ -180,11 +190,19 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                     )
                 }
             }
+            Waiting(conversation.waiting, enabled = connected, onTakeBack = { id ->
+                scope.attempt(snackbar) {
+                    val taken = link.connection().takeBack(session, id)
+                    draft = listOf(draft.trimEnd(), taken.text).filter { it.isNotEmpty() }.joinToString("\n\n")
+                }
+            })
             Composer(
+                text = draft,
+                onTextChange = { draft = it },
                 busy = conversation.status != SessionStatus.IDLE,
                 enabled = connected,
-                onSend = { text ->
-                    scope.attempt(snackbar) { link.connection().sendPrompt(session, text, emptyList()) }
+                onSend = { text, delivery ->
+                    scope.attempt(snackbar) { link.connection().sendPrompt(session, text, emptyList(), delivery) }
                 },
                 onStop = { scope.attempt(snackbar) { link.connection().interrupt(session) } },
             )
@@ -664,8 +682,20 @@ private fun Notice(item: ConversationItem.Notice) {
 }
 
 @Composable
-private fun Composer(busy: Boolean, enabled: Boolean, onSend: (String) -> Unit, onStop: () -> Unit) {
-    var text by remember { mutableStateOf("") }
+private fun Composer(
+    text: String,
+    onTextChange: (String) -> Unit,
+    busy: Boolean,
+    enabled: Boolean,
+    onSend: (String, Delivery) -> Unit,
+    onStop: () -> Unit,
+) {
+    val canSend = enabled && text.isNotBlank()
+    fun send(delivery: Delivery) {
+        if (!canSend) return
+        onSend(text, delivery)
+        onTextChange("")
+    }
     HorizontalDivider()
     Row(
         Modifier.fillMaxWidth().padding(8.dp),
@@ -674,21 +704,60 @@ private fun Composer(busy: Boolean, enabled: Boolean, onSend: (String) -> Unit, 
     ) {
         OutlinedTextField(
             value = text,
-            onValueChange = { text = it },
-            placeholder = { Text("Message") },
-            modifier = Modifier.weight(1f),
+            onValueChange = onTextChange,
+            placeholder = { Text(if (busy) "Queue a message, or steer this turn" else "Message") },
+            modifier = Modifier.weight(1f).onPreviewKeyEvent { event ->
+                // Ctrl+Enter on a hardware keyboard steers, as on the desktop.
+                if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && event.isCtrlPressed) {
+                    send(Delivery.STEER)
+                    true
+                } else {
+                    false
+                }
+            },
             maxLines = 6,
         )
         if (busy) {
             IconButton(onClick = onStop, enabled = enabled) { LoomIcon(LoomIcons.Stop, "Stop the turn") }
+            IconButton(onClick = { send(Delivery.STEER) }, enabled = canSend) {
+                LoomIcon(LoomIcons.CornerDownRight, "Steer this turn")
+            }
         }
-        IconButton(
-            onClick = {
-                onSend(text)
-                text = ""
-            },
-            enabled = enabled && text.isNotBlank(),
-        ) { LoomIcon(LoomIcons.Send, "Send") }
+        IconButton(onClick = { send(Delivery.QUEUE) }, enabled = canSend) {
+            LoomIcon(LoomIcons.Send, if (busy) "Queue for the next turn" else "Send")
+        }
+    }
+}
+
+/** The messages that wait for the running turn, each with a way to take it back into the composer. */
+@Composable
+private fun Waiting(messages: List<WaitingMessage>, enabled: Boolean, onTakeBack: (ULong) -> Unit) {
+    if (messages.isEmpty()) return
+    HorizontalDivider()
+    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+        messages.forEach { message ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when (message.delivery) {
+                        Delivery.STEER -> "Steer"
+                        Delivery.QUEUE -> "Queued"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+                Text(
+                    message.text.replace('\n', ' '),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { onTakeBack(message.id) }, enabled = enabled) {
+                    LoomIcon(LoomIcons.X, "Take back to edit", size = 18.dp)
+                }
+            }
+        }
     }
 }
 

@@ -6,9 +6,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use loom_proto::{
     AccountInfo, AgentInfo, ApiError, ClientHello, ClientMessage, Command, ContentPart, Decision,
-    EventWindow, History, LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo, Notice,
-    PROTOCOL_VERSION, Payload, PolicyAction, ProviderStatus, ReasoningEffort, RequestId,
-    SequencedEvent, ServerMessage, SessionId, SessionInfo, TerminalId, UsageLimits, decode, encode,
+    Delivery, EventWindow, History, LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo,
+    Notice, PROTOCOL_VERSION, Payload, PendingMessage, PolicyAction, ProviderStatus,
+    ReasoningEffort, RequestId, SequencedEvent, ServerMessage, SessionId, SessionInfo, TerminalId,
+    UsageLimits, decode, encode,
 };
 use loom_transport::{Diagnostics, FrameReceiver, FrameSender, FrameStream};
 use tokio::sync::{mpsc, oneshot};
@@ -400,12 +401,39 @@ impl Client {
         .await
     }
 
+    /// Starts a turn with `content`; fails with `Busy` while one runs.
     pub async fn send_prompt(&self, session: &SessionId, content: Vec<ContentPart>) -> Result<()> {
+        self.send_message(session, content, Delivery::Now).await
+    }
+
+    /// Sends a message: it starts a turn when none runs, and otherwise waits
+    /// as `delivery` says. Subscribers see a waiting message in a
+    /// `PendingAdded` event.
+    pub async fn send_message(
+        &self,
+        session: &SessionId,
+        content: Vec<ContentPart>,
+        delivery: Delivery,
+    ) -> Result<()> {
         self.ok(Command::SendPrompt {
             session: session.clone(),
             content,
+            delivery,
         })
         .await
+    }
+
+    /// Takes back a message that waits to be delivered, and returns it.
+    /// Fails with `NotFound` once it was delivered.
+    pub async fn cancel_pending(&self, session: &SessionId, id: u64) -> Result<PendingMessage> {
+        let command = Command::CancelPending {
+            session: session.clone(),
+            id,
+        };
+        match self.request(command).await? {
+            Payload::PendingCancelled(message) => Ok(message),
+            other => Err(unexpected(other)),
+        }
     }
 
     pub async fn send_text(&self, session: &SessionId, text: &str) -> Result<()> {

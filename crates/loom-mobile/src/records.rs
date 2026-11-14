@@ -366,6 +366,8 @@ pub struct ConversationUpdate {
     /// Tokens in the context after the last response.
     pub context_tokens: Option<u64>,
     pub pending_approvals: u32,
+    /// Messages sent while a turn ran, waiting to be delivered, in order.
+    pub waiting: Vec<WaitingMessage>,
     /// Whether the session has items before these, which `load_earlier`
     /// fetches.
     pub has_older: bool,
@@ -400,10 +402,81 @@ impl ConversationUpdate {
             reasoning: conversation.info.reasoning.map(Reasoning::from),
             context_tokens: conversation.last_usage.map(|u| u.context_tokens()),
             pending_approvals: conversation.pending_approvals().count() as u32,
+            waiting: conversation
+                .pending
+                .iter()
+                .map(WaitingMessage::from)
+                .collect(),
             has_older: conversation.has_older,
             reset,
             len: conversation.items.len() as u32,
             items,
+        }
+    }
+}
+
+/// How a message sent while a turn runs goes into the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Delivery {
+    /// It starts the next turn, after the running one completes.
+    Queue,
+    /// It goes into the running turn at its next step.
+    Steer,
+}
+
+impl From<Delivery> for proto::Delivery {
+    fn from(delivery: Delivery) -> Self {
+        match delivery {
+            Delivery::Queue => Self::Queue,
+            Delivery::Steer => Self::Steer,
+        }
+    }
+}
+
+/// A message waiting for the running turn.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WaitingMessage {
+    pub id: u64,
+    /// Its text, with a note of its images.
+    pub text: String,
+    pub delivery: Delivery,
+}
+
+impl From<&proto::PendingMessage> for WaitingMessage {
+    fn from(message: &proto::PendingMessage) -> Self {
+        Self {
+            id: message.id,
+            text: loom_view_model::conversation::pending_text(message),
+            delivery: match message.delivery {
+                proto::Delivery::Steer => Delivery::Steer,
+                proto::Delivery::Queue | proto::Delivery::Now => Delivery::Queue,
+            },
+        }
+    }
+}
+
+/// A waiting message taken back, to be edited and sent again.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TakenBack {
+    pub text: String,
+    pub images: Vec<ImageData>,
+}
+
+impl From<proto::PendingMessage> for TakenBack {
+    fn from(message: proto::PendingMessage) -> Self {
+        let mut text = Vec::new();
+        let mut images = Vec::new();
+        for part in message.content {
+            match part {
+                proto::ContentPart::Text { text: part } => text.push(part),
+                proto::ContentPart::Image { mime_type, data } => {
+                    images.push(ImageData { mime_type, data })
+                }
+            }
+        }
+        Self {
+            text: text.join("\n\n"),
+            images,
         }
     }
 }

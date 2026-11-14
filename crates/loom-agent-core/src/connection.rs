@@ -429,12 +429,20 @@ impl Connection {
             Command::SendPrompt {
                 session: id,
                 content,
+                delivery,
             } => {
                 session(&id)?
-                    .send_prompt(content)
+                    .send_message(content, delivery)
                     .map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Ok)
             }
+            Command::CancelPending {
+                session: id,
+                id: pending,
+            } => session(&id)?
+                .cancel_pending(pending)
+                .map(Payload::PendingCancelled)
+                .map_err(|e| convert::api_error(&e)),
             Command::Interrupt { session: id } => {
                 Ok(Payload::Interrupted(session(&id)?.interrupt()))
             }

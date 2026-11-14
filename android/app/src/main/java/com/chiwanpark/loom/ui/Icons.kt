@@ -35,6 +35,7 @@ object LoomIcons {
     val CircleCheck = Lucide.drawable.lucide_ic_circle_check
     val CircleDot = Lucide.drawable.lucide_ic_circle_dot
     val CircleX = Lucide.drawable.lucide_ic_circle_x
+    val CornerDownRight = Lucide.drawable.lucide_ic_corner_down_right
     val Image = Lucide.drawable.lucide_ic_image
     val Info = Lucide.drawable.lucide_ic_info
     val Loader = Lucide.drawable.lucide_ic_loader

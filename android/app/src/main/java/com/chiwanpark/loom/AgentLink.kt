@@ -19,6 +19,7 @@ import com.chiwanpark.loom.core.Reasoning
 import com.chiwanpark.loom.core.SessionStatus
 import com.chiwanpark.loom.core.SessionSummary
 import com.chiwanpark.loom.core.TaskItem
+import com.chiwanpark.loom.core.WaitingMessage
 import kotlin.math.min
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -63,6 +64,9 @@ class ConversationState(val session: String) {
     var contextTokens by mutableStateOf<ULong?>(null)
     var pendingApprovals by mutableStateOf(0)
 
+    /** Messages sent while a turn ran, waiting to be delivered. */
+    var waiting by mutableStateOf<List<WaitingMessage>>(emptyList())
+
     /** Counts the updates, so the screen can follow every change, also one that only grows the last item. */
     var revision by mutableStateOf(0L)
         private set
@@ -84,6 +88,7 @@ class ConversationState(val session: String) {
         reasoning = update.reasoning
         contextTokens = update.contextTokens
         pendingApprovals = update.pendingApprovals.toInt()
+        waiting = update.waiting
         loaded = true
         revision++
     }

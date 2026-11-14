@@ -31,6 +31,6 @@ pub use metrics::Metrics;
 pub use observer::SessionObserver;
 pub use policy::SessionPolicy;
 pub use runtime::Runtime;
-pub use session::Session;
+pub use session::{Sent, Session};
 pub use supervisor::Supervisor;
 pub use watcher::{ConfigWatcher, watch_config};

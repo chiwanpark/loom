@@ -25,6 +25,7 @@ gpui_kit_assets::icon_assets!(
         CircleStop,
         Coins,
         Columns2,
+        CornerDownRight,
         Download,
         Eraser,
         FileDiff,

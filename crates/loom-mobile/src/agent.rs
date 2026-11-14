@@ -13,8 +13,9 @@ use tokio::sync::Notify;
 use crate::error::{LoomError, Result};
 use crate::hosts::CLIENT_NAME;
 use crate::records::{
-    Agent, AgentUpdate, ApprovalDecision, ConversationUpdate, ImageData, Model, Notes, Reasoning,
-    SessionSummary, TaskEdit, TaskItem, notice_message, parse_version, task_items, version_text,
+    Agent, AgentUpdate, ApprovalDecision, ConversationUpdate, Delivery, ImageData, Model, Notes,
+    Reasoning, SessionSummary, TakenBack, TaskEdit, TaskItem, notice_message, parse_version,
+    task_items, version_text,
 };
 use crate::runtime::{run, spawn};
 
@@ -546,11 +547,14 @@ impl AgentConnection {
         .await
     }
 
+    /// Sends a message: it starts a turn when none runs, and otherwise waits
+    /// as `delivery` says.
     pub async fn send_prompt(
         self: Arc<Self>,
         session: String,
         text: String,
         images: Vec<ImageData>,
+        delivery: Delivery,
     ) -> Result<()> {
         let mut content = Vec::new();
         if !text.trim().is_empty() {
@@ -564,7 +568,20 @@ impl AgentConnection {
             return Err(LoomError::invalid("the message is empty"));
         }
         with_client(&self.shared, move |client| async move {
-            Ok(client.send_prompt(&session_id(session), content).await?)
+            Ok(client
+                .send_message(&session_id(session), content, delivery.into())
+                .await?)
+        })
+        .await
+    }
+
+    /// Takes back a waiting message, to be edited and sent again.
+    pub async fn take_back(self: Arc<Self>, session: String, id: u64) -> Result<TakenBack> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client
+                .cancel_pending(&session_id(session), id)
+                .await?
+                .into())
         })
         .await
     }

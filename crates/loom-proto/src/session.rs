@@ -239,8 +239,55 @@ pub enum SessionEvent {
         reasoning: Option<ReasoningEffort>,
     },
     /// The conversation was cleared: clients drop everything shown before it.
-    /// It is the first event of a session's log afterwards.
+    /// It is the first event of a session's log afterwards. Messages still
+    /// waiting are added again right after it.
     Cleared,
+    /// A message sent while a turn ran waits to be delivered; see
+    /// [`Delivery`]. After a turn that was interrupted or failed, waiting
+    /// messages stay until the next turn completes.
+    PendingAdded {
+        message: PendingMessage,
+    },
+    /// A waiting message left the queue: delivered, with its `UserMessage`
+    /// event right after this one, or cancelled.
+    PendingRemoved {
+        id: u64,
+    },
+}
+
+/// How a message a client sends goes into the conversation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Delivery {
+    /// Starts a turn; refused while one runs.
+    Now,
+    /// Starts a turn, or waits for the running one to complete and starts
+    /// the next.
+    #[default]
+    Queue,
+    /// Starts a turn, or goes into the running one at its next step: after
+    /// the results of the tool calls in progress, or after an answer, which
+    /// the turn then goes on from.
+    Steer,
+}
+
+/// A message waiting to be delivered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingMessage {
+    /// Unique within the session.
+    pub id: u64,
+    pub content: Vec<ContentPart>,
+    /// [`Delivery::Queue`] or [`Delivery::Steer`].
+    pub delivery: Delivery,
+}
+
+/// Applies what `event` changes to the waiting messages.
+pub fn apply_pending(pending: &mut Vec<PendingMessage>, event: &SessionEvent) {
+    match event {
+        SessionEvent::PendingAdded { message } => pending.push(message.clone()),
+        SessionEvent::PendingRemoved { id } => pending.retain(|message| message.id != *id),
+        SessionEvent::Cleared => pending.clear(),
+        _ => {}
+    }
 }
 
 impl SessionEvent {
@@ -294,13 +341,15 @@ impl UsageSoFar {
 
 /// Where the events of an [`crate::ServerMessage::Events`] begin, on the
 /// first message of a subscription that starts a new window of the session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventWindow {
     /// Whether the session has events before the window, to fetch with
     /// [`crate::Command::GetHistory`].
     pub has_older: bool,
     /// The usage of the events before the window.
     pub usage: UsageSoFar,
+    /// The messages waiting as of the window's start.
+    pub pending: Vec<PendingMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

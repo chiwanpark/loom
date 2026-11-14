@@ -12,14 +12,27 @@ use gpui_component::input::{InputEvent, Paste, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
-use loom_client::proto::{ContentPart, Decision, SessionId, UsageLimit};
+use loom_client::proto::{ContentPart, Decision, Delivery, PendingMessage, SessionId, UsageLimit};
 
 use crate::attachments::{self, AttachError};
-use crate::conversation::Conversation;
+use crate::conversation::{Conversation, delivery_label, pending_text};
 use crate::state::{AgentConnection, UsageState};
 use crate::ui::dialogs;
 use crate::ui::messages::{self, MessageList, MessagesEvent};
 use crate::ui::notify;
+
+const PLACEHOLDER: &str = "Ask the agent… (Enter to send, Shift+Enter for a new line)";
+const BUSY_PLACEHOLDER: &str =
+    "Ask the agent… (Enter to queue for the next turn, Ctrl+Enter to steer this one)";
+
+/// The key that steers the running turn, as a tooltip shows it.
+fn steer_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-enter"
+    } else {
+        "ctrl-enter"
+    }
+}
 
 pub struct SessionView {
     pub connection: Entity<AgentConnection>,
@@ -28,6 +41,8 @@ pub struct SessionView {
     input: Entity<TextareaState>,
     attachments: Vec<Arc<Image>>,
     focus: FocusHandle,
+    /// Whether the prompt's placeholder is the one for a running turn.
+    busy_placeholder: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -40,18 +55,30 @@ impl SessionView {
     ) -> Self {
         let input = cx.new(|cx| {
             let mut state = TextareaState::new(window, cx)
-                .placeholder("Ask the agent… (Enter to send, Shift+Enter for a new line)")
+                .placeholder(PLACEHOLDER)
                 .submit_on_enter(true);
             state.set_auto_grow(2, 12, cx);
             state
         });
         let messages = cx.new(|cx| MessageList::new(conversation.clone(), cx));
         let subscriptions = vec![
-            cx.observe(&conversation, |_, _, cx| cx.notify()),
+            cx.observe_in(&conversation, window, |this, _, window, cx| {
+                this.update_placeholder(window, cx);
+                cx.notify();
+            }),
             cx.observe(&connection, |_, _, cx| cx.notify()),
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = event {
-                    this.submit(window, cx);
+                if let InputEvent::PressEnter {
+                    shift: false,
+                    secondary,
+                } = event
+                {
+                    let delivery = if *secondary {
+                        Delivery::Steer
+                    } else {
+                        Delivery::Queue
+                    };
+                    this.submit(delivery, window, cx);
                 }
             }),
             cx.subscribe_in(
@@ -77,8 +104,22 @@ impl SessionView {
             input,
             attachments: Vec::new(),
             focus: cx.focus_handle(),
+            busy_placeholder: false,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Says in the prompt what Enter does: while a turn runs it queues the
+    /// message, and Ctrl+Enter steers the turn.
+    fn update_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let busy = self.conversation.read(cx).is_busy();
+        if busy == self.busy_placeholder {
+            return;
+        }
+        self.busy_placeholder = busy;
+        let text = if busy { BUSY_PLACEHOLDER } else { PLACEHOLDER };
+        self.input
+            .update(cx, |input, cx| input.set_placeholder(text, window, cx));
     }
 
     pub fn session_id(&self, cx: &App) -> SessionId {
@@ -167,7 +208,9 @@ impl SessionView {
         self.add_images(images, window, cx);
     }
 
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Sends the prompt: it starts a turn when none runs, and otherwise waits
+    /// as `delivery` says.
+    fn submit(&mut self, delivery: Delivery, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().trim().to_owned();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -192,13 +235,117 @@ impl SessionView {
         let session = self.session_id(cx);
         let task = conn
             .backend
-            .run(async move { client.send_prompt(&session, content).await });
+            .run(async move { client.send_message(&session, content, delivery).await });
         cx.spawn_in(window, async move |_, cx: &mut AsyncWindowContext| {
             if let Some(Err(err)) = task.await {
                 let _ = cx.update(|window, cx| notify::error(window, cx, err.to_string()));
             }
         })
         .detach();
+    }
+
+    /// Takes back a waiting message and puts it into the composer, after
+    /// what is there, to be edited and sent again.
+    fn take_back(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.connection.read(cx);
+        let client = conn.client.clone();
+        let session = self.session_id(cx);
+        let task = conn
+            .backend
+            .run(async move { client.cancel_pending(&session, id).await });
+        cx.spawn_in(
+            window,
+            async move |this, cx: &mut AsyncWindowContext| match task.await {
+                Some(Ok(message)) => {
+                    let _ =
+                        this.update_in(cx, |this, window, cx| this.restore(message, window, cx));
+                }
+                Some(Err(err)) => {
+                    let _ = cx.update(|window, cx| notify::error(window, cx, err.to_string()));
+                }
+                None => {}
+            },
+        )
+        .detach();
+    }
+
+    fn restore(&mut self, message: PendingMessage, window: &mut Window, cx: &mut Context<Self>) {
+        let mut text = self.input.read(cx).value().trim_end().to_owned();
+        for part in message.content {
+            match part {
+                ContentPart::Text { text: part } => {
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(&part);
+                }
+                ContentPart::Image { mime_type, data } => {
+                    if let Some(image) = attachments::decode(&mime_type, &data) {
+                        self.attachments.push(image);
+                    }
+                }
+            }
+        }
+        self.input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn render_pending(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let pending = &self.conversation.read(cx).pending;
+        if pending.is_empty() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let rows: Vec<_> = pending
+            .iter()
+            .map(|message| (message.id, message.delivery, pending_text(message)))
+            .collect();
+        let rows = rows.into_iter().map(|(id, delivery, text)| {
+            let tooltip = match delivery {
+                Delivery::Steer => "Goes into this turn at its next step",
+                _ => "Starts the next turn when this one completes",
+            };
+            h_flex()
+                .id(("pending", id))
+                .debug_selector(move || format!("pending-{id}"))
+                .w_full()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .id(("pending-label", id))
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(delivery_label(delivery))
+                        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .child(text.replace('\n', " ")),
+                )
+                .child(
+                    Button::new(("take-back", id))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("Take back to edit")
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.take_back(id, window, cx)),
+                        ),
+                )
+        });
+        Some(v_flex().w_full().gap_1().children(rows))
     }
 
     fn compact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -748,6 +895,7 @@ impl Render for SessionView {
                     .border_t_1()
                     .border_color(theme.border)
                     .capture_action(cx.listener(Self::on_paste))
+                    .children(self.render_pending(cx))
                     .when(!self.attachments.is_empty(), |el| {
                         el.child(self.render_attachments(cx))
                     })
@@ -807,16 +955,35 @@ impl Render for SessionView {
                                         this.interrupt(window, cx)
                                     })),
                             )
+                            .when(busy, |el| {
+                                el.child(
+                                    Button::new("steer")
+                                        .small()
+                                        .icon(Icon::new(gpui_kit_assets::IconName::CornerDownRight))
+                                        .label("Steer")
+                                        .tooltip(format!(
+                                            "Send into this turn at its next step ({})",
+                                            steer_key()
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.submit(Delivery::Steer, window, cx)
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("send")
                                     .primary()
                                     .small()
                                     .icon(Icon::new(gpui_kit_assets::IconName::SendHorizontal))
-                                    .label("Send")
-                                    .tooltip("Send the prompt (enter)")
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| this.submit(window, cx)),
-                                    ),
+                                    .label(if busy { "Queue" } else { "Send" })
+                                    .tooltip(if busy {
+                                        "Send when this turn completes (enter)"
+                                    } else {
+                                        "Send the prompt (enter)"
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.submit(Delivery::Queue, window, cx)
+                                    })),
                             ),
                     ),
             )
@@ -915,6 +1082,46 @@ mod tests {
             wait_until(cx, |cx| conversation.read(cx).generation == before + 1);
             assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
             assert!(conversation.read_with(cx, |c, _| c.items.is_empty()));
+        }
+
+        /// While a turn runs, the composer queues and steers, and lists the
+        /// waiting messages, which can be taken back into it.
+        #[gpui::test]
+        fn a_busy_session_lists_waiting_messages(cx: &mut TestAppContext) {
+            use loom_client::proto::{ContentPart, Delivery, PendingMessage, SessionState};
+
+            let agent = TestAgent::start();
+            let (view, conversation, cx) = open(&agent, cx);
+            assert!(cx.debug_bounds("pending-4").is_none());
+            let message = PendingMessage {
+                id: 4,
+                content: vec![ContentPart::text("then this")],
+                delivery: Delivery::Steer,
+            };
+            conversation.update(cx, |conversation, cx| {
+                for event in [
+                    SessionEvent::StateChanged {
+                        state: SessionState::Thinking,
+                    },
+                    SessionEvent::PendingAdded {
+                        message: message.clone(),
+                    },
+                ] {
+                    conversation.apply(&SequencedEvent { seq: 0, event });
+                }
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("pending-4").is_some());
+            assert!(view.read_with(cx, |view, _| view.busy_placeholder));
+
+            let input = view.read_with(cx, |view, _| view.input.clone());
+            input.update_in(cx, |input, window, cx| input.set_value("first", window, cx));
+            view.update_in(cx, |view, window, cx| view.restore(message, window, cx));
+            assert_eq!(
+                input.read_with(cx, |input, _| input.value().to_string()),
+                "first\n\nthen this"
+            );
         }
     }
 

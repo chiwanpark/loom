@@ -9,8 +9,8 @@ use crate::auth::{
 };
 use crate::relay::HostId;
 use crate::session::{
-    ContentPart, Decision, EventWindow, SequencedEvent, SessionId, SessionInfo, ToolCallId,
-    UsageSoFar,
+    ContentPart, Decision, Delivery, EventWindow, PendingMessage, SequencedEvent, SessionId,
+    SessionInfo, ToolCallId, UsageSoFar,
 };
 
 pub const PROTOCOL_VERSION: u16 = 11;
@@ -132,6 +132,14 @@ pub enum Command {
     SendPrompt {
         session: SessionId,
         content: Vec<ContentPart>,
+        delivery: Delivery,
+    },
+    /// Takes back a message that waits to be delivered. Answered with
+    /// [`Payload::PendingCancelled`] holding it, for the client to edit;
+    /// fails with [`ErrorCode::NotFound`] once it was delivered.
+    CancelPending {
+        session: SessionId,
+        id: u64,
     },
     Interrupt {
         session: SessionId,
@@ -318,6 +326,8 @@ pub enum Payload {
     NotesWritten(FileVersion),
     Tasks(TasksContent),
     History(History),
+    /// The message [`Command::CancelPending`] took back.
+    PendingCancelled(PendingMessage),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].

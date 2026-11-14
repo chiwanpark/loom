@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use loom_proto::{
-    ContentPart, Decision, EventWindow, History, ReasoningEffort, SequencedEvent, SessionEvent,
-    SessionInfo, SessionState, ToolCall, ToolResult, TurnOutcome, Usage, UsageSoFar,
+    ContentPart, Decision, Delivery, EventWindow, History, PendingMessage, ReasoningEffort,
+    SequencedEvent, SessionEvent, SessionInfo, SessionState, ToolCall, ToolResult, TurnOutcome,
+    Usage, UsageSoFar, apply_pending,
 };
 
 pub const MAX_TOOL_OUTPUT: usize = 256 * 1024;
@@ -123,6 +124,38 @@ impl Activity {
     }
 }
 
+/// A waiting message as a client lists it: its text, with a note of its
+/// images.
+pub fn pending_text(message: &PendingMessage) -> String {
+    let mut text: Vec<&str> = Vec::new();
+    let mut images = 0;
+    for part in &message.content {
+        match part {
+            ContentPart::Text { text: t } => text.push(t),
+            ContentPart::Image { .. } => images += 1,
+        }
+    }
+    let mut out = text.join("\n").trim().to_owned();
+    if images > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&match images {
+            1 => "[1 image]".to_owned(),
+            n => format!("[{n} images]"),
+        });
+    }
+    out
+}
+
+/// What a client calls how a waiting message is delivered.
+pub fn delivery_label(delivery: Delivery) -> &'static str {
+    match delivery {
+        Delivery::Steer => "Steer",
+        Delivery::Queue | Delivery::Now => "Queued",
+    }
+}
+
 /// A short name for a session state, for lists and tooltips.
 pub fn state_label(state: SessionState) -> &'static str {
     match state {
@@ -144,6 +177,9 @@ pub struct Conversation<I = Attachment> {
     pub state: SessionState,
     pub last_usage: Option<Usage>,
     pub total_usage: Usage,
+    /// The messages sent while a turn ran that wait to be delivered, in
+    /// order.
+    pub pending: Vec<PendingMessage>,
     pub last_seq: u64,
     pub revision: u64,
     /// Bumped when a tool call finishes, the only event that can change the
@@ -190,6 +226,7 @@ impl<I> Conversation<I> {
             items: Vec::new(),
             last_usage: None,
             total_usage: Usage::default(),
+            pending: Vec::new(),
             last_seq: 0,
             revision: 0,
             changes_revision: 0,
@@ -229,6 +266,7 @@ impl<I> Conversation<I> {
         self.events.clear();
         self.total_usage = window.usage.total;
         self.last_usage = window.usage.last;
+        self.pending = window.pending.clone();
         self.has_older = window.has_older;
         self.last_seq = 0;
         self.revision += 1;
@@ -380,6 +418,7 @@ impl<I> Conversation<I> {
         usage.apply(&event.event);
         self.total_usage = usage.total;
         self.last_usage = usage.last;
+        apply_pending(&mut self.pending, &event.event);
         match &event.event {
             SessionEvent::UserMessage { content } => {
                 self.finish_streaming();
@@ -544,6 +583,8 @@ impl<I> Conversation<I> {
                 self.notice(NoticeKind::Info, model_changed(model, *reasoning));
             }
             SessionEvent::Cleared => self.clear_items(),
+            // Kept above.
+            SessionEvent::PendingAdded { .. } | SessionEvent::PendingRemoved { .. } => {}
         }
         true
     }
@@ -890,6 +931,7 @@ mod tests {
         conv.start_window(&EventWindow {
             has_older: true,
             usage: usage_before(&events[..3]),
+            pending: Vec::new(),
         });
         assert_ne!(conv.generation, generation);
         events[3..].iter().for_each(|e| {
@@ -938,11 +980,79 @@ mod tests {
     }
 
     #[test]
+    fn waiting_messages_follow_their_events_and_the_window() {
+        let message = |id: u64, text: &str, delivery| PendingMessage {
+            id,
+            content: vec![ContentPart::text(text)],
+            delivery,
+        };
+        let mut conv = Conversation::new(info());
+        conv.start_window(&EventWindow {
+            has_older: true,
+            usage: UsageSoFar::default(),
+            pending: vec![message(1, "held", Delivery::Queue)],
+        });
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("hi")],
+                },
+                SessionEvent::PendingAdded {
+                    message: message(2, "steer", Delivery::Steer),
+                },
+            ],
+        );
+        assert_eq!(conv.pending.len(), 2);
+        // Older events do not change what waits now.
+        assert!(conv.prepend(History {
+            events: vec![SequencedEvent {
+                seq: 0,
+                event: SessionEvent::PendingAdded {
+                    message: message(1, "held", Delivery::Queue),
+                },
+            }],
+            has_older: false,
+            usage: UsageSoFar::default(),
+        }));
+        assert_eq!(conv.pending.len(), 2);
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::PendingRemoved { id: 2 },
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("steer")],
+                },
+            ],
+        );
+        assert_eq!(conv.pending, [message(1, "held", Delivery::Queue)]);
+        assert_eq!(pending_text(&conv.pending[0]), "held");
+        assert_eq!(delivery_label(Delivery::Steer), "Steer");
+        let with_images = PendingMessage {
+            id: 3,
+            content: vec![
+                ContentPart::text("look "),
+                ContentPart::Image {
+                    mime_type: "image/png".into(),
+                    data: vec![1],
+                },
+                ContentPart::Image {
+                    mime_type: "image/png".into(),
+                    data: vec![2],
+                },
+            ],
+            delivery: Delivery::Queue,
+        };
+        assert_eq!(pending_text(&with_images), "look [2 images]");
+    }
+
+    #[test]
     fn clearing_forgets_older_events() {
         let mut conv = Conversation::new(info());
         conv.start_window(&EventWindow {
             has_older: true,
             usage: UsageSoFar::default(),
+            pending: Vec::new(),
         });
         feed(
             &mut conv,

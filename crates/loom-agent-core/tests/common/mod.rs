@@ -24,6 +24,13 @@ pub enum Script {
     Reply(AssistantMessage),
     Fail(String),
     Hang,
+    /// Replies once the gate is opened with `notify_one`.
+    Gated(Arc<tokio::sync::Notify>, Box<Script>),
+}
+
+/// `script`, held back until `gate` is opened.
+pub fn gated(gate: &Arc<tokio::sync::Notify>, script: Script) -> Script {
+    Script::Gated(gate.clone(), Box::new(script))
 }
 
 pub fn text(reply: &str) -> Script {
@@ -104,19 +111,26 @@ impl LlmProvider for ScriptedProvider {
 
     async fn stream(&self, request: CompletionRequest) -> loom_llm::Result<ChunkStream> {
         self.requests.lock().unwrap().push(request);
-        let script = self
+        let mut script = self
             .scripts
             .lock()
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| text("(no more scripts)"));
-        match script {
-            Script::Fail(message) => Err(LlmError::Stream {
-                provider: PROVIDER.into(),
-                code: None,
-                message,
-            }),
-            Script::Hang => Ok(futures::stream::pending().boxed()),
+        let mut gate = None;
+        if let Script::Gated(notify, inner) = script {
+            gate = Some(notify);
+            script = *inner;
+        }
+        let stream = match script {
+            Script::Fail(message) => {
+                return Err(LlmError::Stream {
+                    provider: PROVIDER.into(),
+                    code: None,
+                    message,
+                });
+            }
+            Script::Hang => futures::stream::pending().boxed(),
             Script::Reply(message) => {
                 let mut chunks = vec![Ok(CompletionChunk::Start { response_id: None })];
                 let reply = message.text();
@@ -133,9 +147,19 @@ impl LlmProvider for ScriptedProvider {
                     }
                 }
                 chunks.push(Ok(CompletionChunk::Done(message)));
-                Ok(futures::stream::iter(chunks).boxed())
+                futures::stream::iter(chunks).boxed()
             }
-        }
+            Script::Gated(..) => unreachable!("gates do not nest"),
+        };
+        Ok(match gate {
+            Some(gate) => futures::stream::once(async move {
+                gate.notified().await;
+                stream
+            })
+            .flatten()
+            .boxed(),
+            None => stream,
+        })
     }
 }
 

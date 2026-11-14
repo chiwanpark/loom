@@ -8,8 +8,8 @@ use loom_llm::{
     ReasoningEffort, StopReason, ToolCall as LlmToolCall, ToolDefinition,
 };
 use loom_proto::{
-    ContentPart, Decision, SequencedEvent, SessionEvent, SessionId, SessionInfo, SessionState,
-    Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
+    ContentPart, Decision, Delivery, PendingMessage, SequencedEvent, SessionEvent, SessionId,
+    SessionInfo, SessionState, Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
 };
 use loom_tools::{FileTracker, LockWaitHook, TasksAccess, ToolContext, ToolError, Workspace};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -52,6 +52,19 @@ struct State {
     last_used: Option<UsedModel>,
     /// The task list, saved apart from the rest of the state.
     tasks: TaskList,
+    /// Messages sent while a turn ran, waiting to be delivered, in order.
+    pending: Vec<PendingMessage>,
+    /// The ID of the next waiting message.
+    next_pending: u64,
+}
+
+/// What became of a message sent to a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    /// It started a turn.
+    Started,
+    /// It waits, with this ID, for the running turn.
+    Pending(u64),
 }
 
 struct Core {
@@ -123,6 +136,7 @@ impl Core {
                     archived: state.archived,
                     title: state.title.clone(),
                     last_used: state.last_used.clone(),
+                    pending: state.pending.clone(),
                 },
             );
         }
@@ -180,6 +194,63 @@ impl Core {
             state.tasks = list;
         }
         Ok(state.tasks.tasks.clone())
+    }
+
+    /// Starts a turn with `content` as the user's message. The caller holds
+    /// the lock and has checked that no turn runs.
+    fn start_turn(self: &Arc<Self>, state: &mut State, content: Vec<ContentPart>) {
+        state.history.push(Message::User {
+            content: content.iter().map(convert::input_content).collect(),
+        });
+        self.persist_state(state);
+        self.emit(SessionEvent::UserMessage { content });
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(run_turn(self.clone(), cancel.clone()));
+        state.turn = Some(Turn {
+            cancel,
+            task: Some(task),
+        });
+    }
+
+    /// Starts the next turn with the first waiting message, unless a turn
+    /// runs or none waits. Tells whether it started one.
+    fn start_next_pending(self: &Arc<Self>) -> bool {
+        let mut state = self.lock();
+        if state.turn.is_some() || state.pending.is_empty() {
+            return false;
+        }
+        let message = state.pending.remove(0);
+        self.emit(SessionEvent::PendingRemoved { id: message.id });
+        self.start_turn(&mut state, message.content);
+        true
+    }
+
+    /// Puts the waiting steering messages into the conversation, in order,
+    /// and tells whether there were any. Called between the steps of a
+    /// turn, where a user message may follow.
+    fn deliver_steering(&self) -> bool {
+        let mut state = self.lock();
+        let (steering, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut state.pending)
+            .into_iter()
+            .partition(|message| message.delivery == Delivery::Steer);
+        state.pending = rest;
+        if steering.is_empty() {
+            return false;
+        }
+        for message in &steering {
+            state.history.push(Message::User {
+                content: message.content.iter().map(convert::input_content).collect(),
+            });
+        }
+        self.persist_state(&state);
+        // Under the lock, like a prompt, so clients see them in order.
+        for message in steering {
+            self.emit(SessionEvent::PendingRemoved { id: message.id });
+            self.emit(SessionEvent::UserMessage {
+                content: message.content,
+            });
+        }
+        true
     }
 
     fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
@@ -288,6 +359,8 @@ impl Session {
                     title: state.title,
                     last_used: state.last_used,
                     tasks,
+                    next_pending: state.pending.iter().map(|m| m.id + 1).max().unwrap_or(1),
+                    pending: state.pending,
                 }),
                 runtime: params.runtime,
                 workspace: params.workspace,
@@ -424,7 +497,15 @@ impl Session {
         self.core.lock().turn.is_some()
     }
 
+    /// Starts a turn with `content`; fails with [`CoreError::Busy`] while
+    /// one runs.
     pub fn send_prompt(&self, content: Vec<ContentPart>) -> Result<()> {
+        self.send_message(content, Delivery::Now).map(drop)
+    }
+
+    /// Sends the user's message: it starts a turn when none runs, and
+    /// otherwise waits as `delivery` says; see [`Delivery`].
+    pub fn send_message(&self, content: Vec<ContentPart>, delivery: Delivery) -> Result<Sent> {
         let empty = content.iter().all(|part| match part {
             ContentPart::Text { text } => text.trim().is_empty(),
             ContentPart::Image { .. } => false,
@@ -436,21 +517,43 @@ impl Session {
         let model = self.core.model(&runtime)?;
         runtime.providers.get(&model.provider)?;
         let mut state = self.core.lock();
-        if state.turn.is_some() {
+        if state.turn.is_none() {
+            self.core.start_turn(&mut state, content);
+            return Ok(Sent::Started);
+        }
+        if delivery == Delivery::Now {
             return Err(CoreError::Busy);
         }
-        state.history.push(Message::User {
-            content: content.iter().map(convert::input_content).collect(),
-        });
+        let id = state.next_pending;
+        state.next_pending += 1;
+        let message = PendingMessage {
+            id,
+            content,
+            delivery,
+        };
+        state.pending.push(message.clone());
         self.core.persist_state(&state);
-        self.core.emit(SessionEvent::UserMessage { content });
-        let cancel = CancellationToken::new();
-        let task = tokio::spawn(run_turn(self.core.clone(), cancel.clone()));
-        state.turn = Some(Turn {
-            cancel,
-            task: Some(task),
-        });
-        Ok(())
+        self.core.emit(SessionEvent::PendingAdded { message });
+        Ok(Sent::Pending(id))
+    }
+
+    /// The messages waiting to be delivered, in order.
+    pub fn pending(&self) -> Vec<PendingMessage> {
+        self.core.lock().pending.clone()
+    }
+
+    /// Takes back a waiting message and returns it.
+    pub fn cancel_pending(&self, id: u64) -> Result<PendingMessage> {
+        let mut state = self.core.lock();
+        let index = state
+            .pending
+            .iter()
+            .position(|message| message.id == id)
+            .ok_or(CoreError::UnknownPending(id))?;
+        let message = state.pending.remove(index);
+        self.core.persist_state(&state);
+        self.core.emit(SessionEvent::PendingRemoved { id });
+        Ok(message)
     }
 
     /// Compacts the context now, whatever its size. Like a turn it runs in the
@@ -495,6 +598,12 @@ impl Session {
         self.core.persist_state(&state);
         // Under the lock, like a prompt, so no prompt lands between the two.
         self.core.emit(SessionEvent::Cleared);
+        // The waiting messages stay, so the new log tells of them again.
+        for message in &state.pending {
+            self.core.emit(SessionEvent::PendingAdded {
+                message: message.clone(),
+            });
+        }
         Ok(())
     }
 
@@ -562,7 +671,14 @@ async fn run_turn(core: Arc<Core>, cancel: CancellationToken) {
     // Observers may read the session, so they must not run under its lock.
     drop(state);
     core.emit(SessionEvent::TurnFinished { outcome });
-    core.hub.set_state(SessionState::Idle);
+    // Waiting messages go on after a completed turn, and are held after an
+    // interrupted or failed one.
+    if outcome == TurnOutcome::Completed && core.start_next_pending() {
+        return;
+    }
+    if core.lock().turn.is_none() {
+        core.hub.set_state(SessionState::Idle);
+    }
 }
 
 async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
@@ -580,7 +696,7 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
         compact(&core, &model, &capabilities, provider.as_ref(), &cancel).await
     }
     .await;
-    match result {
+    match &result {
         Ok(()) => {}
         Err(TurnError::Interrupted) => core.emit(SessionEvent::Warning {
             message: "compaction was interrupted".into(),
@@ -589,11 +705,17 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
             message: format!("could not compact the context: {message}"),
         }),
     }
+    let completed = result.is_ok();
     let mut state = core.lock();
     state.turn = None;
     core.persist_state(&state);
     drop(state);
-    core.hub.set_state(SessionState::Idle);
+    if completed && core.start_next_pending() {
+        return;
+    }
+    if core.lock().turn.is_none() {
+        core.hub.set_state(SessionState::Idle);
+    }
 }
 
 async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), TurnError> {
@@ -694,6 +816,10 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         }
         core.persist();
         if calls.is_empty() {
+            // A steering message sent during the answer goes on the turn.
+            if core.deliver_steering() {
+                continue;
+            }
             return Ok(());
         }
         let max_chars = runtime.config.context.max_tool_output_tokens as usize * CHARS_PER_TOKEN;
@@ -724,6 +850,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         if interrupted {
             return Err(TurnError::Interrupted);
         }
+        core.deliver_steering();
     }
 }
 

@@ -310,7 +310,12 @@ fn render_event(
     streamed: &mut bool,
 ) -> Option<Approval> {
     match event {
-        SessionEvent::UserMessage { .. } | SessionEvent::StateChanged { .. } => {}
+        SessionEvent::UserMessage { .. }
+        | SessionEvent::StateChanged { .. }
+        | SessionEvent::PendingRemoved { .. } => {}
+        SessionEvent::PendingAdded { message } => {
+            let _ = writeln!(out, "\x1b[2m[waiting: {:?}]\x1b[0m", message.delivery);
+        }
         SessionEvent::AssistantDelta { text } => {
             *streamed = true;
             let _ = write!(out, "{text}");

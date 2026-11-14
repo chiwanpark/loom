@@ -8,9 +8,10 @@ use futures::StreamExt;
 use loom_agent::server::{ServerContext, serve_stream};
 use loom_agent_core::{Agent, AgentOptions};
 use loom_client::proto::{
-    AgentInfo, ClientHello, ClientMessage, Command, ContentPart, Decision, ErrorCode, EventWindow,
-    InstanceId, Notice, PROTOCOL_VERSION, PolicyAction, ReasoningEffort, ServerMessage,
-    SessionEvent, SessionId, Task, TaskChange, TaskStatus, TurnOutcome, decode, encode,
+    AgentInfo, ClientHello, ClientMessage, Command, ContentPart, Decision, Delivery, ErrorCode,
+    EventWindow, InstanceId, Notice, PROTOCOL_VERSION, PolicyAction, ReasoningEffort,
+    ServerMessage, SessionEvent, SessionId, Task, TaskChange, TaskStatus, TurnOutcome, decode,
+    encode,
 };
 use loom_client::{Client, ClientError, Notification, Notifications, memory_pair};
 use loom_config::{AgentConfig, Dirs};
@@ -300,6 +301,74 @@ async fn approvals_round_trip_through_the_client() {
         std::fs::read_to_string(setup.info.workspace.join("out.txt")).unwrap(),
         "hi"
     );
+}
+
+/// Messages sent during a turn wait for it, can be taken back, and start
+/// the next turn.
+#[tokio::test]
+async fn messages_wait_for_the_running_turn() {
+    let setup = setup(vec![
+        write_call("out.txt"),
+        text("written"),
+        text("later on"),
+    ]);
+    let (client, mut notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap().id;
+    client.subscribe(&session, None, None).await.unwrap();
+    client
+        .set_policy(&session, Some(PolicyAction::Ask))
+        .await
+        .unwrap();
+    client.send_text(&session, "write it").await.unwrap();
+    let call_id = loop {
+        if let (_, _, SessionEvent::ApprovalRequired { call_id, .. }) = next_event(&mut notes).await
+        {
+            break call_id;
+        }
+    };
+    let message = |text: &str| vec![loom_client::proto::ContentPart::text(text)];
+    let err = client
+        .send_prompt(&session, message("now"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Busy);
+    for text in ["later", "never mind"] {
+        client
+            .send_message(&session, message(text), Delivery::Queue)
+            .await
+            .unwrap();
+    }
+    let mut waiting = Vec::new();
+    while waiting.len() < 2 {
+        if let (_, _, SessionEvent::PendingAdded { message }) = next_event(&mut notes).await {
+            waiting.push(message);
+        }
+    }
+    let taken = client
+        .cancel_pending(&session, waiting[1].id)
+        .await
+        .unwrap();
+    assert_eq!(taken.content, message("never mind"));
+    let err = client
+        .cancel_pending(&session, waiting[1].id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+
+    client
+        .resolve_approval(&session, &call_id, Decision::Deny)
+        .await
+        .unwrap();
+    until_turn_finished(&mut notes).await;
+    let next = until_turn_finished(&mut notes).await;
+    let users: Vec<_> = next
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::UserMessage { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(users, [message("later")]);
 }
 
 #[tokio::test]

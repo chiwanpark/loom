@@ -164,6 +164,7 @@ impl EventHub {
                 let window = EventWindow {
                     has_older: start > 0,
                     usage: usage_of(&events[..start]),
+                    pending: pending_of(&events[..start]),
                 };
                 (events[start..].to_vec(), Some(window))
             }
@@ -253,6 +254,14 @@ fn window_start(events: &[SequencedEvent], items: usize, max_bytes: Option<usize
         }
     }
     open.into_values().fold(start, usize::min)
+}
+
+fn pending_of(events: &[SequencedEvent]) -> Vec<loom_proto::PendingMessage> {
+    let mut pending = Vec::new();
+    for event in events {
+        loom_proto::apply_pending(&mut pending, &event.event);
+    }
+    pending
 }
 
 fn usage_of(events: &[SequencedEvent]) -> UsageSoFar {

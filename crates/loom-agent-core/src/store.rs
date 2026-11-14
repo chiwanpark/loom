@@ -79,6 +79,9 @@ pub struct SessionState {
     /// forget what a change is measured against.
     #[serde(default)]
     pub last_used: Option<UsedModel>,
+    /// Messages sent while a turn ran, waiting to be delivered.
+    #[serde(default)]
+    pub pending: Vec<loom_proto::PendingMessage>,
 }
 
 /// The model and reasoning effort a request was sent with.

@@ -21,8 +21,8 @@ use loom_llm::{
     LlmProvider, ProviderId, StopReason, ToolCall, Usage,
 };
 use loom_mobile::{
-    AgentConnection, AgentUpdate, ApprovalDecision, ConversationItem, ConversationUpdate, Loom,
-    LoomError, SessionStatus, TaskEdit, TaskState, ToolState,
+    AgentConnection, AgentUpdate, ApprovalDecision, ConversationItem, ConversationUpdate, Delivery,
+    Loom, LoomError, SessionStatus, TaskEdit, TaskState, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -376,7 +376,12 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
     app.until(&conn, "the opened session", |app| app.last.is_some())
         .await;
     conn.clone()
-        .send_prompt(session.id.clone(), "say hello".into(), Vec::new())
+        .send_prompt(
+            session.id.clone(),
+            "say hello".into(),
+            Vec::new(),
+            Delivery::Queue,
+        )
         .await
         .unwrap();
     app.until(&conn, "the answer", |app| {
@@ -397,7 +402,12 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
 
     // A tool call waits for approval.
     conn.clone()
-        .send_prompt(session.id.clone(), "write it".into(), Vec::new())
+        .send_prompt(
+            session.id.clone(),
+            "write it".into(),
+            Vec::new(),
+            Delivery::Queue,
+        )
         .await
         .unwrap();
     app.until(&conn, "the approval", |app| {
@@ -416,6 +426,37 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
             _ => None,
         })
         .unwrap();
+
+    // A message sent meanwhile waits, and can be taken back.
+    conn.clone()
+        .send_prompt(
+            session.id.clone(),
+            "and then".into(),
+            Vec::new(),
+            Delivery::Steer,
+        )
+        .await
+        .unwrap();
+    app.until(&conn, "the waiting message", |app| {
+        app.last.as_ref().is_some_and(|u| u.waiting.len() == 1)
+    })
+    .await;
+    let waiting = app.last.as_ref().unwrap().waiting[0].clone();
+    assert_eq!(
+        (waiting.text.as_str(), waiting.delivery),
+        ("and then", Delivery::Steer)
+    );
+    let taken = conn
+        .clone()
+        .take_back(session.id.clone(), waiting.id)
+        .await
+        .unwrap();
+    assert_eq!(taken.text, "and then");
+    app.until(&conn, "no waiting message", |app| {
+        app.last.as_ref().is_some_and(|u| u.waiting.is_empty())
+    })
+    .await;
+
     conn.clone()
         .resolve_approval(session.id.clone(), call_id, ApprovalDecision::Allow)
         .await
@@ -467,7 +508,12 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
     assert!(!conn.is_connected());
     let err = conn
         .clone()
-        .send_prompt(session.id.clone(), "lost".into(), Vec::new())
+        .send_prompt(
+            session.id.clone(),
+            "lost".into(),
+            Vec::new(),
+            Delivery::Queue,
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, LoomError::Closed), "{err:?}");

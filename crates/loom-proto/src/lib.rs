@@ -180,6 +180,11 @@ mod tests {
             Command::SendPrompt {
                 session: session.clone(),
                 content: vec![ContentPart::text("hi")],
+                delivery: Delivery::Steer,
+            },
+            Command::CancelPending {
+                session: session.clone(),
+                id: 3,
             },
             Command::SetReasoning {
                 session: session.clone(),
@@ -375,6 +380,11 @@ mod tests {
                     },
                     last: None,
                 },
+                pending: vec![PendingMessage {
+                    id: 2,
+                    content: vec![ContentPart::text("next")],
+                    delivery: Delivery::Queue,
+                }],
             }),
         });
         message_roundtrip(ServerMessage::Events {

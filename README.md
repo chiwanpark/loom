@@ -109,7 +109,7 @@ keyPassword=…
 
 Without it, debug builds are signed with the SDK's debug key. Keep the key and its password safe: an APK signed by another key installs only after you uninstall the app, which deletes its pairings.
 
-The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing, and you can start, rename, archive, and delete sessions there. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model and reasoning effort, compact or clear the conversation, and edit the agent's notes and the session's tasks. Scanning the QR code needs Google Play services; pasting the link works without them.
+The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing, and you can start, rename, archive, and delete sessions there. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model and reasoning effort, compact or clear the conversation, queue messages or steer a running turn with them, and edit the agent's notes and the session's tasks. Scanning the QR code needs Google Play services; pasting the link works without them.
 
 ## Getting started
 
@@ -246,6 +246,7 @@ Useful default key bindings:
 | `` ctrl-` `` | New terminal |
 | `ctrl-b` | Show or hide the agents panel |
 | `ctrl-shift-b` / `ctrl-shift-n` / `ctrl-shift-t` | Agents panel / the agent's notes / the session's tasks |
+| `enter` / `ctrl-enter` while a turn runs | Queue the message for the next turn / steer the running turn with it |
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
 | `ctrl-tab` / `ctrl-shift-tab` (or `ctrl-pagedown` / `ctrl-pageup`) | Next / previous tab in the pane |
 | `alt-1` … `alt-8` / `alt-9` | Tab 1 to 8 / the last tab in the pane |
@@ -263,6 +264,15 @@ To copy a workspace file to your machine, right-click it in the files panel and 
 When you open a session, the client loads its latest 50 messages and tool calls, and loads earlier ones as you scroll to the top. The **Changes** panel loads the whole session, to list every file it changed.
 
 To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its tasks, and the tool approvals you gave it, and the agent's notes stay.
+
+### Messages while a turn runs
+
+You can keep typing while the agent works. Under a running turn the prompt box offers two ways to send:
+
+- **Queue** (`enter`) waits for the turn to complete and then starts the next turn with your message. Several queued messages run one turn each, in order.
+- **Steer** (`ctrl-enter`, `cmd-enter` on macOS, or the **Steer** button) puts your message into the running turn at its next step: after the results of the tool calls in progress, or, when the model answered without calling tools, right after the answer, and the turn goes on from there.
+
+Waiting messages are listed above the prompt box; the **×** on one takes it back into the prompt box to edit. They are kept with the session, so they survive a restart of the agent. After a turn that you stop or that fails, they stay waiting until the next turn completes, so nothing runs on its own after you interrupt. The Android app has the same queue and steer buttons.
 
 ### Notes and tasks
 

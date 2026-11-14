@@ -1612,6 +1612,7 @@ mod view_tests {
             conversation.start_window(&loom_client::proto::EventWindow {
                 has_older: true,
                 usage: Default::default(),
+                pending: Vec::new(),
             });
             for event in turn_events(10, 30, 21) {
                 conversation.apply(&event);
