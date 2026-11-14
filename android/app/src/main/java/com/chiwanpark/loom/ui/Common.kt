@@ -1,0 +1,180 @@
+package com.chiwanpark.loom.ui
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.chiwanpark.loom.LinkState
+import com.chiwanpark.loom.R
+import com.chiwanpark.loom.userMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+
+/**
+ * A top bar with a title, an optional subtitle, and a back button when
+ * `onBack` is set; without one, the start screen shows the logo there.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LoomTopBar(
+    title: String,
+    subtitle: String? = null,
+    onBack: (() -> Unit)? = null,
+    actions: @Composable () -> Unit = {},
+) {
+    TopAppBar(
+        title = {
+            Column {
+                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        },
+        navigationIcon = {
+            if (onBack != null) {
+                IconButton(onClick = onBack) { LoomIcon(LoomIcons.Back, "Back") }
+            } else {
+                // Where the back button would be, so the title lines up as on the other screens.
+                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Image(painterResource(R.drawable.logo), "Loom logo", Modifier.size(32.dp))
+                }
+            }
+        },
+        actions = { actions() },
+    )
+}
+
+/** Runs `action`, showing what went wrong in the snackbar. */
+fun CoroutineScope.attempt(snackbar: SnackbarHostState, action: suspend () -> Unit) {
+    launch {
+        try {
+            action()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            snackbar.showSnackbar(e.userMessage())
+        }
+    }
+}
+
+@Composable
+fun ConfirmDialog(
+    title: String,
+    text: String,
+    confirm: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = {
+            TextButton(onClick = {
+                onDismiss()
+                onConfirm()
+            }) { Text(confirm) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Asks for a line of text, such as a new name. */
+@Composable
+fun TextInputDialog(
+    title: String,
+    initial: String,
+    label: String,
+    confirm: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text(label) },
+                singleLine = true,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onDismiss()
+                onConfirm(text)
+            }) { Text(confirm) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Shows that the link to an agent is down or coming up, with a way to retry. */
+@Composable
+fun LinkBanner(state: LinkState, onRetry: () -> Unit) {
+    val (text, error) = when (state) {
+        LinkState.Connected -> return
+        LinkState.Connecting -> "Connecting…" to false
+        is LinkState.Down -> state.message to true
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (error) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (!error) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (error) {
+                MaterialTheme.colorScheme.onErrorContainer
+            } else {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            },
+        )
+        if (error) TextButton(onClick = onRetry) { Text("Retry") }
+    }
+}
+
+/** The last part of a path, as a short name for a workspace. */
+fun shortWorkspace(path: String?): String? = path?.trimEnd('/')?.substringAfterLast('/')?.ifEmpty { path }

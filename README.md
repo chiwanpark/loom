@@ -2,7 +2,7 @@
 
 # Loom
 
-Loom is a coding agent split into two parts. An **agent** runs on the machine that holds the code and does the work there: it talks to the model, reads and edits files, and runs shell commands. A **client** (the `loom` desktop app) connects to any number of agents on your own machine, over SSH, or through a relay, and shows their sessions, terminals, file changes, and diffs.
+Loom is a coding agent split into two parts. An **agent** runs on the machine that holds the code and does the work there: it talks to the model, reads and edits files, and runs shell commands. A **client** (the `loom` desktop app) connects to any number of agents on your own machine, over SSH, or through a relay, and shows their sessions, terminals, file changes, and diffs. An [Android app](#the-android-app) follows the sessions of agents it reaches through a relay.
 
 Agents keep running when the client disconnects, so you can close the app, reopen it later or on another machine, and pick up the same sessions.
 
@@ -15,6 +15,7 @@ Loom is early software. Configuration formats and the protocol may still change 
 | `loom-agent` | `crates/loom-agent` | The agent daemon and its command-line tools. It serves one workspace directory. |
 | `loom` | `crates/loom-gui` | The desktop client, built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui). Linux and Wayland only. |
 | `loom-relay` | `crates/loom-relay` | An optional WebSocket relay so clients can reach agents behind NAT without SSH. |
+| Loom for Android | `android/` | An Android client for agents reached through a relay. Android 17 (API 37) or newer, arm64. |
 
 The other crates are libraries: the agent core (`loom-agent-core`), model providers (`loom-llm`), tools and sandboxing (`loom-tools`), the wire protocol (`loom-proto`), transports (`loom-transport`), the client library (`loom-client`), the client-side view model shared by the clients (`loom-view-model`), the Rust core of the Android client with its Kotlin bindings (`loom-mobile`), configuration (`loom-config`), key handling (`loom-crypto`), terminal emulation (`loom-vt`), and OpenTelemetry export (`loom-telemetry`).
 
@@ -83,6 +84,33 @@ cargo install --path crates/loom-relay    # only if you run a relay
 
 Install `loom-agent` on every machine where you want an agent to run, including remote hosts you reach over SSH. [`scripts/install.sh agent --source`](#installing-the-agent-or-relay) does this with Cargo, too.
 
+### The Android app
+
+The Android app is built from source; releases do not include it yet. You need JDK 21, the Android SDK with platform 37, build tools 37.0.0, and NDK 30.0.16248370, Rust's `aarch64-linux-android` target, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk):
+
+```sh
+rustup target add aarch64-linux-android
+cargo install cargo-ndk
+export ANDROID_HOME=~/Android/Sdk
+cd android && ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Gradle builds the Rust core (`crates/loom-mobile`) with cargo-ndk and generates its Kotlin bindings with UniFFI, so the app always matches the protocol of the agents built from the same tree.
+
+Android replaces an installed app only with an APK signed by the same key. To sign every build, debug ones too, with your own key, put its details in `~/.config/loom-android/keystore.properties` (or the file that `LOOM_ANDROID_KEYSTORE_PROPERTIES` or `-Ploom.keystoreProperties` names):
+
+```properties
+storeFile=/home/me/.config/loom-android/release.jks
+storePassword=…
+keyAlias=loom
+keyPassword=…
+```
+
+Without it, debug builds are signed with the SDK's debug key. Keep the key and its password safe: an APK signed by another key installs only after you uninstall the app, which deletes its pairings.
+
+The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing, and you can start, rename, archive, and delete sessions there. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model and reasoning effort, compact or clear the conversation, and edit the session's notes and tasks. Scanning the QR code needs Google Play services; pasting the link works without them.
+
 ## Getting started
 
 1. Create the agent configuration:
@@ -126,7 +154,7 @@ A relay lets clients reach agents that have no inbound SSH access. Both sides di
 1. Run `loom-relay serve` somewhere both sides can reach (`loom-relay config init` writes a starting configuration). `sudo scripts/install.sh relay --systemd` installs it as a system service with its configuration in `/etc/loom/relay.yaml`. Set `allowed_hosts` there to the `host_id` that `loom-agent host` prints on each agent's host, then `systemctl restart loom-relay`.
 2. In the agent's `agent.yaml`, set `relay.enabled: true` and `relay.url`.
 3. On the agent's host, run `loom-agent pair`. It prints a one-time `loom://` link (and a QR code) that expires after 10 minutes by default.
-4. In the client, use **Pair through a relay** and paste the link.
+4. In the client, use **Pair through a relay** and paste the link. In the Android app, use **Pair with a host** and scan the QR code or paste the link.
 
 `loom-agent clients list` shows the paired clients, and `loom-agent clients revoke <label>` removes one.
 

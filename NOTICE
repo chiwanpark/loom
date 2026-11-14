@@ -56,3 +56,5 @@ The other theme files in crates/loom-gui/assets/themes are generated for Loom by
 - tokyonight-day.json: Tokyo Night Day by Folke Lemaitre (https://github.com/folke/tokyonight.nvim, Apache-2.0).
 - tomorrow.json: Tomorrow by Chris Kempson (https://github.com/chriskempson/tomorrow-theme, MIT license).
 - zenbones.json: Zenbones and its variants by mcchrish (https://github.com/zenbones-theme/zenbones.nvim, MIT license).
+
+android/gradlew, android/gradlew.bat, and android/gradle/wrapper/gradle-wrapper.jar are the Gradle wrapper of Gradle 9.6.0 (https://gradle.org), Copyright the original authors, licensed under Apache-2.0.

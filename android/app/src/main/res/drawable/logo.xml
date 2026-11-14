@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- assets/logo.svg as a vector drawable: the tile with the woven threads, for the app's top bar. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="512dp"
+    android:height="512dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <!-- App-icon tile -->
+    <path android:pathData="M120,8H392A112,112 0,0 1,504 120V392A112,112 0,0 1,392 504H120A112,112 0,0 1,8 392V120A112,112 0,0 1,120 8Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="0" android:endX="0" android:endY="512">
+                <item android:offset="0" android:color="#FF16212B" />
+                <item android:offset="1" android:color="#FF0C1014" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M120,9H392A111,111 0,0 1,503 120V392A111,111 0,0 1,392 503H120A111,111 0,0 1,9 392V120A111,111 0,0 1,120 9Z"
+        android:strokeColor="#FF0A3749"
+        android:strokeWidth="2" />
+
+    <!-- Warp threads, full length -->
+    <path
+        android:pathData="M176,112V400M256,112V400M336,112V400"
+        android:strokeLineCap="round"
+        android:strokeWidth="60">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="0" android:startY="0" android:endX="0" android:endY="512">
+                <item android:offset="0" android:color="#FF16212B" />
+                <item android:offset="1" android:color="#FF0C1014" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M176,112V400M256,112V400M336,112V400"
+        android:strokeLineCap="round"
+        android:strokeWidth="44">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="0" android:startY="112" android:endX="0" android:endY="400">
+                <item android:offset="0" android:color="#FF2AA889" />
+                <item android:offset="1" android:color="#FF33859E" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Weft threads, full length -->
+    <path
+        android:pathData="M112,176H400M112,256H400M112,336H400"
+        android:strokeLineCap="round"
+        android:strokeWidth="60">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="0" android:startY="0" android:endX="0" android:endY="512">
+                <item android:offset="0" android:color="#FF16212B" />
+                <item android:offset="1" android:color="#FF0C1014" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M112,176H400M112,336H400"
+        android:strokeLineCap="round"
+        android:strokeWidth="44">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="112" android:startY="0" android:endX="400" android:endY="0">
+                <item android:offset="0" android:color="#FF99D1CE" />
+                <item android:offset="1" android:color="#FFD3EBE9" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Accent weft: the agent's thread -->
+    <path
+        android:pathData="M112,256H400"
+        android:strokeLineCap="round"
+        android:strokeWidth="44">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="112" android:startY="0" android:endX="400" android:endY="0">
+                <item android:offset="0" android:color="#FFEDB443" />
+                <item android:offset="1" android:color="#FFD26937" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Plain weave: the warp goes back over the weft at alternating crossings -->
+    <path
+        android:pathData="M256,138V214M176,218V294M336,218V294M256,298V374"
+        android:strokeWidth="60">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="0" android:startY="0" android:endX="0" android:endY="512">
+                <item android:offset="0" android:color="#FF16212B" />
+                <item android:offset="1" android:color="#FF0C1014" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M256,138V214M176,218V294M336,218V294M256,298V374"
+        android:strokeWidth="44">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="0" android:startY="112" android:endX="0" android:endY="400">
+                <item android:offset="0" android:color="#FF2AA889" />
+                <item android:offset="1" android:color="#FF33859E" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The woven threads of assets/logo.svg, in the 66 dp safe zone of a 108 dp adaptive icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.17"
+        android:scaleY="0.17"
+        android:translateX="10.48"
+        android:translateY="10.48">
+        <path android:pathData="M176,112V400M256,112V400M336,112V400" android:strokeColor="#FF111A21" android:strokeWidth="60" android:strokeLineCap="round" />
+        <path android:pathData="M176,112V400M256,112V400M336,112V400" android:strokeColor="#FF2F9A93" android:strokeWidth="44" android:strokeLineCap="round" />
+        <path android:pathData="M112,176H400M112,256H400M112,336H400" android:strokeColor="#FF111A21" android:strokeWidth="60" android:strokeLineCap="round" />
+        <path android:pathData="M112,176H400M112,336H400" android:strokeColor="#FFB6DEDB" android:strokeWidth="44" android:strokeLineCap="round" />
+        <path android:pathData="M112,256H400" android:strokeColor="#FFE08D3D" android:strokeWidth="44" android:strokeLineCap="round" />
+        <path android:pathData="M256,138V214M176,218V294M336,218V294M256,298V374" android:strokeColor="#FF111A21" android:strokeWidth="60" />
+        <path android:pathData="M256,138V214M176,218V294M336,218V294M256,298V374" android:strokeColor="#FF2F9A93" android:strokeWidth="44" />
+    </group>
+</vector>

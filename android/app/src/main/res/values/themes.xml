@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose draws everything; this only covers the window until it does. -->
+    <style name="Theme.Loom" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ic_launcher_background</item>
+    </style>
+    <color name="ic_launcher_background">#FF111A21</color>
+</resources>
