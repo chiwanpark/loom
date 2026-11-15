@@ -44,11 +44,16 @@ object LoomIcons {
     val EyeOff = Lucide.drawable.lucide_ic_eye_off
     val File = Lucide.drawable.lucide_ic_file
     val FileCode = Lucide.drawable.lucide_ic_file_code
+    val FileMinus = Lucide.drawable.lucide_ic_file_minus
+    val FilePen = Lucide.drawable.lucide_ic_file_pen
+    val FilePlus = Lucide.drawable.lucide_ic_file_plus
     val FileSymlink = Lucide.drawable.lucide_ic_file_symlink
     val Folder = Lucide.drawable.lucide_ic_folder
     val FolderSymlink = Lucide.drawable.lucide_ic_folder_symlink
     val FoldVertical = Lucide.drawable.lucide_ic_fold_vertical
     val Gauge = Lucide.drawable.lucide_ic_gauge
+    val GitBranch = Lucide.drawable.lucide_ic_git_branch
+    val GitCompare = Lucide.drawable.lucide_ic_git_compare
     val Image = Lucide.drawable.lucide_ic_image
     val Info = Lucide.drawable.lucide_ic_info
     val KeyRound = Lucide.drawable.lucide_ic_key_round

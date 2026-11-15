@@ -24,9 +24,9 @@ use loom_llm::{
     LlmProvider, ProviderId, StopReason, ToolCall, Usage,
 };
 use loom_mobile::{
-    AgentConnection, AgentUpdate, ApprovalDecision, ConversationItem, ConversationUpdate, Delivery,
-    EntryKind, Highlight, Loom, LoomError, Policy, PushKind, PushNotice, SessionStatus, Span,
-    TaskEdit, TaskState, ToolState,
+    AgentConnection, AgentUpdate, ApprovalDecision, ChangeKind, ConversationItem,
+    ConversationUpdate, Delivery, DiffKind, EntryKind, Highlight, Loom, LoomError, Policy,
+    PushKind, PushNotice, SessionStatus, Span, TaskEdit, TaskState, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -1055,4 +1055,127 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
     );
     let outside = conn.clone().list_directory("../..".into()).await;
     assert!(matches!(outside, Err(LoomError::Invalid { .. })));
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_sees_uncommitted_changes_and_what_a_session_changed() {
+    let host = Host::start(vec![write_call("src/lib.rs"), text("written")]).await;
+    let ws = host.root.join("ws");
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(ws.join("src/lib.rs"), "fn old() {}\n").unwrap();
+    std::fs::write(ws.join("README.md"), "# Title\n").unwrap();
+    git(&ws, &["init", "-q", "-b", "main"]);
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-q", "-m", "init"]);
+    std::fs::write(ws.join("new.py"), "print('hi')\n").unwrap();
+    let (_dir, _loom, conn) = phone(&host).await;
+    let mut app = App::default();
+
+    // The session overwrites src/lib.rs.
+    let session = conn.clone().create_session(None).await.unwrap();
+    conn.clone().open_session(session.id.clone()).await.unwrap();
+    conn.clone()
+        .send_prompt(
+            session.id.clone(),
+            "write".into(),
+            Vec::new(),
+            Delivery::Queue,
+        )
+        .await
+        .unwrap();
+    app.until(&conn, "the approval", |app| {
+        app.last.as_ref().is_some_and(|u| u.pending_approvals == 1)
+    })
+    .await;
+    conn.clone()
+        .resolve_approval(session.id.clone(), "call-1".into(), ApprovalDecision::Allow)
+        .await
+        .unwrap();
+    app.until(&conn, "the end of the turn", |app| {
+        app.idle() && app.texts().len() == 3
+    })
+    .await;
+
+    let changes = conn.clone().git_changes().await.unwrap();
+    assert!(changes.repository);
+    assert_eq!(changes.branch.as_deref(), Some("main"));
+    let files: Vec<_> = changes
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.kind, f.added, f.removed))
+        .collect();
+    assert!(
+        files.contains(&("src/lib.rs", ChangeKind::Modified, 1, 1)),
+        "{files:?}"
+    );
+    assert!(
+        files
+            .iter()
+            .any(|f| f.0 == "new.py" && f.1 == ChangeKind::Untracked),
+        "{files:?}"
+    );
+
+    let diff = conn
+        .clone()
+        .git_diff("src/lib.rs".into(), None)
+        .await
+        .unwrap();
+    assert_eq!((diff.added, diff.removed), (1, 1));
+    assert_eq!(diff.language.as_deref(), Some("Rust"));
+    let rows: Vec<_> = diff
+        .rows
+        .iter()
+        .filter(|r| r.kind != DiffKind::Hunk)
+        .map(|r| (r.kind, r.text.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (DiffKind::Removed, "fn old() {}"),
+            (DiffKind::Added, "hi"),
+            (DiffKind::Note, "\\ No newline at end of file")
+        ]
+    );
+    let untracked = conn.clone().git_diff("new.py".into(), None).await.unwrap();
+    assert_eq!(untracked.added, 1);
+    assert!(
+        untracked.rows.iter().any(|r| r.kind == DiffKind::Added
+            && r.spans.iter().any(|s| s.highlight == Highlight::String))
+    );
+
+    let touched = conn
+        .clone()
+        .session_changes(session.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(touched.len(), 1, "{touched:?}");
+    assert_eq!(touched[0].display_path, "src/lib.rs");
+    assert!(!touched[0].created);
+    let diff = conn
+        .clone()
+        .session_diff(session.id.clone(), touched[0].path.clone())
+        .await
+        .unwrap();
+    assert_eq!(diff.path, "src/lib.rs");
+    assert!(
+        diff.rows
+            .iter()
+            .any(|r| r.kind == DiffKind::Added && r.text == "hi")
+    );
+    assert!(
+        conn.clone()
+            .session_diff(session.id.clone(), "/elsewhere".into())
+            .await
+            .is_err()
+    );
 }

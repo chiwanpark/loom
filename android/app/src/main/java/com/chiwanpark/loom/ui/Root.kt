@@ -58,6 +58,14 @@ fun LoomRoot(app: LoomApplication) {
             is Screen.Tasks -> TasksScreen(app, app.links.get(loom, screen.host, screen.instance), screen.session)
             is Screen.Files -> FilesScreen(app, app.links.get(loom, screen.host, screen.instance), screen.path)
             is Screen.File -> FileScreen(app, app.links.get(loom, screen.host, screen.instance), screen.path)
+            is Screen.Changes -> ChangesScreen(app, app.links.get(loom, screen.host, screen.instance), screen.session)
+            is Screen.Diff -> DiffScreen(
+                app,
+                app.links.get(loom, screen.host, screen.instance),
+                screen.path,
+                screen.oldPath,
+                screen.session,
+            )
         }
     }
 }

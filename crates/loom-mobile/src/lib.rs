@@ -10,6 +10,7 @@
 uniffi::setup_scaffolding!();
 
 mod agent;
+mod changes;
 mod error;
 mod files;
 mod highlight;
@@ -18,6 +19,7 @@ mod records;
 mod runtime;
 
 pub use agent::AgentConnection;
+pub use changes::{ChangeKind, DiffKind, DiffRow, DiffView, GitChange, GitChanges, SessionChange};
 pub use error::LoomError;
 pub use files::{DirectoryListing, EntryKind, FileEntry, FileView};
 pub use highlight::{CodeLine, Highlight, Span};

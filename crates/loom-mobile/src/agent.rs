@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use loom_client::proto::{ContentPart, InstanceId, SessionId, SessionInfo};
 use loom_client::{Client, ClientError, ClientIdentity, Notification, Notifications, RelayHost};
-use loom_view_model::conversation::{Conversation, PAGE_ITEMS};
+use loom_view_model::conversation::{BULK_PAGE_ITEMS, Conversation, PAGE_ITEMS};
 use tokio::sync::Notify;
 
 use crate::error::{LoomError, Result};
@@ -278,6 +278,56 @@ impl Shared {
         drop(state);
         self.wake.notify_one();
         Ok(())
+    }
+
+    /// The agent's workspace directory, once the agent introduced itself.
+    pub(crate) fn workspace(&self) -> Option<String> {
+        self.lock().agent.workspace.clone()
+    }
+
+    /// Runs `f` on an open session's conversation.
+    pub(crate) fn with_conversation<R>(
+        &self,
+        id: &SessionId,
+        f: impl FnOnce(&Conversation) -> R,
+    ) -> Result<R> {
+        let state = self.lock();
+        let open = state
+            .open
+            .get(id)
+            .ok_or_else(|| LoomError::invalid(format!("session {id} is not open")))?;
+        Ok(f(&open.conversation))
+    }
+
+    /// Loads all the items before the ones an open session's conversation
+    /// holds, for what needs the whole of it, as the files it changed.
+    pub(crate) async fn load_all(&self, id: &SessionId) -> Result<()> {
+        loop {
+            let before = {
+                let state = self.lock();
+                let open = state
+                    .open
+                    .get(id)
+                    .ok_or_else(|| LoomError::invalid(format!("session {id} is not open")))?;
+                match open.conversation.first_seq() {
+                    Some(first) if open.conversation.has_older => first,
+                    _ => return Ok(()),
+                }
+            };
+            let history = self.client()?.history(id, before, BULK_PAGE_ITEMS).await?;
+            let mut state = self.lock();
+            let Some(open) = state.open.get_mut(id) else {
+                return Ok(());
+            };
+            // A page that no longer fits, as after the conversation started
+            // over, ends it; the next call starts from what is there then.
+            if !open.conversation.prepend(history) {
+                return Ok(());
+            }
+            open.changed = true;
+            drop(state);
+            self.wake.notify_one();
+        }
     }
 }
 

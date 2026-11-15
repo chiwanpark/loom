@@ -165,6 +165,9 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
+                    MenuEntry("Changes", LoomIcons.GitCompare, close) {
+                        app.navigator.push(Screen.Changes(link.host, link.instance, session))
+                    }
                     MenuEntry("Files", LoomIcons.Folder, close) {
                         app.navigator.push(Screen.Files(link.host, link.instance))
                     }

@@ -36,6 +36,22 @@ sealed interface Screen {
     data class File(override val host: String, override val instance: String, val path: String) :
         Screen, AgentScreen
 
+    /** The workspace's uncommitted changes, and the files `session` changed. */
+    data class Changes(override val host: String, override val instance: String, val session: String) :
+        Screen, AgentScreen
+
+    /**
+     * A file's diff: what `session` changed in it when there is one, else its
+     * uncommitted changes in git (`oldPath` is where a renamed file came from).
+     */
+    data class Diff(
+        override val host: String,
+        override val instance: String,
+        val path: String,
+        val oldPath: String? = null,
+        val session: String? = null,
+    ) : Screen, AgentScreen
+
     /** The text size and the fonts of text and code. */
     data object Font : Screen
 }
