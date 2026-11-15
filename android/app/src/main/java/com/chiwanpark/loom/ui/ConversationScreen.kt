@@ -45,7 +45,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -174,11 +173,11 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 }
             }
         },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { LoomSnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             LinkBanner(link.state, onRetry = link::retryNow)
-            Box(Modifier.weight(1f)) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (!conversation.loaded) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 } else {

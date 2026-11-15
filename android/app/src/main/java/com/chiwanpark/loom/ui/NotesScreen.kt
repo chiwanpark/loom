@@ -16,7 +16,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -95,7 +94,7 @@ fun NotesScreen(app: LoomApplication, link: AgentLink) {
                 ) { Text("Save") }
             }
         },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { LoomSnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             LinkBanner(link.state, onRetry = link::retryNow)
@@ -156,12 +155,12 @@ fun TasksScreen(app: LoomApplication, link: AgentLink, session: String) {
 
     Scaffold(
         topBar = { LoomTopBar("Tasks", subtitle = link.conversation(session).title, onBack = { app.navigator.pop() }) },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { LoomSnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             LinkBanner(link.state, onRetry = link::retryNow)
             val list = tasks
-            Box(Modifier.weight(1f)) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     list == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                     list.isEmpty() -> Text(

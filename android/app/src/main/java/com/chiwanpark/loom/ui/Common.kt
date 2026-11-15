@@ -9,10 +9,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -24,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -106,6 +112,18 @@ fun CoroutineScope.attempt(snackbar: SnackbarHostState, action: suspend () -> Un
             snackbar.showSnackbar(e.userMessage())
         }
     }
+}
+
+/**
+ * The snackbar of a screen, kept above the keyboard. The Scaffold already keeps it
+ * above the navigation bar, which the keyboard covers too, so only the rest is added.
+ */
+@Composable
+fun LoomSnackbarHost(state: SnackbarHostState) {
+    SnackbarHost(
+        state,
+        Modifier.windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars)),
+    )
 }
 
 /** A menu entry with an icon before its label; picking it closes the menu first. */

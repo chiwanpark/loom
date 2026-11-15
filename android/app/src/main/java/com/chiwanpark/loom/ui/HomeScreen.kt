@@ -21,7 +21,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -127,7 +126,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                 ) { LoomIcon(LoomIcons.Plus, "New session") }
             }
         },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { LoomSnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             if (directory.refreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
