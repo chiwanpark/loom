@@ -34,6 +34,8 @@ class LoomApplication : Application() {
         private set
     lateinit var push: Push
         private set
+    lateinit var forwarding: Forwarding
+        private set
 
     private val foregroundState = MutableStateFlow(false)
 
@@ -42,6 +44,7 @@ class LoomApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        forwarding = Forwarding(this)
         links = AgentLinks(this)
         directory = Directory(this)
         push = Push(this)

@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Notifications from agents: approvals and finished or failed turns. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Forwarded ports keep working while the app is not on screen. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".LoomApplication"
@@ -34,6 +37,16 @@
                 <data android:scheme="loom+ws" />
             </intent-filter>
         </activity>
+
+        <!-- Keeps forwarded ports open while the app is not on screen. -->
+        <service
+            android:name=".ForwardingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Forwards local TCP ports, which the user chose, to a development machine for the browser and other apps on the device." />
+        </service>
 
         <!-- Receives notifications from agents through Firebase Cloud Messaging. -->
         <service

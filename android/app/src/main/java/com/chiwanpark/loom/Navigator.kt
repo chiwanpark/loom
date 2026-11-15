@@ -59,6 +59,9 @@ sealed interface Screen {
     data class Terminal(override val host: String, override val instance: String, val number: Int = 0) :
         Screen, AgentScreen
 
+    /** The ports programs listen on, on the agent's host, and the phone's ports forwarded to them. */
+    data class Ports(override val host: String, override val instance: String) : Screen, AgentScreen
+
     /** The text size and the fonts of text and code. */
     data object Font : Screen
 }

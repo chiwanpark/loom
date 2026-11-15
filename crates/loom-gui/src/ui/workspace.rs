@@ -41,6 +41,7 @@ use crate::ui::notes_view::NotesView;
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
 use crate::ui::picker::{PickerItem, open_picker};
+use crate::ui::ports_view::PortsView;
 use crate::ui::session::SessionView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
@@ -110,6 +111,9 @@ actions!(
         ShowNotes,
         /// Shows the active session's task list in the right panel.
         ShowTasks,
+        /// Shows the active agent's listening and forwarded ports in the
+        /// right panel.
+        ShowPorts,
         /// Wraps long lines in the focused file or diff view, or stops
         /// wrapping them.
         ToggleLineWrap,
@@ -233,6 +237,7 @@ enum RightTab {
     Files,
     Notes,
     Tasks,
+    Ports,
 }
 
 /// Something with changes that are not saved, which closing must not lose
@@ -358,6 +363,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("panel: files", Box::new(ShowFiles)),
         ("panel: notes", Box::new(ShowNotes)),
         ("panel: tasks", Box::new(ShowTasks)),
+        ("panel: ports", Box::new(ShowPorts)),
         ("view: toggle line wrap", Box::new(ToggleLineWrap)),
         ("file: save", Box::new(Save)),
         ("session: close", Box::new(CloseSession)),
@@ -579,6 +585,9 @@ pub struct Workspace {
     /// Each agent's notes, by its connection's entity, once the Notes tab
     /// has shown them.
     notes: HashMap<EntityId, Entity<NotesView>>,
+    /// Each agent's ports, by its connection's entity, once the Ports tab
+    /// has shown them.
+    ports: HashMap<EntityId, Entity<PortsView>>,
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_right: bool,
@@ -654,6 +663,7 @@ impl Workspace {
             saved_layout,
             restoring: HashMap::new(),
             notes: HashMap::new(),
+            ports: HashMap::new(),
         };
         cx.on_app_quit(|this, cx| {
             this.save_layout(cx);
@@ -807,6 +817,30 @@ impl Workspace {
             view.read(cx).input_focus(cx).focus(window, cx);
         }
         cx.notify();
+    }
+
+    fn on_show_ports(&mut self, _: &ShowPorts, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_right = true;
+        self.right_tab = RightTab::Ports;
+        self.ports_view(window, cx);
+        cx.notify();
+    }
+
+    /// The ports view of the agent the Ports tab shows, the same as the
+    /// Notes tab's, made the first time it is asked for.
+    fn ports_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<PortsView>> {
+        let conn = self.notes_connection()?;
+        if let Some(view) = self.ports.get(&conn.entity_id()) {
+            return Some(view.clone());
+        }
+        let id = conn.entity_id();
+        let view = cx.new(|cx| PortsView::new(conn, window, cx));
+        self.ports.insert(id, view.clone());
+        Some(view)
     }
 
     /// The agent whose notes the Notes tab shows: the active session's, or
@@ -2394,6 +2428,7 @@ impl Workspace {
     ) {
         self.remove_groups(window, cx, |g| g.connection == *conn);
         self.notes.remove(&conn.entity_id());
+        self.ports.remove(&conn.entity_id());
         self.connections.retain(|c| c != conn);
         if self.active_connection.as_ref() == Some(conn) {
             self.active_connection = self.connections.first().cloned();
@@ -2706,6 +2741,15 @@ impl Workspace {
         };
         let tab = self.right_tab;
         let files_tab = tab == RightTab::Files;
+        let forwarded = self
+            .notes_connection()
+            .map(|conn| conn.read(cx).forwards().len())
+            .unwrap_or(0);
+        let ports_label = if forwarded > 0 {
+            format!("Ports {forwarded}")
+        } else {
+            "Ports".to_string()
+        };
         let changes_label = if count > 0 {
             format!("Changes {count}")
         } else {
@@ -2736,6 +2780,15 @@ impl Workspace {
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .child("Connect to an agent to see its notes.")
+                    .into_any_element(),
+            },
+            (RightTab::Ports, _) => match self.ports_view(window, cx) {
+                Some(view) => div().flex_1().min_h_0().child(view).into_any_element(),
+                None => div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("Connect to an agent to forward its ports.")
                     .into_any_element(),
             },
             (RightTab::Tasks, _) => match self.tasks_view(window, cx) {
@@ -2833,6 +2886,19 @@ impl Workspace {
                     .tooltip("The session's task list, kept by the agent and you (ctrl-shift-t)")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.right_tab = RightTab::Tasks;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("right-ports")
+                    .debug_selector(|| "right-ports".into())
+                    .ghost()
+                    .xsmall()
+                    .label(ports_label)
+                    .selected(tab == RightTab::Ports)
+                    .tooltip("Ports on the agent's host, and the local ports forwarded to them")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.right_tab = RightTab::Ports;
                         cx.notify();
                     })),
             )
@@ -4470,6 +4536,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_show_changes))
             .on_action(cx.listener(Self::on_show_files))
             .on_action(cx.listener(Self::on_show_notes))
+            .on_action(cx.listener(Self::on_show_ports))
             .on_action(cx.listener(Self::on_show_tasks))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))

@@ -175,6 +175,9 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                         // Another client's terminal shows first when the app has none.
                         app.navigator.push(Screen.Terminal(link.host, link.instance, link.defaultTerminal() ?: 0))
                     }
+                    MenuEntry("Ports", LoomIcons.Plug, close) {
+                        app.navigator.push(Screen.Ports(link.host, link.instance))
+                    }
                     MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
                     MenuEntry("Compact the context", LoomIcons.FoldVertical, close) {
                         scope.attempt(snackbar) { link.connection().compactSession(session) }

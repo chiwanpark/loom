@@ -28,6 +28,7 @@ gpui_kit_assets::icon_assets!(
         CornerDownRight,
         Download,
         Eraser,
+        ExternalLink,
         FileDiff,
         FileMinus,
         FilePen,

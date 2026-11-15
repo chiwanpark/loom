@@ -42,6 +42,7 @@ object LoomIcons {
     val Copy = Lucide.drawable.lucide_ic_copy
     val CornerDownRight = Lucide.drawable.lucide_ic_corner_down_right
     val Eraser = Lucide.drawable.lucide_ic_eraser
+    val ExternalLink = Lucide.drawable.lucide_ic_external_link
     val Eye = Lucide.drawable.lucide_ic_eye
     val EyeOff = Lucide.drawable.lucide_ic_eye_off
     val File = Lucide.drawable.lucide_ic_file
@@ -67,6 +68,7 @@ object LoomIcons {
     val More = Lucide.drawable.lucide_ic_ellipsis_vertical
     val Notes = Lucide.drawable.lucide_ic_notebook_pen
     val Pencil = Lucide.drawable.lucide_ic_pencil
+    val Plug = Lucide.drawable.lucide_ic_plug
     val Plus = Lucide.drawable.lucide_ic_plus
     val QrCode = Lucide.drawable.lucide_ic_qr_code
     val Refresh = Lucide.drawable.lucide_ic_refresh_cw

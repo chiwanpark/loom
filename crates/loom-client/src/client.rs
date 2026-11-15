@@ -9,7 +9,7 @@ use loom_proto::{
     Delivery, EventWindow, History, LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo,
     Notice, PROTOCOL_VERSION, Payload, PendingMessage, PolicyAction, ProviderStatus,
     ReasoningEffort, RequestId, SequencedEvent, ServerMessage, SessionId, SessionInfo, TerminalId,
-    TerminalInfo, TerminalOwner, UsageLimits, decode, encode,
+    TerminalInfo, TerminalOwner, TunnelId, UsageLimits, decode, encode,
 };
 use loom_transport::{Diagnostics, FrameReceiver, FrameSender, FrameStream};
 use tokio::sync::{mpsc, oneshot};
@@ -50,12 +50,26 @@ pub enum Notification {
 
 type Pending = Arc<Mutex<Option<HashMap<RequestId, oneshot::Sender<Result<Payload>>>>>>;
 
+/// What the agent sends about a tunnel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TunnelEvent {
+    Data(Vec<u8>),
+    /// The port sends no more; with an error, the tunnel failed.
+    End(Option<String>),
+}
+
+/// Where each open tunnel's events go; `None` once the connection closed.
+pub(crate) type TunnelRoutes =
+    Arc<Mutex<Option<HashMap<TunnelId, mpsc::UnboundedSender<TunnelEvent>>>>>;
+
 #[derive(Clone)]
 pub struct Client {
     agent: AgentInfo,
     writer: mpsc::Sender<ClientMessage>,
     pending: Pending,
     next_id: Arc<AtomicU64>,
+    pub(crate) tunnels: TunnelRoutes,
+    pub(crate) next_tunnel: Arc<AtomicU64>,
 }
 
 pub struct Notifications {
@@ -69,6 +83,14 @@ impl Notifications {
 
     pub fn try_recv(&mut self) -> Option<Notification> {
         self.rx.try_recv().ok()
+    }
+}
+
+/// Hands a tunnel's event to whoever reads the tunnel.
+fn route(tunnels: &TunnelRoutes, tunnel: TunnelId, event: TunnelEvent) {
+    let routes = tunnels.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(route) = routes.as_ref().and_then(|routes| routes.get(&tunnel)) {
+        let _ = route.send(event);
     }
 }
 
@@ -139,8 +161,10 @@ impl Client {
         });
 
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
+        let tunnels: TunnelRoutes = Arc::new(Mutex::new(Some(HashMap::new())));
         let (notify, rx) = mpsc::unbounded_channel();
         let reader_pending = pending.clone();
+        let reader_tunnels = tunnels.clone();
         tokio::spawn(async move {
             loop {
                 let message = match recv_message(&mut receiver).await {
@@ -182,6 +206,14 @@ impl Client {
                     ServerMessage::TerminalExited { terminal, status } => {
                         Notification::TerminalExited { terminal, status }
                     }
+                    ServerMessage::TunnelData { tunnel, data } => {
+                        route(&reader_tunnels, tunnel, TunnelEvent::Data(data));
+                        continue;
+                    }
+                    ServerMessage::TunnelEnd { tunnel, error } => {
+                        route(&reader_tunnels, tunnel, TunnelEvent::End(error));
+                        continue;
+                    }
                     ServerMessage::Rejected(err) => {
                         tracing::warn!(error = %err, "agent closed the connection");
                         break;
@@ -194,6 +226,10 @@ impl Client {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take();
+            reader_tunnels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
         });
 
         Ok((
@@ -202,6 +238,8 @@ impl Client {
                 writer,
                 pending,
                 next_id: Arc::new(AtomicU64::new(1)),
+                tunnels,
+                next_tunnel: Arc::new(AtomicU64::new(1)),
             },
             Notifications { rx },
         ))
@@ -222,6 +260,15 @@ impl Client {
 
     pub async fn request(&self, command: Command) -> Result<Payload> {
         self.submit(command).await?.await
+    }
+
+    /// Sends a request whose answer nobody waits for, without waiting for
+    /// room in the queue of outgoing messages; whether it could be queued.
+    pub(crate) fn send_detached(&self, command: Command) -> bool {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.writer
+            .try_send(ClientMessage::Request { id, command })
+            .is_ok()
     }
 
     pub async fn submit(

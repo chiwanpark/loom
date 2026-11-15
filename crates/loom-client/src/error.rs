@@ -21,6 +21,8 @@ pub enum ClientError {
     Changed(String),
     #[error("{path} is {} MB, more than the {} MB that can be opened", .size.div_ceil(1 << 20), .max >> 20)]
     TooLarge { path: String, size: u64, max: u64 },
+    #[error("the forwarded connection failed on the agent's side: {0}")]
+    Tunnel(String),
     #[error("no agent is running for {0}")]
     NoAgent(String),
     #[error(transparent)]

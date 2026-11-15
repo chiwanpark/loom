@@ -67,6 +67,7 @@ fun LoomRoot(app: LoomApplication) {
                 screen.session,
             )
             is Screen.Terminal -> TerminalScreen(app, app.links.get(loom, screen.host, screen.instance), screen.number)
+            is Screen.Ports -> PortsScreen(app, app.links.get(loom, screen.host, screen.instance))
         }
     }
 }

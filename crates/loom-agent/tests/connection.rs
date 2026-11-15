@@ -1384,3 +1384,98 @@ async fn a_tail_subscription_sends_the_latest_items_in_one_batch_and_pages_back(
     assert!(window.is_none());
     assert_eq!(caught_up, all[all.len() - 2..]);
 }
+
+/// A server that answers each connection with what it sent, reversed, once
+/// the client ended its side, and then `extra` more bytes.
+async fn reversing_server(extra: usize) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut received = Vec::new();
+                stream.read_to_end(&mut received).await.unwrap();
+                received.reverse();
+                stream.write_all(&received).await.unwrap();
+                stream.write_all(&vec![7u8; extra]).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn local_ports_are_forwarded_to_the_agents_host() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    // More than the window each way, so both wait for room.
+    let port = reversing_server(3 * 1024 * 1024).await;
+
+    let ports = client.list_ports().await.unwrap();
+    let listed = ports
+        .iter()
+        .find(|p| p.port == port)
+        .expect("the port is listed");
+    assert_eq!(listed.pid, Some(std::process::id()));
+    assert_eq!(listed.connect_host(), "127.0.0.1");
+
+    let forward_client = client.clone();
+    let forward = loom_client::PortForward::start(None, "127.0.0.1".into(), port, move || {
+        Some(forward_client.clone())
+    })
+    .await
+    .unwrap();
+    // The agent's port is taken here, as both run on this machine.
+    assert_ne!(forward.local_addr().port(), port);
+
+    let sent: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let mut connections = Vec::new();
+    for _ in 0..3 {
+        let mut stream = tokio::net::TcpStream::connect(forward.local_addr())
+            .await
+            .unwrap();
+        let sent = sent.clone();
+        connections.push(tokio::spawn(async move {
+            let (mut read, mut write) = stream.split();
+            let reading = async {
+                let mut received = Vec::new();
+                read.read_to_end(&mut received).await.unwrap();
+                received
+            };
+            let writing = async {
+                write.write_all(&sent).await.unwrap();
+                write.shutdown().await.unwrap();
+            };
+            tokio::join!(reading, writing).0
+        }));
+    }
+    let mut expected = sent.clone();
+    expected.reverse();
+    expected.extend(vec![7u8; 3 * 1024 * 1024]);
+    for connection in connections {
+        let received = tokio::time::timeout(Duration::from_secs(30), connection)
+            .await
+            .expect("the forwarded connection finished")
+            .unwrap();
+        assert!(received == expected, "{} bytes", received.len());
+    }
+
+    // A port nobody listens on closes the local connection at once.
+    drop(forward);
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let nobody = closed.local_addr().unwrap().port();
+    drop(closed);
+    let err = client.open_tunnel("127.0.0.1", nobody).await.err().unwrap();
+    assert_eq!(
+        err.api().map(|e| e.code),
+        Some(ErrorCode::NotFound),
+        "{err}"
+    );
+    // The connection still works.
+    assert!(client.list_sessions().await.unwrap().is_empty());
+}

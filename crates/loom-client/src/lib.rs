@@ -2,6 +2,7 @@ mod client;
 mod connect;
 mod download;
 mod error;
+mod forward;
 mod login;
 mod relay;
 
@@ -10,6 +11,7 @@ pub use connect::{
     AgentTarget, connect_local, connect_ssh, list_local_agents, list_remote_agents, local_registry,
 };
 pub use error::{ClientError, Result};
+pub use forward::{PortForward, Tunnel};
 pub use login::BrowserCallback;
 pub use loom_crypto::ClientIdentity;
 pub use loom_proto as proto;

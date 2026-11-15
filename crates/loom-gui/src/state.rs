@@ -1,16 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
     AgentInfo, ApiError, Command, DirectoryListing, ErrorCode, FileContent, FileDiff, FileVersion,
-    NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo, TaskChange,
-    TasksContent, TelemetryStatus, TerminalHolder, TerminalId, TerminalInfo, TerminalOwner,
-    UsageLimits, WorkspaceChanges,
+    ListeningPort, NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo,
+    TaskChange, TasksContent, TelemetryStatus, TerminalHolder, TerminalId, TerminalInfo,
+    TerminalOwner, UsageLimits, WorkspaceChanges,
 };
-use loom_client::{Client, Notification, Notifications, terminal_owner};
+use loom_client::{Client, Notification, Notifications, PortForward, terminal_owner};
 use loom_config::HostEntry;
 use tokio::sync::mpsc;
 
@@ -143,7 +144,25 @@ pub struct AgentConnection {
     listed: Vec<TerminalInfo>,
     /// This client's token for its terminals, kept across reconnects.
     pub terminal_owner: TerminalOwner,
+    /// The client that forwarded ports use, the latest after a reconnect.
+    live_client: Arc<std::sync::Mutex<Client>>,
+    /// Local ports forwarded to ports on the agent's host, the oldest first.
+    forwards: Vec<Forward>,
     _pump: Option<Task<()>>,
+}
+
+/// A local port that forwards to a port on the agent's host.
+pub struct Forward {
+    /// The host and port the agent connects to.
+    pub host: String,
+    pub port: u16,
+    pub forward: Arc<PortForward>,
+}
+
+impl Forward {
+    pub fn local_port(&self) -> u16 {
+        self.forward.local_addr().port()
+    }
 }
 
 impl EventEmitter<ConnectionEvent> for AgentConnection {}
@@ -176,6 +195,7 @@ impl AgentConnection {
         cx: &mut Context<Self>,
     ) -> Self {
         let info = client.agent().clone();
+        let live_client = Arc::new(std::sync::Mutex::new(client.clone()));
         let mut this = Self {
             git: GitState::default(),
             usage: HashMap::new(),
@@ -192,6 +212,8 @@ impl AgentConnection {
             terminals: HashMap::new(),
             listed: Vec::new(),
             terminal_owner: terminal_owner(),
+            live_client,
+            forwards: Vec::new(),
             _pump: None,
         };
         this.attach(notifications, cx);
@@ -199,8 +221,6 @@ impl AgentConnection {
         this
     }
 
-    /// Whether files can be downloaded from the agent: only over a direct
-    /// connection, not through a relay.
     pub fn key(&self) -> (String, String) {
         (self.host.name().to_owned(), self.info.instance.0.clone())
     }
@@ -236,6 +256,7 @@ impl AgentConnection {
         // Even the same agent may have changed while the link was down.
         self.telemetry.reset();
         self.client = client;
+        *self.live_client.lock().unwrap_or_else(|e| e.into_inner()) = self.client.clone();
         self.info = self.client.agent().clone();
         self.status = LinkStatus::Connected;
         self.attach(notifications, cx);
@@ -736,6 +757,71 @@ impl AgentConnection {
         let client = self.client.clone();
         self.backend
             .run(async move { client.read_file(&path).await })
+    }
+
+    /// The TCP ports that programs listen on, on the agent's host.
+    pub fn list_ports(
+        &self,
+    ) -> impl Future<Output = Option<loom_client::Result<Vec<ListeningPort>>>> + use<> {
+        let client = self.client.clone();
+        self.backend.run(async move { client.list_ports().await })
+    }
+
+    pub fn forwards(&self) -> &[Forward] {
+        &self.forwards
+    }
+
+    /// Forwards a local port to `host:port` on the agent's host: `port`
+    /// itself when it is free here, else any free port. The task says which
+    /// local port, or why none.
+    pub fn forward_port(
+        &mut self,
+        host: String,
+        port: u16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<u16, String>> {
+        if let Some(forward) = self
+            .forwards
+            .iter()
+            .find(|f| f.host == host && f.port == port)
+        {
+            return Task::ready(Ok(forward.local_port()));
+        }
+        let live = self.live_client.clone();
+        let started = self.backend.run({
+            let host = host.clone();
+            async move {
+                PortForward::start(None, host, port, move || {
+                    let client = live.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    (!client.is_closed()).then_some(client)
+                })
+                .await
+            }
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let forward = match started.await {
+                Some(Ok(forward)) => Arc::new(forward),
+                Some(Err(err)) => return Err(format!("could not listen on a local port: {err}")),
+                None => return Err("the client is shutting down".into()),
+            };
+            let local = forward.local_addr().port();
+            this.update(cx, |this, cx| {
+                this.forwards.push(Forward {
+                    host,
+                    port,
+                    forward,
+                });
+                cx.notify();
+            })
+            .map_err(|_| "the agent's connection is gone".to_string())?;
+            Ok(local)
+        })
+    }
+
+    /// Stops forwarding the local port `local`; its connections close.
+    pub fn stop_forward(&mut self, local: u16, cx: &mut Context<Self>) {
+        self.forwards.retain(|f| f.local_port() != local);
+        cx.notify();
     }
 
     pub fn read_file_bytes(

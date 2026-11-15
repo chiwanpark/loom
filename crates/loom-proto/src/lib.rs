@@ -216,6 +216,22 @@ mod tests {
                 take_over: true,
             },
             Command::ListTerminals,
+            Command::ListPorts,
+            Command::OpenTunnel {
+                tunnel: 4,
+                host: "localhost".into(),
+                port: 3000,
+            },
+            Command::TunnelData {
+                tunnel: 4,
+                data: b"GET / HTTP/1.1\r\n\r\n".to_vec(),
+            },
+            Command::TunnelAck {
+                tunnel: 4,
+                bytes: 4096,
+            },
+            Command::TunnelEnd { tunnel: 4 },
+            Command::CloseTunnel { tunnel: 4 },
             Command::CompactSession {
                 session: session.clone(),
             },
@@ -501,6 +517,42 @@ mod tests {
             "the Android app"
         );
         assert_eq!(client("other", None).describe(), "other");
+    }
+
+    #[test]
+    fn ports_and_tunnels_roundtrip() {
+        let port = |address: &str| ListeningPort {
+            port: 3000,
+            address: address.into(),
+            process: Some("node".into()),
+            pid: Some(42),
+        };
+        message_roundtrip(ServerMessage::Response {
+            id: 1,
+            result: Ok(Payload::Ports(vec![port("127.0.0.1"), port("::")])),
+        });
+        message_roundtrip(ServerMessage::TunnelData {
+            tunnel: 4,
+            data: vec![0, 1, 2],
+        });
+        message_roundtrip(ServerMessage::TunnelEnd {
+            tunnel: 4,
+            error: Some("reset".into()),
+        });
+        assert_eq!(port("0.0.0.0").connect_host(), "127.0.0.1");
+        assert_eq!(port("::").connect_host(), "::1");
+        assert_eq!(port("192.168.0.2").connect_host(), "192.168.0.2");
+        // A tunnel's data with its message's other fields fits in one
+        // message of the encrypted transport.
+        let data = encode(&ClientMessage::Request {
+            id: u64::MAX,
+            command: Command::TunnelData {
+                tunnel: u64::MAX,
+                data: vec![0xff; MAX_TUNNEL_DATA as usize],
+            },
+        })
+        .unwrap();
+        assert!(data.len() < 65_535 - 16, "{}", data.len());
     }
 
     #[test]

@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -152,6 +154,8 @@ fun CompactTextField(
     trailingIcon: (@Composable () -> Unit)? = null,
     maxLines: Int = Int.MAX_VALUE,
     textStyle: TextStyle = MaterialTheme.typography.bodyLarge,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val colors = OutlinedTextFieldDefaults.colors()
@@ -162,6 +166,8 @@ fun CompactTextField(
         textStyle = textStyle.copy(color = MaterialTheme.colorScheme.onSurface),
         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         maxLines = maxLines,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
         interactionSource = interaction,
         decorationBox = { inner ->
             OutlinedTextFieldDefaults.DecorationBox(

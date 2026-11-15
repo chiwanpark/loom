@@ -13,12 +13,14 @@ pub mod models;
 pub mod notes;
 pub mod observer;
 pub mod policy;
+pub mod ports;
 pub mod runtime;
 mod session;
 pub mod store;
 pub mod supervisor;
 pub mod tasks;
 pub mod terminals;
+pub mod tunnels;
 pub mod watcher;
 pub mod web_search;
 

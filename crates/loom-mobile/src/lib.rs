@@ -15,6 +15,7 @@ mod error;
 mod files;
 mod highlight;
 mod hosts;
+mod ports;
 mod records;
 mod runtime;
 mod terminal;
@@ -25,6 +26,7 @@ pub use error::LoomError;
 pub use files::{DirectoryListing, EntryKind, FileEntry, FileView};
 pub use highlight::{CodeLine, Highlight, Span};
 pub use hosts::{CLIENT_NAME, Loom};
+pub use ports::{Forward, HostPort};
 pub use records::*;
 pub use terminal::{
     KeyModifiers, Terminal, TerminalColor, TerminalCursor, TerminalCursorShape, TerminalFrame,

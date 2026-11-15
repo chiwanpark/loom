@@ -18,6 +18,7 @@ use crate::host_keys::HostKeys;
 use crate::session::Session;
 use crate::supervisor::Supervisor;
 use crate::terminals::{ConnectionId, Viewer, interactive_shell};
+use crate::tunnels::Tunnels;
 
 pub type Reply = Result<Payload, ApiError>;
 
@@ -46,6 +47,7 @@ pub struct Connection {
     client_label: Option<String>,
     /// The name the client gave in its hello.
     program: String,
+    tunnels: Tunnels,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -59,6 +61,7 @@ impl Connection {
         Self {
             agent,
             info,
+            tunnels: Tunnels::new(out.clone()),
             out,
             greeted: false,
             subscriptions: HashMap::new(),
@@ -74,8 +77,8 @@ impl Connection {
         }
     }
 
-    /// Marks a connection that comes through a relay, which does not carry
-    /// downloads yet.
+    /// Marks a connection that comes through a relay, which may set the
+    /// client's push token.
     pub fn relayed(mut self, relayed: bool) -> Self {
         self.relayed = relayed;
         self
@@ -417,6 +420,38 @@ impl Connection {
                 let terminals = self.agent.terminals().list(self.connection_id);
                 self.respond(id, Ok(Payload::Terminals(terminals))).await;
             }
+            Command::ListPorts => {
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = crate::ports::listening_ports().await.map(Payload::Ports);
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
+            Command::OpenTunnel { tunnel, host, port } => {
+                let tunnels = self.tunnels.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    tunnels.open(id, tunnel, host, port).await;
+                }));
+            }
+            Command::TunnelData { tunnel, data } => {
+                // The tunnel's writer answers once the bytes are written.
+                if let Err(err) = self.tunnels.data(id, tunnel, data) {
+                    self.respond(id, Err(err)).await;
+                }
+            }
+            Command::TunnelEnd { tunnel } => {
+                if let Err(err) = self.tunnels.end(id, tunnel) {
+                    self.respond(id, Err(err)).await;
+                }
+            }
+            Command::TunnelAck { tunnel, bytes } => {
+                let result = self.tunnels.ack(tunnel, bytes).map(|()| Payload::Ok);
+                self.respond(id, result).await;
+            }
+            Command::CloseTunnel { tunnel } => {
+                let result = self.tunnels.close(tunnel).map(|()| Payload::Ok);
+                self.respond(id, result).await;
+            }
             Command::CancelLogin { login } => {
                 let waiting = self
                     .logins
@@ -608,6 +643,12 @@ impl Connection {
             | Command::CloseTerminal { .. }
             | Command::AttachTerminal { .. }
             | Command::ListTerminals
+            | Command::ListPorts
+            | Command::OpenTunnel { .. }
+            | Command::TunnelData { .. }
+            | Command::TunnelAck { .. }
+            | Command::TunnelEnd { .. }
+            | Command::CloseTunnel { .. }
             | Command::GetHostKey
             | Command::AuthorizeClient { .. }
             | Command::ListClients
@@ -633,6 +674,7 @@ impl Drop for Connection {
         self.agent
             .terminals()
             .detach_connection(self.connection_id, timeout);
+        self.tunnels.close_all();
         for (_, task) in self.subscriptions.drain() {
             task.abort();
         }

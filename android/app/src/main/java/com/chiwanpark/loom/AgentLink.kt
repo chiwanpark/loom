@@ -5,12 +5,14 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import com.chiwanpark.loom.core.Activity
 import com.chiwanpark.loom.core.Agent
 import com.chiwanpark.loom.core.AgentConnection
 import com.chiwanpark.loom.core.AgentUpdate
 import com.chiwanpark.loom.core.ConversationItem
 import com.chiwanpark.loom.core.ConversationUpdate
+import com.chiwanpark.loom.core.Forward
 import com.chiwanpark.loom.core.Host
 import com.chiwanpark.loom.core.Loom
 import com.chiwanpark.loom.core.LoomException
@@ -31,6 +33,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -136,6 +139,39 @@ class TerminalTab(val terminal: Terminal) {
 }
 
 /**
+ * A local port of the phone forwarded to `host:port` on the agent's host. It
+ * keeps its local port when the link reconnects or follows a restarted
+ * agent, and starts again then.
+ */
+class PortForwardState(val host: String, val port: Int) {
+    /** The phone's port, once it listened. */
+    var localPort by mutableStateOf<Int?>(null)
+        internal set
+
+    /** Why it does not listen now, if it does not. */
+    var error by mutableStateOf<String?>(null)
+        internal set
+
+    /** How many connections it carried when last asked. */
+    var connections by mutableStateOf(0)
+        internal set
+
+    internal var forward: Forward? = null
+
+    /** Updates `connections` from the core. */
+    fun poll() {
+        connections = forward?.connections()?.toInt() ?: 0
+    }
+
+    internal fun close() {
+        forward?.stop()
+        forward?.destroy()
+        forward = null
+        connections = 0
+    }
+}
+
+/**
  * The app's link to one agent: it connects, follows the agent's updates, and
  * reconnects after the link is lost, catching the open conversations up on
  * what they missed. When the agent is restarted, it runs as another instance;
@@ -172,6 +208,9 @@ class AgentLink(
     var agentTerminals by mutableStateOf<List<TerminalSummary>>(emptyList())
         private set
 
+    /** The local ports forwarded to the agent's host, oldest first. */
+    val forwards = mutableStateListOf<PortForwardState>()
+
     /** Sessions the connection follows; it resubscribes them when it reconnects. */
     private val opened = mutableSetOf<String>()
     private var connection: AgentConnection? = null
@@ -201,9 +240,18 @@ class AgentLink(
         retry.tryEmit(Unit)
     }
 
-    fun stop() {
+    /**
+     * Ends the link. Its forwards end with it, unless `keepForwards`: then
+     * they start again when the link starts again, as after [moveTo].
+     */
+    fun stop(keepForwards: Boolean = false) {
         job?.cancel()
         job = null
+        forwards.forEach { it.close() }
+        if (!keepForwards) {
+            forwards.clear()
+            app.forwarding.update()
+        }
         closeTerminals()
         agentTerminals = emptyList()
         connection?.disconnect()
@@ -242,7 +290,7 @@ class AgentLink(
     /** Follows the agent to the instance it runs as after a restart. */
     fun moveTo(newInstance: String) {
         if (newInstance == instance) return
-        stop()
+        stop(keepForwards = true)
         instance = newInstance
         agent = null
         // The new connection follows no session yet; the screens open theirs again.
@@ -253,6 +301,44 @@ class AgentLink(
 
     /** The connection, or an error the screens can show. */
     fun connection(): AgentConnection = connection ?: throw LoomException.Closed("Not connected to the agent yet.")
+
+    /**
+     * Forwards a local port to `host:port` on the agent's host, or gives the
+     * forward there is already. Throws when the phone cannot listen.
+     */
+    suspend fun forwardPort(host: String, port: Int): PortForwardState {
+        forwards.firstOrNull { it.host == host && it.port == port }?.let { return it }
+        val forward = PortForwardState(host, port)
+        startForward(forward)
+        forwards.add(forward)
+        app.forwarding.update()
+        return forward
+    }
+
+    /** Stops forwarding a port; its connections close. */
+    fun stopForward(forward: PortForwardState) {
+        forwards.remove(forward)
+        forward.close()
+        app.forwarding.update()
+    }
+
+    private suspend fun startForward(forward: PortForwardState) {
+        val started = connection().forwardPort(forward.host, forward.port.toUShort(), forward.localPort?.toUShort())
+        forward.forward = started
+        forward.localPort = started.localPort().toInt()
+        forward.error = null
+    }
+
+    /** Starts the forwards that do not listen, as after the link moved to a restarted agent. */
+    private suspend fun restoreForwards() {
+        for (forward in forwards.filter { it.forward == null }) {
+            try {
+                startForward(forward)
+            } catch (e: LoomException) {
+                forward.error = e.userMessage()
+            }
+        }
+    }
 
     /** Opens a terminal of `cols` by `rows` cells on the agent's host. */
     suspend fun openTerminal(cols: Int, rows: Int): TerminalTab {
@@ -346,8 +432,12 @@ class AgentLink(
 
     private suspend fun run() {
         var wait = 1_000L
+        // Forwards keep the link up while the app is away, for the browser.
+        val wanted = combine(app.foreground, snapshotFlow { forwards.isNotEmpty() }) { shown, forwarding ->
+            shown || forwarding
+        }
         while (app.scope.isActive) {
-            app.foreground.first { it }
+            wanted.first { it }
             state = LinkState.Connecting
             var fatal = false
             try {
@@ -362,6 +452,7 @@ class AgentLink(
                 state = LinkState.Connected
                 wait = 1_000L
                 app.push.linked(this)
+                restoreForwards()
                 // Following the updates until the link is lost or closed.
                 if (!pump(connection!!)) return
                 state = LinkState.Down("Lost the connection to the agent.", fatal = false)
@@ -443,6 +534,11 @@ class AgentLinks(private val app: LoomApplication) {
         links.values.forEach { it.checkLink() }
     }
 
+    /** Stops every forward of every link. */
+    fun stopForwards() {
+        links.values.forEach { link -> link.forwards.toList().forEach(link::stopForward) }
+    }
+
     /** Ends the links to a host's agents, as when it is renamed or removed. */
     fun forget(host: String) {
         links.keys.filter { it.first == host }.forEach { key -> links.remove(key)?.stop() }
@@ -473,7 +569,7 @@ class AgentLinks(private val app: LoomApplication) {
                         links[target] = link
                     }
                 }
-                !inUse(key) -> links.remove(key)?.stop()
+                !inUse(key) && link.forwards.isEmpty() -> links.remove(key)?.stop()
             }
         }
     }

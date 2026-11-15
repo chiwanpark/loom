@@ -11,6 +11,7 @@ pub mod notes_view;
 pub mod notify;
 pub mod panes;
 pub mod picker;
+pub mod ports_view;
 pub mod session;
 pub mod tab;
 pub mod tabs;

@@ -1466,3 +1466,75 @@ async fn a_phone_starts_an_agent_for_another_directory() {
         Err(LoomError::Invalid { .. })
     ));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_forwards_a_port_of_the_agents_host_through_the_relay() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let host = Host::start(Vec::new()).await;
+    let (_dir, _loom, conn) = phone(&host).await;
+    // A server on the agent's host that sends a page larger than a tunnel's
+    // window for any request.
+    let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    let page: Vec<u8> = (0..1_500_000).map(|i| (i % 253) as u8).collect();
+    let served = page.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = server.accept().await.unwrap();
+            let page = served.clone();
+            tokio::spawn(async move {
+                let mut request = [0u8; 4];
+                stream.read_exact(&mut request).await.unwrap();
+                stream.write_all(&page).await.unwrap();
+            });
+        }
+    });
+
+    let ports = conn.clone().list_ports().await.unwrap();
+    let listed = ports
+        .iter()
+        .find(|p| p.port == port)
+        .expect("the port is listed");
+    assert_eq!(listed.host, "127.0.0.1");
+    let forward = conn
+        .clone()
+        .forward_port(listed.host.clone(), port, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (forward.host().as_str(), forward.port()),
+        ("127.0.0.1", port)
+    );
+
+    for _ in 0..2 {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", forward.local_port()))
+            .await
+            .unwrap();
+        stream.write_all(b"GET!").await.unwrap();
+        let mut received = vec![0u8; page.len()];
+        tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut received))
+            .await
+            .expect("the page arrived")
+            .unwrap();
+        assert!(received == page);
+    }
+
+    // A forward on the same local port, as after the agent restarted.
+    let local = forward.local_port();
+    forward.stop();
+    assert_eq!(forward.connections(), 0);
+    let again = conn
+        .clone()
+        .forward_port(listed.host.clone(), port, Some(local))
+        .await
+        .unwrap();
+    assert_eq!(again.local_port(), local);
+    again.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", forward.local_port()))
+            .await
+            .is_err()
+    );
+}

@@ -13,10 +13,13 @@ use crate::session::{
     SessionInfo, ToolCallId, UsageSoFar,
 };
 
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
+/// A connection to a TCP port that the agent opened for a client; the
+/// client picks the number, unique among its connection's tunnels.
+pub type TunnelId = u64;
 /// A token a client picks at random and sends with the terminals it opens
 /// and attaches, so that after a reconnect it can take back a terminal its
 /// earlier connection still holds (as when the agent has not yet noticed
@@ -316,6 +319,81 @@ pub enum Command {
     /// The agent's open terminals, as [`Notice::TerminalsChanged`] lists
     /// them. Answered with [`Payload::Terminals`].
     ListTerminals,
+    /// The TCP ports that programs of the agent's user listen on, on the
+    /// agent's host. Answered with [`Payload::Ports`].
+    ListPorts,
+    /// Connects to a TCP port on or near the agent's host, as for a client
+    /// that forwards one of its own ports there. `tunnel` is a number the
+    /// client picks; it fails with [`ErrorCode::Conflict`] while the
+    /// connection has a tunnel of that number. Answered with
+    /// [`Payload::Ok`] once connected; then what the port sends comes as
+    /// [`ServerMessage::TunnelData`], at most [`TUNNEL_WINDOW`] bytes ahead
+    /// of the client's [`Command::TunnelAck`]s, and its end as
+    /// [`ServerMessage::TunnelEnd`]. A connection has at most
+    /// [`MAX_TUNNELS`] tunnels, and they close with it.
+    OpenTunnel {
+        tunnel: TunnelId,
+        host: String,
+        port: u16,
+    },
+    /// Bytes for the port, at most [`MAX_TUNNEL_DATA`] of them. Answered
+    /// with [`Payload::Ok`] once they were written, so a client keeps only a
+    /// few of these unanswered.
+    TunnelData {
+        tunnel: TunnelId,
+        data: Vec<u8>,
+    },
+    /// Tells that the client took `bytes` of the tunnel's data, so the
+    /// agent may send that many more.
+    TunnelAck {
+        tunnel: TunnelId,
+        bytes: u32,
+    },
+    /// The client sends no more bytes: the agent ends its side of the
+    /// connection for writing once it wrote the earlier ones. The tunnel
+    /// closes when both sides ended.
+    TunnelEnd {
+        tunnel: TunnelId,
+    },
+    /// Closes a tunnel in both directions at once.
+    CloseTunnel {
+        tunnel: TunnelId,
+    },
+}
+
+/// The most bytes of a tunnel the agent sends ahead of the client's
+/// [`Command::TunnelAck`]s.
+pub const TUNNEL_WINDOW: u32 = 512 * 1024;
+
+/// The most bytes in one [`Command::TunnelData`] or
+/// [`ServerMessage::TunnelData`], so that one fits in a single message of
+/// the encrypted transport.
+pub const MAX_TUNNEL_DATA: u32 = 60 * 1024;
+
+/// The most tunnels one connection has open at once.
+pub const MAX_TUNNELS: usize = 24;
+
+/// A TCP port that a program listens on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListeningPort {
+    pub port: u16,
+    /// The address it listens on, such as `127.0.0.1`, `0.0.0.0`, or `::`.
+    pub address: String,
+    /// The program's name and process id, when the agent can tell.
+    pub process: Option<String>,
+    pub pid: Option<u32>,
+}
+
+impl ListeningPort {
+    /// The host a tunnel connects to for this port: the loopback address
+    /// for ports that listen on every address.
+    pub fn connect_host(&self) -> String {
+        match self.address.as_str() {
+            "0.0.0.0" | "" => "127.0.0.1".into(),
+            "::" => "::1".into(),
+            other => other.into(),
+        }
+    }
 }
 
 /// The most bytes of a terminal's recent output that attaching to it replays.
@@ -401,6 +479,7 @@ pub enum Payload {
     /// The message [`Command::CancelPending`] took back.
     PendingCancelled(PendingMessage),
     Terminals(Vec<TerminalInfo>),
+    Ports(Vec<ListeningPort>),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].
@@ -784,5 +863,16 @@ pub enum ServerMessage {
     TerminalExited {
         terminal: TerminalId,
         status: i32,
+    },
+    /// Bytes a tunnel's port sent, at most [`MAX_TUNNEL_DATA`] of them.
+    TunnelData {
+        tunnel: TunnelId,
+        data: Vec<u8>,
+    },
+    /// The port sends no more bytes: it ended its side of the connection,
+    /// or, with an `error`, the tunnel failed and is closed.
+    TunnelEnd {
+        tunnel: TunnelId,
+        error: Option<String>,
     },
 }
