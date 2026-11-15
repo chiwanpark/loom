@@ -15,7 +15,15 @@ class MainActivity : ComponentActivity() {
         val app = application as LoomApplication
         if (savedInstanceState == null) openLink(intent)
         setContent {
-            LoomTheme { LoomRoot(app) }
+            val settings = app.settings
+            LoomTheme(
+                textScale = settings.textScale,
+                blockScale = settings.blockScale,
+                textFont = settings.textFont,
+                codeFont = settings.codeFont,
+            ) {
+                LoomRoot(app)
+            }
         }
     }
 

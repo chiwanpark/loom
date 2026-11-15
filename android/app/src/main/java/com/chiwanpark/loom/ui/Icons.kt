@@ -22,10 +22,13 @@ import com.composables.icons.lucide.R as Lucide
 
 /** The app's icons: Lucide, the set the desktop client uses. */
 object LoomIcons {
+    val ALargeSmall = Lucide.drawable.lucide_ic_a_large_small
     val Archive = Lucide.drawable.lucide_ic_archive
+    val ArchiveRestore = Lucide.drawable.lucide_ic_archive_restore
     val ArrowDown = Lucide.drawable.lucide_ic_arrow_down
     val Back = Lucide.drawable.lucide_ic_arrow_left
     val Ban = Lucide.drawable.lucide_ic_ban
+    val Bot = Lucide.drawable.lucide_ic_bot
     val Brain = Lucide.drawable.lucide_ic_brain
     val Check = Lucide.drawable.lucide_ic_check
     val CheckCheck = Lucide.drawable.lucide_ic_check_check
@@ -36,18 +39,29 @@ object LoomIcons {
     val CircleDot = Lucide.drawable.lucide_ic_circle_dot
     val CircleX = Lucide.drawable.lucide_ic_circle_x
     val CornerDownRight = Lucide.drawable.lucide_ic_corner_down_right
+    val Eraser = Lucide.drawable.lucide_ic_eraser
+    val Eye = Lucide.drawable.lucide_ic_eye
+    val EyeOff = Lucide.drawable.lucide_ic_eye_off
+    val FoldVertical = Lucide.drawable.lucide_ic_fold_vertical
+    val Gauge = Lucide.drawable.lucide_ic_gauge
     val Image = Lucide.drawable.lucide_ic_image
     val Info = Lucide.drawable.lucide_ic_info
+    val KeyRound = Lucide.drawable.lucide_ic_key_round
     val Loader = Lucide.drawable.lucide_ic_loader
     val LoaderCircle = Lucide.drawable.lucide_ic_loader_circle
     val Lock = Lucide.drawable.lucide_ic_lock
     val More = Lucide.drawable.lucide_ic_ellipsis_vertical
     val Notes = Lucide.drawable.lucide_ic_notebook_pen
+    val Pencil = Lucide.drawable.lucide_ic_pencil
     val Plus = Lucide.drawable.lucide_ic_plus
+    val QrCode = Lucide.drawable.lucide_ic_qr_code
     val Refresh = Lucide.drawable.lucide_ic_refresh_cw
+    val Search = Lucide.drawable.lucide_ic_search
     val Send = Lucide.drawable.lucide_ic_send_horizontal
+    val Server = Lucide.drawable.lucide_ic_server
     val Stop = Lucide.drawable.lucide_ic_square
     val Tasks = Lucide.drawable.lucide_ic_list_todo
+    val Trash = Lucide.drawable.lucide_ic_trash_2
     val TriangleAlert = Lucide.drawable.lucide_ic_triangle_alert
     val X = Lucide.drawable.lucide_ic_x
 }

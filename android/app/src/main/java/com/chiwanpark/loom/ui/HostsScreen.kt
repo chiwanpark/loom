@@ -23,11 +23,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,7 +43,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.chiwanpark.loom.LoomApplication
 import com.chiwanpark.loom.Screen
@@ -73,10 +70,8 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
             LoomTopBar("Hosts", onBack = { app.navigator.pop() }) {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("This device's key") }, onClick = {
-                        menu = false
-                        showKey = true
-                    })
+                    val close = { menu = false }
+                    MenuEntry("This device's key", LoomIcons.KeyRound, close) { showKey = true }
                 }
             }
         },
@@ -152,7 +147,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
 @Composable
 private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
-    ListItem(
+    CompactListItem(
         modifier = Modifier.clickable { menu = true },
         headlineContent = { Text(host.name) },
         supportingContent = { Text(host.relayUrl.substringAfter("://")) },
@@ -160,14 +155,9 @@ private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit) {
             Box {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Rename") }, onClick = {
-                        menu = false
-                        onRename()
-                    })
-                    DropdownMenuItem(text = { Text("Remove") }, onClick = {
-                        menu = false
-                        onRemove()
-                    })
+                    val close = { menu = false }
+                    MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
+                    MenuEntry("Remove", LoomIcons.Trash, close, onRemove)
                 }
             }
         },
@@ -184,7 +174,7 @@ private fun DeviceKeyDialog(key: String, onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Hosts list this device by its key in `loom-agent clients list`.")
                 SelectionContainer {
-                    Text(key, fontFamily = FontFamily.Monospace)
+                    Text(key, fontFamily = LoomFonts.code)
                 }
             }
         },

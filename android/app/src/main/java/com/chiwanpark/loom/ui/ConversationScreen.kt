@@ -37,14 +37,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
@@ -53,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,7 +63,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -75,10 +79,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import com.chiwanpark.loom.AgentLink
 import com.chiwanpark.loom.ConversationState
@@ -98,6 +102,8 @@ import com.chiwanpark.loom.core.ToolArguments
 import com.chiwanpark.loom.core.ToolState
 import com.chiwanpark.loom.userMessage
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownTypography
+import com.mikepenz.markdown.model.MarkdownTypography
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
@@ -137,13 +143,11 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
 
     Scaffold(
         topBar = {
+            // The model, reasoning effort, and context sit above the prompt box, where they have room.
             LoomTopBar(
                 conversation.title.ifEmpty { "Session" },
-                subtitle = listOfNotNull(
-                    conversation.model ?: link.agent?.defaultModel,
-                    conversation.reasoning?.let { "${reasoningLabel(it).lowercase()} reasoning" },
-                    conversation.contextTokens?.let { "${formatTokens(it)} context" },
-                ).joinToString(" · ").ifEmpty { null },
+                subtitle = workspaceSubtitle(link, manyHosts = app.directory.hosts.size > 1),
+                subtitleIsPath = true,
                 onBack = { app.navigator.pop() },
             ) {
                 IconButton(onClick = { app.navigator.push(Screen.Tasks(link.host, link.instance, session)) }) {
@@ -154,22 +158,12 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 }
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Model…") }, onClick = {
-                        menu = false
-                        pickModel = true
-                    })
-                    DropdownMenuItem(text = { Text("Reasoning effort…") }, onClick = {
-                        menu = false
-                        pickReasoning = true
-                    })
-                    DropdownMenuItem(text = { Text("Compact the context") }, onClick = {
-                        menu = false
+                    val close = { menu = false }
+                    MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
+                    MenuEntry("Compact the context", LoomIcons.FoldVertical, close) {
                         scope.attempt(snackbar) { link.connection().compactSession(session) }
-                    })
-                    DropdownMenuItem(text = { Text("Clear the conversation") }, onClick = {
-                        menu = false
-                        clearing = true
-                    })
+                    }
+                    MenuEntry("Clear the conversation", LoomIcons.Eraser, close) { clearing = true }
                 }
             }
         },
@@ -201,6 +195,16 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 onTextChange = { draft = it },
                 busy = conversation.status != SessionStatus.IDLE,
                 enabled = connected,
+                info = {
+                    SessionInfo(
+                        model = conversation.model ?: link.agent?.defaultModel,
+                        reasoning = conversation.reasoning,
+                        contextTokens = conversation.contextTokens,
+                        enabled = connected,
+                        onModel = { pickModel = true },
+                        onReasoning = { pickReasoning = true },
+                    )
+                },
                 onSend = { text, delivery ->
                     scope.attempt(snackbar) { link.connection().sendPrompt(session, text, emptyList(), delivery) }
                 },
@@ -271,12 +275,12 @@ private fun Messages(
             state = listState,
             reverseLayout = true,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
             statusRow(conversation)?.let { row ->
                 item(key = "activity") {
-                    Box(Modifier.padding(top = if (items.isEmpty()) 0.dp else 12.dp)) { row() }
+                    Box(Modifier.padding(top = if (items.isEmpty()) 0.dp else 8.dp)) { row() }
                 }
             }
             // Keyed by item, so items that load above keep the ones in view in place.
@@ -309,7 +313,7 @@ private fun Messages(
 /** The top of the list: earlier items loading, a way to load them, or the start of the session. */
 @Composable
 private fun SessionStart(conversation: ConversationState, onLoadEarlier: () -> Unit) {
-    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
         when {
             conversation.loadingEarlier -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
             conversation.hasOlder -> IconButton(onClick = onLoadEarlier) {
@@ -336,9 +340,9 @@ private fun SessionStart(conversation: ConversationState, onLoadEarlier: () -> U
  */
 private fun gapBefore(previous: ConversationItem?, item: ConversationItem): Dp = when {
     previous == null -> 0.dp
-    item is ConversationItem.User -> 24.dp
-    previous is ConversationItem.Tool && item is ConversationItem.Tool -> 4.dp
-    else -> 12.dp
+    item is ConversationItem.User -> 16.dp
+    previous is ConversationItem.Tool && item is ConversationItem.Tool -> 3.dp
+    else -> 8.dp
 }
 
 /**
@@ -398,7 +402,7 @@ private fun Block(
                 Modifier
                     .fillMaxWidth()
                     .then(if (onToggle != null) Modifier.clickable(onClick = onToggle) else Modifier)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -415,8 +419,8 @@ private fun Block(
             }
             if (body != null) {
                 Column(
-                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) { body() }
             }
         }
@@ -452,10 +456,10 @@ private fun UserMessage(item: ConversationItem.User) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
         Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.widthIn(max = 340.dp),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.widthIn(max = 360.dp),
         ) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (item.text.isNotEmpty()) SelectionContainer { Text(item.text) }
                 if (item.images.isNotEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -472,7 +476,7 @@ private fun UserMessage(item: ConversationItem.User) {
 private fun AssistantMessage(item: ConversationItem.Assistant) {
     var showReasoning by remember { mutableStateOf(false) }
     val thinking = item.streaming && item.text.isEmpty()
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (item.reasoning.isNotBlank()) {
             Block(
                 expanded = showReasoning,
@@ -483,7 +487,7 @@ private fun AssistantMessage(item: ConversationItem.Assistant) {
                         SelectionContainer {
                             Text(
                                 item.reasoning,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = blockStyle(MaterialTheme.typography.bodySmall),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -495,10 +499,35 @@ private fun AssistantMessage(item: ConversationItem.Assistant) {
         }
         if (item.text.isNotEmpty()) {
             SelectionContainer {
-                Markdown(content = item.text, modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp))
+                Markdown(
+                    content = item.text,
+                    typography = answerTypography(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                )
             }
         }
     }
+}
+
+/**
+ * The styles of an answer: headings in title sizes rather than the
+ * renderer's display sizes, which fill a phone's screen, and code in the
+ * code font.
+ */
+@Composable
+private fun answerTypography(): MarkdownTypography {
+    val type = MaterialTheme.typography
+    val code = LoomFonts.code
+    return markdownTypography(
+        h1 = type.headlineSmall,
+        h2 = type.titleLarge,
+        h3 = type.titleMedium,
+        h4 = type.titleMedium,
+        h5 = type.titleSmall,
+        h6 = type.titleSmall,
+        code = type.bodySmall.copy(fontFamily = code),
+        inlineCode = type.bodyLarge.copy(fontFamily = code, fontSize = TextUnit.Unspecified),
+    )
 }
 
 /**
@@ -525,7 +554,7 @@ private fun ToolCall(item: ConversationItem.Tool, onDecide: (String, ApprovalDec
             }
             Text(
                 item.name,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LoomFonts.code,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary.copy(
                     alpha = if (item.state == ToolState.RUNNING) pulse() else 1f,
@@ -548,7 +577,7 @@ private fun ToolBody(item: ConversationItem.Tool, expanded: Boolean, onDecide: (
     val waiting = item.state == ToolState.WAITING_APPROVAL
     if (expanded) {
         item.approvalReason?.takeIf { waiting }?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = LoomColors.warning)
+            Text(it, style = blockStyle(MaterialTheme.typography.bodySmall), color = LoomColors.warning)
         }
         when (val arguments = item.arguments) {
             is ToolArguments.Code -> CodeBlock(arguments.text)
@@ -583,10 +612,17 @@ private fun ToolBody(item: ConversationItem.Tool, expanded: Boolean, onDecide: (
 }
 
 @Composable
-private fun ButtonIcon(icon: Int, label: String) {
+private fun ButtonIcon(icon: Int, label: String, widest: List<String> = emptyList()) {
     LoomIcon(icon, null, size = ButtonDefaults.IconSize)
     Spacer(Modifier.width(ButtonDefaults.IconSpacing))
-    Text(label)
+    // The other labels in `widest` take room unseen, so the button keeps its
+    // width when its label changes.
+    Box(contentAlignment = Alignment.Center) {
+        widest.filter { it != label }.forEach {
+            Text(it, Modifier.alpha(0f).clearAndSetSemantics {})
+        }
+        Text(label)
+    }
 }
 
 /** How a tool call's state shows: an icon in a color, described for screen readers. */
@@ -651,8 +687,8 @@ private fun MonoBlock(text: AnnotatedString, color: Color) {
     SelectionContainer {
         Text(
             text,
-            fontFamily = FontFamily.Monospace,
-            style = MaterialTheme.typography.bodySmall,
+            fontFamily = LoomFonts.code,
+            style = blockStyle(MaterialTheme.typography.bodySmall),
             color = color,
             modifier = Modifier
                 .fillMaxWidth()
@@ -660,7 +696,7 @@ private fun MonoBlock(text: AnnotatedString, color: Color) {
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(6.dp))
                 .verticalScroll(rememberScrollState())
                 .horizontalScroll(rememberScrollState())
-                .padding(8.dp),
+                .padding(horizontal = 6.dp, vertical = 4.dp),
         )
     }
 }
@@ -687,6 +723,7 @@ private fun Composer(
     onTextChange: (String) -> Unit,
     busy: Boolean,
     enabled: Boolean,
+    info: @Composable () -> Unit = {},
     onSend: (String, Delivery) -> Unit,
     onStop: () -> Unit,
 ) {
@@ -697,19 +734,21 @@ private fun Composer(
         onTextChange("")
     }
     HorizontalDivider()
-    Row(
-        Modifier.fillMaxWidth().padding(8.dp),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    // The text field takes the whole width, and the buttons always have the row
+    // below it, so nothing moves when a turn starts or ends.
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        OutlinedTextField(
+        info()
+        CompactTextField(
             value = text,
             onValueChange = onTextChange,
-            placeholder = { Text(if (busy) "Queue a message, or steer this turn" else "Message") },
-            modifier = Modifier.weight(1f).onPreviewKeyEvent { event ->
-                // Ctrl+Enter on a hardware keyboard steers, as on the desktop.
+            placeholder = if (busy) "Queue a message, or steer this turn" else "Message",
+            modifier = Modifier.fillMaxWidth().onPreviewKeyEvent { event ->
+                // Ctrl+Enter on a hardware keyboard steers, as on the desktop, and sends while idle.
                 if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && event.isCtrlPressed) {
-                    send(Delivery.STEER)
+                    send(if (busy) Delivery.STEER else Delivery.QUEUE)
                     true
                 } else {
                     false
@@ -717,14 +756,30 @@ private fun Composer(
             },
             maxLines = 6,
         )
-        if (busy) {
-            IconButton(onClick = onStop, enabled = enabled) { LoomIcon(LoomIcons.Stop, "Stop the turn") }
-            IconButton(onClick = { send(Delivery.STEER) }, enabled = canSend) {
-                LoomIcon(LoomIcons.CornerDownRight, "Steer this turn")
-            }
-        }
-        IconButton(onClick = { send(Delivery.QUEUE) }, enabled = canSend) {
-            LoomIcon(LoomIcons.Send, if (busy) "Queue for the next turn" else "Send")
+        // Stop and Steer stay in place while idle, disabled; the last button
+        // sends while idle and queues while a turn runs, as wide either way.
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = onStop,
+                enabled = enabled && busy,
+                contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) { ButtonIcon(LoomIcons.Stop, "Stop") }
+            Spacer(Modifier.weight(1f))
+            FilledTonalButton(
+                onClick = { send(Delivery.STEER) },
+                enabled = canSend && busy,
+                contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+            ) { ButtonIcon(LoomIcons.CornerDownRight, "Steer") }
+            Button(
+                onClick = { send(Delivery.QUEUE) },
+                enabled = canSend,
+                contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+            ) { ButtonIcon(LoomIcons.Send, if (busy) "Queue" else "Send", widest = listOf("Queue", "Send")) }
         }
     }
 }
@@ -734,27 +789,35 @@ private fun Composer(
 private fun Waiting(messages: List<WaitingMessage>, enabled: Boolean, onTakeBack: (ULong) -> Unit) {
     if (messages.isEmpty()) return
     HorizontalDivider()
-    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-        messages.forEach { message ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when (message.delivery) {
-                        Delivery.STEER -> "Steer"
-                        Delivery.QUEUE -> "Queued"
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(end = 8.dp),
-                )
-                Text(
-                    message.text.replace('\n', ' '),
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                IconButton(onClick = { onTakeBack(message.id) }, enabled = enabled) {
-                    LoomIcon(LoomIcons.X, "Take back to edit", size = 18.dp)
+    // Rows as low as their take-back button, 32 dp instead of Material's
+    // 48 dp touch target, so waiting messages leave the conversation room.
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        Column(Modifier.fillMaxWidth().padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)) {
+            messages.forEach { message ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        when (message.delivery) {
+                            Delivery.STEER -> "Steer"
+                            Delivery.QUEUE -> "Queued"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 6.dp),
+                    )
+                    Text(
+                        message.text.replace('\n', ' '),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = { onTakeBack(message.id) },
+                        enabled = enabled,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        LoomIcon(LoomIcons.X, "Take back to edit", size = 16.dp)
+                    }
                 }
             }
         }
@@ -824,20 +887,6 @@ private fun ReasoningDialog(current: Reasoning?, onPick: (Reasoning?) -> Unit, o
     )
 }
 
-@Composable
-private fun ChoiceRow(title: String, detail: String?, selected: Boolean, onClick: () -> Unit) {
-    ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
-        headlineContent = { Text(title) },
-        supportingContent = detail?.let { { Text(it) } },
-        trailingContent = if (selected) {
-            { LoomIcon(LoomIcons.Check, "Selected", size = 20.dp, tint = MaterialTheme.colorScheme.primary) }
-        } else {
-            null
-        },
-    )
-}
-
 fun reasoningLabel(reasoning: Reasoning): String = when (reasoning) {
     Reasoning.NONE -> "None"
     Reasoning.MINIMAL -> "Minimal"
@@ -851,4 +900,80 @@ private fun formatTokens(tokens: ULong): String = when {
     tokens >= 1_000_000u -> "%.1fM".format(tokens.toDouble() / 1_000_000)
     tokens >= 1_000u -> "${tokens / 1_000u}k"
     else -> tokens.toString()
+}
+
+/**
+ * The session's model, reasoning effort, and context used, in a row above
+ * the prompt box. The model and the effort open their pickers.
+ */
+@Composable
+private fun SessionInfo(
+    model: String?,
+    reasoning: Reasoning?,
+    contextTokens: ULong?,
+    enabled: Boolean,
+    onModel: () -> Unit,
+    onReasoning: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // The model and the effort on the left, the model shortened when they do not fit;
+        // the context on the right.
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            InfoItem(
+                LoomIcons.Bot,
+                // The provider takes room the model's own name needs; the picker shows it.
+                model?.substringAfter('/') ?: "Default model",
+                description = "Model",
+                onClick = onModel.takeIf { enabled },
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            InfoItem(
+                LoomIcons.Brain,
+                reasoning?.let(::reasoningLabel) ?: "Default",
+                description = "Reasoning effort",
+                onClick = onReasoning.takeIf { enabled },
+            )
+        }
+        contextTokens?.let { InfoItem(LoomIcons.Gauge, formatTokens(it), description = "Context used", onClick = null) }
+    }
+}
+
+/** An icon and a short value, which opens a picker when it has `onClick`. */
+@Composable
+private fun InfoItem(
+    icon: Int,
+    text: String,
+    description: String,
+    onClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier
+            .clip(RoundedCornerShape(6.dp))
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClickLabel = description, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            )
+            .semantics(mergeDescendants = true) { contentDescription = "$description: $text" }
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        LoomIcon(icon, null, size = 14.dp, tint = color)
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }

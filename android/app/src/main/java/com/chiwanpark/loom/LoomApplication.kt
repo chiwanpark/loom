@@ -24,6 +24,7 @@ class LoomApplication : Application() {
     val core: Result<Loom> by lazy { runCatching { Loom(File(filesDir, "core").path) } }
 
     val navigator = Navigator()
+    val settings by lazy { Settings(this) }
     lateinit var links: AgentLinks
         private set
     lateinit var directory: Directory

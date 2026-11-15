@@ -19,6 +19,9 @@ sealed interface Screen {
     data class Notes(val host: String, val instance: String) : Screen
 
     data class Tasks(val host: String, val instance: String, val session: String) : Screen
+
+    /** The text size and the fonts of text and code. */
+    data object Font : Screen
 }
 
 /** The screens the user went through, the current one last. */

@@ -15,12 +15,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -110,21 +108,15 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                 IconButton(onClick = { directory.refresh(loom) }) { LoomIcon(LoomIcons.Refresh, "Refresh") }
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Pair with a host") }, onClick = {
-                        menu = false
-                        app.navigator.push(Screen.Pair())
-                    })
-                    DropdownMenuItem(text = { Text("Hosts") }, onClick = {
-                        menu = false
-                        app.navigator.push(Screen.Hosts)
-                    })
-                    DropdownMenuItem(
-                        text = { Text(if (showArchived) "Hide archived sessions" else "Show archived sessions") },
-                        onClick = {
-                            menu = false
-                            showArchived = !showArchived
-                        },
-                    )
+                    val close = { menu = false }
+                    MenuEntry("Pair with a host", LoomIcons.QrCode, close) { app.navigator.push(Screen.Pair()) }
+                    MenuEntry("Hosts", LoomIcons.Server, close) { app.navigator.push(Screen.Hosts) }
+                    MenuEntry(
+                        if (showArchived) "Hide archived sessions" else "Show archived sessions",
+                        if (showArchived) LoomIcons.EyeOff else LoomIcons.Eye,
+                        close,
+                    ) { showArchived = !showArchived }
+                    MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
                 }
             }
         },
@@ -160,7 +152,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                                 problem,
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                             )
                         }
                     }
@@ -170,7 +162,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                                 "${group.title} (${rows.size})",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+                                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp),
                             )
                         }
                         items(rows, key = { row -> rowKey(row) }) { row ->
@@ -212,7 +204,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
             text = {
                 LazyColumn {
                     items(connected, key = { "${it.host}/${it.instance}" }) { link ->
-                        ListItem(
+                        CompactListItem(
                             modifier = Modifier.clickable {
                                 choosingAgent = false
                                 newSession(link)
@@ -305,7 +297,7 @@ private fun SessionRow(
 ) {
     val session = row.session
     var menu by remember { mutableStateOf(false) }
-    ListItem(
+    CompactListItem(
         modifier = Modifier.clickable(onClick = onOpen),
         leadingContent = { SessionStatusIcon(session.status) },
         headlineContent = { Text(session.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
@@ -321,18 +313,15 @@ private fun SessionRow(
             Box {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Rename") }, onClick = {
-                        menu = false
-                        onRename()
-                    })
-                    DropdownMenuItem(text = { Text(if (session.archived) "Unarchive" else "Archive") }, onClick = {
-                        menu = false
-                        onArchive()
-                    })
-                    DropdownMenuItem(text = { Text("Delete") }, onClick = {
-                        menu = false
-                        onDelete()
-                    })
+                    val close = { menu = false }
+                    MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
+                    MenuEntry(
+                        if (session.archived) "Unarchive" else "Archive",
+                        if (session.archived) LoomIcons.ArchiveRestore else LoomIcons.Archive,
+                        close,
+                        onArchive,
+                    )
+                    MenuEntry("Delete", LoomIcons.Trash, close, onDelete)
                 }
             }
         },
@@ -343,7 +332,7 @@ private fun SessionRow(
 @Composable
 private fun AgentRow(link: AgentLink, name: String, onNewSession: () -> Unit) {
     val state = link.state
-    ListItem(
+    CompactListItem(
         headlineContent = { Text(name) },
         supportingContent = {
             Text(

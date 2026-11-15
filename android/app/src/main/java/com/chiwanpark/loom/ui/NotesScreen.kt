@@ -1,6 +1,5 @@
 package com.chiwanpark.loom.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,12 +12,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -34,7 +30,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.chiwanpark.loom.AgentLink
@@ -81,7 +76,12 @@ fun NotesScreen(app: LoomApplication, link: AgentLink) {
     val dirty = text != null && text != saved
     Scaffold(
         topBar = {
-            LoomTopBar("Notes", subtitle = link.workspace?.substringAfterLast('/'), onBack = { app.navigator.pop() }) {
+            LoomTopBar(
+                "Notes",
+                subtitle = workspaceSubtitle(link, manyHosts = app.directory.hosts.size > 1),
+                subtitleIsPath = true,
+                onBack = { app.navigator.pop() },
+            ) {
                 TextButton(
                     enabled = dirty && connected,
                     onClick = {
@@ -101,7 +101,7 @@ fun NotesScreen(app: LoomApplication, link: AgentLink) {
             LinkBanner(link.state, onRetry = link::retryNow)
             if (changedOnAgent) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -116,12 +116,12 @@ fun NotesScreen(app: LoomApplication, link: AgentLink) {
             if (current == null) {
                 Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
             } else {
-                OutlinedTextField(
+                CompactTextField(
                     value = current,
                     onValueChange = { text = it },
-                    modifier = Modifier.fillMaxSize().padding(12.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    placeholder = { Text("No notes yet. All sessions of this agent share them.") },
+                    modifier = Modifier.fillMaxSize().padding(6.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = LoomFonts.code),
+                    placeholder = "No notes yet. All sessions of this agent share them.",
                 )
             }
         }
@@ -183,15 +183,15 @@ fun TasksScreen(app: LoomApplication, link: AgentLink, session: String) {
                 }
             }
             Row(
-                Modifier.fillMaxWidth().padding(8.dp),
+                Modifier.fillMaxWidth().padding(start = 6.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                OutlinedTextField(
+                CompactTextField(
                     value = adding,
                     onValueChange = { adding = it },
-                    placeholder = { Text("New task") },
-                    singleLine = true,
+                    placeholder = "New task",
+                    maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(
@@ -220,7 +220,7 @@ fun TasksScreen(app: LoomApplication, link: AgentLink, session: String) {
 @Composable
 private fun TaskRow(task: TaskItem, onCycle: () -> Unit, onEdit: () -> Unit, onRemove: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
-    ListItem(
+    CompactListItem(
         leadingContent = {
             IconButton(onClick = onCycle) {
                 LoomIcon(
@@ -249,14 +249,9 @@ private fun TaskRow(task: TaskItem, onCycle: () -> Unit, onEdit: () -> Unit, onR
             Box {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Edit") }, onClick = {
-                        menu = false
-                        onEdit()
-                    })
-                    DropdownMenuItem(text = { Text("Remove") }, onClick = {
-                        menu = false
-                        onRemove()
-                    })
+                    val close = { menu = false }
+                    MenuEntry("Edit", LoomIcons.Pencil, close, onEdit)
+                    MenuEntry("Remove", LoomIcons.Trash, close, onRemove)
                 }
             }
         },

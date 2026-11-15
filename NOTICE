@@ -58,3 +58,7 @@ The other theme files in crates/loom-gui/assets/themes are generated for Loom by
 - zenbones.json: Zenbones and its variants by mcchrish (https://github.com/zenbones-theme/zenbones.nvim, MIT license).
 
 android/gradlew, android/gradlew.bat, and android/gradle/wrapper/gradle-wrapper.jar are the Gradle wrapper of Gradle 9.6.0 (https://gradle.org), Copyright the original authors, licensed under Apache-2.0.
+
+android/app/src/main/res/font/jetbrains_mono_nl_regular.ttf and jetbrains_mono_nl_bold.ttf are JetBrainsMonoNL-Regular.ttf and JetBrainsMonoNL-Bold.ttf of JetBrains Mono 2.304 (https://github.com/JetBrains/JetBrainsMono), copied unmodified, Copyright 2020 The JetBrains Mono Project Authors, licensed under the SIL Open Font License 1.1, which android/licenses/JetBrainsMono-OFL.txt contains.
+
+android/app/src/main/res/values/font_certs.xml, the certificates of the Google Play services font provider, is copied unmodified from the DownloadableFonts sample (https://github.com/android/user-interface-samples, DownloadableFonts/app/src/main/res/values/font_certs.xml), Copyright 2017 The Android Open Source Project, licensed under Apache-2.0.
