@@ -20,10 +20,13 @@ import com.chiwanpark.loom.core.Reasoning
 import com.chiwanpark.loom.core.SessionStatus
 import com.chiwanpark.loom.core.SessionSummary
 import com.chiwanpark.loom.core.TaskItem
+import com.chiwanpark.loom.core.Terminal
+import com.chiwanpark.loom.core.TerminalFrame
 import com.chiwanpark.loom.core.WaitingMessage
 import kotlin.math.min
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.first
@@ -99,6 +102,34 @@ class ConversationState(val session: String) {
     }
 }
 
+/** A terminal on the agent's host, numbered among the agent's terminals in the app. */
+class TerminalTab(val terminal: Terminal, val number: Int) {
+    /** What it shows now; null until the first frame. */
+    var frame by mutableStateOf<TerminalFrame?>(null)
+        internal set
+    private var job: Job? = null
+
+    /** Whether its shell exited or it ended otherwise. */
+    val ended: Boolean get() = frame?.let { it.exitStatus != null || it.ended != null } ?: false
+
+    internal fun follow(link: AgentLink, scope: kotlinx.coroutines.CoroutineScope) {
+        job = scope.launch {
+            while (true) {
+                frame = terminal.nextFrame() ?: break
+                // At most one frame for each of the display's, however fast output comes.
+                delay(16)
+            }
+            link.forgetTerminal(this@TerminalTab)
+        }
+    }
+
+    internal fun stop() {
+        job?.cancel()
+        terminal.end()
+        terminal.destroy()
+    }
+}
+
 /**
  * The app's link to one agent: it connects, follows the agent's updates, and
  * reconnects after the link is lost, catching the open conversations up on
@@ -128,6 +159,10 @@ class AgentLink(
         private set
 
     private val conversations = mutableMapOf<String, ConversationState>()
+
+    /** The terminals open on the agent's host, oldest first. */
+    val terminals = mutableStateListOf<TerminalTab>()
+    private var terminalNumber = 0
 
     /** Sessions the connection follows; it resubscribes them when it reconnects. */
     private val opened = mutableSetOf<String>()
@@ -161,6 +196,7 @@ class AgentLink(
     fun stop() {
         job?.cancel()
         job = null
+        closeTerminals()
         connection?.disconnect()
         connection?.destroy()
         connection = null
@@ -208,6 +244,31 @@ class AgentLink(
 
     /** The connection, or an error the screens can show. */
     fun connection(): AgentConnection = connection ?: throw LoomException.Closed("Not connected to the agent yet.")
+
+    /** Opens a terminal of `cols` by `rows` cells on the agent's host. */
+    suspend fun openTerminal(cols: Int, rows: Int): TerminalTab {
+        val terminal = connection().openTerminal(cols.toUShort(), rows.toUShort())
+        val tab = TerminalTab(terminal, ++terminalNumber)
+        terminals.add(tab)
+        tab.follow(this, app.scope)
+        return tab
+    }
+
+    fun terminal(number: Int): TerminalTab? = terminals.firstOrNull { it.number == number }
+
+    /** Closes a terminal, ending its shell. */
+    fun closeTerminal(tab: TerminalTab) {
+        terminals.remove(tab)
+        tab.stop()
+    }
+
+    internal fun forgetTerminal(tab: TerminalTab) {
+        terminals.remove(tab)
+    }
+
+    private fun closeTerminals() {
+        terminals.toList().forEach(::closeTerminal)
+    }
 
     fun conversation(session: String): ConversationState =
         conversations.getOrPut(session) { ConversationState(session) }

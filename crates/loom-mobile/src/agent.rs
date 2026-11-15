@@ -19,6 +19,7 @@ use crate::records::{
     parse_version, task_items, version_text,
 };
 use crate::runtime::{run, spawn};
+use crate::terminal::{TermShared, Terminals};
 
 #[derive(uniffi::Object)]
 pub struct AgentConnection {
@@ -47,6 +48,7 @@ struct State {
     open: HashMap<SessionId, Open>,
     /// Updates that go out in the order they came.
     queue: Vec<AgentUpdate>,
+    terminals: Terminals,
 }
 
 struct Open {
@@ -188,9 +190,22 @@ impl State {
                     }
                 }
             },
-            Notification::LoginFinished { .. }
-            | Notification::TerminalOutput { .. }
-            | Notification::TerminalExited { .. } => {}
+            Notification::TerminalOutput { terminal, data } => {
+                // The emulator's answers, as to a query of the cursor's
+                // position, go back to the program.
+                if let Some((id, responses)) = self.terminals.output(terminal, &data)
+                    && !responses.is_empty()
+                    && let Some(client) = self.client.clone()
+                {
+                    spawn(async move {
+                        let _ = client.terminal_input(id, responses).await;
+                    });
+                }
+            }
+            Notification::TerminalExited { terminal, status } => {
+                self.terminals.exited(terminal, status);
+            }
+            Notification::LoginFinished { .. } => {}
         }
     }
 }
@@ -200,7 +215,7 @@ impl Shared {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn client(&self) -> Result<Client> {
+    pub(crate) fn client(&self) -> Result<Client> {
         self.lock().client.clone().ok_or(LoomError::Closed)
     }
 
@@ -283,6 +298,47 @@ impl Shared {
     /// The agent's workspace directory, once the agent introduced itself.
     pub(crate) fn workspace(&self) -> Option<String> {
         self.lock().agent.workspace.clone()
+    }
+
+    /// Follows a terminal's output; returns what came for it before.
+    pub(crate) fn add_terminal(&self, terminal: Arc<TermShared>) -> Vec<u8> {
+        self.lock().terminals.add(terminal)
+    }
+
+    pub(crate) fn remove_terminal(&self, id: u64) {
+        self.lock().terminals.open.remove(&id);
+    }
+
+    /// Takes the terminals over on a new link, at their sizes; those the
+    /// agent closed meanwhile end.
+    async fn reattach_terminals(&self) -> Result<()> {
+        let terminals: Vec<Arc<TermShared>> = self
+            .lock()
+            .terminals
+            .open
+            .values()
+            .filter(|terminal| terminal.is_live())
+            .cloned()
+            .collect();
+        let client = self.client()?;
+        for terminal in terminals {
+            let (cols, rows) = terminal.size();
+            match client.attach_terminal(terminal.id(), cols, rows).await {
+                Ok(()) => {}
+                Err(ClientError::Api(err)) => {
+                    tracing::debug!(error = %err, "a terminal is gone");
+                    self.lock().terminals.open.remove(&terminal.id());
+                    let why = if err.code == loom_client::proto::ErrorCode::NotFound {
+                        "The agent closed the terminal while the app was away."
+                    } else {
+                        "The agent did not take the terminal back."
+                    };
+                    terminal.end(why);
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Runs `f` on an open session's conversation.
@@ -371,6 +427,7 @@ impl AgentConnection {
                 sessions_changed: false,
                 open: HashMap::new(),
                 queue: Vec::new(),
+                terminals: Terminals::default(),
             }),
             wake: Notify::new(),
         });
@@ -486,7 +543,7 @@ impl AgentConnection {
             for (id, since) in open {
                 shared.subscribe(&id, Some(since)).await?;
             }
-            Ok(())
+            shared.reattach_terminals().await
         })
         .await
     }
@@ -497,6 +554,9 @@ impl AgentConnection {
         state.closed = true;
         state.client = None;
         state.epoch += 1;
+        state
+            .terminals
+            .end_all("The connection to the agent is closed.");
         drop(state);
         self.shared.wake.notify_one();
     }

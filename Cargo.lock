@@ -4604,6 +4604,7 @@ dependencies = [
  "loom-llm",
  "loom-relay",
  "loom-view-model",
+ "loom-vt",
  "rustls",
  "serde",
  "serde_json",

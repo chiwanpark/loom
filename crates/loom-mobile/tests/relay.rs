@@ -25,8 +25,9 @@ use loom_llm::{
 };
 use loom_mobile::{
     AgentConnection, AgentUpdate, ApprovalDecision, ChangeKind, ConversationItem,
-    ConversationUpdate, Delivery, DiffKind, EntryKind, Highlight, Loom, LoomError, Policy,
-    PushKind, PushNotice, SessionStatus, Span, TaskEdit, TaskState, ToolState,
+    ConversationUpdate, Delivery, DiffKind, EntryKind, Highlight, KeyModifiers, Loom, LoomError,
+    Policy, PushKind, PushNotice, SessionStatus, Span, TaskEdit, TaskState, Terminal,
+    TerminalFrame, TerminalKey, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -1178,4 +1179,104 @@ async fn a_phone_sees_uncommitted_changes_and_what_a_session_changed() {
             .await
             .is_err()
     );
+}
+
+/// A frame's text, a line per row, as the app would draw it.
+fn screen(frame: &TerminalFrame) -> String {
+    frame
+        .lines
+        .iter()
+        .map(|runs| {
+            let mut line = String::new();
+            for run in runs {
+                while line.chars().count() < run.column as usize {
+                    line.push(' ');
+                }
+                line.push_str(&run.text);
+            }
+            line.trim_end().to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Takes frames until one satisfies `done`.
+async fn frame_until(
+    terminal: &Arc<Terminal>,
+    what: &str,
+    done: impl Fn(&TerminalFrame) -> bool,
+) -> TerminalFrame {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let mut last = None;
+    loop {
+        let frame = tokio::time::timeout_at(deadline, terminal.clone().next_frame())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out waiting for {what}; screen:\n{}",
+                    last.as_ref().map(screen).unwrap_or_default()
+                )
+            })
+            .expect("the terminal closed");
+        if done(&frame) {
+            return frame;
+        }
+        last = Some(frame);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_runs_a_terminal_that_survives_a_lost_link() {
+    let mut host = Host::start(Vec::new()).await;
+    let (_dir, _loom, conn) = phone(&host).await;
+
+    let terminal = conn.clone().open_terminal(40, 10).await.unwrap();
+    terminal.send_text("echo one-$((1+2))".into());
+    terminal.send_key(TerminalKey::Enter, KeyModifiers::default());
+    let frame = frame_until(&terminal, "the echo", |f| screen(f).contains("\none-3")).await;
+    assert_eq!((frame.cols, frame.rows), (40, 10));
+    assert!(frame.cursor.is_some());
+
+    // Resizing reaches the shell.
+    terminal.resize(50, 12);
+    terminal.send_text("echo cols=$(tput cols)\r".into());
+    frame_until(&terminal, "the new size", |f| {
+        f.cols == 50 && screen(f).contains("cols=50")
+    })
+    .await;
+
+    // A lost link leaves the shell running; the new link takes it over.
+    host.stop_relay();
+    let mut app = App::default();
+    app.until(&conn, "the lost link", |app| app.connected == Some(false))
+        .await;
+    host.restart_relay().await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while let Err(err) = conn.clone().reconnect().await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "could not reconnect: {err}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    terminal.send_text("echo two-$((2+2))".into());
+    terminal.send_key(TerminalKey::Enter, KeyModifiers::default());
+    frame_until(&terminal, "the echo after reconnecting", |f| {
+        screen(f).contains("two-4")
+    })
+    .await;
+    assert!(terminal.text().contains("two-4"));
+
+    // Ctrl-D ends the shell.
+    terminal.send_key(
+        TerminalKey::Char { text: "d".into() },
+        KeyModifiers {
+            ctrl: true,
+            ..KeyModifiers::default()
+        },
+    );
+    let frame = frame_until(&terminal, "the exit", |f| f.exit_status.is_some()).await;
+    assert_eq!(frame.exit_status, Some(0));
+    terminal.end();
+    assert!(terminal.clone().next_frame().await.is_none());
 }

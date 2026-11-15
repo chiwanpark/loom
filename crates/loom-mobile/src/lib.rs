@@ -17,6 +17,7 @@ mod highlight;
 mod hosts;
 mod records;
 mod runtime;
+mod terminal;
 
 pub use agent::AgentConnection;
 pub use changes::{ChangeKind, DiffKind, DiffRow, DiffView, GitChange, GitChanges, SessionChange};
@@ -25,3 +26,7 @@ pub use files::{DirectoryListing, EntryKind, FileEntry, FileView};
 pub use highlight::{CodeLine, Highlight, Span};
 pub use hosts::{CLIENT_NAME, Loom};
 pub use records::*;
+pub use terminal::{
+    KeyModifiers, Terminal, TerminalColor, TerminalCursor, TerminalCursorShape, TerminalFrame,
+    TerminalKey, TerminalRun,
+};

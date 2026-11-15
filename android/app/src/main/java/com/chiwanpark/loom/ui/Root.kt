@@ -66,6 +66,7 @@ fun LoomRoot(app: LoomApplication) {
                 screen.oldPath,
                 screen.session,
             )
+            is Screen.Terminal -> TerminalScreen(app, app.links.get(loom, screen.host, screen.instance), screen.number)
         }
     }
 }

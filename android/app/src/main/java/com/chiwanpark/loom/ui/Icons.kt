@@ -38,6 +38,8 @@ object LoomIcons {
     val CircleCheck = Lucide.drawable.lucide_ic_circle_check
     val CircleDot = Lucide.drawable.lucide_ic_circle_dot
     val CircleX = Lucide.drawable.lucide_ic_circle_x
+    val ClipboardPaste = Lucide.drawable.lucide_ic_clipboard_paste
+    val Copy = Lucide.drawable.lucide_ic_copy
     val CornerDownRight = Lucide.drawable.lucide_ic_corner_down_right
     val Eraser = Lucide.drawable.lucide_ic_eraser
     val Eye = Lucide.drawable.lucide_ic_eye
@@ -56,6 +58,7 @@ object LoomIcons {
     val GitCompare = Lucide.drawable.lucide_ic_git_compare
     val Image = Lucide.drawable.lucide_ic_image
     val Info = Lucide.drawable.lucide_ic_info
+    val Keyboard = Lucide.drawable.lucide_ic_keyboard
     val KeyRound = Lucide.drawable.lucide_ic_key_round
     val Loader = Lucide.drawable.lucide_ic_loader
     val LoaderCircle = Lucide.drawable.lucide_ic_loader_circle
@@ -72,6 +75,7 @@ object LoomIcons {
     val ShieldCheck = Lucide.drawable.lucide_ic_shield_check
     val Stop = Lucide.drawable.lucide_ic_square
     val Tasks = Lucide.drawable.lucide_ic_list_todo
+    val Terminal = Lucide.drawable.lucide_ic_square_terminal
     val Trash = Lucide.drawable.lucide_ic_trash_2
     val TriangleAlert = Lucide.drawable.lucide_ic_triangle_alert
     val WrapText = Lucide.drawable.lucide_ic_text_wrap

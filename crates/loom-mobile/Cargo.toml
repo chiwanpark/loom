@@ -23,6 +23,7 @@ bindgen = ["uniffi/cli"]
 base64 = "0.23.1"
 loom-client = { path = "../loom-client" }
 loom-crypto = { path = "../loom-crypto" }
+loom-vt = { path = "../loom-vt" }
 loom-view-model = { path = "../loom-view-model" }
 # The TLS of wss:// relays. Nothing else in the app picks rustls's crypto, so
 # the core names one; ring builds with the NDK alone.

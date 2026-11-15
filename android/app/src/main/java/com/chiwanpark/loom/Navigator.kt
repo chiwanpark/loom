@@ -52,6 +52,13 @@ sealed interface Screen {
         val session: String? = null,
     ) : Screen, AgentScreen
 
+    /**
+     * A terminal on the agent's host, by its number among the agent's
+     * terminals in the app; 0 opens a new one.
+     */
+    data class Terminal(override val host: String, override val instance: String, val number: Int = 0) :
+        Screen, AgentScreen
+
     /** The text size and the fonts of text and code. */
     data object Font : Screen
 }

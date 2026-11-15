@@ -33,6 +33,10 @@ class Settings(context: Context) {
     var wrapCode by mutableStateOf(prefs.getBoolean(WRAP_CODE, false))
         private set
 
+    /** The text size of terminals, in sp; pinching a terminal changes it. */
+    var terminalTextSize by mutableFloatStateOf(prefs.getFloat(TERMINAL_TEXT_SIZE, 12f).coerceIn(TERMINAL_TEXT_SIZES))
+        private set
+
     fun updateTextScale(scale: Float) {
         textScale = scale
         prefs.edit().putFloat(TEXT_SCALE, scale).apply()
@@ -58,12 +62,18 @@ class Settings(context: Context) {
         prefs.edit().putBoolean(WRAP_CODE, wrap).apply()
     }
 
+    fun updateTerminalTextSize(size: Float) {
+        terminalTextSize = size.coerceIn(TERMINAL_TEXT_SIZES)
+        prefs.edit().putFloat(TERMINAL_TEXT_SIZE, terminalTextSize).apply()
+    }
+
     companion object {
         private const val TEXT_SCALE = "text_scale"
         private const val BLOCK_SCALE = "block_scale"
         private const val TEXT_FONT = "text_font"
         private const val CODE_FONT = "code_font"
         private const val WRAP_CODE = "wrap_code"
+        private const val TERMINAL_TEXT_SIZE = "terminal_text_size"
 
         const val DEFAULT_TEXT_FONT = "system"
         const val DEFAULT_CODE_FONT = "jetbrains-mono"
@@ -73,5 +83,8 @@ class Settings(context: Context) {
 
         /** The sizes of text in blocks to choose from, as factors of the app's text size. */
         val BLOCK_SCALES = listOf(0.7f, 0.8f, 0.9f, 1f, 1.1f, 1.2f, 1.3f)
+
+        /** The range of terminal text sizes, in sp. */
+        val TERMINAL_TEXT_SIZES = 6f..24f
     }
 }
