@@ -79,6 +79,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
     var menu by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
     var choosingAgent by remember { mutableStateOf(false) }
+    var choosingDirectory by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Row.Session?>(null) }
     var deleting by remember { mutableStateOf<Row.Session?>(null) }
 
@@ -121,9 +122,8 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
         },
         floatingActionButton = {
             if (connected.isNotEmpty()) {
-                FloatingActionButton(
-                    onClick = { if (connected.size == 1) newSession(connected.single()) else choosingAgent = true },
-                ) { LoomIcon(LoomIcons.Plus, "New session") }
+                // It asks where, as the session may go to a directory without an agent yet.
+                FloatingActionButton(onClick = { choosingAgent = true }) { LoomIcon(LoomIcons.Plus, "New session") }
             }
         },
         snackbarHost = { LoomSnackbarHost(snackbar) },
@@ -197,24 +197,30 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
     }
 
     if (choosingAgent) {
-        AlertDialog(
-            onDismissRequest = { choosingAgent = false },
-            title = { Text("New session on") },
-            text = {
-                LazyColumn {
-                    items(connected, key = { "${it.host}/${it.instance}" }) { link ->
-                        CompactListItem(
-                            modifier = Modifier.clickable {
-                                choosingAgent = false
-                                newSession(link)
-                            },
-                            headlineContent = { Text(agentName(link, manyHosts)) },
-                            supportingContent = { link.workspace?.let { Text(it) } },
-                        )
-                    }
-                }
+        NewSessionChooser(
+            connected = connected,
+            agentName = { agentName(it, manyHosts) },
+            onPick = { link ->
+                choosingAgent = false
+                newSession(link)
             },
-            confirmButton = { TextButton(onClick = { choosingAgent = false }) { Text("Cancel") } },
+            onDirectory = {
+                choosingAgent = false
+                choosingDirectory = true
+            },
+            onDismiss = { choosingAgent = false },
+        )
+    }
+    if (choosingDirectory) {
+        DirectorySessionDialog(
+            app,
+            loom,
+            connected = connected,
+            onStarted = { link, session ->
+                choosingDirectory = false
+                app.navigator.push(Screen.Conversation(link.host, link.instance, session))
+            },
+            onDismiss = { choosingDirectory = false },
         )
     }
     renaming?.let { row ->

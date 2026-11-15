@@ -51,6 +51,7 @@ object LoomIcons {
     val FilePlus = Lucide.drawable.lucide_ic_file_plus
     val FileSymlink = Lucide.drawable.lucide_ic_file_symlink
     val Folder = Lucide.drawable.lucide_ic_folder
+    val FolderPlus = Lucide.drawable.lucide_ic_folder_plus
     val FolderSymlink = Lucide.drawable.lucide_ic_folder_symlink
     val FoldVertical = Lucide.drawable.lucide_ic_fold_vertical
     val Gauge = Lucide.drawable.lucide_ic_gauge

@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use loom_agent::push::PushObserver;
 use loom_agent::relay::{LocalHostKeys, relay_endpoint, start_relay, wait_registered};
 use loom_agent::server::{ServerContext, serve_stream};
-use loom_agent_core::{Agent, AgentOptions, SessionObserver};
-use loom_client::proto::{AgentInfo, InstanceId, SessionEvent, SessionId};
+use loom_agent_core::{Agent, AgentOptions, SessionObserver, Supervisor};
+use loom_client::proto::{AgentInfo, ApiError, ErrorCode, InstanceId, SessionEvent, SessionId};
 use loom_client::{Client, Notification, memory_pair};
 use loom_config::{
     AgentConfig, Dirs, FcmConfig, PolicyAction, PolicyConfig, PushConfig, RelayServerConfig,
@@ -167,6 +167,10 @@ impl Host {
         let keys = Arc::new(LocalHostKeys::new(identity.clone(), &data, &config));
         let mut ctx = ServerContext::new(agent, info);
         ctx.host_keys = Some(keys.clone());
+        ctx.supervisor = Some(Arc::new(Supervised {
+            this: ctx.info.clone(),
+            others: Mutex::new(Vec::new()),
+        }));
         let agent_link = CancellationToken::new();
         let endpoint = relay_endpoint(&config).unwrap().unwrap();
         let mut handle = start_relay(
@@ -1279,4 +1283,88 @@ async fn a_phone_runs_a_terminal_that_survives_a_lost_link() {
     assert_eq!(frame.exit_status, Some(0));
     terminal.end();
     assert!(terminal.clone().next_frame().await.is_none());
+}
+
+/// Stands in for `loom-agent serve`'s supervisor: the agent's own workspace
+/// has it, any other existing directory gets a (pretend) new agent, and the
+/// rest is refused as the real one refuses it.
+struct Supervised {
+    this: AgentInfo,
+    others: Mutex<Vec<AgentInfo>>,
+}
+
+#[async_trait]
+impl Supervisor for Supervised {
+    async fn list(&self) -> Result<Vec<AgentInfo>, ApiError> {
+        let mut all = vec![self.this.clone()];
+        all.extend(self.others.lock().unwrap().iter().cloned());
+        Ok(all)
+    }
+
+    async fn spawn(&self, workspace: PathBuf) -> Result<AgentInfo, ApiError> {
+        if workspace == self.this.workspace {
+            return Ok(self.this.clone());
+        }
+        if !workspace.is_dir() {
+            return Err(ApiError::new(
+                ErrorCode::NotFound,
+                format!("{} is not a directory", workspace.display()),
+            ));
+        }
+        let info = AgentInfo {
+            instance: InstanceId(format!("spawned-{}", self.others.lock().unwrap().len())),
+            workspace,
+            ..self.this.clone()
+        };
+        self.others.lock().unwrap().push(info.clone());
+        Ok(info)
+    }
+
+    async fn stop(&self, _instance: &InstanceId) -> Result<(), ApiError> {
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_starts_an_agent_for_another_directory() {
+    let host = Host::start(Vec::new()).await;
+    let (_dir, loom, conn) = phone(&host).await;
+    let other = host.root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+
+    // The agent's own workspace has its agent already.
+    let same = conn
+        .clone()
+        .spawn_agent(host.root.join("ws").display().to_string())
+        .await
+        .unwrap();
+    assert_eq!(same.instance, "phone-test");
+
+    let spawned = conn
+        .clone()
+        .spawn_agent(format!("  {}  ", other.display()))
+        .await
+        .unwrap();
+    assert_eq!(spawned.instance, "spawned-0");
+    assert_eq!(spawned.workspace.as_deref(), Some(other.to_str().unwrap()));
+    // The host's agents list it.
+    let agents = loom.clone().list_agents("lab".into()).await.unwrap();
+    assert!(
+        agents.iter().any(|a| a.instance == "spawned-0"),
+        "{agents:?}"
+    );
+
+    let missing = conn
+        .clone()
+        .spawn_agent(host.root.join("nope").display().to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&missing, LoomError::Api { code, .. } if code == "NotFound"),
+        "{missing:?}"
+    );
+    assert!(matches!(
+        conn.clone().spawn_agent("  ".into()).await,
+        Err(LoomError::Invalid { .. })
+    ));
 }

@@ -2,6 +2,7 @@ package com.chiwanpark.loom
 
 import android.content.Context
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -37,6 +38,15 @@ class Settings(context: Context) {
     var terminalTextSize by mutableFloatStateOf(prefs.getFloat(TERMINAL_TEXT_SIZE, 12f).coerceIn(TERMINAL_TEXT_SIZES))
         private set
 
+    /** Directories sessions were started in, as host and path, the latest first. */
+    private val recentDirectories = mutableStateListOf<Pair<String, String>>().apply {
+        prefs.getString(RECENT_DIRECTORIES, null).orEmpty().lines().forEach { line ->
+            val host = line.substringBefore('\t', "")
+            val path = line.substringAfter('\t', "")
+            if (host.isNotEmpty() && path.isNotEmpty()) add(host to path)
+        }
+    }
+
     fun updateTextScale(scale: Float) {
         textScale = scale
         prefs.edit().putFloat(TEXT_SCALE, scale).apply()
@@ -67,6 +77,21 @@ class Settings(context: Context) {
         prefs.edit().putFloat(TERMINAL_TEXT_SIZE, terminalTextSize).apply()
     }
 
+    /** The directories on `host` that sessions were started in, the latest first. */
+    fun recentDirectories(host: String): List<String> =
+        recentDirectories.filter { it.first == host }.map { it.second }
+
+    /** Remembers a directory a session was started in, keeping the latest few of each host. */
+    fun rememberDirectory(host: String, path: String) {
+        recentDirectories.remove(host to path)
+        recentDirectories.add(0, host to path)
+        val kept = recentDirectories.groupBy { it.first }.values.flatMap { it.take(MAX_RECENT_DIRECTORIES) }.toSet()
+        recentDirectories.retainAll { it in kept }
+        prefs.edit()
+            .putString(RECENT_DIRECTORIES, recentDirectories.joinToString("\n") { "${it.first}\t${it.second}" })
+            .apply()
+    }
+
     companion object {
         private const val TEXT_SCALE = "text_scale"
         private const val BLOCK_SCALE = "block_scale"
@@ -74,6 +99,8 @@ class Settings(context: Context) {
         private const val CODE_FONT = "code_font"
         private const val WRAP_CODE = "wrap_code"
         private const val TERMINAL_TEXT_SIZE = "terminal_text_size"
+        private const val RECENT_DIRECTORIES = "recent_directories"
+        private const val MAX_RECENT_DIRECTORIES = 8
 
         const val DEFAULT_TEXT_FONT = "system"
         const val DEFAULT_CODE_FONT = "jetbrains-mono"
