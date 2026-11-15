@@ -97,14 +97,18 @@ class ConversationState(val session: String) {
 /**
  * The app's link to one agent: it connects, follows the agent's updates, and
  * reconnects after the link is lost, catching the open conversations up on
- * what they missed.
+ * what they missed. When the agent is restarted, it runs as another instance;
+ * the link then moves to that instance (see [AgentLinks.retain]).
  */
 class AgentLink(
     private val app: LoomApplication,
     private val loom: Loom,
     val host: String,
-    val instance: String,
+    initialInstance: String,
 ) {
+    /** The agent's instance on its host; it changes when the agent is restarted. */
+    var instance by mutableStateOf(initialInstance)
+        private set
     var state by mutableStateOf<LinkState>(LinkState.Connecting)
         private set
     var agent by mutableStateOf<Agent?>(null)
@@ -124,6 +128,7 @@ class AgentLink(
     private val opened = mutableSetOf<String>()
     private var connection: AgentConnection? = null
     private var job: Job? = null
+    private var checking = false
     private val retry = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     private val noticeFlow = MutableSharedFlow<AppNotice>(extraBufferCapacity = 16)
@@ -150,9 +155,50 @@ class AgentLink(
 
     fun stop() {
         job?.cancel()
+        job = null
         connection?.disconnect()
         connection?.destroy()
         connection = null
+    }
+
+    /**
+     * Makes sure the link still works, as when the app comes back on screen or
+     * the device changes networks: a link that died meanwhile would otherwise
+     * only show it at the heartbeat's timeout, a minute or more later. A lost
+     * link tries again at once instead of after its backoff.
+     */
+    fun checkLink() {
+        when (val current = state) {
+            LinkState.Connected -> {
+                val conn = connection ?: return
+                if (checking) return
+                checking = true
+                app.scope.launch {
+                    // A link that does not answer counts as lost; the pump then reconnects.
+                    try {
+                        conn.checkLink(CHECK_TIMEOUT_MS)
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                    } finally {
+                        checking = false
+                    }
+                }
+            }
+            is LinkState.Down -> if (!current.fatal) retryNow()
+            LinkState.Connecting -> {}
+        }
+    }
+
+    /** Follows the agent to the instance it runs as after a restart. */
+    fun moveTo(newInstance: String) {
+        if (newInstance == instance) return
+        stop()
+        instance = newInstance
+        agent = null
+        // The new connection follows no session yet; the screens open theirs again.
+        opened.clear()
+        state = LinkState.Connecting
+        start()
     }
 
     /** The connection, or an error the screens can show. */
@@ -212,6 +258,8 @@ class AgentLink(
                 fatal = e is LoomException.VersionMismatch || e is LoomException.Rejected ||
                     e is LoomException.Invalid
                 state = LinkState.Down(e.message ?: e.toString(), fatal)
+                // It may run as another instance now; the host's list says.
+                if (e is LoomException.Offline) app.directory.refreshHost(loom, host)
             }
             if (fatal) {
                 retry.first()
@@ -241,32 +289,97 @@ class AgentLink(
             if (lost) return true
         }
     }
+
+    private companion object {
+        const val CHECK_TIMEOUT_MS: ULong = 5_000uL
+    }
 }
 
-/** The links the app has made, one per agent, kept while the app runs. */
+/**
+ * The links the app has made, one per agent, kept while the app runs. A
+ * link moves to the instance of its agent's workspace when the agent is
+ * restarted, and the screens that name the old instance find it there.
+ */
 class AgentLinks(private val app: LoomApplication) {
     private val links = mutableStateMapOf<Pair<String, String>, AgentLink>()
+
+    /** Old instances and the ones their agents run as now, by host. */
+    private val moved = mutableMapOf<Pair<String, String>, String>()
 
     /** Every link, in a stable order; reading it in a composable follows changes. */
     val all: List<AgentLink> get() = links.values.sortedWith(compareBy({ it.host }, { it.workspace }))
 
-    fun get(loom: Loom, host: String, instance: String): AgentLink =
-        links.getOrPut(host to instance) { AgentLink(app, loom, host, instance) }.also { it.start() }
+    fun get(loom: Loom, host: String, instance: String): AgentLink {
+        val key = resolve(host to instance)
+        return links.getOrPut(key) { AgentLink(app, loom, host, key.second) }.also { it.start() }
+    }
+
+    /** Checks every link, as when the app comes back on screen or the network changes. */
+    fun checkAll() {
+        links.values.forEach { it.checkLink() }
+    }
 
     /** Ends the links to a host's agents, as when it is renamed or removed. */
     fun forget(host: String) {
         links.keys.filter { it.first == host }.forEach { key -> links.remove(key)?.stop() }
+        moved.keys.removeAll { it.first == host }
     }
 
-    /** Ends the links to a host's agents that are not in `instances` any more. */
-    fun retain(host: String, instances: Collection<String>) {
-        links.keys.filter { it.first == host && it.second !in instances }
-            .forEach { key -> links.remove(key)?.stop() }
+    /**
+     * Takes in the agents the host's relay lists now. A link to an instance
+     * that is gone moves to the listed agent of its workspace, which is the
+     * same agent restarted; without one, it stays (offline) while a screen
+     * shows it and ends otherwise.
+     */
+    fun retain(host: String, agents: List<Agent>) {
+        val listed = agents.map { it.instance }.toSet()
+        for ((key, link) in links.filter { it.key.first == host && it.key.second !in listed }) {
+            val successor = link.workspace?.let { workspace ->
+                agents.firstOrNull { it.workspace == workspace }
+            }
+            when {
+                successor != null -> {
+                    val target = host to successor.instance
+                    links.remove(key)
+                    moved[key] = successor.instance
+                    if (target in links) {
+                        link.stop()
+                    } else {
+                        link.moveTo(successor.instance)
+                        links[target] = link
+                    }
+                }
+                !inUse(key) -> links.remove(key)?.stop()
+            }
+        }
     }
 
     /** Ends the links to hosts that are not paired any more. */
     fun retainHosts(hosts: Collection<String>) {
         links.keys.filter { it.first !in hosts }.forEach { key -> links.remove(key)?.stop() }
+        moved.keys.removeAll { it.first !in hosts }
+    }
+
+    /** The instance an agent runs as now, following its restarts. */
+    private fun resolve(key: Pair<String, String>): Pair<String, String> {
+        var current = key
+        val seen = mutableSetOf(current)
+        while (true) {
+            val next = current.first to (moved[current] ?: return current)
+            if (!seen.add(next)) return current
+            current = next
+        }
+    }
+
+    /** Whether a screen on the back stack shows the agent. */
+    private fun inUse(key: Pair<String, String>): Boolean = app.navigator.stack.any { screen ->
+        val named = when (screen) {
+            is Screen.Conversation -> screen.host to screen.instance
+            is Screen.Notes -> screen.host to screen.instance
+            is Screen.Tasks -> screen.host to screen.instance
+            else -> null
+        }
+        named != null && resolve(named) == key
     }
 }
 
@@ -290,6 +403,7 @@ class Directory(private val app: LoomApplication) {
     var refreshing by mutableStateOf(false)
         private set
     private var job: Job? = null
+    private val loading = mutableSetOf<String>()
 
     fun refresh(loom: Loom) {
         hosts = loom.hosts()
@@ -307,12 +421,27 @@ class Directory(private val app: LoomApplication) {
         }
     }
 
+    /** Asks one host's relay for its agents again, as when one went offline. */
+    fun refreshHost(loom: Loom, host: String) {
+        if (hosts.none { it.name == host }) return
+        app.scope.launch { load(loom, host) }
+    }
+
     private suspend fun load(loom: Loom, host: String) {
+        if (!loading.add(host)) return
+        try {
+            loadAgents(loom, host)
+        } finally {
+            loading.remove(host)
+        }
+    }
+
+    private suspend fun loadAgents(loom: Loom, host: String) {
         if (agents[host] !is HostAgents.Loaded) agents[host] = HostAgents.Loading
         try {
             val list = loom.listAgents(host)
             agents[host] = HostAgents.Loaded(list)
-            app.links.retain(host, list.map { it.instance })
+            app.links.retain(host, list)
             list.forEach { agent -> app.links.get(loom, host, agent.instance).listed = agent }
         } catch (e: LoomException) {
             agents[host] = HostAgents.Failed(e.userMessage())

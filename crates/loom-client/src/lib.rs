@@ -13,5 +13,7 @@ pub use error::{ClientError, Result};
 pub use login::BrowserCallback;
 pub use loom_crypto::ClientIdentity;
 pub use loom_proto as proto;
-pub use loom_transport::{AccessToken, AgentEntry, FrameStream, Registry, SshTarget, memory_pair};
+pub use loom_transport::{
+    AccessToken, AgentEntry, FrameStream, Registry, RelayError, SshTarget, memory_pair,
+};
 pub use relay::{RelayHost, client_identity_path, load_client_identity, pair_with_uri};

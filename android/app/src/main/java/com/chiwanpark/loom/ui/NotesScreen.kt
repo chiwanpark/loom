@@ -52,7 +52,7 @@ fun NotesScreen(app: LoomApplication, link: AgentLink) {
     var reload by remember { mutableIntStateOf(0) }
     val connected = link.state == LinkState.Connected
 
-    LaunchedEffect(connected, reload) {
+    LaunchedEffect(link, connected, reload) {
         if (!connected) return@LaunchedEffect
         try {
             val notes = link.connection().notes()
@@ -138,7 +138,7 @@ fun TasksScreen(app: LoomApplication, link: AgentLink, session: String) {
     var editing by remember { mutableStateOf<TaskItem?>(null) }
     val connected = link.state == LinkState.Connected
 
-    LaunchedEffect(connected) {
+    LaunchedEffect(link, connected) {
         if (!connected) return@LaunchedEffect
         try {
             tasks = link.connection().tasks(session)

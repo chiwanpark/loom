@@ -568,6 +568,28 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
     })
     .await;
 
+    // A live link answers a check.
+    assert!(conn.clone().check_link(5_000).await);
+
+    // The agent leaves the relay: a check finds the link gone, and
+    // connecting again says the agent is not running.
+    host.agent_link.cancel();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while conn.clone().check_link(1_000).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the link outlived the agent"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    app.until(&conn, "the link lost with the agent", |app| {
+        app.connected == Some(false)
+    })
+    .await;
+    assert!(!conn.is_connected());
+    let err = conn.clone().reconnect().await.unwrap_err();
+    assert!(matches!(err, LoomError::Offline { .. }), "{err:?}");
+
     conn.disconnect();
     let end = tokio::time::timeout(WAIT, conn.clone().next_updates())
         .await

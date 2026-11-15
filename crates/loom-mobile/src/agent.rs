@@ -4,9 +4,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use loom_client::proto::{ContentPart, InstanceId, SessionId, SessionInfo};
-use loom_client::{Client, ClientIdentity, Notification, Notifications, RelayHost};
+use loom_client::{Client, ClientError, ClientIdentity, Notification, Notifications, RelayHost};
 use loom_view_model::conversation::{Conversation, PAGE_ITEMS};
 use tokio::sync::Notify;
 
@@ -343,6 +344,47 @@ impl AgentConnection {
 
     pub fn is_connected(&self) -> bool {
         self.shared.lock().client.is_some()
+    }
+
+    /// Checks that the link still answers, as after the app was in the
+    /// background or the device changed networks, when a dead link would
+    /// only show at the heartbeat's timeout. Returns whether it answered in
+    /// time; when it did not, the link counts as lost, so `next_updates`
+    /// says so and the app reconnects at once.
+    pub async fn check_link(self: Arc<Self>, timeout_ms: u64) -> bool {
+        let shared = self.shared.clone();
+        run(async move {
+            let (client, epoch) = {
+                let state = shared.lock();
+                match &state.client {
+                    Some(client) => (client.clone(), state.epoch),
+                    None => return false,
+                }
+            };
+            let answer =
+                tokio::time::timeout(Duration::from_millis(timeout_ms), client.list_sessions())
+                    .await;
+            let mut state = shared.lock();
+            let alive = match answer {
+                Ok(Ok(sessions)) => {
+                    state.sessions = sessions;
+                    state.sessions_changed = true;
+                    true
+                }
+                // The agent answered, if only with a refusal.
+                Ok(Err(ClientError::Api(_))) => true,
+                Ok(Err(_)) | Err(_) => false,
+            };
+            if !alive && state.epoch == epoch && !state.closed {
+                state.epoch += 1;
+                state.client = None;
+                state.link = Some((false, Some("The agent stopped answering.".into())));
+            }
+            drop(state);
+            shared.wake.notify_one();
+            alive
+        })
+        .await
     }
 
     /// Waits for what changed since the last call and returns it, or `None`

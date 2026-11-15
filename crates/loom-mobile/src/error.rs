@@ -1,5 +1,6 @@
-use loom_client::ClientError;
-use loom_client::proto::ErrorCode;
+use loom_client::proto::relay::RelayErrorCode;
+use loom_client::proto::{ErrorCode, PROTOCOL_VERSION};
+use loom_client::{ClientError, RelayError};
 
 /// Why a call into the core failed. The message is for the user.
 ///
@@ -15,6 +16,10 @@ pub enum LoomError {
     /// The relay or the agent could not be reached, or the link broke.
     #[error("{message}")]
     Connect { message: String },
+    /// The relay has no such agent: it stopped, or it was restarted and
+    /// runs as another instance now.
+    #[error("{message}")]
+    Offline { message: String },
     /// The agent speaks another protocol version; one of the two needs an
     /// update.
     #[error("{message}")]
@@ -49,18 +54,40 @@ impl LoomError {
     }
 }
 
+/// Says which side to update, from the agent's "client speaks protocol 10,
+/// agent speaks 11", or the agent's words when they are not in that form.
+fn version_mismatch(message: &str) -> String {
+    let agent = message
+        .rsplit_once("agent speaks ")
+        .and_then(|(_, rest)| rest.trim().parse::<u16>().ok());
+    match agent {
+        Some(agent) if agent > PROTOCOL_VERSION => format!(
+            "The agent speaks protocol {agent}, newer than this app's {PROTOCOL_VERSION}: \
+             update the app."
+        ),
+        Some(agent) if agent < PROTOCOL_VERSION => format!(
+            "The agent speaks protocol {agent}, older than this app's {PROTOCOL_VERSION}: \
+             update loom-agent on the host and restart the agent."
+        ),
+        _ => format!("{message}; update the app or the agent so that both speak the same version"),
+    }
+}
+
 impl From<ClientError> for LoomError {
     fn from(err: ClientError) -> Self {
         let message = err.to_string();
         match err {
             ClientError::Rejected(api) if api.code == ErrorCode::VersionMismatch => {
                 Self::VersionMismatch {
-                    message: format!(
-                        "{}; update the app or the agent so that both speak the same version",
-                        api.message
-                    ),
+                    message: version_mismatch(&api.message),
                 }
             }
+            ClientError::Relay(RelayError::Refused {
+                code: RelayErrorCode::NotFound,
+                ..
+            }) => Self::Offline {
+                message: "The agent is not running.".into(),
+            },
             ClientError::Rejected(_) => Self::Rejected { message },
             ClientError::Api(api) => Self::Api {
                 code: format!("{:?}", api.code),
@@ -83,15 +110,31 @@ mod tests {
     fn a_version_mismatch_says_what_to_update() {
         let err = LoomError::from(ClientError::Rejected(ApiError::new(
             ErrorCode::VersionMismatch,
-            "the agent speaks protocol 9, the client 8",
+            format!("client speaks protocol {PROTOCOL_VERSION}, agent speaks 999"),
         )));
         let LoomError::VersionMismatch { message } = err else {
             panic!("{err:?}");
         };
-        assert!(message.starts_with("the agent speaks protocol 9"));
-        assert!(message.contains("update the app or the agent"));
+        assert!(message.contains("protocol 999, newer"), "{message}");
+        assert!(message.ends_with("update the app."), "{message}");
+        let older = format!("client speaks protocol {PROTOCOL_VERSION}, agent speaks 1");
+        assert!(version_mismatch(&older).contains("restart the agent"));
+        assert!(version_mismatch("something else").contains("update the app or the agent"));
+
         let busy = LoomError::from(ClientError::Api(ApiError::new(ErrorCode::Busy, "busy")));
         assert!(matches!(busy, LoomError::Api { code, .. } if code == "Busy"));
+        let offline = LoomError::from(ClientError::Relay(RelayError::Refused {
+            code: RelayErrorCode::NotFound,
+            message: "the agent is offline".into(),
+        }));
+        assert!(matches!(offline, LoomError::Offline { .. }));
+        assert!(matches!(
+            LoomError::from(ClientError::Relay(RelayError::Refused {
+                code: RelayErrorCode::RateLimited,
+                message: "slow down".into(),
+            })),
+            LoomError::Connect { .. }
+        ));
         assert!(matches!(
             LoomError::from(ClientError::Closed),
             LoomError::Closed

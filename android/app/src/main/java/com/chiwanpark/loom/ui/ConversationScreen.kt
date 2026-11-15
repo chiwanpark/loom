@@ -119,9 +119,10 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var clearing by remember { mutableStateOf(false) }
     var draft by rememberSaveable { mutableStateOf("") }
 
-    // Follows the conversation while it is on the back stack, also after reconnecting.
+    // Follows the conversation while it is on the back stack, also after reconnecting
+    // and after the agent was restarted, when the link may be another one.
     val connected = link.state == LinkState.Connected
-    LaunchedEffect(connected) {
+    LaunchedEffect(link, connected) {
         if (connected) {
             try {
                 link.openSession(session)
