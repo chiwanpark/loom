@@ -1495,7 +1495,7 @@ impl Workspace {
         self.subscriptions.push(cx.subscribe_in(
             &view,
             window,
-            |this, view, _: &TakeOver, window, cx| this.take_over_terminal(view, false, window, cx),
+            |this, view, _: &TakeOver, _, cx| this.take_over_terminal(view, cx),
         ));
         view
     }
@@ -2287,57 +2287,20 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Moves a terminal that another client holds, or none does, here,
-    /// after asking when another client holds it and `ask` is set.
-    fn take_over_terminal(
-        &mut self,
-        view: &Entity<TerminalView>,
-        ask: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if view.read(cx).exited().is_some() {
+    /// Moves a terminal that another client holds, or none does, here, as
+    /// the button over its tab asks.
+    fn take_over_terminal(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let read = view.read(cx);
+        if read.exited().is_some() || *read.holder() == TerminalHolder::You {
             return;
         }
-        let Some(conn) = self
+        if let Some(conn) = self
             .connections
             .iter()
             .find(|c| c.read(cx).terminal_id(view).is_some())
             .cloned()
-        else {
-            return;
-        };
-        let take = {
-            let view = view.clone();
-            move |_: &mut Window, cx: &mut App| {
-                conn.update(cx, |conn, cx| conn.take_terminal(&view, cx))
-            }
-        };
-        match view.read(cx).holder().clone() {
-            TerminalHolder::You => {}
-            TerminalHolder::Other(client) if ask => {
-                let who = client.describe();
-                dialogs::confirm(
-                    "Take over this terminal?",
-                    format!(
-                        "It is open on {who}. It moves here with its recent output, and {who} can take it back."
-                    ),
-                    "Take over",
-                    take,
-                    window,
-                    cx,
-                );
-            }
-            _ => take(window, cx),
-        }
-    }
-
-    /// Offers the active tab's terminal when another client holds it, or
-    /// opens it here when none does, as when its tab is clicked.
-    fn offer_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(Panel::Terminal(view)) = self.active_group().and_then(|g| g.active_panel()) {
-            let view = view.clone();
-            self.take_over_terminal(&view, true, window, cx);
+        {
+            conn.update(cx, |conn, cx| conn.take_terminal(view, cx));
         }
     }
 
@@ -4173,8 +4136,7 @@ impl Workspace {
                             )
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.activate_tab(pane_id, ix, window, cx);
-                            this.offer_terminal(window, cx);
+                            this.activate_tab(pane_id, ix, window, cx)
                         }))
                         .on_middle_click(cx.listener(move |this, _, window, cx| {
                             this.close_tab(pane_id, ix, window, cx)
@@ -5351,15 +5313,19 @@ mod tests {
         let title = cx.update(|_, cx| Panel::Terminal(view.clone()).title(cx));
         assert_eq!(title, "Terminal (on the Android app)");
 
-        // Taking it over brings its output along. (Clicking the tab would ask
-        // first.)
+        // Showing its tab asks nothing; the button over it takes it over,
+        // with its output.
         ws.update_in(cx, |ws, window, cx| {
             let pane = ws.active_group().unwrap().active_pane;
             ws.activate_tab(pane, 4, window, cx);
         });
-        ws.update_in(cx, |ws, window, cx| {
-            ws.take_over_terminal(&view, false, window, cx)
-        });
+        cx.run_until_parked();
+        assert!(!has_dialog(cx));
+        assert!(matches!(
+            view.read_with(cx, |v, _| v.holder().clone()),
+            TerminalHolder::Other(_)
+        ));
+        click("terminal-take-over", cx);
         wait_until(cx, |cx| {
             *view.read(cx).holder() == TerminalHolder::You
                 && view.read(cx).snapshot().text().contains("phone=9")
@@ -5437,9 +5403,7 @@ mod tests {
         close(4, cx);
         assert_eq!(cx.update(|_, cx| terminal_tabs(&ws, cx).len()), 1);
         let view = cx.update(|_, cx| terminal_tabs(&ws, cx).remove(0).0);
-        ws.update_in(cx, |ws, window, cx| {
-            ws.take_over_terminal(&view, false, window, cx)
-        });
+        ws.update(cx, |ws, cx| ws.take_over_terminal(&view, cx));
         wait_until(cx, |cx| *view.read(cx).holder() == TerminalHolder::You);
         assert!(kinds(&ws, cx)[4] == (PanelKind::Terminal, true));
         // Closing it here ends it, once its view is gone.

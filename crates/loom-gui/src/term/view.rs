@@ -315,11 +315,13 @@ impl TerminalView {
                 .text_color(theme.foreground)
                 .child(message)
                 .child(
-                    Button::new("terminal-take-over")
-                        .primary()
-                        .label(action)
-                        .tooltip("Move the terminal here, with its recent output")
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TakeOver))),
+                    div().debug_selector(|| "terminal-take-over".into()).child(
+                        Button::new("terminal-take-over")
+                            .primary()
+                            .label(action)
+                            .tooltip("Move the terminal here, with its recent output")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(TakeOver))),
+                    ),
                 ),
         )
     }

@@ -75,7 +75,6 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
     var menu by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableStateOf(0) }
-    var confirm by remember { mutableStateOf<Int?>(null) }
     var taking by remember { mutableStateOf(false) }
 
     // Number 0 opens a terminal, then stands for it.
@@ -97,7 +96,7 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
     fun show(target: Int) = app.navigator.replace(Screen.Terminal(link.host, link.instance, target))
     val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
 
-    // Moves a terminal here from the client that holds it, or from none.
+    // Moves a terminal here from the client that holds it, or from none, with the button over it.
     fun take(target: Int) {
         if (taking) return
         // The size of this screen's terminal is the best guess for the other one.
@@ -115,27 +114,6 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
                 taking = false
             }
         }
-    }
-
-    // Shows a terminal from the menu; one that another client holds needs a yes first.
-    fun open(target: Int) {
-        val followed = link.terminal(target)
-        when {
-            link.place(target) is TerminalPlace.Elsewhere -> confirm = target
-            followed != null -> show(target)
-            else -> take(target)
-        }
-    }
-
-    confirm?.let { target ->
-        val who = (link.place(target) as? TerminalPlace.Elsewhere)?.client ?: "another client"
-        ConfirmDialog(
-            "Take over this terminal?",
-            "Terminal $target is open on $who. It moves here with its recent output, and $who can take it back.",
-            "Take over",
-            onConfirm = { take(target) },
-            onDismiss = { confirm = null },
-        )
     }
 
     Scaffold(
@@ -163,7 +141,7 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
                                 (where?.let { " ($it)" } ?: ""),
                             LoomIcons.Terminal,
                             close,
-                        ) { open(other) }
+                        ) { show(other) }
                     }
                     if (tab != null) {
                         MenuEntry("Paste", LoomIcons.ClipboardPaste, close) {

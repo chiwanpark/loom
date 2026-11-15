@@ -115,10 +115,10 @@ impl RenderOnce for Tab {
             .size(START_SLOT_SIZE)
             .justify_center()
             .children(self.start_slot);
-        let end_slot = h_flex()
-            .size(END_SLOT_SIZE)
-            .justify_center()
-            .children(self.end_slot);
+        // A tab without an end slot (as one that cannot be closed) keeps no room for it.
+        let end_slot = self
+            .end_slot
+            .map(|slot| h_flex().size(END_SLOT_SIZE).justify_center().child(slot));
         self.div
             .h(CONTAINER_HEIGHT)
             .flex_none()
@@ -155,7 +155,7 @@ impl RenderOnce for Tab {
                     .text_color(text_color)
                     .child(start_slot)
                     .children(self.children)
-                    .child(end_slot),
+                    .children(end_slot),
             )
     }
 }
@@ -219,5 +219,33 @@ mod tests {
 
         click(cx, "tab-0", "tab-0", MouseButton::Middle);
         assert_eq!(closed(cx), [1, 0]);
+    }
+
+    /// A tab with a close button and one without.
+    struct Slots;
+
+    impl Render for Slots {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            gpui_component::h_flex().children((0..2usize).map(|ix| {
+                Tab::new(("tab", ix))
+                    .debug_selector(move || format!("slot-{ix}"))
+                    .when(ix == 0, |tab| tab.end_slot(div().child("x")))
+                    .child("tab")
+            }))
+        }
+    }
+
+    #[gpui::test]
+    fn a_tab_without_an_end_slot_keeps_no_room_for_it(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| Slots);
+        cx.run_until_parked();
+        let with = cx.debug_bounds("slot-0").unwrap().size.width;
+        let without = cx.debug_bounds("slot-1").unwrap().size.width;
+        // The slot and the gap before it.
+        assert!(
+            with - without >= END_SLOT_SIZE,
+            "with {with:?}, without {without:?}"
+        );
     }
 }
