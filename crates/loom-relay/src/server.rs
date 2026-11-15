@@ -243,7 +243,7 @@ impl Relay {
             (
                 "loom_relay_rate_limited_total",
                 "counter",
-                "Connections closed by rate limits",
+                "Connections refused and messages slowed down by rate limits",
                 get(&s.rate_limited),
             ),
             (
@@ -528,12 +528,15 @@ impl Conn {
             let Message::Binary(bytes) = message else {
                 continue;
             };
-            if !self.relay.limits.allow_message(self.ip) {
+            // Waiting before the next read slows the sender down through
+            // the connection's flow control.
+            let delay = self.relay.limits.delay_message(self.ip);
+            if !delay.is_zero() {
                 bump(&self.relay.stats.rate_limited, 1);
-                return Err((
-                    RelayErrorCode::RateLimited,
-                    "too many messages; slow down".into(),
-                ));
+                tokio::select! {
+                    _ = self.peer.kill.cancelled() => return Ok(None),
+                    _ = tokio::time::sleep(delay) => {}
+                }
             }
             return decode::<RelayFrame>(&bytes)
                 .map(Some)
