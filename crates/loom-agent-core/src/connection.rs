@@ -39,6 +39,8 @@ pub struct Connection {
     host_keys: Option<Arc<dyn HostKeys>>,
     connection_id: ConnectionId,
     relayed: bool,
+    /// The key of a client that comes through a relay, which its push token belongs to.
+    client_key: Option<[u8; 32]>,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -61,6 +63,7 @@ impl Connection {
             host_keys: None,
             connection_id,
             relayed: false,
+            client_key: None,
         }
     }
 
@@ -68,6 +71,13 @@ impl Connection {
     /// downloads yet.
     pub fn relayed(mut self, relayed: bool) -> Self {
         self.relayed = relayed;
+        self
+    }
+
+    /// The static key of a client that comes through a relay, which
+    /// [`Command::SetPushToken`] sets the token of.
+    pub fn with_client_key(mut self, key: Option<[u8; 32]>) -> Self {
+        self.client_key = key;
         self
     }
 
@@ -197,6 +207,27 @@ impl Connection {
                 let out = self.out.clone();
                 self.tasks.push(tokio::spawn(async move {
                     let result = manage_keys(host_keys.as_deref(), command).await;
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
+            Command::SetPushToken { token } => {
+                let host_keys = self.host_keys.clone();
+                let client_key = self.client_key;
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = match (host_keys, client_key) {
+                        (_, None) => Err(ApiError::new(
+                            ErrorCode::Unsupported,
+                            "notifications go through a relay, and this connection does not",
+                        )),
+                        (None, Some(_)) => Err(ApiError::new(
+                            ErrorCode::Unsupported,
+                            "this agent does not send notifications",
+                        )),
+                        (Some(keys), Some(key)) => {
+                            keys.set_push_token(key, token).await.map(|()| Payload::Ok)
+                        }
+                    };
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
@@ -548,6 +579,7 @@ impl Connection {
             | Command::AuthorizeClient { .. }
             | Command::ListClients
             | Command::RevokeClient { .. }
+            | Command::SetPushToken { .. }
             | Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }

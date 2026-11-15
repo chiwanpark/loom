@@ -109,9 +109,13 @@ keyPassword=…
 
 Without it, debug builds are signed with the SDK's debug key. Keep the key and its password safe: an APK signed by another key installs only after you uninstall the app, which deletes its pairings.
 
+Notifications need a Firebase project. In the [Firebase console](https://console.firebase.google.com), create one, add an Android app with the package name `com.chiwanpark.loom`, and put its `google-services.json` in `~/.config/loom-android/` (or the file that `LOOM_ANDROID_GOOGLE_SERVICES` or `-Ploom.googleServices` names). Builds without it, such as CI's, work the same without notifications.
+
 The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing, and you can start, rename, archive, and delete sessions there. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model, the reasoning effort, and what happens to tool calls that no policy rule matches (ask, allow, or deny, or the agent's default) from the row above the prompt box (which also shows the context used), compact or clear the conversation, queue messages or steer a running turn with them, and edit the agent's notes and the session's tasks. **Font** in the menu of the start screen or a session opens a screen with a preview, where you set the text size, from 80% to 130% of the system's; the size of the text in blocks (tool calls' arguments and output, and the reasoning of answers), from 70% to 130% of the app's text; the font of the app's text; and the font of code: tool arguments and output, code in answers, notes, and keys. Code is shown in JetBrains Mono, which the app bundles, unless you pick another. Besides the system's fonts, you can search all of Google Fonts by name, with filters for fonts with Hangul and, for text, by category; the code tab lists monospaced fonts only. Google Play services downloads a Google font when it is first shown. The app's list of Google Fonts is `android/app/src/main/assets/google-fonts.tsv`, which `scripts/fonts/generate.py` writes from the directory of the Google Play services font provider and the metadata of fonts.google.com; run it again to pick up new fonts. Scanning the QR code needs Google Play services too; pasting the link works without them.
 
 The app keeps its links to the agents while it runs and reconnects by itself, catching open conversations up on what they missed. When it comes back on screen or the phone changes networks, it checks each link at once instead of waiting for the link's heartbeat to time out. A restarted agent runs as a new instance; the app finds it by its workspace on the host's relay, and open screens follow it. When the app and an agent speak different protocol versions, the app says which of the two to update.
+
+Built with a Firebase project, the app shows a notification when a tool call waits for approval and when a turn finishes or fails, also while it is closed; tapping one opens the session, and none comes for the session on screen. Each kind has its own channel in the system's notification settings. The app tells each paired host where to send them when it connects; the host's agents seal every notification for the phone with the keys from pairing and hand it to their relay, which sends it through Firebase Cloud Messaging, so Google sees only ciphertext. The relay needs a key of the same Firebase project (see [Through a relay](#through-a-relay)).
 
 ## Getting started
 
@@ -159,6 +163,16 @@ A relay lets clients reach agents that have no inbound SSH access. Both sides di
 4. In the client, use **Pair through a relay** and paste the link. In the Android app, use **Pair with a host** and scan the QR code or paste the link.
 
 `loom-agent clients list` shows the paired clients, and `loom-agent clients revoke <label>` removes one.
+
+For the Android app's notifications, the relay needs the private key of a service account of the app's Firebase project: in the Firebase console, open **Project settings**, then **Service accounts**, and use **Generate new private key** (the language picked for the code sample there does not matter). Keep the JSON file on the relay's host, readable by the relay only, and name it in `relay.yaml`:
+
+```yaml
+push:
+  fcm:
+    service_account: /etc/loom/firebase-service-account.json
+```
+
+The relay system service cannot read files that only root may read; `contrib/systemd/loom-relay.service` shows how to hand it the key as a credential. Agents send notifications through relays of this version or newer; with an older relay they connect as before, without them. The relay's metrics count the notifications it sent (`loom_relay_pushes_sent_total`), sent to tokens Firebase no longer knows (`loom_relay_pushes_rejected_total`, which the agents then forget), could not send, and dropped.
 
 To keep an agent running for the relay, `contrib/systemd/loom-agent.service` starts `loom-agent serve --default` (the `lifecycle.default_workspace` directory) as a systemd user service. `scripts/install.sh agent --systemd` installs and starts it; manual steps are in the file. To keep it running after you log out, run `loginctl enable-linger`.
 

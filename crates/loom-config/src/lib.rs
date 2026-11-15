@@ -20,8 +20,8 @@ pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, 
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;
 pub use relay_server::{
-    AccessVerifyConfig, RELAY_CONFIG_ENV, RELAY_CONFIG_FILE, RelayLimits, RelayServerConfig,
-    TlsConfig, relay_config_schema,
+    AccessVerifyConfig, FCM_API_URL, FcmConfig, PushConfig, RELAY_CONFIG_ENV, RELAY_CONFIG_FILE,
+    RelayLimits, RelayServerConfig, TlsConfig, relay_config_schema,
 };
 pub use units::{ByteSize, HumanDuration};
 

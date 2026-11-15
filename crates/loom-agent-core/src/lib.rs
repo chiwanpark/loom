@@ -28,7 +28,7 @@ pub use error::{CoreError, Result};
 pub use events::{EventHub, Subscription};
 pub use host_keys::HostKeys;
 pub use metrics::Metrics;
-pub use observer::SessionObserver;
+pub use observer::{Observers, SessionObserver};
 pub use policy::SessionPolicy;
 pub use runtime::Runtime;
 pub use session::{Sent, Session};

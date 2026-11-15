@@ -21,7 +21,7 @@ pub trait SessionObserver: Send + Sync {
 }
 
 /// Several observers that see the same events, in order.
-pub(crate) struct Observers(pub Vec<Arc<dyn SessionObserver>>);
+pub struct Observers(pub Vec<Arc<dyn SessionObserver>>);
 
 impl SessionObserver for Observers {
     fn session_created(&self, session: &SessionId) {

@@ -14,18 +14,26 @@ use futures::{SinkExt, StreamExt};
 use loom_config::RelayServerConfig;
 use loom_crypto::{host_id_for, verify_signature};
 use loom_proto::relay::{
-    AgentId, ChannelId, CloseReason, HostId, RELAY_VERSION, RelayErrorCode, RelayFrame,
-    agent_auth_message,
+    AgentId, ChannelId, CloseReason, HostId, MIN_RELAY_VERSION, RELAY_VERSION, RelayErrorCode,
+    RelayFrame, agent_auth_message,
 };
 use loom_proto::{InstanceId, decode, encode};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::access::{AccessVerifier, JWT_HEADER};
+use crate::fcm::{FcmSender, Outcome};
 use crate::limits::IpLimits;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const CONNECTING_IP: &str = "cf-connecting-ip";
+/// Notifications sent at the same time; more are dropped.
+const PUSH_CONCURRENCY: usize = 16;
+/// The largest sealed notification taken from an agent; FCM's messages
+/// hold 4 KB, and the payload grows by a third in base64.
+const MAX_PUSH_PAYLOAD: usize = 2560;
+/// The longest push token taken from an agent.
+const MAX_PUSH_TOKEN: usize = 4096;
 
 type ConnId = u64;
 
@@ -77,6 +85,10 @@ struct Stats {
     rate_limited: AtomicU64,
     slow_consumers: AtomicU64,
     client_connections: AtomicU64,
+    pushes_sent: AtomicU64,
+    pushes_rejected: AtomicU64,
+    pushes_failed: AtomicU64,
+    pushes_dropped: AtomicU64,
 }
 
 fn bump(counter: &AtomicU64, value: u64) {
@@ -87,6 +99,8 @@ pub struct Relay {
     config: RelayServerConfig,
     allowed: HashSet<HostId>,
     access: Option<AccessVerifier>,
+    push: Option<Arc<FcmSender>>,
+    push_slots: Arc<Semaphore>,
     limits: IpLimits,
     routes: Mutex<Routes>,
     next_id: AtomicU64,
@@ -108,6 +122,22 @@ impl Relay {
             .filter_map(|h| h.parse().ok())
             .collect();
         let access = config.cloudflare_access.clone().map(AccessVerifier::new);
+        let push =
+            config.push.as_ref().and_then(|p| p.fcm.as_ref()).and_then(
+                |fcm| match FcmSender::load(fcm) {
+                    Ok(sender) => {
+                        tracing::info!(
+                            project = sender.project(),
+                            "sending notifications through FCM"
+                        );
+                        Some(Arc::new(sender))
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "notifications are off");
+                        None
+                    }
+                },
+            );
         let limits = IpLimits::new(
             config.limits.messages_per_second,
             config.limits.burst,
@@ -117,6 +147,8 @@ impl Relay {
             config,
             allowed,
             access,
+            push,
+            push_slots: Arc::new(Semaphore::new(PUSH_CONCURRENCY)),
             limits,
             routes: Mutex::new(Routes::default()),
             next_id: AtomicU64::new(1),
@@ -147,7 +179,7 @@ impl Relay {
     pub fn metrics_text(&self) -> String {
         let get = |c: &AtomicU64| c.load(Ordering::Relaxed);
         let s = &self.stats;
-        let rows: [(&str, &str, &str, u64); 12] = [
+        let rows: [(&str, &str, &str, u64); 16] = [
             (
                 "loom_relay_agents_online",
                 "gauge",
@@ -220,6 +252,30 @@ impl Relay {
                 "Connections closed for falling behind",
                 get(&s.slow_consumers),
             ),
+            (
+                "loom_relay_pushes_sent_total",
+                "counter",
+                "Notifications the push service took",
+                get(&s.pushes_sent),
+            ),
+            (
+                "loom_relay_pushes_rejected_total",
+                "counter",
+                "Notifications to tokens the push service no longer knows",
+                get(&s.pushes_rejected),
+            ),
+            (
+                "loom_relay_pushes_failed_total",
+                "counter",
+                "Notifications the push service could not take",
+                get(&s.pushes_failed),
+            ),
+            (
+                "loom_relay_pushes_dropped_total",
+                "counter",
+                "Notifications dropped: push off, too many at once, or too large",
+                get(&s.pushes_dropped),
+            ),
         ];
         let mut out = String::new();
         for (name, kind, help, value) in rows {
@@ -248,6 +304,48 @@ impl Relay {
 
     pub fn open_channels(&self) -> usize {
         self.routes().channels.len()
+    }
+
+    /// Sends an agent's notification through the push service, and tells
+    /// the agent when the service rejects the token.
+    fn push(&self, host: HostId, token: String, payload: Vec<u8>, agent: Peer) {
+        use base64::Engine;
+        let Some(sender) = self.push.clone() else {
+            tracing::debug!(%host, "dropped a notification: notifications are off");
+            bump(&self.stats.pushes_dropped, 1);
+            return;
+        };
+        if payload.len() > MAX_PUSH_PAYLOAD || token.is_empty() || token.len() > MAX_PUSH_TOKEN {
+            bump(&self.stats.pushes_dropped, 1);
+            return;
+        }
+        let Ok(slot) = self.push_slots.clone().try_acquire_owned() else {
+            tracing::warn!(%host, "dropped a notification: too many are being sent");
+            bump(&self.stats.pushes_dropped, 1);
+            return;
+        };
+        let stats = self.stats.clone();
+        tokio::spawn(async move {
+            let data = [
+                ("h", host.to_string()),
+                (
+                    "p",
+                    base64::engine::general_purpose::STANDARD.encode(&payload),
+                ),
+            ];
+            match sender.send(&token, &data).await {
+                Outcome::Sent => bump(&stats.pushes_sent, 1),
+                Outcome::Rejected => {
+                    bump(&stats.pushes_rejected, 1);
+                    agent.send(RelayFrame::PushRejected { token });
+                }
+                Outcome::Failed(err) => {
+                    bump(&stats.pushes_failed, 1);
+                    tracing::warn!(%host, error = %err, "could not send a notification");
+                }
+            }
+            drop(slot);
+        });
     }
 
     fn client_ip(&self, headers: &HeaderMap, addr: SocketAddr) -> IpAddr {
@@ -458,10 +556,12 @@ impl Conn {
         else {
             return Err(bad("expected AgentHello"));
         };
-        if version != RELAY_VERSION {
+        if !(MIN_RELAY_VERSION..=RELAY_VERSION).contains(&version) {
             return Err((
                 RelayErrorCode::VersionMismatch,
-                format!("the relay speaks version {RELAY_VERSION}, not {version}"),
+                format!(
+                    "the relay speaks versions {MIN_RELAY_VERSION} to {RELAY_VERSION}, not {version}"
+                ),
             ));
         }
         if instance.0.is_empty() || instance.0.len() > 128 {
@@ -501,6 +601,9 @@ impl Conn {
                     self.forward(channel, payload, Role::Agent)
                 }
                 RelayFrame::Close { channel } => self.close_channel(channel, Role::Agent),
+                RelayFrame::Push { token, payload } if version >= 2 => {
+                    self.relay.push(host, token, payload, self.peer.clone())
+                }
                 _ => return Err(bad("unexpected frame from an agent")),
             }
         }

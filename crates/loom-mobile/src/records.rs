@@ -134,6 +134,58 @@ impl From<Policy> for proto::PolicyAction {
     }
 }
 
+/// What a notification is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PushKind {
+    /// A tool call waits for approval.
+    Approval,
+    /// A turn completed.
+    Finished,
+    /// A turn failed.
+    Failed,
+}
+
+impl From<proto::push::PushKind> for PushKind {
+    fn from(kind: proto::push::PushKind) -> Self {
+        match kind {
+            proto::push::PushKind::Approval => Self::Approval,
+            proto::push::PushKind::Finished => Self::Finished,
+            proto::push::PushKind::Failed => Self::Failed,
+        }
+    }
+}
+
+/// A notification from an agent, opened.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PushNotice {
+    /// The name of the paired host it came from.
+    pub host: String,
+    pub instance: String,
+    pub workspace: String,
+    pub session: String,
+    pub title: Option<String>,
+    pub kind: PushKind,
+    /// The tool call that waits, the start of the answer, or the error.
+    pub detail: Option<String>,
+    /// Seconds since the Unix epoch.
+    pub at: u64,
+}
+
+impl PushNotice {
+    pub fn of(host: &str, notice: proto::push::PushNotice) -> Self {
+        Self {
+            host: host.to_owned(),
+            instance: notice.instance.0,
+            workspace: notice.workspace,
+            session: notice.session.0,
+            title: notice.title,
+            kind: notice.kind.into(),
+            detail: notice.detail,
+            at: notice.at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SessionSummary {
     pub id: String,

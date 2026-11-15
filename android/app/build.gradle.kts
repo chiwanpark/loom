@@ -28,6 +28,40 @@ val keystoreProperties: File = file(
         .getOrElse("${System.getProperty("user.home")}/.config/loom-android/keystore.properties"),
 )
 
+// Notifications from agents come through Firebase Cloud Messaging. The
+// app's Firebase project is in a google-services.json from the Firebase
+// console, kept outside the repository: by default in
+// ~/.config/loom-android/google-services.json. Without it (as in CI) the app
+// builds without notifications.
+val googleServices: File = file(
+    providers.gradleProperty("loom.googleServices")
+        .orElse(providers.environmentVariable("LOOM_ANDROID_GOOGLE_SERVICES"))
+        .getOrElse("${System.getProperty("user.home")}/.config/loom-android/google-services.json"),
+)
+
+/**
+ * The string resources Firebase starts from, as the google-services Gradle
+ * plugin writes them, read from [file] for the app [packageName].
+ */
+@Suppress("UNCHECKED_CAST")
+fun firebaseResources(file: File, packageName: String): Map<String, String> {
+    val json = groovy.json.JsonSlurper().parse(file) as Map<String, Any?>
+    val project = json["project_info"] as Map<String, Any?>
+    val client = (json["client"] as List<Map<String, Any?>>).firstOrNull { client ->
+        val info = client["client_info"] as Map<String, Any?>
+        (info["android_client_info"] as Map<String, Any?>)["package_name"] == packageName
+    } ?: error("$file has no Android app $packageName")
+    val info = client["client_info"] as Map<String, Any?>
+    val apiKey = (client["api_key"] as List<Map<String, Any?>>).first()["current_key"]
+    return mapOf(
+        "google_app_id" to info["mobilesdk_app_id"],
+        "gcm_defaultSenderId" to project["project_number"],
+        "google_api_key" to apiKey,
+        "project_id" to project["project_id"],
+        "google_storage_bucket" to project["storage_bucket"],
+    ).filterValues { it != null }.mapValues { it.value.toString() }
+}
+
 android {
     namespace = "com.chiwanpark.loom"
     compileSdk = 37
@@ -40,6 +74,11 @@ android {
         versionName = workspaceVersion
         versionCode = versionCodeOf(workspaceVersion)
         ndk { abiFilters += "arm64-v8a" }
+        if (googleServices.isFile) {
+            for ((name, value) in firebaseResources(googleServices, "com.chiwanpark.loom")) {
+                resValue("string", name, value)
+            }
+        }
     }
 
     signingConfigs {
@@ -71,7 +110,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        // The Firebase settings from google-services.json.
+        resValues = true
+    }
 
     packaging {
         // The Rust core is built with symbols stripped already.
@@ -180,5 +223,7 @@ dependencies {
     implementation(libs.code.scanner)
     implementation(libs.markdown.m3)
     implementation(libs.lucide)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
     debugImplementation(libs.compose.ui.tooling)
 }

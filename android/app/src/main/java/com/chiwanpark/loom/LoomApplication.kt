@@ -32,6 +32,8 @@ class LoomApplication : Application() {
         private set
     lateinit var directory: Directory
         private set
+    lateinit var push: Push
+        private set
 
     private val foregroundState = MutableStateFlow(false)
 
@@ -42,6 +44,8 @@ class LoomApplication : Application() {
         super.onCreate()
         links = AgentLinks(this)
         directory = Directory(this)
+        push = Push(this)
+        push.start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foregroundState.value = true

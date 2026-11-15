@@ -15,6 +15,10 @@
 #   [Service]
 #   LoadCredential=tls.key:/etc/letsencrypt/live/relay.example.com/privkey.pem
 # and set tls.key in relay.yaml to /run/credentials/loom-relay.service/tls.key.
+# The same goes for the Firebase service account key that sends notifications:
+#   LoadCredential=firebase.json:/etc/loom/firebase-service-account.json
+# with push.fcm.service_account in relay.yaml set to
+# /run/credentials/loom-relay.service/firebase.json.
 
 [Unit]
 Description=Loom relay

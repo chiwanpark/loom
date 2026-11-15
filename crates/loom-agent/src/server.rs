@@ -58,7 +58,11 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
     let mut connection = Connection::new(ctx.agent, ctx.info, out)
         .with_supervisor(ctx.supervisor)
         .with_host_keys(ctx.host_keys)
-        .relayed(matches!(peer, PeerInfo::Relay { .. }));
+        .relayed(matches!(peer, PeerInfo::Relay { .. }))
+        .with_client_key(match &peer {
+            PeerInfo::Relay { pubkey, .. } => Some(*pubkey),
+            _ => None,
+        });
     tracing::debug!(?peer, "connection opened");
     loop {
         let frame = match receiver.recv().await {

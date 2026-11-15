@@ -15,10 +15,13 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::push::{PushEvent, start_push};
 use crate::server::{ServerContext, serve_stream};
 
 const REVOCATION_POLL: Duration = Duration::from_secs(2);
 pub const REGISTRATION_WAIT: Duration = Duration::from_secs(10);
+/// The longest push token taken; FCM's are about 160 characters.
+const MAX_PUSH_TOKEN: usize = 4096;
 
 type ClientSet = Arc<HashSet<[u8; 32]>>;
 
@@ -134,6 +137,38 @@ impl HostKeys for LocalHostKeys {
         tracing::info!(%label, "revoked a relay client");
         Ok(())
     }
+
+    async fn set_push_token(
+        &self,
+        pubkey: [u8; 32],
+        token: Option<String>,
+    ) -> Result<(), ApiError> {
+        if let Some(token) = &token
+            && (token.is_empty()
+                || token.len() > MAX_PUSH_TOKEN
+                || !token.chars().all(|c| c.is_ascii_graphic()))
+        {
+            return Err(ApiError::new(
+                ErrorCode::BadRequest,
+                format!("a push token is 1 to {MAX_PUSH_TOKEN} printable ASCII characters"),
+            ));
+        }
+        if !self
+            .clients
+            .set_push_token(&pubkey, token.as_deref())
+            .map_err(internal)?
+        {
+            return Err(ApiError::new(
+                ErrorCode::NotFound,
+                "this client is not authorized any more",
+            ));
+        }
+        tracing::info!(
+            registered = token.is_some(),
+            "set a relay client's push token"
+        );
+        Ok(())
+    }
 }
 
 pub fn relay_endpoint(config: &AgentConfig) -> anyhow::Result<Option<RelayEndpoint>> {
@@ -157,20 +192,34 @@ pub struct RelayHandle {
     pub state: watch::Receiver<LinkState>,
 }
 
+/// Links the agent to its relay. With `push`, the events of
+/// [`crate::push::PushObserver`], it also sends notifications to the
+/// clients that registered a push token.
 pub fn start_relay(
     ctx: ServerContext,
     endpoint: RelayEndpoint,
     keys: Arc<LocalHostKeys>,
     data_dir: &Path,
+    push: Option<mpsc::Receiver<PushEvent>>,
     shutdown: CancellationToken,
 ) -> RelayHandle {
     let (tx, rx) = mpsc::channel::<IncomingChannel>(16);
+    let push = push.map(|events| {
+        start_push(
+            ctx.agent.clone(),
+            ctx.info.clone(),
+            keys.clone(),
+            events,
+            shutdown.clone(),
+        )
+    });
     let (_task, state) = spawn_agent_link(
         AgentLinkOptions {
             endpoint,
             instance: ctx.info.instance.clone(),
             host: keys.identity.clone(),
             responder: Arc::new(FileResponder::in_dir(data_dir)),
+            push,
         },
         tx,
         shutdown.clone(),

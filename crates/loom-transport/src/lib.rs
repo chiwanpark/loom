@@ -12,8 +12,8 @@ pub use frame::{
 };
 pub use registry::{AgentEntry, Registration, Registry, RegistryError};
 pub use relay::{
-    AgentLinkOptions, IncomingChannel, LinkState, RelayClient, RelayError, connect_relay,
-    pair_relay, spawn_agent_link,
+    AgentLinkOptions, IncomingChannel, LinkState, PushChannel, PushRequest, RelayClient,
+    RelayError, connect_relay, pair_relay, spawn_agent_link,
 };
 pub use unix::{UnixFrameListener, connect_unix, current_uid};
 pub use ws::{AbortOnDrop, AccessToken, RelayEndpoint};

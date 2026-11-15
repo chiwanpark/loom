@@ -22,6 +22,9 @@ pub struct RelayServerConfig {
     pub tls: Option<TlsConfig>,
     pub allowed_hosts: Vec<String>,
     pub cloudflare_access: Option<AccessVerifyConfig>,
+    /// Sending agents' notifications to clients' push services.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushConfig>,
     pub limits: RelayLimits,
     pub logging: LoggingConfig,
 }
@@ -35,6 +38,7 @@ impl Default for RelayServerConfig {
             tls: None,
             allowed_hosts: Vec::new(),
             cloudflare_access: None,
+            push: None,
             limits: RelayLimits::default(),
             logging: LoggingConfig::default(),
         }
@@ -68,6 +72,28 @@ impl AccessVerifyConfig {
             .unwrap_or_else(|| format!("{}/cdn-cgi/access/certs", self.issuer()))
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {
+    /// Firebase Cloud Messaging, which delivers to the Android app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fcm: Option<FcmConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FcmConfig {
+    /// The JSON key of a service account of the Firebase project the app
+    /// was built with, from Project settings > Service accounts > Generate
+    /// new private key.
+    pub service_account: PathBuf,
+    /// The FCM API's base URL; for tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+}
+
+pub const FCM_API_URL: &str = "https://fcm.googleapis.com";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -136,6 +162,9 @@ impl RelayServerConfig {
         if let Some(tls) = &mut self.tls {
             tls.cert = expand_home(&tls.cert, home);
             tls.key = expand_home(&tls.key, home);
+        }
+        if let Some(fcm) = self.push.as_mut().and_then(|p| p.fcm.as_mut()) {
+            fcm.service_account = expand_home(&fcm.service_account, home);
         }
     }
 
@@ -255,6 +284,10 @@ mod tests {
             "https://myteam.cloudflareaccess.com/cdn-cgi/access/certs"
         );
         assert_eq!(config.limits.max_frame, ByteSize::kib(256));
+        assert_eq!(
+            config.push.and_then(|p| p.fcm).unwrap().service_account,
+            PathBuf::from("/home/u/firebase-service-account.json")
+        );
         let empty = RelayServerConfig::parse("", "relay.yaml", &dirs()).unwrap();
         assert_eq!(empty, RelayServerConfig::default());
         let yaml = RelayServerConfig::default().to_yaml();

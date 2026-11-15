@@ -20,6 +20,7 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
+base64 = "0.23.1"
 loom-client = { path = "../loom-client" }
 loom-crypto = { path = "../loom-crypto" }
 loom-view-model = { path = "../loom-view-model" }
@@ -35,6 +36,8 @@ uniffi = "0.32"
 
 [dev-dependencies]
 async-trait = "0.1.92"
+aws-lc-rs = "1.19.0"
+axum = "0.8.9"
 futures = "0.3.34"
 loom-agent = { path = "../loom-agent" }
 loom-agent-core = { path = "../loom-agent-core" }

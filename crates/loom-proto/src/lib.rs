@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod codec;
+pub mod push;
 pub mod relay;
 pub mod session;
 
@@ -237,6 +238,10 @@ mod tests {
             Command::GetTasks {
                 session: session.clone(),
             },
+            Command::SetPushToken {
+                token: Some("fcm-token".into()),
+            },
+            Command::SetPushToken { token: None },
             Command::UpdateTasks {
                 session: session.clone(),
                 changes: vec![

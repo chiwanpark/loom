@@ -143,6 +143,10 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     LaunchedEffect(link) {
         link.notices.collect { snackbar.showSnackbar(it.message) }
     }
+    // Its notification has been seen.
+    LaunchedEffect(link.host, session) {
+        app.push.clear(link.host, session)
+    }
 
     Scaffold(
         topBar = {

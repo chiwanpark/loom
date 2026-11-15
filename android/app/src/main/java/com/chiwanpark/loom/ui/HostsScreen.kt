@@ -250,6 +250,8 @@ fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
                         try {
                             val host = loom.pair(link, label, name)
                             app.links.forget(host.name)
+                            // The host forgot where this device's notifications go.
+                            app.push.tellAgain()
                             app.navigator.home()
                             app.directory.refresh(loom)
                         } catch (e: Exception) {

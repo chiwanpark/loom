@@ -5,7 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::InstanceId;
 
-pub const RELAY_VERSION: u16 = 1;
+/// The version of the relay protocol agents speak. Version 2 adds push
+/// notifications ([`RelayFrame::Push`]).
+pub const RELAY_VERSION: u16 = 2;
+/// The oldest version a relay still accepts from agents. An agent falls
+/// back to it, without push notifications, when an older relay refuses
+/// [`RELAY_VERSION`].
+pub const MIN_RELAY_VERSION: u16 = 1;
 pub type ChannelId = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -114,6 +120,21 @@ pub enum RelayFrame {
         code: RelayErrorCode,
         message: String,
     },
+    /// From an agent of version 2: asks the relay to send a notification
+    /// to a client through its push service. `payload` is sealed for the
+    /// client (see `loom_crypto::seal_push`); the relay adds the agent's
+    /// host ID, which the client needs to open it.
+    ///
+    /// New variants go last: postcard stores the variant's position.
+    Push {
+        token: String,
+        payload: Vec<u8>,
+    },
+    /// To the agent that sent a [`RelayFrame::Push`]: the push service says
+    /// the token is no longer valid, so the agent should forget it.
+    PushRejected {
+        token: String,
+    },
 }
 
 pub fn agent_auth_message(nonce: &[u8; 32], instance: &InstanceId) -> Vec<u8> {
@@ -165,6 +186,11 @@ mod tests {
                 code: RelayErrorCode::RateLimited,
                 message: "slow down".into(),
             },
+            RelayFrame::Push {
+                token: "t".into(),
+                payload: vec![7; 100],
+            },
+            RelayFrame::PushRejected { token: "t".into() },
         ] {
             let decoded: RelayFrame = decode(&encode(&frame).unwrap()).unwrap();
             assert_eq!(decoded, frame);

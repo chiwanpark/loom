@@ -13,7 +13,7 @@ use crate::session::{
     SessionInfo, ToolCallId, UsageSoFar,
 };
 
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -289,6 +289,14 @@ pub enum Command {
     UpdateTasks {
         session: SessionId,
         changes: Vec<TaskChange>,
+    },
+    /// Sets where the agents of this host send this client's notifications:
+    /// a token of a push service such as Firebase Cloud Messaging, or none
+    /// to stop them. Only for clients that come through a relay, which
+    /// delivers the notifications; the token belongs to the client's key,
+    /// so every agent of the host uses it. Answered with [`Payload::Ok`].
+    SetPushToken {
+        token: Option<String>,
     },
 }
 

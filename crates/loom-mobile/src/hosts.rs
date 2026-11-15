@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use loom_client::proto::InstanceId;
 use loom_client::{Client, ClientIdentity, RelayHost, pair_with_uri};
-use loom_crypto::{CLIENT_IDENTITY_FILE, encode_key};
+use loom_crypto::{CLIENT_IDENTITY_FILE, decode_key, encode_key};
 
 use crate::agent::AgentConnection;
 use crate::error::{LoomError, Result};
-use crate::records::{Agent, Host};
+use crate::records::{Agent, Host, PushNotice};
 use crate::runtime::run;
 
 /// The name the core gives itself when it connects to an agent.
@@ -109,6 +109,35 @@ impl Loom {
             return Err(unknown_host(&name));
         }
         save_hosts(&self.dir, &hosts)
+    }
+
+    /// Opens a notification from a paired host's agent: `host_id` and
+    /// `payload` are the `h` and `p` of the push message. Fails for a host
+    /// that is not paired, and for one that did not seal it for this device.
+    pub fn open_push(&self, host_id: String, payload: String) -> Result<PushNotice> {
+        use base64::Engine;
+        let (name, host_key) = {
+            let hosts = self.lock();
+            let host = hosts
+                .iter()
+                .find(|h| h.host_id.eq_ignore_ascii_case(host_id.trim()))
+                .ok_or_else(|| {
+                    LoomError::invalid("a notification from a host that is not paired")
+                })?;
+            (host.name.clone(), host.host_key.clone())
+        };
+        let host_key =
+            decode_key(&host_key).ok_or_else(|| LoomError::invalid("the host's key is invalid"))?;
+        let sealed = base64::engine::general_purpose::STANDARD
+            .decode(payload.trim())
+            .map_err(|_| LoomError::invalid("a malformed notification"))?;
+        let plaintext = loom_crypto::open_push(&self.identity, &host_key, &sealed)
+            .map_err(|_| LoomError::invalid("a notification that this device cannot open"))?;
+        let notice: loom_client::proto::push::PushNotice = loom_client::proto::decode(&plaintext)
+            .map_err(|_| {
+            LoomError::invalid("a notification of a version this app does not know")
+        })?;
+        Ok(PushNotice::of(&name, notice))
     }
 
     /// The agents running on a host. Their workspaces are known when one of

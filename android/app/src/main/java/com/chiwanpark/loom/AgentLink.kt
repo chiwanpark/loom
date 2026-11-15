@@ -256,6 +256,7 @@ class AgentLink(
                 }
                 state = LinkState.Connected
                 wait = 1_000L
+                app.push.linked(this)
                 // Following the updates until the link is lost or closed.
                 if (!pump(connection!!)) return
                 state = LinkState.Down("Lost the connection to the agent.", fatal = false)
@@ -317,6 +318,18 @@ class AgentLinks(private val app: LoomApplication) {
     fun get(loom: Loom, host: String, instance: String): AgentLink {
         val key = resolve(host to instance)
         return links.getOrPut(key) { AgentLink(app, loom, host, key.second) }.also { it.start() }
+    }
+
+    /**
+     * Links to an agent that a notification named, with its workspace: when
+     * the agent was restarted since, the link moves to the instance of that
+     * workspace (see [retain]), also before it ever connected.
+     */
+    fun expect(loom: Loom, host: String, instance: String, workspace: String?) {
+        val link = get(loom, host, instance)
+        if (link.workspace == null && workspace != null) {
+            link.listed = Agent(instance, workspace, null, null)
+        }
     }
 
     /** Checks every link, as when the app comes back on screen or the network changes. */

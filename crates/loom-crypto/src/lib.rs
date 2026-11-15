@@ -5,6 +5,7 @@ mod files;
 mod identity;
 pub mod noise;
 mod pairing;
+mod push;
 mod responder;
 
 pub use authorized::{AUTHORIZED_CLIENTS_FILE, AuthorizedClients, ClientEntry, validate_label};
@@ -16,5 +17,6 @@ pub use identity::{
 };
 pub use noise::{Mode, PacketChannel, Peer, Responder, SecureChannel, initiate, respond};
 pub use pairing::{DEFAULT_PAIRING_TTL, PAIRINGS_FILE, PairingUri, Pairings, pairing_id};
+pub use push::{MAX_PUSH_PLAINTEXT, PUSH_OVERHEAD, open_push, seal_push};
 pub use responder::FileResponder;
 pub use zeroize::Zeroizing;

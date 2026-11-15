@@ -518,6 +518,15 @@ impl Client {
         .await
     }
 
+    /// Sets where the host's agents send this client's notifications; none
+    /// stops them. Only through a relay.
+    pub async fn set_push_token(&self, token: Option<&str>) -> Result<()> {
+        self.ok(Command::SetPushToken {
+            token: token.map(str::to_owned),
+        })
+        .await
+    }
+
     pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
         match self.request(Command::ListAgents).await? {
             Payload::Agents(list) => Ok(list),

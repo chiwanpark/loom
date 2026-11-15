@@ -7,8 +7,8 @@ use loom_crypto::{
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{
-    AgentId, ChannelId, CloseReason, HostId, RELAY_VERSION, RelayErrorCode, RelayFrame,
-    agent_auth_message,
+    AgentId, ChannelId, CloseReason, HostId, MIN_RELAY_VERSION, RELAY_VERSION, RelayErrorCode,
+    RelayFrame, agent_auth_message,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -183,6 +183,25 @@ pub struct AgentLinkOptions {
     pub instance: InstanceId,
     pub host: Arc<HostIdentity>,
     pub responder: Arc<dyn Responder>,
+    /// Notifications for the relay to send, and where it reports tokens
+    /// that are no longer valid; without it the agent sends none.
+    pub push: Option<PushChannel>,
+}
+
+/// A notification for the relay to send to a client through its push service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushRequest {
+    pub token: String,
+    /// Sealed for the client with `loom_crypto::seal_push`.
+    pub payload: Vec<u8>,
+}
+
+/// How an agent hands notifications to its relay link. They wait while the
+/// link is down, as many as the channel holds.
+pub struct PushChannel {
+    pub outgoing: mpsc::Receiver<PushRequest>,
+    /// Tokens the push service rejected.
+    pub rejected: mpsc::UnboundedSender<String>,
 }
 
 pub struct IncomingChannel {
@@ -204,18 +223,42 @@ pub fn spawn_agent_link(
     shutdown: CancellationToken,
 ) -> (JoinHandle<()>, watch::Receiver<LinkState>) {
     let (state_tx, state_rx) = watch::channel(LinkState::Connecting);
+    let mut options = options;
+    let mut push = options.push.take();
     let options = Arc::new(options);
     let task = tokio::spawn(async move {
         let mut backoff = Duration::from_secs(1);
+        // Falls back to the older version, without notifications, for a relay that predates them.
+        let mut version = RELAY_VERSION;
         loop {
             if shutdown.is_cancelled() {
                 break;
             }
             let _ = state_tx.send(LinkState::Connecting);
             let mut registered = false;
-            let result = run_link(&options, &incoming, &state_tx, &shutdown, &mut registered).await;
+            let result = run_link(
+                &options,
+                version,
+                &mut push,
+                &incoming,
+                &state_tx,
+                &shutdown,
+                &mut registered,
+            )
+            .await;
             match result {
                 Ok(()) => break,
+                Err(RelayError::Refused {
+                    code: RelayErrorCode::VersionMismatch,
+                    message,
+                }) if version > MIN_RELAY_VERSION && !registered => {
+                    tracing::warn!(
+                        %message,
+                        "the relay is older than this agent and cannot send notifications; update it"
+                    );
+                    version = MIN_RELAY_VERSION;
+                    continue;
+                }
                 Err(err) => {
                     tracing::warn!(error = %err, "relay connection lost");
                     let _ = state_tx.send(LinkState::Disconnected(err.to_string()));
@@ -235,8 +278,19 @@ pub fn spawn_agent_link(
     (task, state_rx)
 }
 
+/// The next notification to send, or never when there is nothing to send them for.
+async fn next_push(outgoing: &mut Option<&mut mpsc::Receiver<PushRequest>>) -> Option<PushRequest> {
+    match outgoing {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_link(
     options: &Arc<AgentLinkOptions>,
+    version: u16,
+    push: &mut Option<PushChannel>,
     incoming: &mpsc::Sender<IncomingChannel>,
     state: &watch::Sender<LinkState>,
     shutdown: &CancellationToken,
@@ -248,7 +302,7 @@ async fn run_link(
         RelayFrame::AgentHello {
             host_pubkey: options.host.verifying_key(),
             instance: options.instance.clone(),
-            version: RELAY_VERSION,
+            version,
         },
     )
     .await?;
@@ -269,8 +323,13 @@ async fn run_link(
     }
     *registered = true;
     let _ = state.send(LinkState::Registered);
-    tracing::info!(relay = %options.endpoint.url, "registered with the relay");
+    tracing::info!(relay = %options.endpoint.url, version, "registered with the relay");
 
+    // Notifications go out only through a relay that knows them.
+    let (mut outgoing, rejected) = match push {
+        Some(push) if version >= 2 => (Some(&mut push.outgoing), Some(push.rejected.clone())),
+        _ => (None, None),
+    };
     let mut channels: HashMap<ChannelId, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let (out_tx, mut out_rx) = mpsc::channel::<(ChannelId, Option<Vec<u8>>)>(CHANNEL_QUEUE);
     let mut tasks = tokio::task::JoinSet::new();
@@ -339,11 +398,23 @@ async fn run_link(
                     RelayFrame::Closed { channel, .. } => {
                         channels.remove(&channel);
                     }
+                    RelayFrame::PushRejected { token } => {
+                        if let Some(rejected) = &rejected {
+                            let _ = rejected.send(token);
+                        }
+                    }
                     RelayFrame::Error { code, message } => {
                         tracing::warn!(?code, %message, "relay error");
                     }
                     _ => {}
                 }
+            }
+            request = next_push(&mut outgoing) => {
+                let Some(PushRequest { token, payload }) = request else {
+                    outgoing = None;
+                    continue;
+                };
+                send(&link, RelayFrame::Push { token, payload }).await?;
             }
             item = out_rx.recv() => {
                 let Some((channel, packet)) = item else { continue };

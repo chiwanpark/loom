@@ -505,6 +505,17 @@ impl AgentConnection {
         .await
     }
 
+    /// Tells the host's agents where to send this device's notifications: a
+    /// Firebase Cloud Messaging registration token, or none to stop them.
+    /// The token belongs to this device's key, so one agent of a host is
+    /// enough.
+    pub async fn set_push_token(self: Arc<Self>, token: Option<String>) -> Result<()> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client.set_push_token(token.as_deref()).await?)
+        })
+        .await
+    }
+
     /// Follows a session's conversation; its updates then come from
     /// `next_updates`, the first with every item.
     pub async fn open_session(self: Arc<Self>, session: String) -> Result<()> {

@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use loom_agent_core::{Agent, AgentOptions, TelemetryReport, watch_config};
+use loom_agent_core::{
+    Agent, AgentOptions, Observers, SessionObserver, TelemetryReport, watch_config,
+};
 use loom_config::{AgentConfig, Dirs};
 use loom_crypto::HostIdentity;
 use loom_proto::{AgentInfo, InstanceId, TelemetryStatus};
@@ -12,6 +14,7 @@ use loom_transport::{AgentEntry, Registry, RegistryError, UnixFrameListener};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
+use crate::push::PushObserver;
 use crate::relay::{LocalHostKeys, relay_endpoint, start_relay, wait_registered};
 use crate::server::{ServerContext, run_listener};
 use crate::spawn::EXIT_ALREADY_RUNNING;
@@ -71,7 +74,21 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     let mut options = AgentOptions::new(&workspace, config, dirs.clone());
     options.config_path = Some(config_path.clone());
     options.sandbox_exe = std::env::current_exe().ok();
-    options.observer = telemetry.as_ref().map(Telemetry::observer);
+    // Notifications go through the relay, so only an agent with one sends them.
+    let (push_observer, push_events) = match relay_endpoint {
+        Some(_) => {
+            let (observer, events) = PushObserver::new();
+            (Some(observer as Arc<dyn SessionObserver>), Some(events))
+        }
+        None => (None, None),
+    };
+    let observers: Vec<Arc<dyn SessionObserver>> = telemetry
+        .as_ref()
+        .map(Telemetry::observer)
+        .into_iter()
+        .chain(push_observer)
+        .collect();
+    options.observer = (!observers.is_empty()).then(|| Arc::new(Observers(observers)) as _);
     options.telemetry = report;
     let agent = Agent::new(options).context("could not start the agent")?;
     let _watcher = start_watcher(&agent, &config_path, &dirs);
@@ -123,6 +140,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
             endpoint,
             host_keys,
             &data_dir,
+            push_events,
             shutdown.clone(),
         );
         if !wait_registered(&mut handle).await {

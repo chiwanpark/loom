@@ -9,12 +9,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use loom_agent::push::PushObserver;
 use loom_agent::relay::{LocalHostKeys, relay_endpoint, start_relay, wait_registered};
 use loom_agent::server::{ServerContext, serve_stream};
-use loom_agent_core::{Agent, AgentOptions};
+use loom_agent_core::{Agent, AgentOptions, SessionObserver};
 use loom_client::proto::{AgentInfo, InstanceId, SessionEvent, SessionId};
 use loom_client::{Client, Notification, memory_pair};
-use loom_config::{AgentConfig, Dirs, PolicyAction, PolicyConfig, RelayServerConfig};
+use loom_config::{
+    AgentConfig, Dirs, FcmConfig, PolicyAction, PolicyConfig, PushConfig, RelayServerConfig,
+};
 use loom_crypto::{HostIdentity, PairingUri, Pairings};
 use loom_llm::{
     AssistantContent, AssistantMessage, ChunkStream, CompletionChunk, CompletionRequest,
@@ -22,7 +25,7 @@ use loom_llm::{
 };
 use loom_mobile::{
     AgentConnection, AgentUpdate, ApprovalDecision, ConversationItem, ConversationUpdate, Delivery,
-    Loom, LoomError, Policy, SessionStatus, TaskEdit, TaskState, ToolState,
+    Loom, LoomError, Policy, PushKind, PushNotice, SessionStatus, TaskEdit, TaskState, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -105,10 +108,17 @@ struct Host {
     /// The relay, for its counters.
     relay_server: Arc<loom_relay::Relay>,
     agent_link: CancellationToken,
+    /// How the relay sends notifications, if it does.
+    push: Option<PushConfig>,
 }
 
 impl Host {
     async fn start(replies: Vec<AssistantMessage>) -> Self {
+        Self::start_with(replies, None).await
+    }
+
+    /// A host whose relay sends notifications as `push` says.
+    async fn start_with(replies: Vec<AssistantMessage>, push: Option<PushConfig>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let workspace = root.join("ws");
@@ -126,7 +136,7 @@ impl Host {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let (relay, relay_server) = serve_relay(listener, &identity);
+        let (relay, relay_server) = serve_relay(listener, &identity, push.clone());
 
         let mut config = AgentConfig::default();
         config.llm.default_model = Some(format!("{PROVIDER}/m"));
@@ -140,6 +150,9 @@ impl Host {
         options.providers.push(Arc::new(Scripted {
             replies: Mutex::new(replies.into()),
         }));
+        // As `loom-agent serve` does for an agent with a relay.
+        let (push_observer, push_events) = PushObserver::new();
+        options.observer = Some(push_observer as Arc<dyn SessionObserver>);
         let agent = Agent::new(options).unwrap();
         let info = AgentInfo {
             instance: InstanceId("phone-test".into()),
@@ -154,7 +167,14 @@ impl Host {
         ctx.host_keys = Some(keys.clone());
         let agent_link = CancellationToken::new();
         let endpoint = relay_endpoint(&config).unwrap().unwrap();
-        let mut handle = start_relay(ctx.clone(), endpoint, keys, &data, agent_link.clone());
+        let mut handle = start_relay(
+            ctx.clone(),
+            endpoint,
+            keys,
+            &data,
+            Some(push_events),
+            agent_link.clone(),
+        );
         assert!(
             wait_registered(&mut handle).await,
             "the agent did not register"
@@ -169,6 +189,7 @@ impl Host {
             relay,
             relay_server,
             agent_link,
+            push,
         }
     }
 
@@ -209,7 +230,7 @@ impl Host {
     /// Starts the relay again on its old address.
     async fn restart_relay(&mut self) {
         let listener = tokio::net::TcpListener::bind(self.addr).await.unwrap();
-        (self.relay, self.relay_server) = serve_relay(listener, &self.identity);
+        (self.relay, self.relay_server) = serve_relay(listener, &self.identity, self.push.clone());
     }
 }
 
@@ -224,9 +245,11 @@ impl Drop for Host {
 fn serve_relay(
     listener: tokio::net::TcpListener,
     identity: &HostIdentity,
+    push: Option<PushConfig>,
 ) -> (CancellationToken, Arc<loom_relay::Relay>) {
     let config = RelayServerConfig {
         allowed_hosts: vec![identity.host_id().to_string()],
+        push,
         ..Default::default()
     };
     let shutdown = CancellationToken::new();
@@ -726,4 +749,238 @@ async fn a_long_session_opens_through_the_relay_within_its_limits() {
     assert_eq!(host.relay_counter("loom_relay_rate_limited_total"), 0);
     assert_ne!(app.connected, Some(false), "the phone lost its link");
     assert!(conn.is_connected());
+}
+
+/// A stand-in for Google's token endpoint and FCM's send API, which keeps
+/// the messages it is sent and rejects the token "dead".
+struct FakeFcm {
+    config: PushConfig,
+    messages: tokio::sync::mpsc::UnboundedReceiver<(String, String, String)>,
+    _key_dir: tempfile::TempDir,
+}
+
+impl FakeFcm {
+    async fn start() -> Self {
+        use axum::Json;
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::routing::post;
+        use base64::Engine;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, messages) = tokio::sync::mpsc::unbounded_channel();
+        let app = axum::Router::new()
+            .route(
+                "/token",
+                post(|body: String| async move {
+                    assert!(body.contains("grant_type=urn"), "{body}");
+                    assert!(body.contains("assertion="), "{body}");
+                    Json(serde_json::json!({"access_token": "access", "expires_in": 3600}))
+                }),
+            )
+            .route(
+                "/v1/projects/loom-test/messages:send",
+                post(
+                    move |headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                        let tx = tx.clone();
+                        async move {
+                            assert_eq!(headers["authorization"], "Bearer access");
+                            let message = &body["message"];
+                            assert_eq!(message["android"]["priority"], "HIGH");
+                            assert!(message.get("notification").is_none(), "{body}");
+                            let field = |v: &serde_json::Value| v.as_str().unwrap().to_owned();
+                            let token = field(&message["token"]);
+                            if token == "dead" {
+                                return (
+                                    StatusCode::NOT_FOUND,
+                                    r#"{"error":{"status":"NOT_FOUND","details":[{"errorCode":"UNREGISTERED"}]}}"#,
+                                );
+                            }
+                            let _ = tx.send((
+                                token,
+                                field(&message["data"]["h"]),
+                                field(&message["data"]["p"]),
+                            ));
+                            (StatusCode::OK, r#"{"name":"projects/loom-test/messages/1"}"#)
+                        }
+                    },
+                ),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        // A service account key as Firebase hands it out, with a new RSA key.
+        let key = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+        let der: aws_lc_rs::encoding::Pkcs8V1Der =
+            aws_lc_rs::encoding::AsDer::as_der(&key).unwrap();
+        let body = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+        let lines: Vec<&str> = body
+            .as_bytes()
+            .chunks(64)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect();
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            lines.join("\n")
+        );
+        let key_dir = tempfile::tempdir().unwrap();
+        let path = key_dir.path().join("service-account.json");
+        let account = serde_json::json!({
+            "type": "service_account",
+            "project_id": "loom-test",
+            "private_key_id": "k1",
+            "private_key": pem,
+            "client_email": "relay@loom-test.iam.gserviceaccount.com",
+            "token_uri": format!("http://{addr}/token"),
+        });
+        std::fs::write(&path, account.to_string()).unwrap();
+        Self {
+            config: PushConfig {
+                fcm: Some(FcmConfig {
+                    service_account: path,
+                    api_url: Some(format!("http://{addr}")),
+                }),
+            },
+            messages,
+            _key_dir: key_dir,
+        }
+    }
+
+    /// The next message FCM was sent: its token and data.
+    async fn next(&mut self) -> (String, String, String) {
+        tokio::time::timeout(WAIT, self.messages.recv())
+            .await
+            .expect("timed out waiting for a notification")
+            .unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_is_told_about_approvals_and_ended_turns() {
+    let mut fcm = FakeFcm::start().await;
+    let host = Host::start_with(
+        vec![
+            write_call("out.txt"),
+            text("written\nand more"),
+            text("again"),
+        ],
+        Some(fcm.config.clone()),
+    )
+    .await;
+    let phone_dir = tempfile::tempdir().unwrap();
+    let loom = Loom::new(phone_dir.path().to_string_lossy().into_owned()).unwrap();
+    loom.clone()
+        .pair(host.pairing_link(), "phone".into(), "lab".into())
+        .await
+        .unwrap();
+    let conn = loom
+        .clone()
+        .connect("lab".into(), "phone-test".into())
+        .await
+        .unwrap();
+    conn.clone()
+        .set_push_token(Some("phone-token".into()))
+        .await
+        .unwrap();
+    let clients = loom_crypto::AuthorizedClients::in_dir(&host.data);
+    let token = || clients.list().unwrap()[0].push_token.clone();
+    assert_eq!(token().as_deref(), Some("phone-token"));
+
+    // A tool call that waits for approval is a notification.
+    let mut app = App::default();
+    let session = conn.clone().create_session(None).await.unwrap();
+    conn.clone().open_session(session.id.clone()).await.unwrap();
+    conn.clone()
+        .send_prompt(
+            session.id.clone(),
+            "write it".into(),
+            Vec::new(),
+            Delivery::Queue,
+        )
+        .await
+        .unwrap();
+    let (to, host_id, payload) = fcm.next().await;
+    assert_eq!(to, "phone-token");
+    assert_eq!(host_id, host.identity.host_id().to_string());
+    let notice = loom.open_push(host_id.clone(), payload.clone()).unwrap();
+    assert_eq!(
+        notice,
+        PushNotice {
+            host: "lab".into(),
+            instance: "phone-test".into(),
+            workspace: host.root.join("ws").to_string_lossy().into_owned(),
+            session: session.id.clone(),
+            title: notice.title.clone(),
+            kind: PushKind::Approval,
+            detail: Some("write: out.txt".into()),
+            at: notice.at,
+        }
+    );
+    assert!(notice.at > 0);
+    // Only the paired phone opens it, and only as the host's.
+    let stranger_dir = tempfile::tempdir().unwrap();
+    let stranger = Loom::new(stranger_dir.path().to_string_lossy().into_owned()).unwrap();
+    assert!(
+        stranger
+            .open_push(host_id.clone(), payload.clone())
+            .is_err()
+    );
+    assert!(loom.open_push("ab".repeat(32), payload.clone()).is_err());
+    assert!(
+        loom.open_push(host_id.clone(), "not base64!".into())
+            .is_err()
+    );
+
+    // A completed turn is one, with the first line of its answer.
+    app.until(&conn, "the approval", |app| {
+        app.last.as_ref().is_some_and(|u| u.pending_approvals == 1)
+    })
+    .await;
+    let call_id = app
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ConversationItem::Tool { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    conn.clone()
+        .resolve_approval(session.id.clone(), call_id, ApprovalDecision::Allow)
+        .await
+        .unwrap();
+    let (_, host_id, payload) = fcm.next().await;
+    let notice = loom.open_push(host_id, payload).unwrap();
+    assert_eq!(notice.kind, PushKind::Finished);
+    assert_eq!(notice.detail.as_deref(), Some("written"));
+    assert_eq!(notice.title.as_deref(), Some("write it"));
+
+    // A token FCM no longer knows is forgotten.
+    conn.clone()
+        .set_push_token(Some("dead".into()))
+        .await
+        .unwrap();
+    app.until(&conn, "the end of the turn", |app| app.idle())
+        .await;
+    conn.clone()
+        .send_prompt(
+            session.id.clone(),
+            "again".into(),
+            Vec::new(),
+            Delivery::Queue,
+        )
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while token().is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dead token stayed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(host.relay_counter("loom_relay_pushes_rejected_total"), 1);
+    assert_eq!(host.relay_counter("loom_relay_pushes_sent_total"), 2);
+
+    // Clients on the host have no push token to set.
+    let local = host.local_client().await;
+    assert!(local.set_push_token(Some("t")).await.is_err());
 }

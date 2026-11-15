@@ -12,6 +12,10 @@ cloudflare_access:
   team_domain: myteam.cloudflareaccess.com
   audience: 0123456789abcdef
 
+push:
+  fcm:
+    service_account: ~/firebase-service-account.json
+
 limits:
   max_frame: 256KiB
   max_channels_per_agent: 64
