@@ -56,6 +56,8 @@ actions!(
         NewSession,
         NewTerminal,
         CloseTab,
+        /// Closes the active session's tabs; the session stays on the agent.
+        CloseSession,
         ArchiveSession,
         NextTab,
         PreviousTab,
@@ -297,6 +299,21 @@ impl Panel {
         }
     }
 
+    /// Whether the tab can be closed. A session's conversation stays while
+    /// the session is open (close the session instead), and a terminal that
+    /// another client holds, or none does, stays until it is taken over
+    /// here, since closing a terminal ends its shell.
+    fn closable(&self, cx: &App) -> bool {
+        match self {
+            Panel::Chat(_) => false,
+            Panel::Terminal(view) => {
+                let view = view.read(cx);
+                view.exited().is_some() || *view.holder() == TerminalHolder::You
+            }
+            Panel::Diff(_) | Panel::File(_) => true,
+        }
+    }
+
     /// The file view, if this is one with unsaved changes.
     fn unsaved(&self, cx: &App) -> Option<Unsaved> {
         match self {
@@ -343,6 +360,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("panel: tasks", Box::new(ShowTasks)),
         ("view: toggle line wrap", Box::new(ToggleLineWrap)),
         ("file: save", Box::new(Save)),
+        ("session: close", Box::new(CloseSession)),
         ("session: archive", Box::new(ArchiveSession)),
         ("session: rename", Box::new(RenameSession)),
         ("session: choose model", Box::new(ChooseModel)),
@@ -1681,16 +1699,28 @@ impl Workspace {
     }
 
     fn release_panel(group: &SessionGroup, panel: &Panel, cx: &mut Context<Self>) {
-        if let Panel::Chat(_) = panel {
-            let id = group.session.clone();
-            group
-                .connection
-                .update(cx, |conn, _| conn.release_conversation(&id));
+        match panel {
+            Panel::Chat(_) => {
+                let id = group.session.clone();
+                group
+                    .connection
+                    .update(cx, |conn, _| conn.release_conversation(&id));
+            }
+            // Another client's terminal goes on there; it gets a tab in
+            // another session of the agent.
+            Panel::Terminal(view) if *view.read(cx).holder() != TerminalHolder::You => {
+                group.connection.update(cx, |conn, _| {
+                    if let Some(id) = conn.terminal_id(view) {
+                        conn.unregister_terminal(id);
+                    }
+                });
+            }
+            _ => {}
         }
     }
 
-    /// Closes a tab of the active group, after asking what to do with its
-    /// unsaved changes, if it has any.
+    /// Closes a tab of the active group that can be closed, after asking
+    /// what to do with its unsaved changes, if it has any.
     fn close_tab(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(group) = self.active_group() else {
             return;
@@ -1698,9 +1728,27 @@ impl Workspace {
         let Some((id, panel)) = group.pane(pane).and_then(|p| p.tabs.iter().nth(ix)) else {
             return;
         };
+        if !panel.closable(cx) {
+            return;
+        }
         let unsaved: Vec<Unsaved> = panel.unsaved(cx).into_iter().collect();
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.close_panel(id, window, cx)
+        });
+    }
+
+    /// Closes a session's tabs, after asking what to do with unsaved
+    /// changes. The session stays on the agent.
+    fn close_session(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let unsaved = self.unsaved_in(|g| g.is(&conn, &id), cx);
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            ws.remove_groups(window, cx, |g| g.is(&conn, &id));
         });
     }
 
@@ -1864,6 +1912,8 @@ impl Workspace {
         if self.active_group.is_none() {
             self.focus.focus(window, cx);
         }
+        // Other clients' terminals of the agent go to another of its sessions.
+        self.sync_terminal_tabs(&group.connection, &[], window, cx);
         cx.notify();
     }
 
@@ -3127,6 +3177,13 @@ impl Workspace {
         }
     }
 
+    fn on_close_session(&mut self, _: &CloseSession, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(group) = self.active_group() {
+            let (conn, id) = (group.connection.clone(), group.session.clone());
+            self.close_session(conn, id, window, cx);
+        }
+    }
+
     fn on_rename_session(
         &mut self,
         _: &RenameSession,
@@ -3790,6 +3847,12 @@ impl Workspace {
     ) -> AnyElement {
         let workspace = cx.entity().downgrade();
         let connected = conn.read(cx).status == LinkStatus::Connected;
+        // An open session closes from here; its conversation tab cannot be closed.
+        let open = session.as_ref().map(|info| info.id.clone()).filter(|id| {
+            self.groups
+                .iter()
+                .any(|g| g.connection == conn && g.session == *id)
+        });
         div()
             // The menu is inside the row, which must not see its clicks.
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -3806,6 +3869,15 @@ impl Workspace {
                                 let _ = workspace.update(cx, |ws, cx| run(ws, window, cx));
                             })
                         };
+                        if let Some(id) = &open {
+                            let (c, id) = (conn.clone(), id.clone());
+                            menu = menu.item(item(
+                                "Close session",
+                                Rc::new(move |ws, window, cx| {
+                                    ws.close_session(c.clone(), id.clone(), window, cx)
+                                }),
+                            ));
+                        }
                         if !connected {
                             let c = conn.clone();
                             menu = menu.item(item(
@@ -4044,84 +4116,88 @@ impl Workspace {
         };
         let len = pane.tabs.len();
         let active = pane.tabs.active_index();
-        let panels: Vec<(PanelId, PanelKind, String, bool)> = pane
+        let panels: Vec<(PanelId, PanelKind, String, bool, bool)> = pane
             .tabs
             .iter()
             .map(|(id, panel)| {
                 let unsaved = panel.unsaved(cx).is_some();
-                (id, panel.kind(), panel.title(cx), unsaved)
+                let closable = panel.closable(cx);
+                (id, panel.kind(), panel.title(cx), unsaved, closable)
             })
             .collect();
         let content = pane.tabs.active().cloned();
         let dim = multiple && !is_active;
-        let tabs = panels
-            .into_iter()
-            .enumerate()
-            .map(|(ix, (id, kind, title, unsaved))| {
-                let dragged = DraggedTab {
-                    pane: pane_id,
-                    panel: id,
-                    ix,
-                    kind,
-                    title: title.clone().into(),
-                };
-                Tab::new(("tab", id as usize))
-                    .position(Tab::position_for(ix, len, active))
-                    .selected(ix == active)
-                    .start_slot(panel_icon(kind))
-                    .child(
-                        div()
-                            .max_w(px(240.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .when(dim, |el| el.text_color(theme.muted_foreground))
-                            .child(title),
-                    )
-                    .when(unsaved, |tab| {
-                        tab.child(
+        let tabs =
+            panels
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (id, kind, title, unsaved, closable))| {
+                    let dragged = DraggedTab {
+                        pane: pane_id,
+                        panel: id,
+                        ix,
+                        kind,
+                        title: title.clone().into(),
+                    };
+                    Tab::new(("tab", id as usize))
+                        .position(Tab::position_for(ix, len, active))
+                        .selected(ix == active)
+                        .start_slot(panel_icon(kind))
+                        .child(
                             div()
-                                .debug_selector(move || format!("tab-unsaved-{id}"))
-                                .text_color(theme.muted_foreground)
-                                .child("●"),
+                                .max_w(px(240.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .when(dim, |el| el.text_color(theme.muted_foreground))
+                                .child(title),
                         )
-                    })
-                    .end_slot(
-                        Button::new(("close-tab", id as usize))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close_tab(pane_id, ix, window, cx)
-                            })),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_tab(pane_id, ix, window, cx);
-                        this.offer_terminal(window, cx);
-                    }))
-                    .on_middle_click(cx.listener(move |this, _, window, cx| {
-                        this.close_tab(pane_id, ix, window, cx)
-                    }))
-                    .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
-                    .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
-                        let theme = cx.theme();
-                        let style = style
-                            .bg(theme.drop_target)
-                            .border_color(theme.drag_border)
-                            .border_0();
-                        if dragged.pane != pane_id || ix < dragged.ix {
-                            style.border_l_2()
-                        } else if ix > dragged.ix {
-                            style.border_r_2()
-                        } else {
-                            style
-                        }
-                    })
-                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
-                        this.handle_tab_drop(dragged, pane_id, ix, window, cx)
-                    }))
-            });
+                        .when(unsaved, |tab| {
+                            tab.child(
+                                div()
+                                    .debug_selector(move || format!("tab-unsaved-{id}"))
+                                    .text_color(theme.muted_foreground)
+                                    .child("●"),
+                            )
+                        })
+                        .when(closable, |tab| {
+                            tab.end_slot(
+                                Button::new(("close-tab", id as usize))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_tab(pane_id, ix, window, cx)
+                                    })),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_tab(pane_id, ix, window, cx);
+                            this.offer_terminal(window, cx);
+                        }))
+                        .on_middle_click(cx.listener(move |this, _, window, cx| {
+                            this.close_tab(pane_id, ix, window, cx)
+                        }))
+                        .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                        .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
+                            let theme = cx.theme();
+                            let style = style
+                                .bg(theme.drop_target)
+                                .border_color(theme.drag_border)
+                                .border_0();
+                            if dragged.pane != pane_id || ix < dragged.ix {
+                                style.border_l_2()
+                            } else if ix > dragged.ix {
+                                style.border_r_2()
+                            } else {
+                                style
+                            }
+                        })
+                        .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                            this.handle_tab_drop(dragged, pane_id, ix, window, cx)
+                        }))
+                });
         let tab_bar = h_flex()
             .w_full()
             .flex_none()
@@ -4426,6 +4502,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_close_session))
             .on_action(cx.listener(Self::on_archive_session))
             .on_action(cx.listener(Self::on_rename_session))
             .on_action(cx.listener(Self::on_show_changes))
@@ -5082,13 +5159,16 @@ mod tests {
         assert!(has_dialog(cx));
         click("unsaved-cancel", cx);
 
-        // Closing the session's tabs does not ask about the notes, which
-        // belong to the agent and stay.
-        let pane = ws.read_with(cx, |ws, _| ws.active_group().unwrap().active_pane);
-        for _ in 0..2 {
-            ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, 0, window, cx));
-            assert!(!has_dialog(cx));
-        }
+        // Closing the session does not ask about the notes, which belong to
+        // the agent and stay.
+        let (conn, session) = ws.read_with(cx, |ws, _| {
+            let group = ws.active_group().unwrap();
+            (group.connection.clone(), group.session.clone())
+        });
+        ws.update_in(cx, |ws, window, cx| {
+            ws.close_session(conn, session, window, cx)
+        });
+        assert!(!has_dialog(cx));
         wait_until(cx, |cx| ws.read(cx).groups.is_empty());
         assert_eq!(cx.update(|_, cx| notes_view(&ws, cx)), Some(view.clone()));
         assert!(view.read_with(cx, |view, _| view.is_dirty()));
@@ -5317,32 +5397,88 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_closed_tab_of_another_clients_terminal_stays_closed(cx: &mut TestAppContext) {
+    fn conversations_and_other_clients_terminals_cannot_be_closed(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (ws, cx) = open_three_files(&agent, cx);
-        let (phone, _phone_notes) = agent.client("loom-android");
-        let first = agent.block_on({
-            let phone = phone.clone();
-            async move { phone.open_terminal(80, 24, 7).await.unwrap() }
-        });
-        wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
-        let tab = active_tabs(&ws, cx).0.len() - 1;
-        ws.update_in(cx, |ws, window, cx| {
-            let pane = ws.active_group().unwrap().active_pane;
-            ws.close_tab(pane, tab, window, cx)
-        });
+        let pane = ws.read_with(cx, |ws, _| ws.active_group().unwrap().active_pane);
+        let close = |ix: usize, cx: &mut VisualTestContext| {
+            ws.update_in(cx, |ws, window, cx| ws.close_tab(pane, ix, window, cx));
+            cx.run_until_parked();
+        };
+
+        // The conversation stays, by click, ctrl-w, or the command palette.
+        close(0, cx);
+        assert_eq!(active_tabs(&ws, cx).0.len(), 4);
+        ws.update_in(cx, |ws, window, cx| ws.activate_tab(pane, 0, window, cx));
+        cx.dispatch_action(CloseTab);
         cx.run_until_parked();
-        assert!(cx.update(|_, cx| terminal_tabs(&ws, cx).is_empty()));
-        // Another terminal changes the list; the closed one gets no tab again,
-        // and it still runs on the agent.
-        agent.block_on({
+        assert_eq!(active_tabs(&ws, cx).0.len(), 4);
+        let kinds = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                let pane = ws.read(cx).active_group().unwrap().active().unwrap();
+                let tabs: Vec<_> = pane
+                    .tabs
+                    .iter()
+                    .map(|(_, panel)| (panel.kind(), panel.closable(cx)))
+                    .collect();
+                tabs
+            })
+        };
+        assert!(kinds(&ws, cx)[0] == (PanelKind::Chat, false));
+
+        // A terminal of another client stays until it is taken over.
+        let (phone, _phone_notes) = agent.client("loom-android");
+        let terminal = agent.block_on({
             let phone = phone.clone();
             async move { phone.open_terminal(80, 24, 7).await.unwrap() }
         });
         wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
+        assert!(kinds(&ws, cx)[4] == (PanelKind::Terminal, false));
+        close(4, cx);
+        assert_eq!(cx.update(|_, cx| terminal_tabs(&ws, cx).len()), 1);
+        let view = cx.update(|_, cx| terminal_tabs(&ws, cx).remove(0).0);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.take_over_terminal(&view, false, window, cx)
+        });
+        wait_until(cx, |cx| *view.read(cx).holder() == TerminalHolder::You);
+        assert!(kinds(&ws, cx)[4] == (PanelKind::Terminal, true));
+        // Closing it here ends it, once its view is gone.
+        drop(view);
+        close(4, cx);
+        assert!(cx.update(|_, cx| terminal_tabs(&ws, cx).is_empty()));
+        wait_until(cx, |_| {
+            let phone = phone.clone();
+            agent
+                .block_on(async move { phone.terminals().await.unwrap() })
+                .iter()
+                .all(|t| t.id != terminal)
+        });
+
+        // Closing a session moves another client's terminal to another
+        // session of the agent, and the terminal goes on.
+        let other = agent.block_on({
+            let phone = phone.clone();
+            async move { phone.open_terminal(80, 24, 7).await.unwrap() }
+        });
+        wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
+        let (conn, first) = ws.read_with(cx, |ws, _| {
+            let group = ws.active_group().unwrap();
+            (group.connection.clone(), group.session.clone())
+        });
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_session(conn.clone(), window, cx)
+        });
+        wait_until(cx, |cx| ws.read(cx).groups.len() == 2);
+        assert!(cx.update(|_, cx| terminal_tabs(&ws, cx).is_empty()));
+        ws.update_in(cx, |ws, window, cx| {
+            ws.close_session(conn, first, window, cx)
+        });
+        wait_until(cx, |cx| {
+            ws.read(cx).groups.len() == 1 && terminal_tabs(&ws, cx).len() == 1
+        });
         let terminals = agent.block_on(async move { phone.terminals().await.unwrap() });
-        assert_eq!(terminals.len(), 2);
-        assert_eq!(terminals[0].id, first);
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].id, other);
     }
 
     #[gpui::test]

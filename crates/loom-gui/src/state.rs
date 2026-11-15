@@ -141,9 +141,6 @@ pub struct AgentConnection {
     terminals: HashMap<TerminalId, TerminalEntry>,
     /// The agent's terminals, as it last listed them.
     listed: Vec<TerminalInfo>,
-    /// Terminals of other clients whose tabs were closed here, which get
-    /// no new tab.
-    dismissed: HashSet<TerminalId>,
     /// This client's token for its terminals, kept across reconnects.
     pub terminal_owner: TerminalOwner,
     _pump: Option<Task<()>>,
@@ -194,7 +191,6 @@ impl AgentConnection {
             loading_all_history: HashSet::new(),
             terminals: HashMap::new(),
             listed: Vec::new(),
-            dismissed: HashSet::new(),
             terminal_owner: terminal_owner(),
             _pump: None,
         };
@@ -802,7 +798,6 @@ impl AgentConnection {
         io: TerminalRebind,
         attaching: bool,
     ) {
-        self.dismissed.remove(&id);
         self.terminals.insert(
             id,
             TerminalEntry {
@@ -829,19 +824,9 @@ impl AgentConnection {
             .map(|(id, _)| *id)
     }
 
-    /// Drops the terminals whose views are gone; those of other clients get
-    /// no new tab.
+    /// Drops the terminals whose views are gone.
     fn prune_terminals(&mut self) {
-        let dismissed: Vec<TerminalId> = self
-            .terminals
-            .iter()
-            .filter(|(_, t)| t.view.upgrade().is_none())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in dismissed {
-            self.terminals.remove(&id);
-            self.dismissed.insert(id);
-        }
+        self.terminals.retain(|_, t| t.view.upgrade().is_some());
     }
 
     /// Takes in the agent's list of terminals: tells each view where its
@@ -876,21 +861,19 @@ impl AgentConnection {
                 entry.view.entity_id()
             })
             .collect();
-        self.dismissed
-            .retain(|id| terminals.iter().any(|t| t.id == *id));
         self.listed = terminals;
         cx.emit(ConnectionEvent::TerminalsChanged { closed });
         cx.notify();
     }
 
     /// The terminals that another client holds, or none does, which have
-    /// no view here and whose tabs were not closed here.
+    /// no view here.
     pub fn untracked_terminals(&mut self) -> Vec<TerminalInfo> {
         self.prune_terminals();
         self.listed
             .iter()
             .filter(|t| t.holder != TerminalHolder::You)
-            .filter(|t| !self.terminals.contains_key(&t.id) && !self.dismissed.contains(&t.id))
+            .filter(|t| !self.terminals.contains_key(&t.id))
             .cloned()
             .collect()
     }
@@ -986,7 +969,6 @@ impl AgentConnection {
         self.prune_terminals();
         if !same_agent {
             self.listed.clear();
-            self.dismissed.clear();
             for (_, terminal) in self.terminals.drain() {
                 terminal.io.forget();
                 if let Some(view) = terminal.view.upgrade() {

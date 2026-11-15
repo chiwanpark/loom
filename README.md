@@ -273,13 +273,15 @@ Useful default key bindings:
 | `ctrl-tab` / `ctrl-shift-tab` (or `ctrl-pagedown` / `ctrl-pageup`) | Next / previous tab in the pane |
 | `alt-1` … `alt-8` / `alt-9` | Tab 1 to 8 / the last tab in the pane |
 | `ctrl-shift-pagedown` / `ctrl-shift-pageup` | Move the tab right / left |
-| `ctrl-w` | Close the tab |
+| `ctrl-w` | Close the tab, unless it is the session's conversation or another client's terminal |
 | `ctrl-k` then an arrow | Split the pane |
 | `ctrl-k ctrl-t` | Select a theme |
 | `ctrl-s` | Save the file being edited in a file view, or the notes in the Notes tab |
 | `alt-z` | Wrap long lines in a file or diff view, or stop wrapping them |
 
-A terminal is open on one client at a time, and every client shows the agent's terminals. A terminal that another client opened, such as the Android app, gets a tab in the agent's active session, titled with where it is open. Click the tab and confirm, or press **Take over** on it, to move the terminal here with its recent output (up to 128 KiB); the other client can take it back the same way. Closing such a tab leaves the terminal running where it is.
+A session's conversation tab stays while the session is open. To close a session with all its tabs, choose **Close session** in its menu in the agents panel, or **session: close** in the command palette; the session stays on the agent, and you can open it again.
+
+A terminal is open on one client at a time, and every client shows the agent's terminals. A terminal that another client opened, such as the Android app, gets a tab in the agent's active session, titled with where it is open. Click the tab and confirm, or press **Take over** on it, to move the terminal here with its recent output (up to 128 KiB); the other client can take it back the same way. Such a tab cannot be closed until you take the terminal over, since closing a terminal's tab ends its shell; closing its session moves the tab to another open session of the agent.
 
 The tab and panel keys work in terminals too, so a terminal program does not see them (for example `alt-1` in readline). `ctrl-w`, `ctrl-b`, and `ctrl-p` go to the terminal.
 
