@@ -2,6 +2,12 @@ package com.chiwanpark.loom
 
 import androidx.compose.runtime.mutableStateListOf
 
+/** A screen about one agent on a host. */
+sealed interface AgentScreen {
+    val host: String
+    val instance: String
+}
+
 /** A place in the app. */
 sealed interface Screen {
     /** Every session of every agent on the paired hosts. */
@@ -13,12 +19,22 @@ sealed interface Screen {
     /** Pairing with a host, with a link that came from outside the app. */
     data class Pair(val link: String = "") : Screen
 
-    data class Conversation(val host: String, val instance: String, val session: String) : Screen
+    data class Conversation(override val host: String, override val instance: String, val session: String) :
+        Screen, AgentScreen
 
     /** The agent's notes, which its sessions share. */
-    data class Notes(val host: String, val instance: String) : Screen
+    data class Notes(override val host: String, override val instance: String) : Screen, AgentScreen
 
-    data class Tasks(val host: String, val instance: String, val session: String) : Screen
+    data class Tasks(override val host: String, override val instance: String, val session: String) :
+        Screen, AgentScreen
+
+    /** A directory of the agent's workspace; an empty `path` is the workspace itself. */
+    data class Files(override val host: String, override val instance: String, val path: String = "") :
+        Screen, AgentScreen
+
+    /** A file of the agent's workspace, highlighted for its language. */
+    data class File(override val host: String, override val instance: String, val path: String) :
+        Screen, AgentScreen
 
     /** The text size and the fonts of text and code. */
     data object Font : Screen
@@ -54,14 +70,7 @@ class Navigator {
 
     /** Drops the screens of `host`, as when it is removed. */
     fun leaveHost(host: String) {
-        stack.removeAll { screen ->
-            when (screen) {
-                is Screen.Conversation -> screen.host == host
-                is Screen.Notes -> screen.host == host
-                is Screen.Tasks -> screen.host == host
-                else -> false
-            }
-        }
+        stack.removeAll { screen -> screen is AgentScreen && screen.host == host }
         if (stack.isEmpty()) stack.add(Screen.Home)
     }
 }

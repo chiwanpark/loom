@@ -22,10 +22,10 @@ use crate::runtime::{run, spawn};
 
 #[derive(uniffi::Object)]
 pub struct AgentConnection {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     relay: RelayHost,
     instance: InstanceId,
     identity: Arc<ClientIdentity>,
@@ -282,7 +282,7 @@ impl Shared {
 }
 
 /// Runs `f` with the current client on the core's runtime.
-async fn with_client<T, F, Fut>(shared: &Arc<Shared>, f: F) -> Result<T>
+pub(crate) async fn with_client<T, F, Fut>(shared: &Arc<Shared>, f: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(Client) -> Fut + Send + 'static,

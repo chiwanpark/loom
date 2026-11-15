@@ -56,6 +56,8 @@ fun LoomRoot(app: LoomApplication) {
             )
             is Screen.Notes -> NotesScreen(app, app.links.get(loom, screen.host, screen.instance))
             is Screen.Tasks -> TasksScreen(app, app.links.get(loom, screen.host, screen.instance), screen.session)
+            is Screen.Files -> FilesScreen(app, app.links.get(loom, screen.host, screen.instance), screen.path)
+            is Screen.File -> FileScreen(app, app.links.get(loom, screen.host, screen.instance), screen.path)
         }
     }
 }

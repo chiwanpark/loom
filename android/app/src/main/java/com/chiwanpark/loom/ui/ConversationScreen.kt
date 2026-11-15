@@ -165,6 +165,9 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
+                    MenuEntry("Files", LoomIcons.Folder, close) {
+                        app.navigator.push(Screen.Files(link.host, link.instance))
+                    }
                     MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
                     MenuEntry("Compact the context", LoomIcons.FoldVertical, close) {
                         scope.attempt(snackbar) { link.connection().compactSession(session) }

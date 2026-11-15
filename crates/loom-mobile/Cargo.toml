@@ -29,9 +29,13 @@ loom-view-model = { path = "../loom-view-model" }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Syntax highlighting of files and diffs: TextMate grammars, bat's collection
+# of them, and a pure Rust regex engine, which builds with the NDK alone.
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.44"
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 uniffi = "0.32"
 
 [dev-dependencies]

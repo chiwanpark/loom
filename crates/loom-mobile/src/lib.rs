@@ -11,11 +11,15 @@ uniffi::setup_scaffolding!();
 
 mod agent;
 mod error;
+mod files;
+mod highlight;
 mod hosts;
 mod records;
 mod runtime;
 
 pub use agent::AgentConnection;
 pub use error::LoomError;
+pub use files::{DirectoryListing, EntryKind, FileEntry, FileView};
+pub use highlight::{CodeLine, Highlight, Span};
 pub use hosts::{CLIENT_NAME, Loom};
 pub use records::*;

@@ -391,13 +391,7 @@ class AgentLinks(private val app: LoomApplication) {
 
     /** Whether a screen on the back stack shows the agent. */
     private fun inUse(key: Pair<String, String>): Boolean = app.navigator.stack.any { screen ->
-        val named = when (screen) {
-            is Screen.Conversation -> screen.host to screen.instance
-            is Screen.Notes -> screen.host to screen.instance
-            is Screen.Tasks -> screen.host to screen.instance
-            else -> null
-        }
-        named != null && resolve(named) == key
+        screen is AgentScreen && resolve(screen.host to screen.instance) == key
     }
 }
 

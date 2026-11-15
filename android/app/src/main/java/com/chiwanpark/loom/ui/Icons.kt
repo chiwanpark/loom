@@ -42,6 +42,11 @@ object LoomIcons {
     val Eraser = Lucide.drawable.lucide_ic_eraser
     val Eye = Lucide.drawable.lucide_ic_eye
     val EyeOff = Lucide.drawable.lucide_ic_eye_off
+    val File = Lucide.drawable.lucide_ic_file
+    val FileCode = Lucide.drawable.lucide_ic_file_code
+    val FileSymlink = Lucide.drawable.lucide_ic_file_symlink
+    val Folder = Lucide.drawable.lucide_ic_folder
+    val FolderSymlink = Lucide.drawable.lucide_ic_folder_symlink
     val FoldVertical = Lucide.drawable.lucide_ic_fold_vertical
     val Gauge = Lucide.drawable.lucide_ic_gauge
     val Image = Lucide.drawable.lucide_ic_image
@@ -64,6 +69,7 @@ object LoomIcons {
     val Tasks = Lucide.drawable.lucide_ic_list_todo
     val Trash = Lucide.drawable.lucide_ic_trash_2
     val TriangleAlert = Lucide.drawable.lucide_ic_triangle_alert
+    val WrapText = Lucide.drawable.lucide_ic_text_wrap
     val X = Lucide.drawable.lucide_ic_x
 }
 

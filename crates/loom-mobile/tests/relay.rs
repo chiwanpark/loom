@@ -25,7 +25,8 @@ use loom_llm::{
 };
 use loom_mobile::{
     AgentConnection, AgentUpdate, ApprovalDecision, ConversationItem, ConversationUpdate, Delivery,
-    Loom, LoomError, Policy, PushKind, PushNotice, SessionStatus, TaskEdit, TaskState, ToolState,
+    EntryKind, Highlight, Loom, LoomError, Policy, PushKind, PushNotice, SessionStatus, Span,
+    TaskEdit, TaskState, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -983,4 +984,75 @@ async fn a_phone_is_told_about_approvals_and_ended_turns() {
     // Clients on the host have no push token to set.
     let local = host.local_client().await;
     assert!(local.set_push_token(Some("t")).await.is_err());
+}
+
+/// A phone paired with `host` as "lab", and its connection to the agent.
+async fn phone(host: &Host) -> (tempfile::TempDir, Arc<Loom>, Arc<AgentConnection>) {
+    let dir = tempfile::tempdir().unwrap();
+    let loom = Loom::new(dir.path().to_string_lossy().into_owned()).unwrap();
+    loom.clone()
+        .pair(host.pairing_link(), "phone".into(), "lab".into())
+        .await
+        .unwrap();
+    let conn = loom
+        .clone()
+        .connect("lab".into(), "phone-test".into())
+        .await
+        .unwrap();
+    (dir, loom, conn)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
+    let host = Host::start(Vec::new()).await;
+    let ws = host.root.join("ws");
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(ws.join("src/main.rs"), "fn main() {\n    // hi\n}\n").unwrap();
+    std::fs::write(ws.join("README"), "plain").unwrap();
+    std::fs::write(ws.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+    let (_dir, _loom, conn) = phone(&host).await;
+
+    let root = conn.clone().list_directory(String::new()).await.unwrap();
+    assert_eq!(root.path, "");
+    let names: Vec<_> = root
+        .entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.kind))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("src", EntryKind::Directory),
+            ("blob.bin", EntryKind::File),
+            ("README", EntryKind::File)
+        ]
+    );
+    let src = conn.clone().list_directory("src".into()).await.unwrap();
+    assert_eq!(src.entries[0].path, "src/main.rs");
+    assert_eq!(src.entries[0].size, 24);
+
+    let file = conn.clone().read_file("src/main.rs".into()).await.unwrap();
+    assert_eq!(file.language.as_deref(), Some("Rust"));
+    let texts: Vec<_> = file.lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["fn main() {", "    // hi", "}"]);
+    assert_eq!(
+        file.lines[1].spans,
+        [Span {
+            start: 4,
+            end: 9,
+            highlight: Highlight::Comment
+        }]
+    );
+    let plain = conn.clone().read_file("README".into()).await.unwrap();
+    assert!(plain.language.is_none() && plain.lines[0].spans.is_empty());
+    let blob = conn.clone().read_file("blob.bin".into()).await.unwrap();
+    assert!(blob.binary && blob.lines.is_empty());
+
+    let missing = conn.clone().read_file("nope.rs".into()).await.unwrap_err();
+    assert!(
+        matches!(&missing, LoomError::Api { code, .. } if code == "NotFound"),
+        "{missing:?}"
+    );
+    let outside = conn.clone().list_directory("../..".into()).await;
+    assert!(matches!(outside, Err(LoomError::Invalid { .. })));
 }

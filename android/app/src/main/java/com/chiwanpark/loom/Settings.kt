@@ -29,6 +29,10 @@ class Settings(context: Context) {
     var codeFont by mutableStateOf(prefs.getString(CODE_FONT, null) ?: DEFAULT_CODE_FONT)
         private set
 
+    /** Whether long lines of files and diffs wrap instead of scrolling sideways. */
+    var wrapCode by mutableStateOf(prefs.getBoolean(WRAP_CODE, false))
+        private set
+
     fun updateTextScale(scale: Float) {
         textScale = scale
         prefs.edit().putFloat(TEXT_SCALE, scale).apply()
@@ -49,11 +53,17 @@ class Settings(context: Context) {
         prefs.edit().putString(CODE_FONT, id).apply()
     }
 
+    fun updateWrapCode(wrap: Boolean) {
+        wrapCode = wrap
+        prefs.edit().putBoolean(WRAP_CODE, wrap).apply()
+    }
+
     companion object {
         private const val TEXT_SCALE = "text_scale"
         private const val BLOCK_SCALE = "block_scale"
         private const val TEXT_FONT = "text_font"
         private const val CODE_FONT = "code_font"
+        private const val WRAP_CODE = "wrap_code"
 
         const val DEFAULT_TEXT_FONT = "system"
         const val DEFAULT_CODE_FONT = "jetbrains-mono"
