@@ -339,8 +339,24 @@ async fn verifies_access_jwts() {
 
 /// A relay of version 0.2, which speaks only version 1 of the protocol:
 /// it refuses other versions, and registers agents without checking them.
-/// Returns its URL and the versions agents said.
-async fn start_old_relay() -> (String, mpsc::UnboundedReceiver<u16>) {
+/// Upgrading it ends its connections, as a restart would, and then it
+/// speaks version 2 as well.
+struct OldRelay {
+    url: String,
+    /// The versions agents said, in order.
+    versions: mpsc::UnboundedReceiver<u16>,
+    upgrade: watch::Sender<bool>,
+}
+
+impl OldRelay {
+    async fn next_version(&mut self) -> Option<u16> {
+        tokio::time::timeout(Duration::from_secs(10), self.versions.recv())
+            .await
+            .expect("timed out waiting for an agent")
+    }
+}
+
+async fn start_old_relay() -> OldRelay {
     use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
     use futures::StreamExt;
     use loom_proto::relay::{HostId, RelayErrorCode, RelayFrame};
@@ -361,10 +377,12 @@ async fn start_old_relay() -> (String, mpsc::UnboundedReceiver<u16>) {
     }
 
     let (tx, versions) = mpsc::unbounded_channel();
+    let (upgrade, upgraded) = watch::channel(false);
     let app = axum::Router::new().route(
         "/v1/agent",
         axum::routing::get(move |ws: WebSocketUpgrade| {
             let tx = tx.clone();
+            let mut upgraded = upgraded.clone();
             async move {
                 ws.on_upgrade(move |mut socket| async move {
                     let Some(RelayFrame::AgentHello { version, .. }) = read(&mut socket).await
@@ -372,7 +390,8 @@ async fn start_old_relay() -> (String, mpsc::UnboundedReceiver<u16>) {
                         return;
                     };
                     let _ = tx.send(version);
-                    if version != 1 {
+                    let new = *upgraded.borrow_and_update();
+                    if version != 1 && !(new && version == 2) {
                         let message = format!("the relay speaks version 1, not {version}");
                         let code = RelayErrorCode::VersionMismatch;
                         write(&mut socket, RelayFrame::Error { code, message }).await;
@@ -385,9 +404,21 @@ async fn start_old_relay() -> (String, mpsc::UnboundedReceiver<u16>) {
                     };
                     let host = HostId([0; 32]);
                     write(&mut socket, RelayFrame::Registered { host }).await;
-                    // Frames the old relay does not know end the connection.
-                    while let Some(frame) = read(&mut socket).await {
-                        assert!(!matches!(frame, RelayFrame::Push { .. }));
+                    loop {
+                        tokio::select! {
+                            frame = read(&mut socket) => match frame {
+                                // The old relay knows no notifications.
+                                Some(frame) => {
+                                    assert!(new || !matches!(frame, RelayFrame::Push { .. }));
+                                }
+                                None => break,
+                            },
+                            // Restarted as the new version.
+                            Ok(()) = upgraded.changed(), if !new => {
+                                let _ = socket.send(Message::Close(None)).await;
+                                break;
+                            }
+                        }
                     }
                 })
             }
@@ -396,17 +427,40 @@ async fn start_old_relay() -> (String, mpsc::UnboundedReceiver<u16>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await });
-    (format!("ws://{addr}"), versions)
+    OldRelay {
+        url: format!("ws://{addr}"),
+        versions,
+        upgrade,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn agents_fall_back_to_an_older_relay_without_notifications() {
-    let (url, mut versions) = start_old_relay().await;
+    let mut relay = start_old_relay().await;
     let dir = tempfile::tempdir().unwrap();
     let host = host_in(dir.path());
-    let mut agent = start_agent(&url, dir, host, "inst-old");
+    let mut agent = start_agent(&relay.url, dir, host, "inst-old");
     wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
-    assert_eq!(versions.recv().await, Some(2));
-    assert_eq!(versions.recv().await, Some(1));
+    assert_eq!(relay.next_version().await, Some(2));
+    assert_eq!(relay.next_version().await, Some(1));
+    agent.shutdown.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_ask_for_notifications_again_when_their_relay_comes_back() {
+    let mut relay = start_old_relay().await;
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_in(dir.path());
+    let mut agent = start_agent(&relay.url, dir, host, "inst-upgraded");
+    wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
+    assert_eq!(relay.next_version().await, Some(2));
+    assert_eq!(relay.next_version().await, Some(1));
+
+    // The relay restarts as a version with notifications, and the agent
+    // that fell back asks for them again instead of staying on version 1.
+    relay.upgrade.send(true).unwrap();
+    assert_eq!(relay.next_version().await, Some(2));
+    wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
+    assert!(relay.versions.try_recv().is_err());
     agent.shutdown.cancel();
 }

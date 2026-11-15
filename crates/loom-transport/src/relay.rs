@@ -228,7 +228,9 @@ pub fn spawn_agent_link(
     let options = Arc::new(options);
     let task = tokio::spawn(async move {
         let mut backoff = Duration::from_secs(1);
-        // Falls back to the older version, without notifications, for a relay that predates them.
+        // Falls back to the older version, without notifications, for a relay
+        // that predates them, and asks for the newer one again on the next
+        // connection, which may reach the relay upgraded.
         let mut version = RELAY_VERSION;
         loop {
             if shutdown.is_cancelled() {
@@ -264,6 +266,7 @@ pub fn spawn_agent_link(
                     let _ = state_tx.send(LinkState::Disconnected(err.to_string()));
                 }
             }
+            version = RELAY_VERSION;
             if registered {
                 backoff = Duration::from_secs(1);
             }

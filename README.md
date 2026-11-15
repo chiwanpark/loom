@@ -172,7 +172,7 @@ push:
     service_account: /etc/loom/firebase-service-account.json
 ```
 
-The relay system service cannot read files that only root may read; `contrib/systemd/loom-relay.service` shows how to hand it the key as a credential. Agents send notifications through relays of this version or newer; with an older relay they connect as before, without them. The relay's metrics count the notifications it sent (`loom_relay_pushes_sent_total`), sent to tokens Firebase no longer knows (`loom_relay_pushes_rejected_total`, which the agents then forget), could not send, and dropped.
+The relay system service cannot read files that only root may read; `contrib/systemd/loom-relay.service` shows how to hand it the key as a credential. Agents send notifications through relays of this version or newer; with an older relay they connect as before, without them, and once the relay is upgraded they send them when they reconnect after its restart, without being restarted themselves. The relay's metrics count the notifications it sent (`loom_relay_pushes_sent_total`), sent to tokens Firebase no longer knows (`loom_relay_pushes_rejected_total`, which the agents then forget), could not send, and dropped.
 
 To keep an agent running for the relay, `contrib/systemd/loom-agent.service` starts `loom-agent serve --default` (the `lifecycle.default_workspace` directory) as a systemd user service. `scripts/install.sh agent --systemd` installs and starts it; manual steps are in the file. To keep it running after you log out, run `loginctl enable-linger`.
 
