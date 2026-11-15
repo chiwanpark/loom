@@ -105,6 +105,10 @@ async fn serve_stdio_spawn_and_stop() {
         String::from_utf8_lossy(&output.stdout).trim(),
         path_arg(&env.config_path())
     );
+    let missing = env.run(&["config", "check"]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("does not exist"), "{missing:?}");
+    assert!(missing.stdout.is_empty());
     assert!(env.run(&["config", "init"]).status.success());
     assert!(!env.run(&["config", "init"]).status.success());
     assert!(env.run(&["config", "check"]).status.success());

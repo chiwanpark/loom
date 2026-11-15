@@ -580,6 +580,15 @@ fn config_command(ctx: &Ctx, command: ConfigCommand) -> anyhow::Result<i32> {
             println!("{}", ctx.config_path.display());
         }
         ConfigCommand::Check => {
+            // A missing file loads as the defaults, which is right for the
+            // agent but would make a mistyped `--config` path look valid.
+            if !ctx.config_path.exists() {
+                bail!(
+                    "{} does not exist; the agent uses the defaults \
+                     (create the file with `loom-agent config init`)",
+                    ctx.config_path.display()
+                );
+            }
             ctx.load()?;
             println!("{}: ok", ctx.config_path.display());
         }
