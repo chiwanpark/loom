@@ -7,14 +7,17 @@ writes the families it can pick from to
 android/app/src/main/assets/google-fonts.tsv, one family per line, the most
 popular first:
 
-    name<TAB>category<TAB>weights<TAB>flags
+    name<TAB>category<TAB>weights<TAB>flags<TAB>scripts
 
 - category: sans-serif, serif, display, handwriting, or monospace;
 - weights: the upright weights of the family, such as 400,500,700;
-- flags: "k" when the family covers Korean, and "m" when it is monospaced:
-  in the monospace category, or with Mono, Code, or Coding in its name, as
-  the categories put some monospaced families elsewhere (Nanum Gothic Coding
-  is "handwriting", Noto Sans Mono "sans-serif").
+- flags: "m" when the family is monospaced: in the monospace category, or
+  with Mono, Code, or Coding in its name, as the categories put some
+  monospaced families elsewhere (Nanum Gothic Coding is "handwriting", Noto
+  Sans Mono "sans-serif");
+- scripts: the scripts other than Latin that the family covers, such as
+  korean,japanese, with the Chinese subsets as chinese and the extended
+  subsets under their script.
 
 It lists the families that both of these name, so each one can be
 downloaded and each one has a category:
@@ -47,6 +50,8 @@ CATEGORIES = {
     "Monospace": "monospace",
 }
 MONOSPACED_NAME = re.compile(r"\b(Mono|Code|Coding)\b")
+# Subsets that are not a script of their own.
+NOT_SCRIPTS = {"menu", "latin", "vietnamese", "math", "symbols", "symbols2", "emoji", "braille"}
 
 
 def fetch(url: str) -> bytes:
@@ -72,6 +77,19 @@ def provider_weights() -> dict[str, list[int]]:
     return families
 
 
+def scripts(subsets: list[str]) -> list[str]:
+    """The scripts of a family's subsets, in the order the metadata lists them."""
+    found = []
+    for subset in subsets:
+        script = subset.removesuffix("-ext")
+        if script.startswith("chinese-"):
+            script = "chinese"
+        if script in NOT_SCRIPTS or "," in script or script in found:
+            continue
+        found.append(script)
+    return found
+
+
 def main() -> None:
     weights = provider_weights()
     metadata = json.loads(fetch(METADATA))["familyMetadataList"]
@@ -81,12 +99,14 @@ def main() -> None:
         category = CATEGORIES.get(family["category"])
         if name not in weights or category is None or "\t" in name:
             continue
-        flags = "k" if "korean" in family["subsets"] else ""
-        if category == "monospace" or MONOSPACED_NAME.search(name):
-            flags += "m"
-        rows.append((family.get("popularity") or 1_000_000, name, category, weights[name], flags))
+        flags = "m" if category == "monospace" or MONOSPACED_NAME.search(name) else ""
+        found = ",".join(scripts(family["subsets"]))
+        rows.append((family.get("popularity") or 1_000_000, name, category, weights[name], flags, found))
     rows.sort(key=lambda row: (row[0], row[1]))
-    lines = [f"{name}\t{category}\t{','.join(map(str, ws))}\t{flags}" for _, name, category, ws, flags in rows]
+    lines = [
+        f"{name}\t{category}\t{','.join(map(str, ws))}\t{flags}\t{found}"
+        for _, name, category, ws, flags, found in rows
+    ]
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"wrote {len(lines)} families to {OUT.relative_to(ROOT)}")

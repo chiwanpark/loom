@@ -26,6 +26,8 @@ class MainActivity : ComponentActivity() {
                 blockScale = settings.blockScale,
                 textFont = settings.textFont,
                 codeFont = settings.codeFont,
+                textFallback = settings.textFallbackFont,
+                codeFallback = settings.codeFallbackFont,
             ) {
                 LoomRoot(app)
             }

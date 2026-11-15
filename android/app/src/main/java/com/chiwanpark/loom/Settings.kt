@@ -30,6 +30,20 @@ class Settings(context: Context) {
     var codeFont by mutableStateOf(prefs.getString(CODE_FONT, null) ?: DEFAULT_CODE_FONT)
         private set
 
+    /**
+     * The font that draws what the text font lacks, such as Hangul, before
+     * the system's fonts do; `DEFAULT_FALLBACK_FONT` leaves it to them.
+     */
+    var textFallbackFont by mutableStateOf(prefs.getString(TEXT_FALLBACK_FONT, null) ?: DEFAULT_FALLBACK_FONT)
+        private set
+
+    /**
+     * The font that draws what the code font lacks, such as Hangul, before
+     * the system's fonts do; `DEFAULT_FALLBACK_FONT` leaves it to them.
+     */
+    var codeFallbackFont by mutableStateOf(prefs.getString(CODE_FALLBACK_FONT, null) ?: DEFAULT_FALLBACK_FONT)
+        private set
+
     /** Whether long lines of files and diffs wrap instead of scrolling sideways. */
     var wrapCode by mutableStateOf(prefs.getBoolean(WRAP_CODE, false))
         private set
@@ -67,6 +81,16 @@ class Settings(context: Context) {
         prefs.edit().putString(CODE_FONT, id).apply()
     }
 
+    fun updateTextFallbackFont(id: String) {
+        textFallbackFont = id
+        prefs.edit().putString(TEXT_FALLBACK_FONT, id).apply()
+    }
+
+    fun updateCodeFallbackFont(id: String) {
+        codeFallbackFont = id
+        prefs.edit().putString(CODE_FALLBACK_FONT, id).apply()
+    }
+
     fun updateWrapCode(wrap: Boolean) {
         wrapCode = wrap
         prefs.edit().putBoolean(WRAP_CODE, wrap).apply()
@@ -97,6 +121,8 @@ class Settings(context: Context) {
         private const val BLOCK_SCALE = "block_scale"
         private const val TEXT_FONT = "text_font"
         private const val CODE_FONT = "code_font"
+        private const val TEXT_FALLBACK_FONT = "text_fallback_font"
+        private const val CODE_FALLBACK_FONT = "code_fallback_font"
         private const val WRAP_CODE = "wrap_code"
         private const val TERMINAL_TEXT_SIZE = "terminal_text_size"
         private const val RECENT_DIRECTORIES = "recent_directories"
@@ -104,6 +130,7 @@ class Settings(context: Context) {
 
         const val DEFAULT_TEXT_FONT = "system"
         const val DEFAULT_CODE_FONT = "jetbrains-mono"
+        const val DEFAULT_FALLBACK_FONT = "system"
 
         /** The text sizes to choose from, as factors of the system's text size. */
         val TEXT_SCALES = listOf(0.8f, 0.9f, 1f, 1.1f, 1.2f, 1.3f)

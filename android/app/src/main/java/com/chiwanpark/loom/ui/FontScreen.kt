@@ -23,6 +23,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -61,9 +64,11 @@ private val CATEGORIES = listOf(
 /**
  * The text size, the font of the app's text, and the font of code, picked
  * from the system's fonts, JetBrains Mono, and Google Fonts, which can be
- * searched. Every pick applies at once and each font's name is shown in that
- * font. On a tall screen the preview and the size stay on top; on a low one
- * they scroll away, and the tabs and the search field stay.
+ * searched; and for each, a fallback font from Google Fonts that draws what
+ * the font lacks, such as Hangul, before the system's fonts do. Every pick
+ * applies at once and each font's name is shown in that font. On a tall
+ * screen the preview and the size stay on top; on a low one they scroll
+ * away, and the tabs and the search field stay.
  */
 @Composable
 fun FontScreen(app: LoomApplication) {
@@ -72,16 +77,19 @@ fun FontScreen(app: LoomApplication) {
     val catalog = remember { FontCatalog.get(context.applicationContext) }
     var target by rememberSaveable { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
-    var korean by rememberSaveable { mutableStateOf(false) }
+    var fallback by rememberSaveable { mutableStateOf(false) }
+    var script by rememberSaveable { mutableStateOf<String?>(null) }
     var category by rememberSaveable { mutableStateOf<String?>(null) }
     val forCode = FontTarget.entries[target] == FontTarget.Code
+    // Code fonts are all monospaced; a fallback for code need not be.
+    val categories = !forCode || fallback
     val list = rememberLazyListState()
 
     Scaffold(topBar = { LoomTopBar("Font", onBack = { app.navigator.pop() }) }) { padding ->
         BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
             val pinned = maxHeight >= 600.dp
             // A new search starts at the top of its results.
-            LaunchedEffect(target, query, korean, category) {
+            LaunchedEffect(target, fallback, query, script, category) {
                 val first = if (pinned) 0 else 3
                 if (list.firstVisibleItemIndex > first) list.scrollToItem(first)
             }
@@ -109,20 +117,31 @@ fun FontScreen(app: LoomApplication) {
                                         )
                                     }
                                 }
+                                FallbackSwitch(fallback, onChange = { fallback = it })
                                 SearchControls(
                                     query = query,
                                     onQuery = { query = it },
-                                    korean = korean,
-                                    onKorean = { korean = it },
-                                    category = category.takeUnless { forCode },
-                                    onCategory = if (forCode) null else { it -> category = it },
+                                    script = script,
+                                    onScript = { script = it },
+                                    category = category.takeIf { categories },
+                                    onCategory = if (categories) { it -> category = it } else null,
                                 )
                                 HorizontalDivider()
                             }
                         }
                     }
-                    val filter = FontFilter(query, korean, category.takeUnless { forCode })
-                    if (forCode) {
+                    val filter = FontFilter(query, script, category.takeIf { categories })
+                    if (fallback) {
+                        fontList(
+                            filter,
+                            listOf(LoomFonts.systemFallback),
+                            if (forCode) LoomFonts.suggestedCodeFallbacks else LoomFonts.suggestedTextFallbacks,
+                            catalog.fonts,
+                            catalog,
+                            selected = if (forCode) settings.codeFallbackFont else settings.textFallbackFont,
+                            onPick = if (forCode) settings::updateCodeFallbackFont else settings::updateTextFallbackFont,
+                        )
+                    } else if (forCode) {
                         fontList(
                             filter,
                             LoomFonts.systemCodeFonts,
@@ -144,8 +163,15 @@ fun FontScreen(app: LoomApplication) {
                         )
                     }
                     item(key = "note") {
+                        val fallbackNote = if (fallback) {
+                            "The fallback font draws the characters that the ${if (forCode) "code" else "text"} " +
+                                "font does not have, such as Hangul, before the system's fonts do. "
+                        } else {
+                            ""
+                        }
                         Text(
-                            "Google Play services downloads a font from Google Fonts when it is first shown; " +
+                            fallbackNote +
+                                "Google Play services downloads a font from Google Fonts when it is first shown; " +
                                 "until then, or without Google Play services, the system's font shows.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -159,18 +185,18 @@ fun FontScreen(app: LoomApplication) {
 }
 
 /** What the search field and the chips ask for. */
-private class FontFilter(query: String, val korean: Boolean, val category: String?) {
+private class FontFilter(query: String, val script: String?, val category: String?) {
     private val needle = normalize(query)
 
-    val any: Boolean = needle.isNotEmpty() || korean || category != null
+    val any: Boolean = needle.isNotEmpty() || script != null || category != null
 
     fun matches(name: String) = needle.isEmpty() || needle in normalize(name)
 
     fun matches(font: CatalogFont) =
-        matches(font.name) && (!korean || font.korean) && (category == null || font.category == category)
+        matches(font.name) && (script == null || script in font.scripts) && (category == null || font.category == category)
 
-    /** The system's fonts and JetBrains Mono have no category and are not counted as Korean. */
-    fun matches(font: FontChoice) = !korean && category == null && matches(font.name)
+    /** The system's fonts and JetBrains Mono have no category and are not counted for a script. */
+    fun matches(font: FontChoice) = script == null && category == null && matches(font.name)
 
     private companion object {
         /** Case and spaces do not matter: "nanumgothic" finds Nanum Gothic. */
@@ -220,26 +246,47 @@ private fun ChoiceRowPadded(font: FontChoice, selected: Boolean, catalog: FontCa
     }
 }
 
-/** Where a font comes from, and for Google Fonts its category and whether it has Hangul. */
+/** Where a font comes from, and for Google Fonts its category and the scripts it has besides Latin. */
 private fun fontDetail(font: FontChoice, catalog: FontCatalog): String? = when {
     font.downloaded -> {
         val entry = catalog.find(font.name)
+        val scripts = FONT_SCRIPTS.filter { it.first in font.scripts }.map { it.second }
         listOfNotNull(
             CATEGORIES.firstOrNull { it.first == entry?.category }?.second,
-            "Korean".takeIf { font.korean },
+            scripts.take(MAX_SCRIPTS).joinToString(", ").ifEmpty { null }
+                ?.let { if (scripts.size > MAX_SCRIPTS) "$it, …" else it },
         ).joinToString(" · ").ifEmpty { null }
     }
+    font === LoomFonts.systemFallback -> "What a font lacks comes from the system's fonts"
     font.id == Settings.DEFAULT_CODE_FONT -> "Bundled with the app"
     else -> null
 }
 
-/** The search field, a chip for fonts with Hangul, and, for text, one per category. */
+/** The most scripts a font's row names. */
+private const val MAX_SCRIPTS = 3
+
+/** Whether the screen picks the font itself or its fallback font. */
+@Composable
+private fun FallbackSwitch(fallback: Boolean, onChange: (Boolean) -> Unit) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
+        listOf(false to "Font", true to "Fallback font").forEachIndexed { index, (value, label) ->
+            SegmentedButton(
+                selected = fallback == value,
+                onClick = { onChange(value) },
+                shape = SegmentedButtonDefaults.itemShape(index, 2),
+                label = { Text(label) },
+            )
+        }
+    }
+}
+
+/** The search field, a chip per script, and, where it helps, one per category. */
 @Composable
 private fun SearchControls(
     query: String,
     onQuery: (String) -> Unit,
-    korean: Boolean,
-    onKorean: (Boolean) -> Unit,
+    script: String?,
+    onScript: (String?) -> Unit,
     category: String?,
     onCategory: ((String?) -> Unit)?,
 ) {
@@ -264,7 +311,13 @@ private fun SearchControls(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChip(selected = korean, onClick = { onKorean(!korean) }, label = { Text("Korean") })
+            FONT_SCRIPTS.forEach { (id, label) ->
+                FilterChip(
+                    selected = script == id,
+                    onClick = { onScript(if (script == id) null else id) },
+                    label = { Text(label) },
+                )
+            }
             if (onCategory != null) {
                 CATEGORIES.forEach { (id, label) ->
                     FilterChip(

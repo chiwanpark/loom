@@ -22,7 +22,8 @@ import com.chiwanpark.loom.Settings
 /**
  * Material 3 in the colors of the user's wallpaper, with text `textScale`
  * times the system's text size and text in blocks `blockScale` times that,
- * in the fonts with these ids.
+ * in the fonts with these ids, and with the fallback fonts for what the
+ * fonts lack.
  */
 @Composable
 fun LoomTheme(
@@ -30,6 +31,8 @@ fun LoomTheme(
     blockScale: Float = 1f,
     textFont: String = Settings.DEFAULT_TEXT_FONT,
     codeFont: String = Settings.DEFAULT_CODE_FONT,
+    textFallback: String = Settings.DEFAULT_FALLBACK_FONT,
+    codeFallback: String = Settings.DEFAULT_FALLBACK_FONT,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -39,13 +42,24 @@ fun LoomTheme(
         dynamicLightColorScheme(context)
     }
     val density = LocalDensity.current
-    val catalog = remember(context) { FontCatalog.get(context.applicationContext) }
-    val typography = remember(textFont) {
-        Typography().withFontFamily(LoomFonts.textFont(textFont, catalog).family)
-    }
+    val app = context.applicationContext
+    val catalog = remember(app) { FontCatalog.get(app) }
+    val textFamily = rememberFallbackFamily(
+        app,
+        LoomFonts.textFont(textFont, catalog),
+        LoomFonts.fallbackFont(textFallback, catalog),
+        "sans-serif",
+    )
+    val codeFamily = rememberFallbackFamily(
+        app,
+        LoomFonts.codeFont(codeFont, catalog),
+        LoomFonts.fallbackFont(codeFallback, catalog),
+        "monospace",
+    )
+    val typography = remember(textFamily) { Typography().withFontFamily(textFamily) }
     CompositionLocalProvider(
         LocalDensity provides Density(density.density, density.fontScale * textScale),
-        LocalCodeFont provides (LoomFonts.codeFont(codeFont, catalog).family ?: FontFamily.Monospace),
+        LocalCodeFont provides (codeFamily ?: FontFamily.Monospace),
         LocalBlockScale provides blockScale,
     ) {
         MaterialTheme(colorScheme = colors, typography = typography, content = content)
