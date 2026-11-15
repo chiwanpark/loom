@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use loom_client::proto::{ContentPart, InstanceId, SessionId, SessionInfo};
-use loom_client::{Client, ClientError, ClientIdentity, Notification, Notifications, RelayHost};
+use loom_client::proto::{ContentPart, InstanceId, SessionId, SessionInfo, TerminalOwner};
+use loom_client::{
+    Client, ClientError, ClientIdentity, Notification, Notifications, RelayHost, terminal_owner,
+};
 use loom_view_model::conversation::{BULK_PAGE_ITEMS, Conversation, PAGE_ITEMS};
 use tokio::sync::Notify;
 
@@ -31,6 +33,8 @@ pub(crate) struct Shared {
     instance: InstanceId,
     identity: Arc<ClientIdentity>,
     state: Mutex<State>,
+    /// This app's token for its terminals, kept across reconnects.
+    pub(crate) terminal_owner: TerminalOwner,
     /// Wakes the app's wait for updates; it keeps a permit when no one waits.
     wake: Notify,
 }
@@ -104,6 +108,11 @@ impl State {
         for open in self.open.values_mut().filter(|open| open.changed) {
             updates.push(AgentUpdate::Conversation {
                 update: open.update(),
+            });
+        }
+        if std::mem::take(&mut self.terminals.changed) {
+            updates.push(AgentUpdate::Terminals {
+                terminals: self.terminals.summaries(),
             });
         }
         updates.append(&mut self.queue);
@@ -183,6 +192,9 @@ impl State {
                         session: session.0,
                         tasks: task_items(&tasks),
                     });
+                }
+                loom_client::proto::Notice::TerminalsChanged(terminals) => {
+                    self.terminals.listed(terminals);
                 }
                 notice => {
                     if let Some((level, message)) = notice_message(&notice) {
@@ -309,22 +321,49 @@ impl Shared {
         self.lock().terminals.open.remove(&id);
     }
 
-    /// Takes the terminals over on a new link, at their sizes; those the
-    /// agent closed meanwhile end.
+    /// Follows a terminal's output from now on, dropping what came before.
+    pub(crate) fn follow_terminal(&self, terminal: Arc<TermShared>) {
+        let _ = self.lock().terminals.add(terminal);
+    }
+
+    /// Stops following a terminal that could not be attached.
+    pub(crate) fn forget_terminal(&self, terminal: &Arc<TermShared>) {
+        let mut state = self.lock();
+        let id = terminal.id();
+        if state
+            .terminals
+            .open
+            .get(&id)
+            .is_some_and(|t| Arc::ptr_eq(t, terminal))
+        {
+            state.terminals.open.remove(&id);
+        }
+        state.terminals.changed = true;
+        drop(state);
+        self.wake.notify_one();
+    }
+
+    /// Has the app get the terminal list again.
+    pub(crate) fn terminals_changed(&self) {
+        self.lock().terminals.changed = true;
+        self.wake.notify_one();
+    }
+
+    /// Attaches the terminals held here again on a new link, at their
+    /// sizes; another client may have taken them meanwhile, and those the
+    /// agent closed end.
     async fn reattach_terminals(&self) -> Result<()> {
         let terminals: Vec<Arc<TermShared>> = self
             .lock()
             .terminals
             .open
             .values()
-            .filter(|terminal| terminal.is_live())
+            .filter(|terminal| terminal.is_live() && terminal.is_held())
             .cloned()
             .collect();
-        let client = self.client()?;
         for terminal in terminals {
-            let (cols, rows) = terminal.size();
-            match client.attach_terminal(terminal.id(), cols, rows).await {
-                Ok(()) => {}
+            match self.attach_terminal(&terminal, false).await {
+                Ok(_) => {}
                 Err(ClientError::Api(err)) => {
                     tracing::debug!(error = %err, "a terminal is gone");
                     self.lock().terminals.open.remove(&terminal.id());
@@ -412,6 +451,7 @@ impl AgentConnection {
             relay,
             instance: instance.clone(),
             identity,
+            terminal_owner: terminal_owner(),
             state: Mutex::new(State {
                 agent: Agent {
                     instance: instance.to_string(),

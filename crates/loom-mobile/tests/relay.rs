@@ -27,7 +27,7 @@ use loom_mobile::{
     AgentConnection, AgentUpdate, ApprovalDecision, ChangeKind, ConversationItem,
     ConversationUpdate, Delivery, DiffKind, EntryKind, Highlight, KeyModifiers, Loom, LoomError,
     Policy, PushKind, PushNotice, SessionStatus, Span, TaskEdit, TaskState, Terminal,
-    TerminalFrame, TerminalKey, ToolState,
+    TerminalFrame, TerminalKey, TerminalPlace, TerminalSummary, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -274,6 +274,7 @@ struct App {
     last: Option<ConversationUpdate>,
     sessions: Vec<loom_mobile::SessionSummary>,
     tasks: Option<Vec<loom_mobile::TaskItem>>,
+    terminals: Vec<TerminalSummary>,
 }
 
 impl App {
@@ -303,6 +304,7 @@ impl App {
                 self.last = Some(update);
             }
             AgentUpdate::TasksChanged { tasks, .. } => self.tasks = Some(tasks),
+            AgentUpdate::Terminals { terminals } => self.terminals = terminals,
             AgentUpdate::NotesChanged { .. } | AgentUpdate::Notice { .. } => {}
         }
     }
@@ -1283,6 +1285,82 @@ async fn a_phone_runs_a_terminal_that_survives_a_lost_link() {
     assert_eq!(frame.exit_status, Some(0));
     terminal.end();
     assert!(terminal.clone().next_frame().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn terminals_move_between_the_phone_and_the_desktop() {
+    let host = Host::start(Vec::new()).await;
+    let (_dir, _loom, conn) = phone(&host).await;
+    let desktop = host.local_client().await;
+    let id = desktop.open_terminal(80, 24, 1).await.unwrap();
+    desktop
+        .terminal_input(id, b"echo desk-$((2+3))\n".to_vec())
+        .await
+        .unwrap();
+    let place = |app: &App| {
+        app.terminals
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.place.clone())
+    };
+    let mut app = App::default();
+    app.until(&conn, "the desktop's terminal", |app| {
+        place(app)
+            == Some(TerminalPlace::Elsewhere {
+                client: "local".into(),
+            })
+    })
+    .await;
+
+    // The phone takes it over, with what it printed.
+    let terminal = conn.clone().attach_terminal(id, 40, 10).await.unwrap();
+    assert!(terminal.is_here());
+    frame_until(&terminal, "the desktop's output", |f| {
+        screen(f).contains("desk-5")
+    })
+    .await;
+    app.until(&conn, "the terminal here", |app| {
+        place(app) == Some(TerminalPlace::Here)
+    })
+    .await;
+    terminal.send_text("echo phone-$((3+4)); stty size\r".into());
+    frame_until(&terminal, "the phone's input", |f| {
+        screen(f).contains("phone-7") && screen(f).contains("10 40")
+    })
+    .await;
+    assert!(desktop.terminal_input(id, b"x".to_vec()).await.is_err());
+
+    // The desktop takes it back; the phone keeps its screen and stops typing.
+    desktop.attach_terminal(id, 80, 24, 1, true).await.unwrap();
+    app.until(&conn, "the terminal on the desktop", |app| {
+        matches!(place(app), Some(TerminalPlace::Elsewhere { .. }))
+    })
+    .await;
+    assert!(!terminal.is_here());
+    assert!(terminal.text().contains("phone-7"));
+
+    // And the phone takes it once more.
+    terminal.clone().take_over().await.unwrap();
+    assert!(terminal.is_here());
+    frame_until(&terminal, "the replay", |f| {
+        screen(f).contains("phone-7") && f.ended.is_none()
+    })
+    .await;
+    app.until(&conn, "the terminal back here", |app| {
+        place(app) == Some(TerminalPlace::Here)
+    })
+    .await;
+
+    // When the desktop closes it after taking it, the phone's ends.
+    desktop.attach_terminal(id, 80, 24, 1, true).await.unwrap();
+    desktop.close_terminal(id).await.unwrap();
+    let frame = frame_until(&terminal, "the end", |f| f.ended.is_some()).await;
+    assert_eq!(
+        frame.ended.as_deref(),
+        Some("The terminal was closed on another client.")
+    );
+    app.until(&conn, "no terminals", |app| app.terminals.is_empty())
+        .await;
 }
 
 /// Stands in for `loom-agent serve`'s supervisor: the agent's own workspace

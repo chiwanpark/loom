@@ -107,6 +107,12 @@ impl<T> TabList<T> {
         index
     }
 
+    /// Adds an item at the end without making it the active one, unless it
+    /// is the only one.
+    pub fn push_background(&mut self, id: PanelId, item: T) {
+        self.items.push((id, item));
+    }
+
     pub fn move_item(&mut self, id: PanelId, destination: usize) -> bool {
         let Some(existing) = self.position(id) else {
             return false;

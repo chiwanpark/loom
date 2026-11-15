@@ -9,7 +9,7 @@ use gpui::{App, AppContext, Entity, TestAppContext, VisualTestContext};
 use loom_agent::server::{ServerContext, serve_stream};
 use loom_agent_core::{Agent, AgentOptions};
 use loom_client::proto::{AgentInfo, InstanceId};
-use loom_client::{Client, memory_pair};
+use loom_client::{Client, Notifications, memory_pair};
 use loom_config::{AgentConfig, Dirs, HostEntry};
 
 use crate::backend::Backend;
@@ -80,16 +80,28 @@ impl TestAgent {
         // Replies from the agent wake the app from the backend's threads, and
         // the connection asks for one as soon as it exists.
         cx.executor().allow_parking();
-        let context = ServerContext::new(self.agent.clone(), self.info.clone());
-        let (client, notifications) = futures::executor::block_on(self.backend.run(async move {
-            let (client_side, server_side) = memory_pair();
-            tokio::spawn(serve_stream(context, server_side));
-            Client::connect(client_side, "test").await
-        }))
-        .unwrap()
-        .unwrap();
+        let (client, notifications) = self.client("test");
         let backend = self.backend.clone();
         cx.new(|cx| AgentConnection::new(host, client, notifications, backend, cx))
+    }
+
+    /// A plain client of the agent that calls itself `name`, as another
+    /// app would be.
+    pub fn client(&self, name: &'static str) -> (Client, Notifications) {
+        let context = ServerContext::new(self.agent.clone(), self.info.clone());
+        self.block_on(async move {
+            let (client_side, server_side) = memory_pair();
+            tokio::spawn(serve_stream(context, server_side));
+            Client::connect(client_side, name).await.unwrap()
+        })
+    }
+
+    /// Runs `future` on the backend's runtime and waits for it.
+    pub fn block_on<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> T {
+        futures::executor::block_on(self.backend.run(future)).unwrap()
     }
 
     /// The configuration the agent is using.

@@ -9,7 +9,7 @@ use loom_proto::{
     Delivery, EventWindow, History, LoginId, LoginInput, LoginMethod, LoginStarted, ModelInfo,
     Notice, PROTOCOL_VERSION, Payload, PendingMessage, PolicyAction, ProviderStatus,
     ReasoningEffort, RequestId, SequencedEvent, ServerMessage, SessionId, SessionInfo, TerminalId,
-    UsageLimits, decode, encode,
+    TerminalInfo, TerminalOwner, UsageLimits, decode, encode,
 };
 use loom_transport::{Diagnostics, FrameReceiver, FrameSender, FrameStream};
 use tokio::sync::{mpsc, oneshot};
@@ -17,6 +17,13 @@ use tokio::sync::{mpsc, oneshot};
 use crate::error::{ClientError, Result};
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A new random token for a client's terminals. Keep one for every agent a
+/// client talks to, also across reconnects, and pass it to
+/// [`Client::open_terminal`] and [`Client::attach_terminal`].
+pub fn terminal_owner() -> TerminalOwner {
+    rand::random()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notification {
@@ -671,8 +678,18 @@ impl Client {
         .await
     }
 
-    pub async fn open_terminal(&self, cols: u16, rows: u16) -> Result<TerminalId> {
-        match self.request(Command::OpenTerminal { cols, rows }).await? {
+    /// Opens a terminal attached to this connection. `owner` is the client's
+    /// token from [`terminal_owner`].
+    pub async fn open_terminal(
+        &self,
+        cols: u16,
+        rows: u16,
+        owner: TerminalOwner,
+    ) -> Result<TerminalId> {
+        match self
+            .request(Command::OpenTerminal { cols, rows, owner })
+            .await?
+        {
             Payload::Terminal(id) => Ok(id),
             other => Err(unexpected(other)),
         }
@@ -766,14 +783,36 @@ impl Client {
         }
     }
 
-    /// Reattaches to a terminal opened over an earlier connection to the same agent.
-    pub async fn attach_terminal(&self, terminal: TerminalId, cols: u16, rows: u16) -> Result<()> {
+    /// Attaches a terminal to this connection: one opened over an earlier
+    /// connection, or one another client holds, with `take_over`. Its
+    /// recent output comes first, so clear the screen before. Fails with
+    /// `Conflict` when a client of another owner holds it and `take_over`
+    /// is not set.
+    pub async fn attach_terminal(
+        &self,
+        terminal: TerminalId,
+        cols: u16,
+        rows: u16,
+        owner: TerminalOwner,
+        take_over: bool,
+    ) -> Result<()> {
         self.ok(Command::AttachTerminal {
             terminal,
             cols,
             rows,
+            owner,
+            take_over,
         })
         .await
+    }
+
+    /// The agent's open terminals. Every connection also gets them as a
+    /// `TerminalsChanged` notice after the hello and whenever they change.
+    pub async fn terminals(&self) -> Result<Vec<TerminalInfo>> {
+        match self.request(Command::ListTerminals).await? {
+            Payload::Terminals(terminals) => Ok(terminals),
+            other => Err(unexpected(other)),
+        }
     }
 
     async fn ok(&self, command: Command) -> Result<()> {

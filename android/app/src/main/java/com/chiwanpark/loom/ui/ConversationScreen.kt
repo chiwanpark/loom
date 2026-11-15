@@ -172,8 +172,8 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                         app.navigator.push(Screen.Files(link.host, link.instance))
                     }
                     MenuEntry("Terminal", LoomIcons.Terminal, close) {
-                        val open = link.terminals.lastOrNull { !it.ended }
-                        app.navigator.push(Screen.Terminal(link.host, link.instance, open?.number ?: 0))
+                        // Another client's terminal shows first when the app has none.
+                        app.navigator.push(Screen.Terminal(link.host, link.instance, link.defaultTerminal() ?: 0))
                     }
                     MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
                     MenuEntry("Compact the context", LoomIcons.FoldVertical, close) {

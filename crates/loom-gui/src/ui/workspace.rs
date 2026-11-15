@@ -20,7 +20,7 @@ use gpui_component::{
 };
 use loom_client::proto::{
     ChangeStatus, Command, ConfigReload, ErrorCode, FileChange as GitChange, Notice, Payload,
-    SessionId, SessionInfo, WorkspaceChanges,
+    SessionId, SessionInfo, TerminalHolder, WorkspaceChanges,
 };
 use loom_config::{ClientConfig, HostEntry};
 
@@ -30,9 +30,9 @@ use crate::changes::{FileChange, display_path, session_changes};
 use crate::connection::{self, AgentSummary, Env, Target};
 use crate::conversation::{Activity, short_id, state_label};
 use crate::layout::{self, GroupKey, SavedGroup, SavedLayout, SavedPane, SavedTab};
-use crate::state::{AgentConnection, ConnectionEvent, LinkStatus, RemoteTerminal};
+use crate::state::{AgentConnection, Attached, ConnectionEvent, LinkStatus, RemoteTerminal};
 use crate::telemetry::Health;
-use crate::term::{TerminalIo, TerminalView, mono_font};
+use crate::term::{TakeOver, TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::DiffView;
 use crate::ui::file_view::FileView;
@@ -285,10 +285,13 @@ impl Panel {
             Panel::Terminal(view) => {
                 let view = view.read(cx);
                 let base = view.title().unwrap_or_else(|| "Terminal".into());
-                if view.exited().is_some() {
-                    format!("{base} (exited)")
-                } else {
-                    base
+                match view.holder() {
+                    _ if view.exited().is_some() => format!("{base} (exited)"),
+                    TerminalHolder::You => base,
+                    TerminalHolder::Other(client) => {
+                        format!("{base} (on {})", client.describe())
+                    }
+                    TerminalHolder::Nobody => format!("{base} (detached)"),
                 }
             }
         }
@@ -1196,7 +1199,13 @@ impl Workspace {
                     let id = id.clone();
                     this.remove_groups(window, cx, |g| g.is(&conn, &id));
                 }
-                ConnectionEvent::SessionsLoaded => this.restore_groups(conn, window, cx),
+                ConnectionEvent::SessionsLoaded => {
+                    this.restore_groups(conn, window, cx);
+                    this.sync_terminal_tabs(conn, &[], window, cx);
+                }
+                ConnectionEvent::TerminalsChanged { closed } => {
+                    this.sync_terminal_tabs(conn, closed, window, cx)
+                }
                 ConnectionEvent::LoginFinished(_)
                 | ConnectionEvent::NotesChanged { .. }
                 | ConnectionEvent::TasksChanged { .. } => {}
@@ -1447,13 +1456,11 @@ impl Workspace {
         Some(panel)
     }
 
-    /// A terminal tab that reattaches to its terminal when the same agent
-    /// still runs it, and opens a new one in its place otherwise.
-    fn restore_terminal(
+    /// A terminal view in the configured font, which offers to take its
+    /// terminal over when another client holds it.
+    fn terminal_view(
         &mut self,
-        conn: &Entity<AgentConnection>,
-        instance: &str,
-        id: u64,
+        io: Option<Rc<dyn TerminalIo>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
@@ -1464,9 +1471,29 @@ impl Workspace {
             cx,
         );
         let size = px(appearance.mono_font_size);
-        let view = cx.new(|cx| TerminalView::new(None, font, size, cx));
+        let view = cx.new(|cx| TerminalView::new(io, font, size, cx));
         self.subscriptions
             .push(cx.observe(&view, |_, _, cx| cx.notify()));
+        self.subscriptions.push(cx.subscribe_in(
+            &view,
+            window,
+            |this, view, _: &TakeOver, window, cx| this.take_over_terminal(view, false, window, cx),
+        ));
+        view
+    }
+
+    /// A terminal tab that reattaches to its terminal when the same agent
+    /// still runs it (unless another client holds it now), and opens a new
+    /// one in its place otherwise.
+    fn restore_terminal(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        instance: &str,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TerminalView> {
+        let view = self.terminal_view(None, window, cx);
         self.restoring.insert(
             view.entity_id(),
             SavedTab::Terminal {
@@ -1477,51 +1504,63 @@ impl Workspace {
         let read = conn.read(cx);
         let client = read.client.clone();
         let backend = read.backend.clone();
+        let owner = read.terminal_owner;
         let (cols, rows) = view.read(cx).grid_size();
         // Register before attaching, so the output that the redraw after
         // attaching produces reaches the view.
         let existing = (read.info.instance.0 == instance).then(|| {
             let remote = RemoteTerminal::new(&backend, client.clone(), id);
             let rebind = remote.rebinder();
-            conn.update(cx, |conn, _| conn.register_terminal(id, &view, rebind));
+            conn.update(cx, |conn, _| {
+                conn.register_terminal(id, &view, rebind, true)
+            });
             Rc::new(remote) as Rc<dyn TerminalIo>
         });
-        let attach = existing.is_some().then_some(id);
-        let task = backend.run({
-            let client = client.clone();
-            async move {
-                if let Some(id) = attach {
-                    match client.attach_terminal(id, cols, rows).await {
-                        Ok(()) => return Ok(None),
-                        Err(err) => tracing::debug!(terminal = id, "cannot reattach: {err}"),
-                    }
-                }
-                client.open_terminal(cols, rows).await.map(Some)
-            }
-        });
+        let attach = existing
+            .is_some()
+            .then(|| conn.update(cx, |conn, cx| conn.attach_terminal(id, false, cx)));
         let conn = conn.clone();
         let view_handle = view.clone();
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
-            let result = task.await;
+            let attached = match attach {
+                Some(task) => task.await,
+                None => Attached::Failed("the agent restarted".into()),
+            };
+            if let Attached::Failed(failed) = &attached {
+                tracing::debug!(terminal = id, "cannot reattach: {failed}");
+            } else {
+                let _ = this.update_in(cx, |this, _, cx| {
+                    this.restoring.remove(&view_handle.entity_id());
+                    if let Some(io) = existing {
+                        view_handle.update(cx, |view, cx| view.connect(io, cx));
+                    }
+                    cx.notify();
+                });
+                return;
+            }
+            if existing.is_some() {
+                let _ = this.update(cx, |_, cx| {
+                    conn.update(cx, |conn, _| conn.unregister_terminal(id))
+                });
+            }
+            let result = backend
+                .run({
+                    let client = client.clone();
+                    async move { client.open_terminal(cols, rows, owner).await }
+                })
+                .await;
             let _ = this.update_in(cx, |this, _, cx| {
                 this.restoring.remove(&view_handle.entity_id());
                 let io = match result {
-                    Some(Ok(None)) => existing,
-                    Some(Ok(Some(new_id))) => {
-                        if existing.is_some() {
-                            conn.update(cx, |conn, _| conn.unregister_terminal(id));
-                        }
+                    Some(Ok(new_id)) => {
                         let remote = RemoteTerminal::new(&backend, client, new_id);
                         let rebind = remote.rebinder();
                         conn.update(cx, |conn, _| {
-                            conn.register_terminal(new_id, &view_handle, rebind)
+                            conn.register_terminal(new_id, &view_handle, rebind, false)
                         });
                         Some(Rc::new(remote) as Rc<dyn TerminalIo>)
                     }
                     Some(Err(err)) => {
-                        if existing.is_some() {
-                            conn.update(cx, |conn, _| conn.unregister_terminal(id));
-                        }
                         let reason = format!("cannot open a terminal: {err}");
                         view_handle.update(cx, |view, cx| view.set_lost(&reason, cx));
                         None
@@ -1581,6 +1620,8 @@ impl Workspace {
             }
         }
         self.activate_group(ix, window, cx);
+        // Terminals of other clients get tabs in the first group of their agent.
+        self.sync_terminal_tabs(&conn, &[], window, cx);
     }
 
     fn active_group(&self) -> Option<&SessionGroup> {
@@ -2091,10 +2132,10 @@ impl Workspace {
         let read = conn.read(cx);
         let client = read.client.clone();
         let backend = read.backend.clone();
+        let owner = read.terminal_owner;
         let task = read
             .backend
-            .run(async move { client.open_terminal(80, 24).await });
-        let appearance = self.config.appearance.clone();
+            .run(async move { client.open_terminal(80, 24, owner).await });
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| match result {
@@ -2103,16 +2144,10 @@ impl Workspace {
                     let remote = RemoteTerminal::new(&backend, client, id);
                     let rebind = remote.rebinder();
                     let io: Rc<dyn TerminalIo> = Rc::new(remote);
-                    let font = mono_font(
-                        appearance.mono_font.as_deref(),
-                        &appearance.mono_font_fallbacks,
-                        cx,
-                    );
-                    let size = px(appearance.mono_font_size);
-                    let view = cx.new(|cx| TerminalView::new(Some(io), font, size, cx));
-                    conn.update(cx, |conn, _| conn.register_terminal(id, &view, rebind));
-                    this.subscriptions
-                        .push(cx.observe(&view, |_, _, cx| cx.notify()));
+                    let view = this.terminal_view(Some(io), window, cx);
+                    conn.update(cx, |conn, _| {
+                        conn.register_terminal(id, &view, rebind, false)
+                    });
                     let panel_id = this.alloc_panel();
                     let new_pane = this.alloc_panel();
                     let Some(gix) = this.groups.iter().position(|g| g.is(&conn, &session)) else {
@@ -2142,6 +2177,118 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Keeps a tab for every terminal of the agent: terminals that another
+    /// client opened get one in the agent's active group (or its first),
+    /// without taking the focus, and the tabs of terminals that closed on
+    /// another client go.
+    fn sync_terminal_tabs(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        closed: &[EntityId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for entity in closed {
+            let panel = self.groups.iter().find_map(|group| {
+                group.panes.iter().find_map(|pane| {
+                    pane.tabs.iter().find_map(|(id, panel)| match panel {
+                        Panel::Terminal(view) if view.entity_id() == *entity => Some(id),
+                        _ => None,
+                    })
+                })
+            });
+            if let Some(panel) = panel {
+                self.close_panel(panel, window, cx);
+            }
+        }
+        let Some(gix) = self
+            .active_group
+            .filter(|&ix| self.groups.get(ix).is_some_and(|g| g.connection == *conn))
+            .or_else(|| self.groups.iter().position(|g| g.connection == *conn))
+        else {
+            return;
+        };
+        let terminals = conn.update(cx, |conn, _| conn.untracked_terminals());
+        if terminals.is_empty() {
+            return;
+        }
+        let (client, backend) = {
+            let read = conn.read(cx);
+            (read.client.clone(), read.backend.clone())
+        };
+        for terminal in terminals {
+            let remote = RemoteTerminal::new(&backend, client.clone(), terminal.id);
+            let rebind = remote.rebinder();
+            let view = self.terminal_view(None, window, cx);
+            view.update(cx, |view, cx| {
+                view.set_holder(terminal.holder, cx);
+                view.connect(Rc::new(remote), cx);
+            });
+            conn.update(cx, |conn, _| {
+                conn.register_terminal(terminal.id, &view, rebind, false)
+            });
+            let panel_id = self.alloc_panel();
+            if let Some(pane) = self.groups[gix].active_mut() {
+                pane.tabs.push_background(panel_id, Panel::Terminal(view));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Moves a terminal that another client holds, or none does, here,
+    /// after asking when another client holds it and `ask` is set.
+    fn take_over_terminal(
+        &mut self,
+        view: &Entity<TerminalView>,
+        ask: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if view.read(cx).exited().is_some() {
+            return;
+        }
+        let Some(conn) = self
+            .connections
+            .iter()
+            .find(|c| c.read(cx).terminal_id(view).is_some())
+            .cloned()
+        else {
+            return;
+        };
+        let take = {
+            let view = view.clone();
+            move |_: &mut Window, cx: &mut App| {
+                conn.update(cx, |conn, cx| conn.take_terminal(&view, cx))
+            }
+        };
+        match view.read(cx).holder().clone() {
+            TerminalHolder::You => {}
+            TerminalHolder::Other(client) if ask => {
+                let who = client.describe();
+                dialogs::confirm(
+                    "Take over this terminal?",
+                    format!(
+                        "It is open on {who}. It moves here with its recent output, and {who} can take it back."
+                    ),
+                    "Take over",
+                    take,
+                    window,
+                    cx,
+                );
+            }
+            _ => take(window, cx),
+        }
+    }
+
+    /// Offers the active tab's terminal when another client holds it, or
+    /// opens it here when none does, as when its tab is clicked.
+    fn offer_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Panel::Terminal(view)) = self.active_group().and_then(|g| g.active_panel()) {
+            let view = view.clone();
+            self.take_over_terminal(&view, true, window, cx);
+        }
     }
 
     /// Asks the agent to read its configuration file again. The agent tells
@@ -3950,7 +4097,8 @@ impl Workspace {
                             })),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.activate_tab(pane_id, ix, window, cx)
+                        this.activate_tab(pane_id, ix, window, cx);
+                        this.offer_terminal(window, cx);
                     }))
                     .on_middle_click(cx.listener(move |this, _, window, cx| {
                         this.close_tab(pane_id, ix, window, cx)
@@ -5079,6 +5227,122 @@ mod tests {
         cx.simulate_keystrokes("ctrl-shift-pageup");
         cx.run_until_parked();
         assert_eq!(active_tabs(&ws, cx).1, terminal - 1);
+    }
+
+    /// The terminal tabs of the active pane, with where they are held.
+    fn terminal_tabs(
+        ws: &Entity<Workspace>,
+        cx: &mut App,
+    ) -> Vec<(Entity<TerminalView>, TerminalHolder)> {
+        let pane = ws.read(cx).active_group().unwrap().active().unwrap();
+        pane.tabs
+            .iter()
+            .filter_map(|(_, panel)| match panel {
+                Panel::Terminal(view) => Some((view.clone(), view.read(cx).holder().clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn terminals_of_other_clients_get_tabs_and_can_be_taken_over(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, cx) = open_three_files(&agent, cx);
+        let (phone, _phone_notes) = agent.client("loom-android");
+        let terminal = agent.block_on({
+            let phone = phone.clone();
+            async move {
+                let id = phone.open_terminal(80, 24, 7).await.unwrap();
+                phone
+                    .terminal_input(id, b"echo phone=$((3*3))\n".to_vec())
+                    .await
+                    .unwrap();
+                id
+            }
+        });
+        wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
+        let (view, holder) = cx.update(|_, cx| terminal_tabs(&ws, cx).remove(0));
+        let TerminalHolder::Other(client) = holder else {
+            panic!("held by {holder:?}");
+        };
+        assert_eq!(client.describe(), "the Android app");
+        // The new tab does not take the focus.
+        assert_eq!(active_tabs(&ws, cx).1, 3);
+        let title = cx.update(|_, cx| Panel::Terminal(view.clone()).title(cx));
+        assert_eq!(title, "Terminal (on the Android app)");
+
+        // Taking it over brings its output along. (Clicking the tab would ask
+        // first.)
+        ws.update_in(cx, |ws, window, cx| {
+            let pane = ws.active_group().unwrap().active_pane;
+            ws.activate_tab(pane, 4, window, cx);
+        });
+        ws.update_in(cx, |ws, window, cx| {
+            ws.take_over_terminal(&view, false, window, cx)
+        });
+        wait_until(cx, |cx| {
+            *view.read(cx).holder() == TerminalHolder::You
+                && view.read(cx).snapshot().text().contains("phone=9")
+        });
+        let refused = agent.block_on({
+            let phone = phone.clone();
+            async move { phone.terminal_input(terminal, b"x".to_vec()).await }
+        });
+        assert!(refused.is_err());
+        // Shells may take a paste as text to edit, so Enter runs it.
+        view.update(cx, |view, cx| view.paste("echo desk=$((4*4))", cx));
+        cx.simulate_keystrokes("enter");
+        wait_until(cx, |cx| view.read(cx).snapshot().text().contains("desk=16"));
+
+        // The phone takes it back, and the tab says so.
+        agent.block_on({
+            let phone = phone.clone();
+            async move {
+                phone
+                    .attach_terminal(terminal, 80, 24, 7, true)
+                    .await
+                    .unwrap()
+            }
+        });
+        wait_until(cx, |cx| {
+            matches!(view.read(cx).holder(), TerminalHolder::Other(_))
+        });
+
+        // When the phone closes it, its tab goes.
+        agent.block_on({
+            let phone = phone.clone();
+            async move { phone.close_terminal(terminal).await.unwrap() }
+        });
+        wait_until(cx, |cx| terminal_tabs(&ws, cx).is_empty());
+    }
+
+    #[gpui::test]
+    fn a_closed_tab_of_another_clients_terminal_stays_closed(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, cx) = open_three_files(&agent, cx);
+        let (phone, _phone_notes) = agent.client("loom-android");
+        let first = agent.block_on({
+            let phone = phone.clone();
+            async move { phone.open_terminal(80, 24, 7).await.unwrap() }
+        });
+        wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
+        let tab = active_tabs(&ws, cx).0.len() - 1;
+        ws.update_in(cx, |ws, window, cx| {
+            let pane = ws.active_group().unwrap().active_pane;
+            ws.close_tab(pane, tab, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.update(|_, cx| terminal_tabs(&ws, cx).is_empty()));
+        // Another terminal changes the list; the closed one gets no tab again,
+        // and it still runs on the agent.
+        agent.block_on({
+            let phone = phone.clone();
+            async move { phone.open_terminal(80, 24, 7).await.unwrap() }
+        });
+        wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
+        let terminals = agent.block_on(async move { phone.terminals().await.unwrap() });
+        assert_eq!(terminals.len(), 2);
+        assert_eq!(terminals[0].id, first);
     }
 
     #[gpui::test]

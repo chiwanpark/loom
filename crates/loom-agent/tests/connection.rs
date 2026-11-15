@@ -10,8 +10,8 @@ use loom_agent_core::{Agent, AgentOptions};
 use loom_client::proto::{
     AgentInfo, ClientHello, ClientMessage, Command, ContentPart, Decision, Delivery, ErrorCode,
     EventWindow, InstanceId, Notice, PROTOCOL_VERSION, PolicyAction, ReasoningEffort,
-    ServerMessage, SessionEvent, SessionId, Task, TaskChange, TaskStatus, TurnOutcome, decode,
-    encode,
+    ServerMessage, SessionEvent, SessionId, Task, TaskChange, TaskStatus, TerminalClient,
+    TerminalHolder, TerminalInfo, TurnOutcome, decode, encode,
 };
 use loom_client::{Client, ClientError, Notification, Notifications, memory_pair};
 use loom_config::{AgentConfig, Dirs};
@@ -504,25 +504,32 @@ async fn provider_status_and_api_keys_are_generic() {
 async fn notices_reach_connected_clients() {
     let setup = setup(vec![]);
     let (_client, mut notes) = connect(&setup).await;
-    let mut config = (*setup.agent.config()).clone();
-    config.policy.default = loom_config::PolicyAction::Deny;
-    setup.agent.apply_config(config).unwrap();
+    // The list of terminals comes first, after the hello.
     let note = tokio::time::timeout(Duration::from_secs(5), notes.recv())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
         note,
+        Notification::Notice(Notice::TerminalsChanged(Vec::new()))
+    );
+    let mut next = async || {
+        tokio::time::timeout(Duration::from_secs(5), notes.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    let mut config = (*setup.agent.config()).clone();
+    config.policy.default = loom_config::PolicyAction::Deny;
+    setup.agent.apply_config(config).unwrap();
+    assert_eq!(
+        next().await,
         Notification::Notice(Notice::ConfigReloaded {
             restart_required: vec![]
         })
     );
     setup.agent.shutdown().await;
-    let note = tokio::time::timeout(Duration::from_secs(5), notes.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(note, Notification::Notice(Notice::ShuttingDown));
+    assert_eq!(next().await, Notification::Notice(Notice::ShuttingDown));
 }
 
 async fn raw_exchange(setup: &Setup, messages: Vec<Bytes>) -> Vec<ServerMessage> {
@@ -618,9 +625,9 @@ async fn terminal_text_until(notes: &mut Notes, seen: &mut String, needle: &str)
 async fn interactive_terminals_run_in_the_workspace() {
     let setup = setup(vec![]);
     let (client, mut notes) = connect(&setup).await;
-    let err = client.open_terminal(0, 24).await.unwrap_err();
+    let err = client.open_terminal(0, 24, 1).await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
-    let terminal = client.open_terminal(80, 24).await.unwrap();
+    let terminal = client.open_terminal(80, 24, 1).await.unwrap();
     client
         .terminal_input(terminal, b"echo answer=$((6*7)); pwd\n".to_vec())
         .await
@@ -657,7 +664,7 @@ async fn interactive_terminals_run_in_the_workspace() {
     let err = client.close_terminal(terminal).await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
 
-    let second = client.open_terminal(80, 24).await.unwrap();
+    let second = client.open_terminal(80, 24, 1).await.unwrap();
     assert_ne!(second, terminal);
     client.close_terminal(second).await.unwrap();
     let err = client
@@ -671,7 +678,7 @@ async fn interactive_terminals_run_in_the_workspace() {
 async fn terminals_survive_a_reconnect() {
     let setup = setup(vec![]);
     let (client, mut notes) = connect(&setup).await;
-    let terminal = client.open_terminal(80, 24).await.unwrap();
+    let terminal = client.open_terminal(80, 24, 1).await.unwrap();
     client
         .terminal_input(
             terminal,
@@ -691,7 +698,12 @@ async fn terminals_survive_a_reconnect() {
         .await
         .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
-    client.attach_terminal(terminal, 80, 24).await.unwrap();
+    client
+        .attach_terminal(terminal, 80, 24, 1, false)
+        .await
+        .unwrap();
+    // What it printed before comes again.
+    terminal_text_until(&mut notes, &mut String::new(), "ready=4").await;
     let mut text = String::new();
     client
         .terminal_input(terminal, b"echo kept=$KEPT; stty size\n".to_vec())
@@ -703,8 +715,110 @@ async fn terminals_survive_a_reconnect() {
     // trap; sh runs it once its pending read returns.
     terminal_text_until(&mut notes, &mut text, "redraw=2").await;
     client.close_terminal(terminal).await.unwrap();
-    let err = client.attach_terminal(terminal, 80, 24).await.unwrap_err();
+    let err = client
+        .attach_terminal(terminal, 80, 24, 1, false)
+        .await
+        .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
+/// Waits for the terminal list that `check` accepts.
+async fn terminals_until(
+    notes: &mut Notes,
+    check: impl Fn(&[TerminalInfo]) -> bool,
+) -> Vec<TerminalInfo> {
+    loop {
+        let note = tokio::time::timeout(Duration::from_secs(10), notes.recv())
+            .await
+            .expect("timed out waiting for terminals")
+            .expect("connection closed");
+        if let Notification::Notice(Notice::TerminalsChanged(terminals)) = note
+            && check(&terminals)
+        {
+            return terminals;
+        }
+    }
+}
+
+#[tokio::test]
+async fn terminals_move_between_clients() {
+    let setup = setup(vec![]);
+    let (desktop, mut desktop_notes) = connect(&setup).await;
+    let (phone, mut phone_notes) = connect(&setup).await;
+    // Each connection hears of the terminals at once, none yet.
+    terminals_until(&mut desktop_notes, |t| t.is_empty()).await;
+    terminals_until(&mut phone_notes, |t| t.is_empty()).await;
+
+    let terminal = desktop.open_terminal(80, 24, 1).await.unwrap();
+    let holder = |list: &[TerminalInfo]| list.first().map(|t| (t.id, t.holder.clone()));
+    let mine = terminals_until(&mut desktop_notes, |t| !t.is_empty()).await;
+    assert_eq!(holder(&mine), Some((terminal, TerminalHolder::You)));
+    let theirs = terminals_until(&mut phone_notes, |t| !t.is_empty()).await;
+    let desktop_client = TerminalClient {
+        program: "test".into(),
+        label: None,
+    };
+    assert_eq!(
+        holder(&theirs),
+        Some((terminal, TerminalHolder::Other(desktop_client.clone())))
+    );
+    assert_eq!(phone.terminals().await.unwrap(), theirs);
+
+    desktop
+        .terminal_input(terminal, b"echo from=desk$((1))\n".to_vec())
+        .await
+        .unwrap();
+    terminal_text_until(&mut desktop_notes, &mut String::new(), "from=desk1").await;
+
+    // Another owner needs to take it over.
+    let err = phone
+        .attach_terminal(terminal, 60, 20, 2, false)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
+    assert!(err.to_string().contains("open on test"), "{err}");
+    phone
+        .attach_terminal(terminal, 60, 20, 2, true)
+        .await
+        .unwrap();
+    // The phone sees what the desktop saw, then its own input.
+    let mut seen = String::new();
+    terminal_text_until(&mut phone_notes, &mut seen, "from=desk1").await;
+    phone
+        .terminal_input(terminal, b"stty size\n".to_vec())
+        .await
+        .unwrap();
+    terminal_text_until(&mut phone_notes, &mut seen, "20 60").await;
+    let list = phone.terminals().await.unwrap();
+    assert_eq!(holder(&list), Some((terminal, TerminalHolder::You)));
+    // The desktop hears that it moved.
+    terminals_until(&mut desktop_notes, |t| {
+        holder(t) == Some((terminal, TerminalHolder::Other(desktop_client.clone())))
+    })
+    .await;
+    // The desktop lost it.
+    let err = desktop
+        .terminal_input(terminal, b"x".to_vec())
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+    assert!(desktop.close_terminal(terminal).await.is_err());
+
+    // A new connection of the phone's owner takes it back from the old one,
+    // which the agent may not know is gone yet.
+    let (phone_again, mut again_notes) = connect(&setup).await;
+    phone_again
+        .attach_terminal(terminal, 60, 20, 2, false)
+        .await
+        .unwrap();
+    terminal_text_until(&mut again_notes, &mut String::new(), "20 60").await;
+    drop(phone);
+    drop(phone_notes);
+
+    // When it closes, it leaves every list.
+    phone_again.close_terminal(terminal).await.unwrap();
+    terminals_until(&mut desktop_notes, |t| t.is_empty()).await;
+    terminals_until(&mut again_notes, |t| t.is_empty()).await;
 }
 
 #[tokio::test]

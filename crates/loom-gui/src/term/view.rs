@@ -2,15 +2,16 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
-    Focusable, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction,
+    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction,
     ParentElement, Pixels, Point, Render, Rgba, ScrollEvent, ShapedLine, SharedString, Size,
     Styled, TextAlign, TextRun, TouchPhase, UTF16Selection, UnderlineStyle, Window, canvas, div,
     fill, point, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::{ActiveTheme, Sizable, h_flex};
+use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex};
+use loom_client::proto::TerminalHolder;
 use loom_vt::input::{Modifiers as VtModifiers, encode_key, encode_paste, encode_text};
 use loom_vt::mouse::{self, CellMetrics, MouseButton as VtButton};
 use loom_vt::{
@@ -76,6 +77,10 @@ struct Metrics {
     cell: Size<Pixels>,
 }
 
+/// Asks to move a terminal that another client holds, or none does, to this
+/// one, from the button over it.
+pub struct TakeOver;
+
 pub struct TerminalView {
     emulator: AlacrittyTerminal,
     io: Option<Rc<dyn TerminalIo>>,
@@ -85,6 +90,9 @@ pub struct TerminalView {
     font: Font,
     font_size: Pixels,
     exited: Option<i32>,
+    /// Where the agent says the terminal is attached. Only a terminal held
+    /// here takes input; the others show who holds them.
+    holder: TerminalHolder,
     read_only: bool,
     display_offset: usize,
     mouse_down_at: Option<Point<Pixels>>,
@@ -94,6 +102,8 @@ pub struct TerminalView {
     clipboard_policy: ClipboardPolicy,
     pending_clipboard: Option<ClipboardWrite>,
 }
+
+impl EventEmitter<TakeOver> for TerminalView {}
 
 pub fn mono_font(family: Option<&str>, fallbacks: &[String], cx: &App) -> Font {
     let family: SharedString = family
@@ -122,6 +132,7 @@ impl TerminalView {
             font,
             font_size,
             exited: None,
+            holder: TerminalHolder::You,
             read_only: false,
             display_offset: 0,
             mouse_down_at: None,
@@ -134,10 +145,13 @@ impl TerminalView {
     }
 
     /// Connects a view that was shown before its terminal was ready (a
-    /// restored tab) and tells the terminal the current size.
+    /// restored tab) and tells the terminal the current size, if it is
+    /// held here.
     pub fn connect(&mut self, io: Rc<dyn TerminalIo>, cx: &mut Context<Self>) {
-        let (cols, rows) = self.grid_size();
-        io.resize(cols, rows);
+        if self.holder == TerminalHolder::You {
+            let (cols, rows) = self.grid_size();
+            io.resize(cols, rows);
+        }
         self.io = Some(io);
         cx.notify();
     }
@@ -145,6 +159,32 @@ impl TerminalView {
     pub fn read_only(mut self) -> Self {
         self.read_only = true;
         self
+    }
+
+    pub fn holder(&self) -> &TerminalHolder {
+        &self.holder
+    }
+
+    /// Says where the terminal is attached now, as the agent told.
+    pub fn set_holder(&mut self, holder: TerminalHolder, cx: &mut Context<Self>) {
+        if self.holder != holder {
+            self.holder = holder;
+            self.marked = None;
+            cx.notify();
+        }
+    }
+
+    /// Clears the screen and takes input again, as the terminal is attached
+    /// here, which replays its recent output.
+    pub fn restart(&mut self, cx: &mut Context<Self>) {
+        let (cols, rows) = self.emulator.size();
+        self.emulator = AlacrittyTerminal::new(cols, rows);
+        self.holder = TerminalHolder::You;
+        self.marked = None;
+        self.pending_clipboard = None;
+        self.display_offset = 0;
+        self.scroll_px = px(0.);
+        cx.notify();
     }
 
     pub fn feed(&mut self, data: &[u8], cx: &mut Context<Self>) {
@@ -241,6 +281,49 @@ impl TerminalView {
         )
     }
 
+    /// Covers a terminal that is not held here with who holds it and a
+    /// button to take it.
+    fn away_overlay(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if self.exited.is_some() {
+            return None;
+        }
+        let (message, action) = match &self.holder {
+            TerminalHolder::You => return None,
+            TerminalHolder::Other(client) => (
+                format!("This terminal is open on {}.", client.describe()),
+                "Take over",
+            ),
+            TerminalHolder::Nobody => (
+                "This terminal is not open on any client.".to_owned(),
+                "Open here",
+            ),
+        };
+        let theme = cx.theme();
+        Some(
+            v_flex()
+                .id("terminal-away")
+                .occlude()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .bg(theme.background.opacity(0.85))
+                .text_color(theme.foreground)
+                .child(message)
+                .child(
+                    Button::new("terminal-take-over")
+                        .primary()
+                        .label(action)
+                        .tooltip("Move the terminal here, with its recent output")
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TakeOver))),
+                ),
+        )
+    }
+
     /// Ctrl+click on an OSC 8 hyperlink asks before opening it.
     fn open_link_at(&self, point: GridPoint, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(uri) = self.emulator.hyperlink_at(point) else {
@@ -300,7 +383,7 @@ impl TerminalView {
     }
 
     fn writable(&self) -> Option<&Rc<dyn TerminalIo>> {
-        if self.read_only || self.exited.is_some() {
+        if self.read_only || self.exited.is_some() || self.holder != TerminalHolder::You {
             None
         } else {
             self.io.as_ref()
@@ -501,7 +584,9 @@ impl TerminalView {
             return false;
         }
         self.emulator.resize(cols, rows);
-        if let Some(io) = &self.io {
+        if let Some(io) = &self.io
+            && self.holder == TerminalHolder::You
+        {
             io.resize(cols, rows);
         }
         true
@@ -714,7 +799,7 @@ impl EntityInputHandler for TerminalView {
     }
 
     fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        !self.read_only && self.exited.is_none()
+        !self.read_only && self.exited.is_none() && self.holder == TerminalHolder::You
     }
 }
 
@@ -955,6 +1040,7 @@ impl Render for TerminalView {
         let focus = self.focus.clone();
         let prepaint_view = view.clone();
         let banner = self.clipboard_banner(cx);
+        let away = self.away_overlay(cx);
         div()
             .id("terminal")
             .relative()
@@ -1112,6 +1198,7 @@ impl Render for TerminalView {
                 .size_full(),
             )
             .children(banner)
+            .children(away)
     }
 }
 

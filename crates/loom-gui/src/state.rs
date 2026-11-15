@@ -3,13 +3,14 @@ use std::future::Future;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, DirectoryListing, FileContent, FileDiff, FileVersion,
+    AgentInfo, ApiError, Command, DirectoryListing, ErrorCode, FileContent, FileDiff, FileVersion,
     NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo, TaskChange,
-    TasksContent, TelemetryStatus, TerminalId, UsageLimits, WorkspaceChanges,
+    TasksContent, TelemetryStatus, TerminalHolder, TerminalId, TerminalInfo, TerminalOwner,
+    UsageLimits, WorkspaceChanges,
 };
-use loom_client::{Client, Notification, Notifications};
+use loom_client::{Client, Notification, Notifications, terminal_owner};
 use loom_config::HostEntry;
 use tokio::sync::mpsc;
 
@@ -39,6 +40,11 @@ pub enum ConnectionEvent {
     },
     /// The session list arrived (after connecting or reconnecting).
     SessionsLoaded,
+    /// The agent's terminals changed: one opened, closed, or moved. The
+    /// views of those that closed on another client are in `closed`.
+    TerminalsChanged {
+        closed: Vec<EntityId>,
+    },
     Closed,
 }
 
@@ -131,7 +137,15 @@ pub struct AgentConnection {
     loading_history: HashSet<SessionId>,
     /// Sessions to fetch every older event of, as the Changes panel needs.
     loading_all_history: HashSet<SessionId>,
+    /// The terminals that have a view here, held here or not.
     terminals: HashMap<TerminalId, TerminalEntry>,
+    /// The agent's terminals, as it last listed them.
+    listed: Vec<TerminalInfo>,
+    /// Terminals of other clients whose tabs were closed here, which get
+    /// no new tab.
+    dismissed: HashSet<TerminalId>,
+    /// This client's token for its terminals, kept across reconnects.
+    pub terminal_owner: TerminalOwner,
     _pump: Option<Task<()>>,
 }
 
@@ -140,6 +154,20 @@ impl EventEmitter<ConnectionEvent> for AgentConnection {}
 struct TerminalEntry {
     view: WeakEntity<TerminalView>,
     io: TerminalRebind,
+    /// Set while this client attaches the terminal, so lists the agent sent
+    /// before do not count.
+    attaching: bool,
+}
+
+/// How attaching a terminal went.
+pub enum Attached {
+    Here,
+    /// Another client holds it, and it was not taken over.
+    Elsewhere,
+    /// The connection closed first; the view still counts the terminal as
+    /// held here, so the next connection attaches it.
+    Interrupted,
+    Failed(String),
 }
 
 impl AgentConnection {
@@ -165,6 +193,9 @@ impl AgentConnection {
             loading_history: HashSet::new(),
             loading_all_history: HashSet::new(),
             terminals: HashMap::new(),
+            listed: Vec::new(),
+            dismissed: HashSet::new(),
+            terminal_owner: terminal_owner(),
             _pump: None,
         };
         this.attach(notifications, cx);
@@ -293,6 +324,9 @@ impl AgentConnection {
             }
             Notification::Notice(Notice::TasksChanged { session, tasks }) => {
                 cx.emit(ConnectionEvent::TasksChanged { session, tasks })
+            }
+            Notification::Notice(Notice::TerminalsChanged(terminals)) => {
+                self.apply_terminals(terminals, cx)
             }
             Notification::Notice(notice) => cx.emit(ConnectionEvent::Notice(notice)),
             Notification::TerminalOutput { terminal, data } => {
@@ -759,17 +793,22 @@ impl AgentConnection {
             .run(async move { client.write_notes(text, expected).await })
     }
 
+    /// Routes a terminal's output to its view. `attaching` marks a terminal
+    /// the caller attaches next, with [`Self::attach_terminal`].
     pub fn register_terminal(
         &mut self,
         id: TerminalId,
         view: &Entity<TerminalView>,
         io: TerminalRebind,
+        attaching: bool,
     ) {
+        self.dismissed.remove(&id);
         self.terminals.insert(
             id,
             TerminalEntry {
                 view: view.downgrade(),
                 io,
+                attaching,
             },
         );
     }
@@ -790,12 +829,164 @@ impl AgentConnection {
             .map(|(id, _)| *id)
     }
 
-    /// After a reconnect, points every open terminal at the new client and takes it
-    /// over with `AttachTerminal`. Terminals of a restarted agent (a new instance)
-    /// are gone, so they are ended instead; the new agent may reuse their IDs.
+    /// Drops the terminals whose views are gone; those of other clients get
+    /// no new tab.
+    fn prune_terminals(&mut self) {
+        let dismissed: Vec<TerminalId> = self
+            .terminals
+            .iter()
+            .filter(|(_, t)| t.view.upgrade().is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in dismissed {
+            self.terminals.remove(&id);
+            self.dismissed.insert(id);
+        }
+    }
+
+    /// Takes in the agent's list of terminals: tells each view where its
+    /// terminal is attached, and forgets the views of terminals that closed
+    /// on another client.
+    fn apply_terminals(&mut self, terminals: Vec<TerminalInfo>, cx: &mut Context<Self>) {
+        self.prune_terminals();
+        let mut closed = Vec::new();
+        for (id, entry) in &self.terminals {
+            let Some(view) = entry.view.upgrade() else {
+                continue;
+            };
+            if entry.attaching {
+                continue;
+            }
+            let held = *view.read(cx).holder() == TerminalHolder::You;
+            match terminals.iter().find(|t| t.id == *id) {
+                // Held by no one: this client's earlier connection, until
+                // the new one attaches it again.
+                Some(info) if held && info.holder == TerminalHolder::Nobody => {}
+                Some(info) => view.update(cx, |view, cx| view.set_holder(info.holder.clone(), cx)),
+                // One held here is new, or it exited, which the agent says itself.
+                None if held => {}
+                None => closed.push(*id),
+            }
+        }
+        let closed = closed
+            .into_iter()
+            .filter_map(|id| self.terminals.remove(&id))
+            .map(|entry| {
+                entry.io.forget();
+                entry.view.entity_id()
+            })
+            .collect();
+        self.dismissed
+            .retain(|id| terminals.iter().any(|t| t.id == *id));
+        self.listed = terminals;
+        cx.emit(ConnectionEvent::TerminalsChanged { closed });
+        cx.notify();
+    }
+
+    /// The terminals that another client holds, or none does, which have
+    /// no view here and whose tabs were not closed here.
+    pub fn untracked_terminals(&mut self) -> Vec<TerminalInfo> {
+        self.prune_terminals();
+        self.listed
+            .iter()
+            .filter(|t| t.holder != TerminalHolder::You)
+            .filter(|t| !self.terminals.contains_key(&t.id) && !self.dismissed.contains(&t.id))
+            .cloned()
+            .collect()
+    }
+
+    /// Attaches a terminal with a view here: its view starts over with the
+    /// terminal's recent output. Without `take_over`, a terminal another
+    /// client holds stays there.
+    pub fn attach_terminal(
+        &mut self,
+        id: TerminalId,
+        take_over: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Attached> {
+        let Some(entry) = self.terminals.get_mut(&id) else {
+            return Task::ready(Attached::Failed("the terminal is not open here".into()));
+        };
+        let Some(view) = entry.view.upgrade() else {
+            return Task::ready(Attached::Failed("the terminal's tab is closed".into()));
+        };
+        entry.attaching = true;
+        entry.io.rebind(self.client.clone());
+        // Cleared before asking, so the replay that comes first lands on an
+        // empty screen.
+        view.update(cx, |view, cx| view.restart(cx));
+        let (cols, rows) = view.read(cx).grid_size();
+        let client = self.client.clone();
+        let owner = self.terminal_owner;
+        let task = self.backend.run(async move {
+            client
+                .attach_terminal(id, cols, rows, owner, take_over)
+                .await
+        });
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                // The agent's list, which tells who holds it when this did not.
+                let holder = match this
+                    .listed
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.holder.clone())
+                {
+                    Some(TerminalHolder::You) | None => TerminalHolder::Nobody,
+                    Some(other) => other,
+                };
+                if let Some(entry) = this.terminals.get_mut(&id) {
+                    entry.attaching = false;
+                }
+                match result {
+                    Some(Ok(())) => Attached::Here,
+                    Some(Err(err)) if err.api().map(|e| e.code) == Some(ErrorCode::Conflict) => {
+                        view.update(cx, |view, cx| view.set_holder(holder, cx));
+                        Attached::Elsewhere
+                    }
+                    Some(Err(err)) => Attached::Failed(err.to_string()),
+                    // The next connection attaches it again.
+                    None => Attached::Interrupted,
+                }
+            })
+            .unwrap_or(Attached::Interrupted)
+        })
+    }
+
+    /// Moves a terminal another client holds, or none does, here.
+    pub fn take_terminal(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let Some(id) = self.terminal_id(view) else {
+            return;
+        };
+        let task = self.attach_terminal(id, true, cx);
+        let view = view.downgrade();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            if let Attached::Failed(failed) = task.await {
+                tracing::debug!(terminal = id, "cannot take the terminal over: {failed}");
+                let _ = this.update(cx, |this, cx| {
+                    this.unregister_terminal(id);
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.set_lost(&format!("cannot take the terminal over: {failed}"), cx)
+                        });
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// After a reconnect, points every terminal at the new client and
+    /// attaches the ones that were held here again; another client may
+    /// have taken them meanwhile. Terminals of a restarted agent (a new
+    /// instance) are gone, so they are ended instead; the new agent may
+    /// reuse their IDs.
     fn reattach_terminals(&mut self, same_agent: bool, cx: &mut Context<Self>) {
-        self.terminals.retain(|_, t| t.view.upgrade().is_some());
+        self.prune_terminals();
         if !same_agent {
+            self.listed.clear();
+            self.dismissed.clear();
             for (_, terminal) in self.terminals.drain() {
                 terminal.io.forget();
                 if let Some(view) = terminal.view.upgrade() {
@@ -806,21 +997,22 @@ impl AgentConnection {
             }
             return;
         }
+        let mut held = Vec::new();
         for (&id, terminal) in &self.terminals {
-            let Some(view) = terminal.view.upgrade() else {
-                continue;
-            };
             terminal.io.rebind(self.client.clone());
-            let (cols, rows) = view.read(cx).grid_size();
-            let client = self.client.clone();
-            let task = self
-                .backend
-                .run(async move { client.attach_terminal(id, cols, rows).await });
+            let here = terminal
+                .view
+                .upgrade()
+                .is_some_and(|view| *view.read(cx).holder() == TerminalHolder::You);
+            if here || terminal.attaching {
+                held.push(id);
+            }
+        }
+        for id in held {
+            let task = self.attach_terminal(id, false, cx);
             cx.spawn(async move |this, cx: &mut AsyncApp| {
-                let failed = match task.await {
-                    Some(Ok(())) => return,
-                    Some(Err(err)) => err.to_string(),
-                    None => "the connection closed".into(),
+                let Attached::Failed(failed) = task.await else {
+                    return;
                 };
                 tracing::debug!(terminal = id, "cannot reattach the terminal: {failed}");
                 let _ = this.update(cx, |this, cx| {

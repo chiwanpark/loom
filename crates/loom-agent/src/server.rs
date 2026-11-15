@@ -62,6 +62,10 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
         .with_client_key(match &peer {
             PeerInfo::Relay { pubkey, .. } => Some(*pubkey),
             _ => None,
+        })
+        .with_client_label(match &peer {
+            PeerInfo::Relay { label, .. } => Some(label.clone()),
+            _ => None,
         });
     tracing::debug!(?peer, "connection opened");
     loop {

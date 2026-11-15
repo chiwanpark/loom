@@ -53,8 +53,8 @@ sealed interface Screen {
     ) : Screen, AgentScreen
 
     /**
-     * A terminal on the agent's host, by its number among the agent's
-     * terminals in the app; 0 opens a new one.
+     * A terminal on the agent's host, by its number on the agent (one that
+     * another client holds too); 0 opens a new one.
      */
     data class Terminal(override val host: String, override val instance: String, val number: Int = 0) :
         Screen, AgentScreen

@@ -22,6 +22,8 @@ import com.chiwanpark.loom.core.SessionSummary
 import com.chiwanpark.loom.core.TaskItem
 import com.chiwanpark.loom.core.Terminal
 import com.chiwanpark.loom.core.TerminalFrame
+import com.chiwanpark.loom.core.TerminalPlace
+import com.chiwanpark.loom.core.TerminalSummary
 import com.chiwanpark.loom.core.WaitingMessage
 import kotlin.math.min
 import kotlinx.coroutines.Job
@@ -102,8 +104,11 @@ class ConversationState(val session: String) {
     }
 }
 
-/** A terminal on the agent's host, numbered among the agent's terminals in the app. */
-class TerminalTab(val terminal: Terminal, val number: Int) {
+/** A terminal on the agent's host that the app follows, by its number on the agent. */
+class TerminalTab(val terminal: Terminal) {
+    /** The terminal's number on the agent, which every client shows. */
+    val number: Int = terminal.id().toInt()
+
     /** What it shows now; null until the first frame. */
     var frame by mutableStateOf<TerminalFrame?>(null)
         internal set
@@ -160,9 +165,12 @@ class AgentLink(
 
     private val conversations = mutableMapOf<String, ConversationState>()
 
-    /** The terminals open on the agent's host, oldest first. */
+    /** The terminals the app follows, oldest first. */
     val terminals = mutableStateListOf<TerminalTab>()
-    private var terminalNumber = 0
+
+    /** Every terminal open on the agent, with where it is open; other clients' too. */
+    var agentTerminals by mutableStateOf<List<TerminalSummary>>(emptyList())
+        private set
 
     /** Sessions the connection follows; it resubscribes them when it reconnects. */
     private val opened = mutableSetOf<String>()
@@ -197,6 +205,7 @@ class AgentLink(
         job?.cancel()
         job = null
         closeTerminals()
+        agentTerminals = emptyList()
         connection?.disconnect()
         connection?.destroy()
         connection = null
@@ -248,13 +257,48 @@ class AgentLink(
     /** Opens a terminal of `cols` by `rows` cells on the agent's host. */
     suspend fun openTerminal(cols: Int, rows: Int): TerminalTab {
         val terminal = connection().openTerminal(cols.toUShort(), rows.toUShort())
-        val tab = TerminalTab(terminal, ++terminalNumber)
+        return follow(terminal)
+    }
+
+    /**
+     * Takes over a terminal that another client opened or holds, at `cols` by
+     * `rows` cells; it comes with its recent output.
+     */
+    suspend fun takeTerminal(number: Int, cols: Int, rows: Int): TerminalTab {
+        terminal(number)?.let { tab ->
+            if (!tab.ended) {
+                tab.terminal.takeOver()
+                return tab
+            }
+            forgetTerminal(tab)
+        }
+        return follow(connection().attachTerminal(number.toULong(), cols.toUShort(), rows.toUShort()))
+    }
+
+    private fun follow(terminal: Terminal): TerminalTab {
+        val tab = TerminalTab(terminal)
         terminals.add(tab)
         tab.follow(this, app.scope)
         return tab
     }
 
     fun terminal(number: Int): TerminalTab? = terminals.firstOrNull { it.number == number }
+
+    /** Where the agent says a terminal is open, or null for one it does not list (yet). */
+    fun place(number: Int): TerminalPlace? = agentTerminals.firstOrNull { it.id.toInt() == number }?.place
+
+    /**
+     * The numbers of the agent's terminals and the app's, oldest first: those
+     * the app follows and those of other clients.
+     */
+    val terminalNumbers: List<Int>
+        get() = (agentTerminals.map { it.id.toInt() } + terminals.map { it.number }).distinct().sorted()
+
+    /** The terminal to show first: the newest one here that runs, else the newest elsewhere. */
+    fun defaultTerminal(): Int? =
+        terminals.lastOrNull { !it.ended && place(it.number) !is TerminalPlace.Elsewhere }?.number
+            ?: terminals.lastOrNull { !it.ended }?.number
+            ?: agentTerminals.lastOrNull()?.id?.toInt()
 
     /** Closes a terminal, ending its shell. */
     fun closeTerminal(tab: TerminalTab) {
@@ -350,6 +394,7 @@ class AgentLink(
                         conversations[update.update.session]?.apply(update.update)
                     is AgentUpdate.NotesChanged -> notesFlow.tryEmit(update.version)
                     is AgentUpdate.TasksChanged -> tasksFlow.tryEmit(update.session to update.tasks)
+                    is AgentUpdate.Terminals -> agentTerminals = update.terminals
                     is AgentUpdate.Notice -> noticeFlow.tryEmit(AppNotice(update.level, update.message))
                 }
             }

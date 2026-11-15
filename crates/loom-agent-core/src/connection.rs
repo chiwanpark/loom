@@ -5,7 +5,7 @@ use loom_llm::ProviderId;
 use loom_proto::{
     AgentInfo, ApiError, ClientHello, ClientMessage, Command, ErrorCode, LoginPrompt, ModelInfo,
     Notice, PROTOCOL_VERSION, Payload, RequestId, SequencedEvent, ServerHello, ServerMessage,
-    SessionId,
+    SessionId, TerminalClient, TerminalOwner,
 };
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -17,7 +17,7 @@ use crate::events::Subscription;
 use crate::host_keys::HostKeys;
 use crate::session::Session;
 use crate::supervisor::Supervisor;
-use crate::terminals::{ConnectionId, interactive_shell};
+use crate::terminals::{ConnectionId, Viewer, interactive_shell};
 
 pub type Reply = Result<Payload, ApiError>;
 
@@ -41,6 +41,11 @@ pub struct Connection {
     relayed: bool,
     /// The key of a client that comes through a relay, which its push token belongs to.
     client_key: Option<[u8; 32]>,
+    /// The label of a client that comes through a relay, to tell people where
+    /// its terminals are open.
+    client_label: Option<String>,
+    /// The name the client gave in its hello.
+    program: String,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -64,6 +69,8 @@ impl Connection {
             connection_id,
             relayed: false,
             client_key: None,
+            client_label: None,
+            program: String::new(),
         }
     }
 
@@ -78,6 +85,13 @@ impl Connection {
     /// [`Command::SetPushToken`] sets the token of.
     pub fn with_client_key(mut self, key: Option<[u8; 32]>) -> Self {
         self.client_key = key;
+        self
+    }
+
+    /// The label a client that comes through a relay was paired with, which
+    /// other clients see on the terminals it holds.
+    pub fn with_client_label(mut self, label: Option<String>) -> Self {
+        self.client_label = label;
         self
     }
 
@@ -158,6 +172,7 @@ impl Connection {
         }
         self.greeted = true;
         tracing::debug!(client = %hello.client, "client connected");
+        self.program = hello.client;
         let ok = self
             .send(ServerMessage::Hello(ServerHello {
                 version: PROTOCOL_VERSION,
@@ -169,8 +184,26 @@ impl Connection {
                 self.agent.notices(),
                 self.out.clone(),
             )));
+            self.tasks.push(tokio::spawn(forward_terminals(
+                self.agent.clone(),
+                self.connection_id,
+                self.out.clone(),
+            )));
         }
         Flow::Continue
+    }
+
+    /// This connection, as a terminal's output goes to it.
+    fn viewer(&self, owner: TerminalOwner) -> Viewer {
+        Viewer {
+            connection: self.connection_id,
+            owner,
+            client: TerminalClient {
+                program: self.program.clone(),
+                label: self.client_label.clone(),
+            },
+            out: self.out.clone(),
+        }
     }
 
     async fn respond(&self, id: RequestId, result: Reply) {
@@ -323,7 +356,7 @@ impl Connection {
                 };
                 self.respond(id, result).await;
             }
-            Command::OpenTerminal { cols, rows } => {
+            Command::OpenTerminal { cols, rows, owner } => {
                 let config = self.agent.config();
                 let shell = config
                     .terminal
@@ -334,12 +367,11 @@ impl Connection {
                     .agent
                     .terminals()
                     .open(
-                        self.connection_id,
+                        self.viewer(owner),
                         shell,
                         self.agent.workspace_root(),
                         cols,
                         rows,
-                        self.out.clone(),
                     )
                     .map(Payload::Terminal);
                 self.respond(id, result).await;
@@ -369,11 +401,14 @@ impl Connection {
                 terminal,
                 cols,
                 rows,
+                owner,
+                take_over,
             } => {
                 let result = self
                     .agent
                     .terminals()
-                    .attach(self.connection_id, terminal, cols, rows, self.out.clone())
+                    .attach(self.viewer(owner), terminal, cols, rows, take_over)
+                    .await
                     .map(|()| Payload::Ok);
                 self.respond(id, result).await;
             }
@@ -384,6 +419,10 @@ impl Connection {
                     .close(self.connection_id, terminal)
                     .map(|()| Payload::Ok);
                 self.respond(id, result).await;
+            }
+            Command::ListTerminals => {
+                let terminals = self.agent.terminals().list(self.connection_id);
+                self.respond(id, Ok(Payload::Terminals(terminals))).await;
             }
             Command::CancelLogin { login } => {
                 let waiting = self
@@ -575,6 +614,7 @@ impl Connection {
             | Command::ResizeTerminal { .. }
             | Command::CloseTerminal { .. }
             | Command::AttachTerminal { .. }
+            | Command::ListTerminals
             | Command::GetHostKey
             | Command::AuthorizeClient { .. }
             | Command::ListClients
@@ -776,6 +816,31 @@ async fn forward_notices(
             Err(broadcast::error::RecvError::Closed) => return,
         };
         if out.send(ServerMessage::Notice(notice)).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Tells the connection which terminals are open, at once and whenever one
+/// opens, closes, or moves to another connection.
+async fn forward_terminals(
+    agent: Agent,
+    connection: ConnectionId,
+    out: mpsc::Sender<ServerMessage>,
+) {
+    let mut changes = agent.terminals().subscribe();
+    let mut sent = None;
+    loop {
+        changes.borrow_and_update();
+        let terminals = agent.terminals().list(connection);
+        if sent.as_ref() != Some(&terminals) {
+            let notice = Notice::TerminalsChanged(terminals.clone());
+            if out.send(ServerMessage::Notice(notice)).await.is_err() {
+                return;
+            }
+            sent = Some(terminals);
+        }
+        if changes.changed().await.is_err() {
             return;
         }
     }

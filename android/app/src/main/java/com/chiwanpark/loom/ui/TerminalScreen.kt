@@ -54,13 +54,17 @@ import com.chiwanpark.loom.Screen
 import com.chiwanpark.loom.TerminalTab
 import com.chiwanpark.loom.core.KeyModifiers
 import com.chiwanpark.loom.core.TerminalKey
+import com.chiwanpark.loom.core.TerminalPlace
 import com.chiwanpark.loom.userMessage
+import kotlinx.coroutines.launch
 
 private val NO_MODIFIERS = KeyModifiers(ctrl = false, alt = false, shift = false)
 
 /**
  * A terminal on the agent's host, running the agent's shell in its
- * workspace, with a row of keys the phone's keyboard lacks.
+ * workspace, with a row of keys the phone's keyboard lacks. `number` is the
+ * terminal's number on the agent, also for one that another client (as the
+ * desktop app) holds, which the app can take over; 0 opens a new terminal.
  */
 @Composable
 fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
@@ -71,6 +75,8 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
     var menu by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableStateOf(0) }
+    var confirm by remember { mutableStateOf<Int?>(null) }
+    var taking by remember { mutableStateOf(false) }
 
     // Number 0 opens a terminal, then stands for it.
     LaunchedEffect(link, connected, number, attempt) {
@@ -86,8 +92,51 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
         }
     }
     val tab = if (number == 0) null else link.terminal(number)
+    val place = if (number == 0) null else link.place(number)
     fun newTerminal() = app.navigator.replace(Screen.Terminal(link.host, link.instance))
+    fun show(target: Int) = app.navigator.replace(Screen.Terminal(link.host, link.instance, target))
     val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
+
+    // Moves a terminal here from the client that holds it, or from none.
+    fun take(target: Int) {
+        if (taking) return
+        // The size of this screen's terminal is the best guess for the other one.
+        val size = tab?.frame
+        scope.launch {
+            taking = true
+            try {
+                val taken = link.takeTerminal(target, size?.cols?.toInt() ?: 80, size?.rows?.toInt() ?: 24)
+                if (taken.number != number) show(taken.number)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                snackbar.showSnackbar("Could not take the terminal over: ${e.userMessage()}")
+            } finally {
+                taking = false
+            }
+        }
+    }
+
+    // Shows a terminal from the menu; one that another client holds needs a yes first.
+    fun open(target: Int) {
+        val followed = link.terminal(target)
+        when {
+            link.place(target) is TerminalPlace.Elsewhere -> confirm = target
+            followed != null -> show(target)
+            else -> take(target)
+        }
+    }
+
+    confirm?.let { target ->
+        val who = (link.place(target) as? TerminalPlace.Elsewhere)?.client ?: "another client"
+        ConfirmDialog(
+            "Take over this terminal?",
+            "Terminal $target is open on $who. It moves here with its recent output, and $who can take it back.",
+            "Take over",
+            onConfirm = { take(target) },
+            onDismiss = { confirm = null },
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -101,14 +150,20 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
                     MenuEntry("New terminal", LoomIcons.Plus, close, ::newTerminal)
-                    for (other in link.terminals) {
-                        if (other.number == number) continue
-                        val title = other.frame?.title?.takeIf { it.isNotBlank() }
+                    for (other in link.terminalNumbers) {
+                        if (other == number) continue
+                        val title = link.terminal(other)?.frame?.title?.takeIf { it.isNotBlank() }
+                        val where = when (val at = link.place(other)) {
+                            is TerminalPlace.Elsewhere -> "on ${at.client}"
+                            TerminalPlace.Nowhere -> "detached"
+                            else -> null
+                        }
                         MenuEntry(
-                            listOfNotNull("Terminal ${other.number}", title).joinToString(": "),
+                            listOfNotNull("Terminal $other", title).joinToString(": ") +
+                                (where?.let { " ($it)" } ?: ""),
                             LoomIcons.Terminal,
                             close,
-                        ) { app.navigator.replace(Screen.Terminal(link.host, link.instance, other.number)) }
+                        ) { open(other) }
                     }
                     if (tab != null) {
                         MenuEntry("Paste", LoomIcons.ClipboardPaste, close) {
@@ -140,20 +195,55 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
                         }) { Text("Retry") }
                     }
                 } ?: Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                tab == null && place != null -> CenteredMessage(awayMessage(place)) {
+                    if (taking) {
+                        CircularProgressIndicator()
+                    } else {
+                        Button(onClick = { take(number) }, enabled = connected, modifier = Modifier.padding(top = 12.dp)) {
+                            Text(awayAction(place))
+                        }
+                    }
+                }
                 tab == null -> CenteredMessage("This terminal is closed.") {
                     Button(onClick = ::newTerminal) { Text("New terminal") }
                 }
-                else -> key(tab.number) { TerminalBody(app, tab, onNew = ::newTerminal, onClose = {
-                    link.closeTerminal(tab)
-                    app.navigator.pop()
-                }) }
+                else -> key(tab.number) {
+                    TerminalBody(
+                        app,
+                        tab,
+                        away = place?.takeIf { it != TerminalPlace.Here && !tab.ended },
+                        taking = taking,
+                        onTake = { take(number) },
+                        onNew = ::newTerminal,
+                        onClose = {
+                            link.closeTerminal(tab)
+                            app.navigator.pop()
+                        },
+                    )
+                }
             }
         }
     }
 }
 
+/** What the screen says of a terminal that is not open here. */
+private fun awayMessage(place: TerminalPlace): String = when (place) {
+    is TerminalPlace.Elsewhere -> "This terminal is open on ${place.client}."
+    else -> "This terminal is not open on any client."
+}
+
+private fun awayAction(place: TerminalPlace): String = if (place is TerminalPlace.Elsewhere) "Take over" else "Open here"
+
 @Composable
-private fun ColumnScope.TerminalBody(app: LoomApplication, tab: TerminalTab, onNew: () -> Unit, onClose: () -> Unit) {
+private fun ColumnScope.TerminalBody(
+    app: LoomApplication,
+    tab: TerminalTab,
+    away: TerminalPlace?,
+    taking: Boolean,
+    onTake: () -> Unit,
+    onNew: () -> Unit,
+    onClose: () -> Unit,
+) {
     var ctrl by remember { mutableStateOf(false) }
     var alt by remember { mutableStateOf(false) }
     var view by remember { mutableStateOf<TerminalView?>(null) }
@@ -182,33 +272,47 @@ private fun ColumnScope.TerminalBody(app: LoomApplication, tab: TerminalTab, onN
     val textSize = app.settings.terminalTextSize
     val frame = tab.frame
 
-    AndroidView(
-        factory = { context ->
-            TerminalView(context).apply {
-                listener = object : TerminalView.Listener {
-                    override fun onText(text: String) = terminal.sendText(text)
+    Box(Modifier.fillMaxWidth().weight(1f)) {
+        AndroidView(
+            factory = { context ->
+                TerminalView(context).apply {
+                    listener = object : TerminalView.Listener {
+                        override fun onText(text: String) = terminal.sendText(text)
 
-                    override fun onKey(key: TerminalKey, modifiers: KeyModifiers) = terminal.sendKey(key, modifiers)
+                        override fun onKey(key: TerminalKey, modifiers: KeyModifiers) = terminal.sendKey(key, modifiers)
 
-                    override fun onResize(cols: Int, rows: Int) = terminal.resize(cols.toUShort(), rows.toUShort())
+                        override fun onResize(cols: Int, rows: Int) = terminal.resize(cols.toUShort(), rows.toUShort())
 
-                    override fun onScroll(lines: Int) = terminal.scroll(lines)
+                        override fun onScroll(lines: Int) = terminal.scroll(lines)
 
-                    override fun onTextSize(sp: Float) = app.settings.updateTerminalTextSize(sp)
+                        override fun onTextSize(sp: Float) = app.settings.updateTerminalTextSize(sp)
 
-                    override fun takeModifiers(): KeyModifiers = take()
+                        override fun takeModifiers(): KeyModifiers = take()
+                    }
+                    view = this
+                    if (away == null) post { showKeyboard() }
                 }
-                view = this
-                post { showKeyboard() }
+            },
+            update = { view ->
+                view.palette = palette
+                view.setFont(typeface, textSize)
+                view.frame = frame
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        // Another client holds it: the screen stays as it was, under who has it.
+        if (away != null) {
+            Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f), modifier = Modifier.fillMaxSize()) {
+                CenteredMessage(awayMessage(away)) {
+                    if (taking) {
+                        CircularProgressIndicator(Modifier.padding(top = 12.dp))
+                    } else {
+                        Button(onClick = onTake, modifier = Modifier.padding(top = 12.dp)) { Text(awayAction(away)) }
+                    }
+                }
             }
-        },
-        update = { view ->
-            view.palette = palette
-            view.setFont(typeface, textSize)
-            view.frame = frame
-        },
-        modifier = Modifier.fillMaxWidth().weight(1f),
-    )
+        }
+    }
     if (frame != null && (frame.exitStatus != null || frame.ended != null)) {
         Row(
             Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer)

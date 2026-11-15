@@ -1,22 +1,49 @@
 //! Terminals on an agent's host. The agent runs the shell; the core keeps
 //! each terminal's screen with the desktop's emulator and hands the app
-//! frames to draw, and it turns keys into the bytes programs expect.
+//! frames to draw, and it turns keys into the bytes programs expect. A
+//! terminal is attached to one client at a time: another client (as the
+//! desktop app) can take one over, and the app can take it back, or take
+//! one that another client opened, with its recent output.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
-use loom_client::proto::{Command, TerminalId};
+use loom_client::ClientError;
+use loom_client::proto::{Command, ErrorCode, TerminalHolder, TerminalId, TerminalInfo};
 use loom_vt::input::{Key, Modifiers, encode_key, encode_paste};
 use loom_vt::{AlacrittyTerminal, CursorShape, TerminalEmulator};
 use tokio::sync::{Notify, mpsc};
 
-use crate::agent::{AgentConnection, Shared, with_client};
-use crate::error::Result;
+use crate::agent::{AgentConnection, Shared};
+use crate::error::{LoomError, Result};
 use crate::runtime::{run, spawn};
 
 /// The most output kept for a terminal before the app knows of it, as when
 /// its first output arrives before the agent's answer that opened it.
 const MAX_EARLY_OUTPUT: usize = 64 * 1024;
+
+/// Where a terminal of the agent is open.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TerminalPlace {
+    /// In this app.
+    Here,
+    /// In another client, which `client` names for people.
+    Elsewhere { client: String },
+    /// Nowhere: its client went away, and the agent closes it after a
+    /// while unless a client takes it.
+    Nowhere,
+}
+
+/// One of the agent's open terminals.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TerminalSummary {
+    /// The terminal's number on the agent.
+    pub id: u64,
+    pub place: TerminalPlace,
+}
+
+/// What the app shows when another client closed a terminal it had taken.
+const CLOSED_ELSEWHERE: &str = "The terminal was closed on another client.";
 
 /// A color of a terminal's text or background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -123,6 +150,11 @@ struct TermState {
     exit_status: Option<i32>,
     ended: Option<String>,
     closed: bool,
+    /// Whether the terminal is attached to this app, so it takes input.
+    held: bool,
+    /// Set while the app attaches it, so lists the agent sent before do
+    /// not count.
+    attaching: bool,
 }
 
 /// A terminal as the connection knows it, to feed it the agent's output.
@@ -133,6 +165,22 @@ pub(crate) struct TermShared {
 }
 
 impl TermShared {
+    fn new(id: TerminalId, cols: u16, rows: u16) -> Self {
+        Self {
+            id,
+            state: Mutex::new(TermState {
+                emulator: AlacrittyTerminal::new(cols, rows),
+                changed: true,
+                exit_status: None,
+                ended: None,
+                closed: false,
+                held: true,
+                attaching: false,
+            }),
+            wake: Notify::new(),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, TermState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -177,16 +225,50 @@ impl TermShared {
         state.exit_status.is_none() && state.ended.is_none() && !state.closed
     }
 
+    /// Whether the terminal is attached here, or being attached.
+    pub(crate) fn is_held(&self) -> bool {
+        let state = self.lock();
+        state.held || state.attaching
+    }
+
+    /// Clears the screen before the terminal is attached here, which
+    /// replays its recent output. Returns whether it was held here.
+    fn start_attach(&self) -> bool {
+        let mut state = self.lock();
+        let (cols, rows) = state.emulator.size();
+        state.emulator = AlacrittyTerminal::new(cols, rows);
+        state.attaching = true;
+        state.changed = true;
+        let held = state.held;
+        drop(state);
+        self.wake.notify_one();
+        held
+    }
+
+    fn finish_attach(&self, held: bool) {
+        let mut state = self.lock();
+        state.attaching = false;
+        state.held = held;
+        state.changed = true;
+        drop(state);
+        self.wake.notify_one();
+    }
+
     pub(crate) fn size(&self) -> (u16, u16) {
         self.lock().emulator.size()
     }
 }
 
-/// The terminals of a connection, and output that came before its terminal.
+/// The terminals of a connection, output that came before its terminal,
+/// and the agent's list of every terminal.
 #[derive(Default)]
 pub(crate) struct Terminals {
     pub(crate) open: HashMap<TerminalId, Arc<TermShared>>,
     early: HashMap<TerminalId, Vec<u8>>,
+    /// The agent's terminals, as it last listed them.
+    listed: Vec<TerminalInfo>,
+    /// Whether the app should get the list again.
+    pub(crate) changed: bool,
 }
 
 impl Terminals {
@@ -225,6 +307,61 @@ impl Terminals {
             terminal.end(why);
         }
         self.early.clear();
+    }
+
+    /// Takes in the agent's list: notes which terminals are held here, and
+    /// ends those that closed on another client after it took them.
+    pub(crate) fn listed(&mut self, terminals: Vec<TerminalInfo>) {
+        let mut closed = Vec::new();
+        for (id, terminal) in &self.open {
+            let mut state = terminal.lock();
+            if state.attaching {
+                continue;
+            }
+            match terminals.iter().find(|t| t.id == *id) {
+                // Held by no one: this app's earlier link, until the new
+                // one attaches it again.
+                Some(info) if info.holder == TerminalHolder::Nobody => {}
+                Some(info) => state.held = info.holder == TerminalHolder::You,
+                // One held here is new, or it exited, which the agent says itself.
+                None if state.held => {}
+                None => closed.push(*id),
+            }
+        }
+        for id in closed {
+            if let Some(terminal) = self.open.remove(&id) {
+                terminal.end(CLOSED_ELSEWHERE);
+            }
+        }
+        self.listed = terminals;
+        self.changed = true;
+    }
+
+    /// The agent's terminals for the app; one the app attaches counts as
+    /// here already.
+    pub(crate) fn summaries(&self) -> Vec<TerminalSummary> {
+        self.listed
+            .iter()
+            .map(|t| {
+                let (attaching, held) = self.open.get(&t.id).map_or((false, false), |t| {
+                    let state = t.lock();
+                    let live =
+                        state.exit_status.is_none() && state.ended.is_none() && !state.closed;
+                    (state.attaching, state.held && live)
+                });
+                let place = match &t.holder {
+                    _ if attaching => TerminalPlace::Here,
+                    TerminalHolder::You => TerminalPlace::Here,
+                    // This app's earlier link held it; the new one takes it back.
+                    TerminalHolder::Nobody if held => TerminalPlace::Here,
+                    TerminalHolder::Other(client) => TerminalPlace::Elsewhere {
+                        client: client.describe(),
+                    },
+                    TerminalHolder::Nobody => TerminalPlace::Nowhere,
+                };
+                TerminalSummary { id: t.id, place }
+            })
+            .collect()
     }
 }
 
@@ -389,6 +526,18 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// A handle for the app on a terminal the connection follows.
+    fn new(shared: &Arc<Shared>, term: Arc<TermShared>) -> Self {
+        let (ops, receiver) = mpsc::unbounded_channel();
+        let connection = Arc::downgrade(shared);
+        spawn(write_ops(connection.clone(), term.id, receiver));
+        Self {
+            connection,
+            term,
+            ops,
+        }
+    }
+
     fn send(&self, op: Op) {
         // Gone once the terminal is closed; then there is nothing to send.
         let _ = self.ops.send(op);
@@ -399,6 +548,10 @@ impl Terminal {
             return;
         }
         let mut state = self.term.lock();
+        // Another client holds it; the agent would refuse the input.
+        if !state.held {
+            return;
+        }
         if state.emulator.snapshot().display_offset > 0 {
             state.emulator.scroll_to_bottom();
             state.changed = true;
@@ -522,7 +675,8 @@ impl Terminal {
         self.input(encode_paste(&text, modes));
     }
 
-    /// Fits the terminal to `cols` by `rows` cells.
+    /// Fits the terminal to `cols` by `rows` cells. One that another client
+    /// holds gets the size when it is taken over.
     pub fn resize(&self, cols: u16, rows: u16) {
         let (cols, rows) = (cols.max(2), rows.max(1));
         let mut state = self.term.lock();
@@ -531,9 +685,12 @@ impl Terminal {
         }
         state.emulator.resize(cols, rows);
         state.changed = true;
+        let held = state.held && !state.attaching;
         drop(state);
         self.term.wake.notify_one();
-        self.send(Op::Resize(cols, rows));
+        if held {
+            self.send(Op::Resize(cols, rows));
+        }
     }
 
     /// Scrolls by `lines`, back into the history when positive. A program on
@@ -571,6 +728,26 @@ impl Terminal {
         self.term.lock().emulator.snapshot().text()
     }
 
+    /// Whether the terminal is attached to this app, so it takes input.
+    /// Another client may take it over; the agent's list then says where
+    /// it is ([`crate::AgentUpdate::Terminals`]).
+    pub fn is_here(&self) -> bool {
+        self.term.is_held()
+    }
+
+    /// Takes the terminal back from the client that took it over. The
+    /// screen starts over with the terminal's recent output.
+    pub async fn take_over(self: Arc<Self>) -> Result<()> {
+        let Some(shared) = self.connection.upgrade() else {
+            return Err(LoomError::Closed);
+        };
+        let term = self.term.clone();
+        run(async move { shared.attach_terminal(&term, true).await })
+            .await
+            .map(|_| ())
+            .map_err(LoomError::from)
+    }
+
     /// Closes the terminal, ending its shell; `next_frame` then returns
     /// `None`. (Not `close`, which Kotlin's `AutoCloseable` takes for
     /// freeing the object.)
@@ -593,29 +770,13 @@ impl AgentConnection {
     pub async fn open_terminal(self: Arc<Self>, cols: u16, rows: u16) -> Result<Arc<Terminal>> {
         let shared = self.shared.clone();
         let (cols, rows) = (cols.max(2), rows.max(1));
-        let id = with_client(&self.shared, move |client| async move {
-            Ok(client.open_terminal(cols, rows).await?)
-        })
-        .await?;
-        let term = Arc::new(TermShared {
-            id,
-            state: Mutex::new(TermState {
-                emulator: AlacrittyTerminal::new(cols, rows),
-                changed: true,
-                exit_status: None,
-                ended: None,
-                closed: false,
-            }),
-            wake: Notify::new(),
-        });
-        let (ops, receiver) = mpsc::unbounded_channel();
-        let connection = Arc::downgrade(&shared);
-        spawn(write_ops(connection.clone(), id, receiver));
-        let terminal = Terminal {
-            connection,
-            term: term.clone(),
-            ops,
-        };
+        let client = shared.client()?;
+        let owner = shared.terminal_owner;
+        let id = run(async move { client.open_terminal(cols, rows, owner).await })
+            .await
+            .map_err(LoomError::from)?;
+        let term = Arc::new(TermShared::new(id, cols, rows));
+        let terminal = Terminal::new(&shared, term.clone());
         // What the shell printed before the terminal was known here.
         let early = shared.add_terminal(term.clone());
         if !early.is_empty() {
@@ -625,6 +786,76 @@ impl AgentConnection {
             }
         }
         Ok(Arc::new(terminal))
+    }
+
+    /// Takes over a terminal that another client opened or holds, at
+    /// `cols` by `rows` cells; its screen starts with the terminal's recent
+    /// output.
+    pub async fn attach_terminal(
+        self: Arc<Self>,
+        id: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<Terminal>> {
+        let shared = self.shared.clone();
+        let term = Arc::new(TermShared::new(id, cols.max(2), rows.max(1)));
+        let terminal = Terminal::new(&shared, term.clone());
+        let attached = {
+            let shared = shared.clone();
+            let term = term.clone();
+            run(async move { shared.attach_terminal(&term, true).await }).await
+        };
+        if let Err(err) = attached {
+            shared.forget_terminal(&term);
+            return Err(err.into());
+        }
+        Ok(Arc::new(terminal))
+    }
+}
+
+/// How attaching a terminal went.
+pub(crate) enum Attached {
+    Here,
+    /// Another client holds it, and it was not taken over.
+    Elsewhere,
+}
+
+impl Shared {
+    /// Attaches a terminal to this connection: the screen starts over, and
+    /// the terminal's recent output comes first. Without `take_over`, one
+    /// another client holds stays there.
+    pub(crate) async fn attach_terminal(
+        &self,
+        term: &Arc<TermShared>,
+        take_over: bool,
+    ) -> std::result::Result<Attached, ClientError> {
+        let was_held = term.start_attach();
+        self.follow_terminal(term.clone());
+        let (cols, rows) = term.size();
+        let attached = match self.client() {
+            Ok(client) => {
+                client
+                    .attach_terminal(term.id, cols, rows, self.terminal_owner, take_over)
+                    .await
+            }
+            Err(_) => Err(ClientError::Closed),
+        };
+        let result = match attached {
+            Ok(()) => Ok(Attached::Here),
+            Err(ClientError::Api(err)) if err.code == ErrorCode::Conflict => {
+                Ok(Attached::Elsewhere)
+            }
+            Err(err) => Err(err),
+        };
+        let held = match &result {
+            Ok(Attached::Here) => true,
+            Ok(Attached::Elsewhere) | Err(ClientError::Api(_)) => false,
+            // The link dropped; the next one attaches it again if it was held.
+            Err(_) => was_held,
+        };
+        term.finish_attach(held);
+        self.terminals_changed();
+        result
     }
 }
 
@@ -641,6 +872,8 @@ mod tests {
             exit_status: None,
             ended: None,
             closed: false,
+            held: true,
+            attaching: false,
         })
     }
 

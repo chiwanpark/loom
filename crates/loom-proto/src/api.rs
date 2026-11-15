@@ -13,10 +13,15 @@ use crate::session::{
     SessionInfo, ToolCallId, UsageSoFar,
 };
 
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
+/// A token a client picks at random and sends with the terminals it opens
+/// and attaches, so that after a reconnect it can take back a terminal its
+/// earlier connection still holds (as when the agent has not yet noticed
+/// that connection is gone).
+pub type TerminalOwner = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InstanceId(pub String);
@@ -173,9 +178,12 @@ pub enum Command {
     /// [`Payload::ConfigReloaded`]. Fails with [`ErrorCode::Config`] when the
     /// file is rejected; the agent then keeps the configuration it has.
     ReloadConfig,
+    /// Opens a terminal attached to this connection. Answered with
+    /// [`Payload::Terminal`].
     OpenTerminal {
         cols: u16,
         rows: u16,
+        owner: TerminalOwner,
     },
     TerminalInput {
         terminal: TerminalId,
@@ -221,12 +229,20 @@ pub enum Command {
     ReadFile {
         path: String,
     },
-    /// Takes over a terminal after reconnecting: output goes to this connection,
-    /// the terminal is resized, and its foreground program is asked to redraw.
+    /// Attaches a terminal to this connection: its recent output (up to
+    /// [`TERMINAL_REPLAY`] bytes) comes as [`ServerMessage::TerminalOutput`]
+    /// before any new output, the terminal is resized, and its foreground
+    /// program is asked to redraw. A terminal is attached to one connection
+    /// at a time; the one that held it before gets
+    /// [`Notice::TerminalsChanged`]. Unless `take_over` is set, it fails with
+    /// [`ErrorCode::Conflict`] while a connection of another `owner` holds
+    /// the terminal.
     AttachTerminal {
         terminal: TerminalId,
         cols: u16,
         rows: u16,
+        owner: TerminalOwner,
+        take_over: bool,
     },
     /// Compacts the session's context now instead of waiting for the threshold.
     /// Runs in the background like a turn; the result arrives as events.
@@ -298,6 +314,55 @@ pub enum Command {
     SetPushToken {
         token: Option<String>,
     },
+    /// The agent's open terminals, as [`Notice::TerminalsChanged`] lists
+    /// them. Answered with [`Payload::Terminals`].
+    ListTerminals,
+}
+
+/// The most bytes of a terminal's recent output that attaching to it replays.
+pub const TERMINAL_REPLAY: usize = 128 * 1024;
+
+/// An open terminal of the agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalInfo {
+    pub id: TerminalId,
+    pub holder: TerminalHolder,
+}
+
+/// Which connection a terminal is attached to, as one connection sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TerminalHolder {
+    /// The connection that asks.
+    You,
+    /// Another connection, of this client.
+    Other(TerminalClient),
+    /// None: its connection went away, and the agent closes it after
+    /// `terminal.detached_timeout` unless a client attaches it.
+    Nobody,
+}
+
+/// A client as the agent knows it, to tell people where a terminal is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalClient {
+    /// The name the client gave in its [`ClientHello`], such as `loom-gui`.
+    pub program: String,
+    /// The label the client was paired with, for clients that come through
+    /// a relay.
+    pub label: Option<String>,
+}
+
+impl TerminalClient {
+    /// How the clients name it to people: its label, or the app it is.
+    pub fn describe(&self) -> String {
+        if let Some(label) = self.label.as_deref().filter(|l| !l.is_empty()) {
+            return label.to_owned();
+        }
+        match self.program.as_str() {
+            "loom-gui" => "the desktop app".into(),
+            "loom-android" => "the Android app".into(),
+            other => other.to_owned(),
+        }
+    }
 }
 
 /// The most bytes one [`Command::ReadFileChunk`] returns.
@@ -336,6 +401,7 @@ pub enum Payload {
     History(History),
     /// The message [`Command::CancelPending`] took back.
     PendingCancelled(PendingMessage),
+    Terminals(Vec<TerminalInfo>),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].
@@ -686,6 +752,9 @@ pub enum Notice {
         session: SessionId,
         tasks: Vec<Task>,
     },
+    /// The agent's open terminals, sent after [`ServerHello`] and whenever
+    /// one opens, closes, or moves to another connection.
+    TerminalsChanged(Vec<TerminalInfo>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

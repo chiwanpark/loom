@@ -5,7 +5,7 @@ mod error;
 mod login;
 mod relay;
 
-pub use client::{Client, Notification, Notifications};
+pub use client::{Client, Notification, Notifications, terminal_owner};
 pub use connect::{
     AgentTarget, connect_local, connect_ssh, list_local_agents, list_remote_agents, local_registry,
 };

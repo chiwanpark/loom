@@ -723,6 +723,11 @@ pub enum AgentUpdate {
         session: String,
         tasks: Vec<TaskItem>,
     },
+    /// The agent's open terminals, oldest first, with where each is open.
+    /// Comes after connecting and whenever one opens, closes, or moves.
+    Terminals {
+        terminals: Vec<crate::terminal::TerminalSummary>,
+    },
     /// A message from the agent for the user, such as a rejected
     /// configuration.
     Notice {
@@ -757,7 +762,8 @@ pub fn notice_message(notice: &proto::Notice) -> Option<(NoticeLevel, String)> {
         proto::Notice::SessionUpdated(_)
         | proto::Notice::SessionRemoved(_)
         | proto::Notice::NotesChanged { .. }
-        | proto::Notice::TasksChanged { .. } => return None,
+        | proto::Notice::TasksChanged { .. }
+        | proto::Notice::TerminalsChanged(_) => return None,
     })
 }
 

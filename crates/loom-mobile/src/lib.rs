@@ -28,5 +28,5 @@ pub use hosts::{CLIENT_NAME, Loom};
 pub use records::*;
 pub use terminal::{
     KeyModifiers, Terminal, TerminalColor, TerminalCursor, TerminalCursorShape, TerminalFrame,
-    TerminalKey, TerminalRun,
+    TerminalKey, TerminalPlace, TerminalRun, TerminalSummary,
 };

@@ -212,7 +212,10 @@ mod tests {
                 terminal: 3,
                 cols: 80,
                 rows: 24,
+                owner: 9,
+                take_over: true,
             },
+            Command::ListTerminals,
             Command::CompactSession {
                 session: session.clone(),
             },
@@ -461,6 +464,43 @@ mod tests {
             session: SessionId("s2".into()),
             tasks,
         }));
+    }
+
+    #[test]
+    fn terminal_lists_roundtrip() {
+        let terminals = vec![
+            TerminalInfo {
+                id: 1,
+                holder: TerminalHolder::You,
+            },
+            TerminalInfo {
+                id: 2,
+                holder: TerminalHolder::Other(TerminalClient {
+                    program: "loom-android".into(),
+                    label: Some("phone".into()),
+                }),
+            },
+            TerminalInfo {
+                id: 3,
+                holder: TerminalHolder::Nobody,
+            },
+        ];
+        message_roundtrip(ServerMessage::Response {
+            id: 13,
+            result: Ok(Payload::Terminals(terminals.clone())),
+        });
+        message_roundtrip(ServerMessage::Notice(Notice::TerminalsChanged(terminals)));
+        let client = |program: &str, label: Option<&str>| TerminalClient {
+            program: program.into(),
+            label: label.map(Into::into),
+        };
+        assert_eq!(client("loom-android", Some("phone")).describe(), "phone");
+        assert_eq!(client("loom-gui", None).describe(), "the desktop app");
+        assert_eq!(
+            client("loom-android", Some("")).describe(),
+            "the Android app"
+        );
+        assert_eq!(client("other", None).describe(), "other");
     }
 
     #[test]
