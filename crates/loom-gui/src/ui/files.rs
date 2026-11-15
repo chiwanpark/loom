@@ -332,20 +332,14 @@ impl FileTreeView {
             return row_element.into_any_element();
         }
         row_element
-            .context_menu(move |menu, _, cx| {
-                let supported = connection.read(cx).downloads_supported();
+            .context_menu(move |menu, _, _| {
                 let (connection, path) = (connection.clone(), menu_path.clone());
                 menu.item(
-                    PopupMenuItem::new(if supported {
-                        "Download…"
-                    } else {
-                        "Download… (direct connections only)"
-                    })
-                    .icon(Icon::new(gpui_kit_assets::IconName::Download))
-                    .disabled(!supported)
-                    .on_click(move |_, window, cx| {
-                        download::prompt(connection.clone(), path.clone(), window, cx)
-                    }),
+                    PopupMenuItem::new("Download…")
+                        .icon(Icon::new(gpui_kit_assets::IconName::Download))
+                        .on_click(move |_, window, cx| {
+                            download::prompt(connection.clone(), path.clone(), window, cx)
+                        }),
                 )
             })
             .into_any_element()

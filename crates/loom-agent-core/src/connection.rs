@@ -264,13 +264,6 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
-            Command::ReadFileChunk { .. } if self.relayed => {
-                let error = ApiError::new(
-                    ErrorCode::Unsupported,
-                    "downloads need a direct connection; they do not work through a relay yet",
-                );
-                self.respond(id, Err(error)).await;
-            }
             Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }

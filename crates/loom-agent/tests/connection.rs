@@ -1164,6 +1164,14 @@ async fn files_download_in_chunks_to_a_local_path() {
             (len as u64, len as u64)
         ]
     );
+    assert_eq!(
+        client
+            .read_file_bytes("data.bin", len as u64)
+            .await
+            .unwrap(),
+        bytes
+    );
+    assert!(client.read_file_bytes("empty", 0).await.unwrap().is_empty());
 
     let size = client
         .download_file("empty", &out.join("empty"), |_, _| {})
@@ -1259,7 +1267,7 @@ async fn a_dropped_download_leaves_nothing_behind() {
 }
 
 #[tokio::test]
-async fn downloads_are_refused_through_a_relay() {
+async fn files_are_read_in_chunks_through_a_relay() {
     let setup = setup(vec![]);
     std::fs::write(setup.info.workspace.join("a.txt"), "a").unwrap();
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
@@ -1281,14 +1289,25 @@ async fn downloads_are_refused_through_a_relay() {
     let (client, _notes) = Client::connect(stream, "test").await.unwrap();
 
     let out = setup.dir.path().join("a.txt");
-    let err = client
+    let size = client
         .download_file("a.txt", &out, |_, _| {})
         .await
-        .unwrap_err();
-    assert_eq!(err.api().map(|e| e.code), Some(ErrorCode::Unsupported));
-    assert!(!out.exists());
-    // Reading files for the viewer still works.
-    assert_eq!(client.read_file("a.txt").await.unwrap().text, "a");
+        .unwrap();
+    assert_eq!(size, 1);
+    assert_eq!(std::fs::read(&out).unwrap(), b"a");
+    assert_eq!(client.read_file_bytes("a.txt", 1).await.unwrap(), b"a");
+    let err = client.read_file_bytes("a.txt", 0).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            loom_client::ClientError::TooLarge {
+                size: 1,
+                max: 0,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 /// Waits for the next batch of events, as the agent sent it.

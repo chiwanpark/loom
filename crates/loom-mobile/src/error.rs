@@ -94,6 +94,7 @@ impl From<ClientError> for LoomError {
                 message: api.message,
             },
             ClientError::Closed => Self::Closed,
+            ClientError::TooLarge { .. } | ClientError::Changed(_) => Self::Invalid { message },
             _ => Self::Connect { message },
         }
     }

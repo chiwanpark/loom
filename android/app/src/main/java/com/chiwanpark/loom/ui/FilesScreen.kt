@@ -105,7 +105,7 @@ fun formatSize(bytes: ULong): String {
 }
 
 /** The workspace path for a screen's subtitle: the agent's workspace, then `path` in it. */
-private fun pathSubtitle(link: AgentLink, path: String): String? {
+internal fun pathSubtitle(link: AgentLink, path: String): String? {
     val workspace = link.workspace ?: return path.ifEmpty { null }
     return if (path.isEmpty()) workspace else "${workspace.trimEnd('/')}/$path"
 }
@@ -214,9 +214,16 @@ fun WrapButton(app: LoomApplication) {
     }
 }
 
-/** A file of the agent's workspace, highlighted for its language, to read. */
+/**
+ * A file of the agent's workspace, highlighted for its language, to read;
+ * images and PDF files show in the media viewer instead.
+ */
 @Composable
 fun FileScreen(app: LoomApplication, link: AgentLink, path: String) {
+    mediaKindOf(path)?.let { kind ->
+        MediaScreen(app, link, path, kind)
+        return
+    }
     val snackbar = remember { SnackbarHostState() }
     var reload by remember { mutableIntStateOf(0) }
     val file = rememberLoaded(link, reload, path) { link.connection().readFile(path) }

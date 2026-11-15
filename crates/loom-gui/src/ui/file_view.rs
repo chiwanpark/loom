@@ -14,6 +14,7 @@ use loom_client::proto::{ErrorCode, FileContent, FileVersion};
 use loom_view_model::tool_details::language;
 
 use crate::state::AgentConnection;
+use crate::ui::media_view::{MAX_MEDIA_BYTES, MediaKind, MediaView, media_kind};
 use crate::ui::workspace::{Save, ToggleLineWrap};
 use crate::ui::{dialogs, download, notify};
 
@@ -28,6 +29,10 @@ enum Status {
         readonly: Option<&'static str>,
     },
     Binary {
+        size: u64,
+    },
+    /// An image or a PDF file, shown by `FileView::media`.
+    Media {
         size: u64,
     },
     Failed(String),
@@ -46,6 +51,10 @@ pub struct FileView {
     path: PathBuf,
     editor: Entity<EditorState>,
     status: Status,
+    /// What the file holds when it is an image or a PDF file, which are
+    /// shown instead of text.
+    kind: Option<MediaKind>,
+    media: Option<Entity<MediaView>>,
     /// Set only while the file can be edited.
     saved: Option<Saved>,
     /// Whether the editor's text differs from `saved`.
@@ -107,6 +116,7 @@ impl FileView {
     ) -> Self {
         let path = connection.read(cx).info.workspace.join(&relative);
         let language = language(&relative);
+        let relative_for_kind = relative.clone();
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
@@ -125,6 +135,8 @@ impl FileView {
             path,
             editor,
             status: Status::Loading,
+            kind: media_kind(&relative_for_kind),
+            media: None,
             saved: None,
             dirty: false,
             loading: false,
@@ -225,6 +237,10 @@ impl FileView {
             return;
         }
         self.loading = true;
+        if let Some(kind) = self.kind {
+            self.load_media(kind, window, cx);
+            return;
+        }
         let task = self.connection.read(cx).read_file(self.relative.clone());
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
             let result = task.await;
@@ -244,6 +260,40 @@ impl FileView {
             });
         })
         .detach();
+    }
+
+    /// Reads an image or a PDF file whole and shows it.
+    fn load_media(&mut self, kind: MediaKind, window: &mut Window, cx: &mut Context<Self>) {
+        let task = self
+            .connection
+            .read(cx)
+            .read_file_bytes(self.relative.clone(), MAX_MEDIA_BYTES);
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.loading = false;
+                match result {
+                    Some(Ok(bytes)) => {
+                        this.status = Status::Media {
+                            size: bytes.len() as u64,
+                        };
+                        this.media = Some(cx.new(|cx| MediaView::new(kind, bytes, window, cx)));
+                    }
+                    Some(Err(err)) => {
+                        this.status = Status::Failed(err.to_string());
+                        this.media = None;
+                    }
+                    None => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The image or PDF file shown, once it was read.
+    pub fn media(&self) -> Option<&Entity<MediaView>> {
+        self.media.as_ref()
     }
 
     fn loaded(&mut self, content: FileContent, window: &mut Window, cx: &mut Context<Self>) {
@@ -362,6 +412,10 @@ impl Render for FileView {
                 detail
             }
             Status::Binary { size } => format!("{} · binary", human_size(*size)),
+            Status::Media { size } => match self.kind {
+                Some(kind) => format!("{} · {}", human_size(*size), kind.name()),
+                None => human_size(*size),
+            },
             Status::Failed(_) => "error".to_string(),
         };
         let message = match &self.status {
@@ -419,11 +473,11 @@ impl Render for FileView {
                             .text_color(theme.muted_foreground)
                             .child(detail),
                     )
-                    .child(
-                        wrap_button("file-wrap", self.wrap).on_click(
+                    .when(self.kind.is_none(), |el| {
+                        el.child(wrap_button("file-wrap", self.wrap).on_click(
                             cx.listener(|this, _, window, cx| this.toggle_wrap(window, cx)),
-                        ),
-                    )
+                        ))
+                    })
                     .when(editable, |el| {
                         el.child(
                             Button::new("save-file")
@@ -439,23 +493,21 @@ impl Render for FileView {
                                 ),
                         )
                     })
-                    .when(self.connection.read(cx).downloads_supported(), |el| {
-                        el.child(
-                            Button::new("download-file")
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(gpui_kit_assets::IconName::Download))
-                                .tooltip("Download…")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    download::prompt(
-                                        this.connection.clone(),
-                                        this.relative.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        )
-                    })
+                    .child(
+                        Button::new("download-file")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(gpui_kit_assets::IconName::Download))
+                            .tooltip("Download…")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                download::prompt(
+                                    this.connection.clone(),
+                                    this.relative.clone(),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
                     .child(
                         Button::new("reload-file")
                             .ghost()
@@ -475,6 +527,12 @@ impl Render for FileView {
                         .child(message),
                 )
             })
+            .when_some(
+                self.media
+                    .clone()
+                    .filter(|_| matches!(self.status, Status::Media { .. })),
+                |el, media| el.child(div().flex_1().min_h_0().child(media)),
+            )
             .when(matches!(self.status, Status::Loaded { .. }), |el| {
                 el.child(
                     div().flex_1().min_h_0().child(
@@ -661,6 +719,95 @@ mod tests {
                 }
             ));
         });
+    }
+
+    /// A PDF file of `pages` pages of 200 by 100 points.
+    fn pdf(pages: usize) -> Vec<u8> {
+        let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", i + 3)).collect();
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {pages} >>",
+                kids.join(" ")
+            ),
+        ];
+        objects.extend(
+            (0..pages).map(|_| "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>".into()),
+        );
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{object}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            out.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        out.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        out
+    }
+
+    fn media(view: &Entity<FileView>, cx: &mut VisualTestContext) -> Entity<MediaView> {
+        wait_until(cx, |cx| {
+            view.read(cx)
+                .media()
+                .is_some_and(|media| media.read(cx).is_ready())
+        });
+        view.read_with(cx, |view, _| view.media().unwrap().clone())
+    }
+
+    #[gpui::test]
+    fn images_are_shown_instead_of_text(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(30, 20)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        agent.write("shot.png", png.into_inner());
+        let (view, cx) = open(&agent, "shot.png", cx);
+        let media = media(&view, cx);
+        assert!(media.read_with(cx, |media, _| media.error().is_none()));
+        assert!(!view.read_with(cx, |view, _| view.is_editable()));
+        assert!(cx.debug_bounds("media-body").is_some());
+        assert!(cx.debug_bounds("media-zoom").is_some());
+    }
+
+    #[gpui::test]
+    fn files_that_only_look_like_images_say_so(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("broken.png", "not an image");
+        let (view, cx) = open(&agent, "broken.png", cx);
+        let media = media(&view, cx);
+        assert!(media.read_with(cx, |media, _| media.error().is_some()));
+    }
+
+    #[gpui::test]
+    fn pdf_pages_are_rendered_as_they_are_shown(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("doc.pdf", pdf(3));
+        let (view, cx) = open(&agent, "doc.pdf", cx);
+        let media = media(&view, cx);
+        assert_eq!(media.read_with(cx, |media, _| media.page_count()), Some(3));
+        wait_until(cx, |cx| media.read(cx).rendered_pages().contains(&0));
+        assert!(media.read_with(cx, |media, _| media.error().is_none()));
+    }
+
+    #[gpui::test]
+    fn broken_pdf_files_say_why_they_are_not_shown(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        agent.write("doc.pdf", "%PDF-1.4 garbage");
+        let (view, cx) = open(&agent, "doc.pdf", cx);
+        let media = media(&view, cx);
+        let error = media.read_with(cx, |media, _| media.error().map(str::to_string));
+        assert!(error.is_some_and(|error| error.contains("PDF")));
     }
 
     #[test]

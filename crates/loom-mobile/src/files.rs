@@ -164,6 +164,20 @@ impl AgentConnection {
         })
         .await
     }
+
+    /// Copies a file of the agent's workspace to `dest` on this device, as
+    /// for a viewer of images and PDF files, and returns its size. Fails
+    /// before anything is written when the file has more than `max` bytes.
+    pub async fn save_file(self: Arc<Self>, path: String, dest: String, max: u64) -> Result<u64> {
+        let path = checked_path(path)?;
+        with_client(&self.shared, move |client| async move {
+            let dest = std::path::PathBuf::from(dest);
+            Ok(client
+                .download_file_within(&path, &dest, max, |_, _| {})
+                .await?)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

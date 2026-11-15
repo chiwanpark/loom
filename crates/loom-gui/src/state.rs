@@ -201,10 +201,6 @@ impl AgentConnection {
 
     /// Whether files can be downloaded from the agent: only over a direct
     /// connection, not through a relay.
-    pub fn downloads_supported(&self) -> bool {
-        !matches!(self.host, HostEntry::Relay { .. })
-    }
-
     pub fn key(&self) -> (String, String) {
         (self.host.name().to_owned(), self.info.instance.0.clone())
     }
@@ -740,6 +736,16 @@ impl AgentConnection {
         let client = self.client.clone();
         self.backend
             .run(async move { client.read_file(&path).await })
+    }
+
+    pub fn read_file_bytes(
+        &self,
+        path: String,
+        max: u64,
+    ) -> impl Future<Output = Option<loom_client::Result<Vec<u8>>>> + use<> {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.read_file_bytes(&path, max).await })
     }
 
     pub fn write_file(

@@ -1,5 +1,4 @@
-//! Downloading workspace files to this machine. Only direct connections
-//! (this machine or SSH) carry downloads for now; a relay does not.
+//! Downloading workspace files to this machine.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -58,9 +57,6 @@ impl Download {
     }
 }
 
-pub const RELAY_UNSUPPORTED: &str =
-    "Downloads need a direct connection; they do not work through a relay yet.";
-
 /// The last part of a workspace path.
 fn file_name(relative: &str) -> &str {
     relative.rsplit('/').next().unwrap_or(relative)
@@ -81,10 +77,6 @@ fn default_folder(cx: &App) -> PathBuf {
 
 /// Asks where to save a workspace file, then downloads it there.
 pub fn prompt(conn: Entity<AgentConnection>, relative: String, window: &mut Window, cx: &mut App) {
-    if !conn.read(cx).downloads_supported() {
-        notify::error(window, cx, RELAY_UNSUPPORTED);
-        return;
-    }
     let chosen = cx.prompt_for_new_path(&default_folder(cx), Some(file_name(&relative)));
     window
         .spawn(cx, async move |cx: &mut AsyncWindowContext| {
@@ -257,7 +249,6 @@ fn finished_note(
 mod tests {
     use gpui::{TestAppContext, VisualTestContext};
     use gpui_component::Root;
-    use loom_config::HostEntry;
 
     use super::*;
     use crate::test_agent::{TestAgent, wait_until};
@@ -378,32 +369,6 @@ mod tests {
             DownloadState::Cancelled
         );
         assert!(files_in(&folder).is_empty());
-    }
-
-    #[gpui::test]
-    fn relayed_agents_offer_no_downloads(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let agent = TestAgent::start();
-        agent.write("a.txt", "a");
-        let local = agent.connect(cx);
-        assert!(local.read_with(cx, |conn, _| conn.downloads_supported()));
-        let relayed = agent.connect_as(
-            HostEntry::Relay {
-                name: "relay".into(),
-                url: "wss://relay.example".into(),
-                host_id: "host".into(),
-                host_key: "key".into(),
-                instance: None,
-                cloudflare_access: None,
-            },
-            cx,
-        );
-        assert!(!relayed.read_with(cx, |conn, _| conn.downloads_supported()));
-        let cx = window(&relayed, cx);
-        // Asking explains why instead of opening a save dialog.
-        cx.update(|window, cx| prompt(relayed.clone(), "a.txt".into(), window, cx));
-        assert!(!cx.did_prompt_for_new_path());
-        assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 1);
     }
 
     #[gpui::test]

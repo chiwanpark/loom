@@ -268,7 +268,6 @@ pub enum Command {
     /// Raw bytes of a workspace file, from `offset` on, at most `len` of them
     /// and never more than [`MAX_FILE_CHUNK`]. A client downloads a file by
     /// asking for its chunks in turn. Answered with [`Payload::FileChunk`].
-    /// Agents refuse it on relayed connections.
     ReadFileChunk {
         path: String,
         offset: u64,

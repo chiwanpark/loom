@@ -17,8 +17,10 @@ pub enum ClientError {
     Closed,
     #[error("protocol error: {0}")]
     Protocol(String),
-    #[error("{0} changed while it was being downloaded; try again")]
+    #[error("{0} changed while it was being read; try again")]
     Changed(String),
+    #[error("{path} is {} MB, more than the {} MB that can be opened", .size.div_ceil(1 << 20), .max >> 20)]
+    TooLarge { path: String, size: u64, max: u64 },
     #[error("no agent is running for {0}")]
     NoAgent(String),
     #[error(transparent)]

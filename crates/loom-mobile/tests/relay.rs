@@ -1062,6 +1062,26 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
     );
     let outside = conn.clone().list_directory("../..".into()).await;
     assert!(matches!(outside, Err(LoomError::Invalid { .. })));
+
+    // Images and PDF files are copied whole to the phone for its viewers,
+    // through the relay.
+    let saved = host.root.join("saved.bin");
+    let dest = saved.display().to_string();
+    let size = conn
+        .clone()
+        .save_file("blob.bin".into(), dest.clone(), 4)
+        .await
+        .unwrap();
+    assert_eq!(size, 4);
+    assert_eq!(std::fs::read(&saved).unwrap(), [0u8, 1, 2, 3]);
+    std::fs::remove_file(&saved).unwrap();
+    let large = conn
+        .clone()
+        .save_file("blob.bin".into(), dest, 3)
+        .await
+        .unwrap_err();
+    assert!(matches!(large, LoomError::Invalid { .. }), "{large:?}");
+    assert!(!saved.exists());
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {
