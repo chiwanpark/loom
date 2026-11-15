@@ -15,8 +15,8 @@ use crate::error::{LoomError, Result};
 use crate::hosts::CLIENT_NAME;
 use crate::records::{
     Agent, AgentUpdate, ApprovalDecision, ConversationUpdate, Delivery, ImageData, Model, Notes,
-    Reasoning, SessionSummary, TakenBack, TaskEdit, TaskItem, notice_message, parse_version,
-    task_items, version_text,
+    Policy, Reasoning, SessionSummary, TakenBack, TaskEdit, TaskItem, notice_message,
+    parse_version, task_items, version_text,
 };
 use crate::runtime::{run, spawn};
 
@@ -688,6 +688,24 @@ impl AgentConnection {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
                 .set_reasoning(&session_id(session), reasoning.map(Into::into))
+                .await?)
+        })
+        .await?;
+        self.shared.lock().session_updated(info);
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+
+    /// Sets what happens to the session's tool calls that no policy rule
+    /// matches; none follows the agent's configuration again.
+    pub async fn set_policy(
+        self: Arc<Self>,
+        session: String,
+        policy: Option<Policy>,
+    ) -> Result<()> {
+        let info = with_client(&self.shared, move |client| async move {
+            Ok(client
+                .set_policy(&session_id(session), policy.map(Into::into))
                 .await?)
         })
         .await?;

@@ -15,6 +15,7 @@ import com.chiwanpark.loom.core.Host
 import com.chiwanpark.loom.core.Loom
 import com.chiwanpark.loom.core.LoomException
 import com.chiwanpark.loom.core.NoticeLevel
+import com.chiwanpark.loom.core.Policy
 import com.chiwanpark.loom.core.Reasoning
 import com.chiwanpark.loom.core.SessionStatus
 import com.chiwanpark.loom.core.SessionSummary
@@ -61,6 +62,9 @@ class ConversationState(val session: String) {
     var activity by mutableStateOf<Activity?>(null)
     var model by mutableStateOf<String?>(null)
     var reasoning by mutableStateOf<Reasoning?>(null)
+
+    /** The session's own default for tool calls no rule matches; null follows the agent's configuration. */
+    var policy by mutableStateOf<Policy?>(null)
     var contextTokens by mutableStateOf<ULong?>(null)
     var pendingApprovals by mutableStateOf(0)
 
@@ -86,6 +90,7 @@ class ConversationState(val session: String) {
         activity = update.activity
         model = update.model
         reasoning = update.reasoning
+        policy = update.policy
         contextTokens = update.contextTokens
         pendingApprovals = update.pendingApprovals.toInt()
         waiting = update.waiting

@@ -22,7 +22,7 @@ use loom_llm::{
 };
 use loom_mobile::{
     AgentConnection, AgentUpdate, ApprovalDecision, ConversationItem, ConversationUpdate, Delivery,
-    Loom, LoomError, SessionStatus, TaskEdit, TaskState, ToolState,
+    Loom, LoomError, Policy, SessionStatus, TaskEdit, TaskState, ToolState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -499,6 +499,25 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
         .await
         .unwrap_err();
     assert!(matches!(stale, LoomError::Api { .. }), "{stale:?}");
+
+    // The session's own default for tool calls reaches the conversation.
+    assert_eq!(app.last.as_ref().unwrap().policy, None);
+    conn.clone()
+        .set_policy(session.id.clone(), Some(Policy::Allow))
+        .await
+        .unwrap();
+    app.until(&conn, "the session's policy", |app| {
+        app.last.as_ref().unwrap().policy == Some(Policy::Allow)
+    })
+    .await;
+    conn.clone()
+        .set_policy(session.id.clone(), None)
+        .await
+        .unwrap();
+    app.until(&conn, "the agent's policy", |app| {
+        app.last.as_ref().unwrap().policy.is_none()
+    })
+    .await;
 
     // The link drops; another client runs a turn meanwhile.
     let before = app.items.len();

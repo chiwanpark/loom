@@ -96,6 +96,7 @@ import com.chiwanpark.loom.core.WaitingMessage
 import com.chiwanpark.loom.core.ConversationItem
 import com.chiwanpark.loom.core.Model
 import com.chiwanpark.loom.core.NoticeLevel
+import com.chiwanpark.loom.core.Policy
 import com.chiwanpark.loom.core.Reasoning
 import com.chiwanpark.loom.core.SessionStatus
 import com.chiwanpark.loom.core.ToolArguments
@@ -116,6 +117,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var menu by remember { mutableStateOf(false) }
     var pickModel by remember { mutableStateOf(false) }
     var pickReasoning by remember { mutableStateOf(false) }
+    var pickPolicy by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
     var draft by rememberSaveable { mutableStateOf("") }
 
@@ -200,10 +202,12 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                     SessionInfo(
                         model = conversation.model ?: link.agent?.defaultModel,
                         reasoning = conversation.reasoning,
+                        policy = conversation.policy,
                         contextTokens = conversation.contextTokens,
                         enabled = connected,
                         onModel = { pickModel = true },
                         onReasoning = { pickReasoning = true },
+                        onPolicy = { pickPolicy = true },
                     )
                 },
                 onSend = { text, delivery ->
@@ -223,6 +227,11 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
         ReasoningDialog(current = conversation.reasoning, onPick = { reasoning ->
             scope.attempt(snackbar) { link.connection().setReasoning(session, reasoning) }
         }, onDismiss = { pickReasoning = false })
+    }
+    if (pickPolicy) {
+        PolicyDialog(current = conversation.policy, onPick = { policy ->
+            scope.attempt(snackbar) { link.connection().setPolicy(session, policy) }
+        }, onDismiss = { pickPolicy = false })
     }
     if (clearing) {
         ConfirmDialog(
@@ -888,6 +897,46 @@ private fun ReasoningDialog(current: Reasoning?, onPick: (Reasoning?) -> Unit, o
     )
 }
 
+/** What the session does with tool calls that no policy rule in the agent's configuration matches. */
+@Composable
+private fun PolicyDialog(current: Policy?, onPick: (Policy?) -> Unit, onDismiss: () -> Unit) {
+    val choices = listOf<Policy?>(null, Policy.ASK, Policy.ALLOW, Policy.DENY)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Tool calls") },
+        text = {
+            Column {
+                Text(
+                    "For the tool calls of this session that no rule in the agent's policy matches.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                choices.forEach { choice ->
+                    ChoiceRow(policyLabel(choice), policyDetail(choice), selected = current == choice) {
+                        onDismiss()
+                        onPick(choice)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+fun policyLabel(policy: Policy?): String = when (policy) {
+    null -> "Default"
+    Policy.ASK -> "Ask"
+    Policy.ALLOW -> "Allow"
+    Policy.DENY -> "Deny"
+}
+
+private fun policyDetail(policy: Policy?): String = when (policy) {
+    null -> "As the agent's configuration says"
+    Policy.ASK -> "Wait for your approval"
+    Policy.ALLOW -> "Run them without asking"
+    Policy.DENY -> "Refuse them"
+}
+
 fun reasoningLabel(reasoning: Reasoning): String = when (reasoning) {
     Reasoning.NONE -> "None"
     Reasoning.MINIMAL -> "Minimal"
@@ -904,25 +953,27 @@ private fun formatTokens(tokens: ULong): String = when {
 }
 
 /**
- * The session's model, reasoning effort, and context used, in a row above
- * the prompt box. The model and the effort open their pickers.
+ * The session's model, reasoning effort, policy for tool calls, and context
+ * used, in a row above the prompt box. All but the context open their pickers.
  */
 @Composable
 private fun SessionInfo(
     model: String?,
     reasoning: Reasoning?,
+    policy: Policy?,
     contextTokens: ULong?,
     enabled: Boolean,
     onModel: () -> Unit,
     onReasoning: () -> Unit,
+    onPolicy: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // The model and the effort on the left, the model shortened when they do not fit;
-        // the context on the right.
+        // The model, the effort, and the policy on the left, the model shortened when they
+        // do not fit; the context on the right.
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
             InfoItem(
                 LoomIcons.Bot,
@@ -937,6 +988,12 @@ private fun SessionInfo(
                 reasoning?.let(::reasoningLabel) ?: "Default",
                 description = "Reasoning effort",
                 onClick = onReasoning.takeIf { enabled },
+            )
+            InfoItem(
+                LoomIcons.ShieldCheck,
+                policyLabel(policy),
+                description = "Tool calls without a rule",
+                onClick = onPolicy.takeIf { enabled },
             )
         }
         contextTokens?.let { InfoItem(LoomIcons.Gauge, formatTokens(it), description = "Context used", onClick = null) }

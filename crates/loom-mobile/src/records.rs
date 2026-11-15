@@ -105,6 +105,35 @@ impl From<Reasoning> for ReasoningEffort {
     }
 }
 
+/// What happens to a tool call that no policy rule matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Policy {
+    /// Waits for the user's approval.
+    Ask,
+    Allow,
+    Deny,
+}
+
+impl From<proto::PolicyAction> for Policy {
+    fn from(action: proto::PolicyAction) -> Self {
+        match action {
+            proto::PolicyAction::Ask => Self::Ask,
+            proto::PolicyAction::Allow => Self::Allow,
+            proto::PolicyAction::Deny => Self::Deny,
+        }
+    }
+}
+
+impl From<Policy> for proto::PolicyAction {
+    fn from(policy: Policy) -> Self {
+        match policy {
+            Policy::Ask => Self::Ask,
+            Policy::Allow => Self::Allow,
+            Policy::Deny => Self::Deny,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SessionSummary {
     pub id: String,
@@ -363,6 +392,9 @@ pub struct ConversationUpdate {
     pub activity: Option<Activity>,
     pub model: Option<String>,
     pub reasoning: Option<Reasoning>,
+    /// The session's own default for tool calls no rule matches; none
+    /// follows the agent's configuration.
+    pub policy: Option<Policy>,
     /// Tokens in the context after the last response.
     pub context_tokens: Option<u64>,
     pub pending_approvals: u32,
@@ -400,6 +432,7 @@ impl ConversationUpdate {
             activity: conversation.activity().map(Activity::from),
             model: conversation.info.model.clone(),
             reasoning: conversation.info.reasoning.map(Reasoning::from),
+            policy: conversation.info.policy_default.map(Policy::from),
             context_tokens: conversation.last_usage.map(|u| u.context_tokens()),
             pending_approvals: conversation.pending_approvals().count() as u32,
             waiting: conversation

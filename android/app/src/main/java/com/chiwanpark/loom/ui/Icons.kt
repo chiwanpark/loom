@@ -59,6 +59,7 @@ object LoomIcons {
     val Search = Lucide.drawable.lucide_ic_search
     val Send = Lucide.drawable.lucide_ic_send_horizontal
     val Server = Lucide.drawable.lucide_ic_server
+    val ShieldCheck = Lucide.drawable.lucide_ic_shield_check
     val Stop = Lucide.drawable.lucide_ic_square
     val Tasks = Lucide.drawable.lucide_ic_list_todo
     val Trash = Lucide.drawable.lucide_ic_trash_2
