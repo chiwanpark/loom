@@ -86,7 +86,7 @@ Install `loom-agent` on every machine where you want an agent to run, including 
 
 ### The Android app
 
-The Android app is built from source; releases do not include it yet. You need JDK 21, the Android SDK with platform 37, build tools 37.0.0, and NDK 30.0.16248370, Rust's `aarch64-linux-android` target, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk):
+The Android app is built from source; releases do not include it yet. CI builds a debug APK of every change (the `loom-android-debug` artifact of a CI run), but each run signs it with a new debug key, so one does not install over another. You need JDK 21, the Android SDK with platform 37, build tools 37.0.0, and NDK 30.0.16248370, Rust's `aarch64-linux-android` target, and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk):
 
 ```sh
 rustup target add aarch64-linux-android
