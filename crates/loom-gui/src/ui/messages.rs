@@ -15,6 +15,7 @@ use gpui::{
     prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::clipboard::Clipboard;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewState};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, Theme, h_flex, v_flex};
@@ -35,6 +36,43 @@ const OUTPUT_ROWS: u16 = 40;
 /// How far beyond the viewport items are laid out, so scrolling does not
 /// reveal blank space before they are measured.
 const OVERDRAW: f32 = 800.;
+
+/// Markdown of a message, with a copy button on each code block and table.
+/// A code block shows its language beside the button.
+fn markdown_view(state: &Entity<TextViewState>) -> TextView {
+    TextView::new(state)
+        .selectable(true)
+        .code_block_actions(|block, _, cx| {
+            h_flex()
+                .gap_1()
+                .items_center()
+                .when_some(block.lang().filter(|lang| !lang.is_empty()), |el, lang| {
+                    el.child(
+                        div()
+                            .pl_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(lang),
+                    )
+                })
+                .child(
+                    div().debug_selector(|| "copy-code".into()).child(
+                        Clipboard::new("copy")
+                            .value(block.code())
+                            .tooltip("Copy code"),
+                    ),
+                )
+        })
+        .table_actions(|table, _, _| {
+            h_flex().justify_end().child(
+                div().debug_selector(|| "copy-table".into()).child(
+                    Clipboard::new("copy")
+                        .value(table.markdown.clone())
+                        .tooltip("Copy table as Markdown"),
+                ),
+            )
+        })
+}
 
 /// The padding inside a card (a prompt, a tool call, the status row).
 const CARD_PADDING: Pixels = px(12.);
@@ -476,10 +514,7 @@ impl MessageList {
                                                             .debug_selector(move || {
                                                                 format!("reasoning-text-{ix}")
                                                             })
-                                                            .child(
-                                                                TextView::new(state)
-                                                                    .selectable(true),
-                                                            ),
+                                                            .child(markdown_view(state)),
                                                     )
                                                 },
                                             ),
@@ -496,7 +531,7 @@ impl MessageList {
                                 div().px(TEXT_INSET).child(
                                     div()
                                         .debug_selector(move || format!("assistant-text-{ix}"))
-                                        .child(TextView::new(state).selectable(true)),
+                                        .child(markdown_view(state)),
                                 ),
                             )
                         },
@@ -1739,6 +1774,38 @@ mod view_tests {
         assert!(shown("user-text-0", cx));
         assert!(shown("reasoning-card-1", cx));
         assert!(!shown("reasoning-text-1", cx));
+    }
+
+    #[gpui::test]
+    fn code_blocks_and_tables_of_a_reply_copy_their_content(cx: &mut TestAppContext) {
+        let (conversation, _, _, cx) = open(0, cx);
+        let reply = "Run this:\n\n```sh\ncargo test\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+        feed(
+            &conversation,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("a prompt")],
+                },
+                SessionEvent::AssistantMessage {
+                    text: reply.into(),
+                    reasoning: None,
+                    model: "test/model".into(),
+                },
+            ],
+            cx,
+        );
+        let copy = |selector: &'static str, cx: &mut VisualTestContext| {
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .unwrap_or_default()
+        };
+        assert_eq!(copy("copy-code", cx).trim_end(), "cargo test");
+        let table = copy("copy-table", cx);
+        assert!(table.contains("| a | b |"), "{table}");
+        assert!(table.contains("| 1 | 2 |"), "{table}");
     }
 
     fn feed(

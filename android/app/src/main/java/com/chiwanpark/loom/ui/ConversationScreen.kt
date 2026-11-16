@@ -66,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -78,6 +79,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -102,11 +104,21 @@ import com.chiwanpark.loom.core.SessionStatus
 import com.chiwanpark.loom.core.ToolArguments
 import com.chiwanpark.loom.core.ToolState
 import com.chiwanpark.loom.userMessage
+import com.mikepenz.markdown.compose.LocalMarkdownColors
+import com.mikepenz.markdown.compose.LocalMarkdownDimens
+import com.mikepenz.markdown.compose.LocalMarkdownPadding
+import com.mikepenz.markdown.compose.components.MarkdownComponents
+import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBackground
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
+import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
+import com.mikepenz.markdown.compose.elements.MarkdownTable
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.MarkdownTypography
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
+import org.intellij.markdown.ast.getTextInNode
 
 /** A session's conversation: what the agent does, and what the user asks of it. */
 @Composable
@@ -552,9 +564,81 @@ private fun AssistantMessage(item: ConversationItem.Assistant) {
                 Markdown(
                     content = item.text,
                     typography = answerTypography(),
+                    components = answerComponents,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
                 )
             }
+        }
+    }
+}
+
+/** Code blocks with their language and a copy button, and tables with a copy button. */
+private val answerComponents: MarkdownComponents = markdownComponents(
+    codeFence = { model ->
+        MarkdownCodeFence(model.content, model.node, style = model.typography.code) { code, language, style ->
+            AnswerCode(code, language, style)
+        }
+    },
+    codeBlock = { model ->
+        MarkdownCodeBlock(model.content, model.node, style = model.typography.code) { code, language, style ->
+            AnswerCode(code, language, style)
+        }
+    },
+    table = { model ->
+        Column(Modifier.fillMaxWidth()) {
+            MarkdownTable(model.content, model.node, style = model.typography.table)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                CopyButton(model.node.getTextInNode(model.content).toString(), "Copy table")
+            }
+        }
+    },
+)
+
+/** A code block as the renderer draws it, with a bar for its language and a copy button. */
+@Composable
+private fun AnswerCode(code: String, language: String?, style: TextStyle) {
+    MarkdownCodeBackground(
+        color = LocalMarkdownColors.current.codeBackground,
+        shape = RoundedCornerShape(LocalMarkdownDimens.current.codeBackgroundCornerSize),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        language = language,
+        code = code,
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    language.orEmpty(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                CopyButton(code, "Copy code")
+            }
+            Text(
+                code,
+                style = style,
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(LocalMarkdownPadding.current.codeBlock),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CopyButton(text: String, description: String) {
+    val context = LocalContext.current
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 32.dp) {
+        IconButton(onClick = { copy(context, description, text) }, modifier = Modifier.size(32.dp)) {
+            LoomIcon(
+                LoomIcons.Copy,
+                description,
+                size = 16.dp,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

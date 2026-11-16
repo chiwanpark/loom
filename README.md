@@ -329,6 +329,8 @@ To copy files of your machine to the workspace, drag them onto a folder in the f
 
 When you open a session, the client loads its latest 50 messages and tool calls, and loads earlier ones as you scroll to the top. The **Changes** panel loads the whole session, to list every file it changed.
 
+Each code block in an answer has a copy button, which copies the code without the fences. Each table has a copy button below it, which copies the table as Markdown. The Android app has the same buttons.
+
 To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its tasks, and the tool approvals you gave it, and the agent's notes stay.
 
 To see what the model gets besides the conversation, choose **System prompt** in a session's menu in the agents panel, or **session: show system prompt** in the command palette. A tab shows the system prompt that the session's next model call sends: the built-in instructions (or `instructions.system_prompt`), the `AGENTS.md` files, and the environment. Problems with the instructions, such as an `AGENTS.md` file that was too large, show above it. **Tools** lists the tools that the model can call; click a tool to see its description and the JSON schema of its parameters. The refresh button reads the prompt again, for example after you change an `AGENTS.md` file. On Android, choose **System prompt** in the menu of a session.
