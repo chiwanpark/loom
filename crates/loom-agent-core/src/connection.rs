@@ -359,6 +359,17 @@ impl Connection {
                     Ok(())
                 });
             }
+            Command::GetSystemPrompt { session } => {
+                let session = self.agent.session(&session);
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = match session {
+                        Ok(session) => Ok(Payload::SystemPrompt(session.system_prompt().await)),
+                        Err(err) => Err(convert::api_error(&err)),
+                    };
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
             Command::ListModels { .. }
             | Command::GetUsageLimits { .. }
             | Command::StartLogin { .. }
@@ -715,7 +726,8 @@ impl Connection {
             | Command::WriteFile { .. }
             | Command::UploadChunk { .. }
             | Command::FinishUpload { .. }
-            | Command::CancelUpload { .. } => Err(ApiError::new(
+            | Command::CancelUpload { .. }
+            | Command::GetSystemPrompt { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),

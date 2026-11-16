@@ -399,6 +399,12 @@ pub enum Command {
     CancelUpload {
         upload: UploadId,
     },
+    /// What the session sends to the model besides the conversation: the
+    /// system prompt and the tools, as the next model call of the session
+    /// would have them now. Answered with [`Payload::SystemPrompt`].
+    GetSystemPrompt {
+        session: SessionId,
+    },
 }
 
 /// The most bytes in one [`Command::UploadChunk`].
@@ -526,6 +532,7 @@ pub enum Payload {
     PendingCancelled(PendingMessage),
     Terminals(Vec<TerminalInfo>),
     Ports(Vec<ListeningPort>),
+    SystemPrompt(SystemPrompt),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].
@@ -565,6 +572,26 @@ pub struct TasksContent {
     pub tasks: Vec<Task>,
     /// The most tasks the list may hold.
     pub max_tasks: u32,
+}
+
+/// A session's system prompt and tools, from [`Command::GetSystemPrompt`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemPrompt {
+    pub text: String,
+    /// Problems with the instructions, such as an `AGENTS.md` file that
+    /// was too large and was truncated.
+    pub warnings: Vec<String>,
+    /// The tools the model can call, in the order it gets them.
+    pub tools: Vec<ToolDefinition>,
+}
+
+/// A tool as the model sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    /// The JSON schema of the tool's arguments, as formatted JSON.
+    pub parameters: String,
 }
 
 /// One task of a session's task list.

@@ -605,6 +605,41 @@ pub fn version_text(version: &proto::FileVersion) -> String {
     version.0.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// What a session sends to the model besides the conversation.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SystemPromptInfo {
+    pub text: String,
+    pub warnings: Vec<String>,
+    pub tools: Vec<ToolInfo>,
+}
+
+/// A tool as the model sees it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+    /// The JSON schema of the arguments, formatted.
+    pub parameters: String,
+}
+
+impl From<proto::SystemPrompt> for SystemPromptInfo {
+    fn from(prompt: proto::SystemPrompt) -> Self {
+        Self {
+            text: prompt.text,
+            warnings: prompt.warnings,
+            tools: prompt
+                .tools
+                .into_iter()
+                .map(|tool| ToolInfo {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.parameters,
+                })
+                .collect(),
+        }
+    }
+}
+
 pub fn parse_version(text: &str) -> Option<proto::FileVersion> {
     if text.len() != 64 || !text.is_ascii() {
         return None;

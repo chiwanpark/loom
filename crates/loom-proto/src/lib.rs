@@ -295,6 +295,9 @@ mod tests {
                 overwrite: true,
             },
             Command::CancelUpload { upload: 5 },
+            Command::GetSystemPrompt {
+                session: session.clone(),
+            },
             Command::UpdateTasks {
                 session: session.clone(),
                 changes: vec![
@@ -483,6 +486,18 @@ mod tests {
         message_roundtrip(ServerMessage::Response {
             id: 11,
             result: Ok(Payload::NotesWritten(FileVersion([5; 32]))),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 12,
+            result: Ok(Payload::SystemPrompt(SystemPrompt {
+                text: "You are Loom.\n\n# Environment".into(),
+                warnings: vec!["AGENTS.md was truncated".into()],
+                tools: vec![ToolDefinition {
+                    name: "read".into(),
+                    description: "Read a file.".into(),
+                    parameters: "{\n  \"type\": \"object\"\n}".into(),
+                }],
+            })),
         });
         for reload in [
             ConfigReload::Applied {

@@ -116,6 +116,8 @@ pub enum SavedTab {
     File {
         path: String,
     },
+    /// The session's system prompt and tools.
+    SystemPrompt,
 }
 
 pub fn path(state_dir: &Path) -> PathBuf {

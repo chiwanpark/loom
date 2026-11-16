@@ -839,6 +839,18 @@ impl Client {
         }
     }
 
+    /// The system prompt and the tools that the session's next model call
+    /// would send.
+    pub async fn system_prompt(&self, session: &SessionId) -> Result<loom_proto::SystemPrompt> {
+        let command = Command::GetSystemPrompt {
+            session: session.clone(),
+        };
+        match self.request(command).await? {
+            Payload::SystemPrompt(prompt) => Ok(prompt),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Attaches a terminal to this connection: one opened over an earlier
     /// connection, or one another client holds, with `take_over`. Its
     /// recent output comes first, so clear the screen before. Fails with

@@ -330,6 +330,8 @@ When you open a session, the client loads its latest 50 messages and tool calls,
 
 To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its tasks, and the tool approvals you gave it, and the agent's notes stay.
 
+To see what the model gets besides the conversation, choose **System prompt** in a session's menu in the agents panel, or **session: show system prompt** in the command palette. A tab shows the system prompt that the session's next model call sends: the built-in instructions (or `instructions.system_prompt`), the `AGENTS.md` files, and the environment. Problems with the instructions, such as an `AGENTS.md` file that was too large, show above it. **Tools** lists the tools that the model can call; click a tool to see its description and the JSON schema of its parameters. The refresh button reads the prompt again, for example after you change an `AGENTS.md` file. On Android, choose **System prompt** in the menu of a session.
+
 ### Messages while a turn runs
 
 You can keep typing while the agent works. Under a running turn the prompt box offers two ways to send:

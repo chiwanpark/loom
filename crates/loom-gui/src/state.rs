@@ -903,6 +903,17 @@ impl AgentConnection {
             .run(async move { client.update_tasks(&session, changes).await })
     }
 
+    /// The system prompt and the tools of the session's next model call.
+    pub fn read_system_prompt(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Option<loom_client::Result<loom_client::proto::SystemPrompt>>> + use<>
+    {
+        let client = self.client.clone();
+        self.backend
+            .run(async move { client.system_prompt(&session).await })
+    }
+
     pub fn write_notes(
         &self,
         text: String,

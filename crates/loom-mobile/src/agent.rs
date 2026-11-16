@@ -17,8 +17,8 @@ use crate::error::{LoomError, Result};
 use crate::hosts::CLIENT_NAME;
 use crate::records::{
     Agent, AgentUpdate, ApprovalDecision, ConversationUpdate, Delivery, ImageData, Model, Notes,
-    Policy, Reasoning, SessionSummary, TakenBack, TaskEdit, TaskItem, notice_message,
-    parse_version, task_items, version_text,
+    Policy, Reasoning, SessionSummary, SystemPromptInfo, TakenBack, TaskEdit, TaskItem,
+    notice_message, parse_version, task_items, version_text,
 };
 use crate::runtime::{run, spawn};
 use crate::terminal::{TermShared, Terminals};
@@ -956,6 +956,15 @@ impl AgentConnection {
         with_client(&self.shared, move |client| async move {
             let content = client.update_tasks(&session_id(session), changes).await?;
             Ok(task_items(&content.tasks))
+        })
+        .await
+    }
+
+    /// The system prompt and the tools that the session's next model call
+    /// would send.
+    pub async fn system_prompt(self: Arc<Self>, session: String) -> Result<SystemPromptInfo> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client.system_prompt(&session_id(session)).await?.into())
         })
         .await
     }

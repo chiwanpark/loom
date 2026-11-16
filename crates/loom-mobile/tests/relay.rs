@@ -547,6 +547,17 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
         .unwrap_err();
     assert!(matches!(stale, LoomError::Api { .. }), "{stale:?}");
 
+    let prompt = conn
+        .clone()
+        .system_prompt(session.id.clone())
+        .await
+        .unwrap();
+    assert!(prompt.text.starts_with("You are Loom"), "{}", prompt.text);
+    assert!(
+        prompt.tools.iter().any(|tool| tool.name == "read"),
+        "{prompt:?}"
+    );
+
     // The session's own default for tool calls reaches the conversation.
     assert_eq!(app.last.as_ref().unwrap().policy, None);
     conn.clone()

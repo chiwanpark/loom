@@ -11,7 +11,7 @@ use loom_proto::{
     ContentPart, Decision, Delivery, PendingMessage, SequencedEvent, SessionEvent, SessionId,
     SessionInfo, SessionState, Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
 };
-use loom_tools::{FileTracker, TasksAccess, ToolContext, ToolError, Workspace};
+use loom_tools::{FileTracker, TasksAccess, ToolContext, ToolError, ToolSpec, Workspace};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +21,7 @@ use crate::compaction;
 use crate::convert;
 use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
-use crate::instructions::{PromptInputs, build_system_prompt};
+use crate::instructions::{PromptInputs, SystemPrompt, build_system_prompt};
 use crate::metrics::Metrics;
 use crate::notes::{AgentNotes, NOTES_READ_TOOL};
 use crate::observer::SessionObserver;
@@ -616,6 +616,26 @@ impl Session {
         }
     }
 
+    /// The system prompt and the tools that the session's next model call
+    /// would send.
+    pub async fn system_prompt(&self) -> loom_proto::SystemPrompt {
+        let runtime = self.core.runtime.current();
+        let (prompt, specs) = prompt_and_tools(&self.core, &runtime).await;
+        loom_proto::SystemPrompt {
+            text: prompt.text,
+            warnings: prompt.warnings,
+            tools: specs
+                .into_iter()
+                .map(|spec| loom_proto::ToolDefinition {
+                    parameters: serde_json::to_string_pretty(&spec.parameters)
+                        .unwrap_or_else(|_| spec.parameters.to_string()),
+                    name: spec.name,
+                    description: spec.description,
+                })
+                .collect(),
+        }
+    }
+
     pub fn interrupt(&self) -> bool {
         match &self.core.lock().turn {
             Some(turn) => {
@@ -731,6 +751,20 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
     }
 }
 
+/// The system prompt and the tools of a model call with `runtime`.
+async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<ToolSpec>) {
+    let specs = runtime.tools.available_specs().await;
+    let prompt = build_system_prompt(&PromptInputs {
+        base: runtime.config.instructions.system_prompt.as_deref(),
+        system_agents_md: &core.system_agents_md,
+        workspace_root: core.workspace.root(),
+        max_bytes: runtime.config.instructions.max_bytes.as_usize(),
+        tools: &specs,
+    })
+    .await;
+    (prompt, specs)
+}
+
 async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), TurnError> {
     let mut rounds: u32 = 0;
     loop {
@@ -753,15 +787,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             .providers
             .get(&model.provider)
             .map_err(CoreError::from)?;
-        let specs = runtime.tools.available_specs().await;
-        let prompt = build_system_prompt(&PromptInputs {
-            base: runtime.config.instructions.system_prompt.as_deref(),
-            system_agents_md: &core.system_agents_md,
-            workspace_root: core.workspace.root(),
-            max_bytes: runtime.config.instructions.max_bytes.as_usize(),
-            tools: &specs,
-        })
-        .await;
+        let (prompt, specs) = prompt_and_tools(core, &runtime).await;
         if first {
             for message in prompt.warnings {
                 core.emit(SessionEvent::Warning { message });

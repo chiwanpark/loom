@@ -191,6 +191,9 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                     MenuEntry("Ports", LoomIcons.Plug, close) {
                         app.navigator.push(Screen.Ports(link.host, link.instance))
                     }
+                    MenuEntry("System prompt", LoomIcons.ScrollText, close) {
+                        app.navigator.push(Screen.SystemPrompt(link.host, link.instance, session))
+                    }
                     MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
                     MenuEntry("Compact the context", LoomIcons.FoldVertical, close) {
                         scope.attempt(snackbar) { link.connection().compactSession(session) }

@@ -1042,6 +1042,28 @@ async fn tasks_changed(notes: &mut Notes) -> (SessionId, Vec<Task>) {
 }
 
 #[tokio::test]
+async fn system_prompt_is_read_through_the_client() {
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    std::fs::write(setup.info.workspace.join("AGENTS.md"), "Use tabs.").unwrap();
+    let session = client.create_session(None).await.unwrap().id;
+
+    let prompt = client.system_prompt(&session).await.unwrap();
+    assert!(prompt.text.starts_with("You are Loom"), "{}", prompt.text);
+    assert!(prompt.text.contains("Use tabs."), "{}", prompt.text);
+    assert!(prompt.warnings.is_empty(), "{:?}", prompt.warnings);
+    let read = prompt.tools.iter().find(|t| t.name == "read").unwrap();
+    let parameters: serde_json::Value = serde_json::from_str(&read.parameters).unwrap();
+    assert_eq!(parameters["type"], "object");
+
+    let err = client
+        .system_prompt(&SessionId("missing".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
 async fn tasks_are_read_and_changed_through_the_client() {
     let update = reply(
         vec![AssistantContent::ToolCall(ToolCall {

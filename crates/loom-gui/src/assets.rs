@@ -43,6 +43,7 @@ gpui_kit_assets::icon_assets!(
         Plug,
         Rows2,
         Save,
+        ScrollText,
         SendHorizontal,
         ShieldCheck,
         TextWrap,

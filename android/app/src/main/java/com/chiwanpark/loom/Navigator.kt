@@ -28,6 +28,10 @@ sealed interface Screen {
     data class Tasks(override val host: String, override val instance: String, val session: String) :
         Screen, AgentScreen
 
+    /** The system prompt and the tools of the session's next model call. */
+    data class SystemPrompt(override val host: String, override val instance: String, val session: String) :
+        Screen, AgentScreen
+
     /** A directory of the agent's workspace; an empty `path` is the workspace itself. */
     data class Files(override val host: String, override val instance: String, val path: String = "") :
         Screen, AgentScreen

@@ -181,6 +181,33 @@ async fn configured_system_prompt_replaces_builtin_instructions() {
 }
 
 #[tokio::test]
+async fn system_prompt_is_what_the_next_model_call_sends() {
+    let mut config = test_config(PolicyAction::Ask);
+    config.instructions.max_bytes = "8B".parse().unwrap();
+    let h = Harness::new(config, vec![text("ok")]);
+    std::fs::write(h.workspace.join("AGENTS.md"), "Always answer in haiku.").unwrap();
+    let session = h.agent.create_session(None).unwrap();
+
+    let prompt = session.system_prompt().await;
+    assert!(prompt.text.contains("Always a"), "{}", prompt.text);
+    assert!(!prompt.text.contains("haiku"), "{}", prompt.text);
+    assert_eq!(prompt.warnings.len(), 1, "{:?}", prompt.warnings);
+    assert!(prompt.warnings[0].contains("truncated"));
+
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "hi").await;
+    let request = &h.provider.requests()[0];
+    assert_eq!(request.system.as_deref(), Some(prompt.text.as_str()));
+    assert_eq!(prompt.tools.len(), request.tools.len());
+    for (shown, sent) in prompt.tools.iter().zip(&request.tools) {
+        assert_eq!(shown.name, sent.name);
+        assert_eq!(shown.description, sent.description);
+        let parameters: serde_json::Value = serde_json::from_str(&shown.parameters).unwrap();
+        assert_eq!(parameters, sent.parameters, "{}", shown.name);
+    }
+}
+
+#[tokio::test]
 async fn allowed_tool_calls_run_and_feed_results_back() {
     let h = Harness::new(
         test_config(PolicyAction::Allow),

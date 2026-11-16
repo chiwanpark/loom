@@ -72,6 +72,7 @@ object LoomIcons {
     val Plus = Lucide.drawable.lucide_ic_plus
     val QrCode = Lucide.drawable.lucide_ic_qr_code
     val Refresh = Lucide.drawable.lucide_ic_refresh_cw
+    val ScrollText = Lucide.drawable.lucide_ic_scroll_text
     val Search = Lucide.drawable.lucide_ic_search
     val Send = Lucide.drawable.lucide_ic_send_horizontal
     val Server = Lucide.drawable.lucide_ic_server

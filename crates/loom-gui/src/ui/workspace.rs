@@ -42,6 +42,7 @@ use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
 use crate::ui::picker::{PickerItem, open_picker};
 use crate::ui::ports_view::PortsView;
+use crate::ui::prompt_view::SystemPromptView;
 use crate::ui::session::SessionView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
@@ -114,6 +115,8 @@ actions!(
         /// Shows the active agent's listening and forwarded ports in the
         /// right panel.
         ShowPorts,
+        /// Opens a tab with the active session's system prompt and tools.
+        ShowSystemPrompt,
         /// Wraps long lines in the focused file or diff view, or stops
         /// wrapping them.
         ToggleLineWrap,
@@ -226,6 +229,7 @@ enum Panel {
     Terminal(Entity<TerminalView>),
     Diff(Entity<DiffView>),
     File(Entity<FileView>),
+    SystemPrompt(Entity<SystemPromptView>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -234,6 +238,7 @@ enum PanelKind {
     Terminal,
     Diff,
     File,
+    SystemPrompt,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -278,6 +283,7 @@ impl Panel {
             Panel::Terminal(_) => PanelKind::Terminal,
             Panel::Diff(_) => PanelKind::Diff,
             Panel::File(_) => PanelKind::File,
+            Panel::SystemPrompt(_) => PanelKind::SystemPrompt,
         }
     }
 
@@ -287,6 +293,7 @@ impl Panel {
             Panel::Terminal(view) => view.clone().into(),
             Panel::Diff(view) => view.clone().into(),
             Panel::File(view) => view.clone().into(),
+            Panel::SystemPrompt(view) => view.clone().into(),
         }
     }
 
@@ -295,6 +302,7 @@ impl Panel {
             Panel::Chat(view) => view.read(cx).title(cx),
             Panel::Diff(view) => view.read(cx).title(),
             Panel::File(view) => view.read(cx).title(),
+            Panel::SystemPrompt(_) => "System prompt".into(),
             Panel::Terminal(view) => {
                 let view = view.read(cx);
                 let base = view.title().unwrap_or_else(|| "Terminal".into());
@@ -321,7 +329,7 @@ impl Panel {
                 let view = view.read(cx);
                 view.exited().is_some() || *view.holder() == TerminalHolder::You
             }
-            Panel::Diff(_) | Panel::File(_) => true,
+            Panel::Diff(_) | Panel::File(_) | Panel::SystemPrompt(_) => true,
         }
     }
 
@@ -342,6 +350,7 @@ impl Panel {
             Panel::Terminal(view) => view.read(cx).focus_handle(cx).focus(window, cx),
             Panel::Diff(view) => view.read(cx).focus_handle(cx).focus(window, cx),
             Panel::File(view) => view.read(cx).editor_focus(cx).focus(window, cx),
+            Panel::SystemPrompt(view) => view.read(cx).editor_focus(cx).focus(window, cx),
         }
     }
 }
@@ -376,6 +385,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("session: archive", Box::new(ArchiveSession)),
         ("session: rename", Box::new(RenameSession)),
         ("session: choose model", Box::new(ChooseModel)),
+        ("session: show system prompt", Box::new(ShowSystemPrompt)),
         ("finder: sessions", Box::new(FindSession)),
         ("finder: agents", Box::new(FindAgent)),
         ("pane: split left", Box::new(SplitLeft)),
@@ -432,6 +442,7 @@ fn panel_icon(kind: PanelKind) -> Icon {
         PanelKind::Terminal => Icon::new(IconName::SquareTerminal).xsmall(),
         PanelKind::Diff => Icon::new(gpui_kit_assets::IconName::FileDiff).xsmall(),
         PanelKind::File => Icon::new(IconName::FileText).xsmall(),
+        PanelKind::SystemPrompt => Icon::new(gpui_kit_assets::IconName::ScrollText).xsmall(),
     }
 }
 
@@ -471,7 +482,9 @@ impl SessionGroup {
             .flat_map(|pane| pane.tabs.iter())
             .find_map(|(_, panel)| match panel {
                 Panel::Chat(view) => Some(view.clone()),
-                Panel::Terminal(_) | Panel::Diff(_) | Panel::File(_) => None,
+                Panel::Terminal(_) | Panel::Diff(_) | Panel::File(_) | Panel::SystemPrompt(_) => {
+                    None
+                }
             })
     }
 
@@ -1336,6 +1349,7 @@ impl Workspace {
             Panel::File(view) => Some(SavedTab::File {
                 path: view.read(cx).relative().to_owned(),
             }),
+            Panel::SystemPrompt(_) => Some(SavedTab::SystemPrompt),
         }
     }
 
@@ -1539,8 +1553,22 @@ impl Workspace {
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
                 Panel::File(view)
             }
+            SavedTab::SystemPrompt => self.system_prompt_panel(conn, info.id.clone(), window, cx),
         };
         Some(panel)
+    }
+
+    fn system_prompt_panel(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        session: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Panel {
+        let view = cx.new(|cx| SystemPromptView::new(conn.clone(), session, window, cx));
+        self.subscriptions
+            .push(cx.observe(&view, |_, _, cx| cx.notify()));
+        Panel::SystemPrompt(view)
     }
 
     /// A terminal view in the configured font, which offers to take its
@@ -3318,6 +3346,49 @@ impl Workspace {
         crate::ui::session::open_rename(conn, id, title, window, cx);
     }
 
+    fn on_show_system_prompt(
+        &mut self,
+        _: &ShowSystemPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_group().is_none() {
+            notify::info(window, cx, "Open a session to see its system prompt.");
+            return;
+        }
+        self.show_system_prompt(window, cx);
+    }
+
+    /// Shows the active session's system prompt tab, read again, or opens
+    /// one.
+    fn show_system_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.active_group() else {
+            return;
+        };
+        let found = group.panes.iter().find_map(|pane| {
+            pane.tabs
+                .find(|panel| matches!(panel, Panel::SystemPrompt(_)))
+                .map(|ix| (pane.id, ix))
+        });
+        if let Some((pane, ix)) = found {
+            self.activate_tab(pane, ix, window, cx);
+            if let Some(Panel::SystemPrompt(view)) =
+                self.active_group().and_then(|g| g.active_panel())
+            {
+                view.update(cx, |view, cx| view.reload(window, cx));
+            }
+            return;
+        }
+        let (conn, session) = (group.connection.clone(), group.session.clone());
+        let panel = self.system_prompt_panel(&conn, session, window, cx);
+        let id = self.alloc_panel();
+        if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
+            pane.tabs.add(id, panel, None);
+        }
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         let target = self
             .active_group()
@@ -4037,6 +4108,14 @@ impl Workspace {
                                     )
                                 }),
                             ));
+                            let (c, i) = (conn.clone(), info.clone());
+                            menu = menu.item(item(
+                                "System prompt",
+                                Rc::new(move |ws, window, cx| {
+                                    ws.open_session(c.clone(), i.clone(), window, cx);
+                                    ws.show_system_prompt(window, cx);
+                                }),
+                            ));
                             let (c, id, archived) = (conn.clone(), info.id.clone(), info.archived);
                             menu = menu.item(item(
                                 if archived { "Restore" } else { "Archive" },
@@ -4631,6 +4710,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_session))
             .on_action(cx.listener(Self::on_archive_session))
             .on_action(cx.listener(Self::on_rename_session))
+            .on_action(cx.listener(Self::on_show_system_prompt))
             .on_action(cx.listener(Self::on_show_changes))
             .on_action(cx.listener(Self::on_show_files))
             .on_action(cx.listener(Self::on_show_notes))
@@ -5392,6 +5472,49 @@ mod tests {
         // At the start already: nothing moves.
         assert_eq!(active_after("ctrl-shift-pageup", cx), 0);
         assert_eq!(active_tabs(&ws, cx).0, [ids[1], ids[0], ids[2], ids[3]]);
+    }
+
+    #[gpui::test]
+    fn the_system_prompt_opens_in_one_tab_that_is_kept(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, conn, cx) = connected(&agent, cx);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_session(conn.clone(), window, cx)
+        });
+        wait_until(cx, |cx| ws.read(cx).active_group.is_some());
+        // The saved layout of the prompt tabs of the active session.
+        let saved = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, cx| {
+                let group = ws.active_group().unwrap();
+                group
+                    .panes
+                    .iter()
+                    .flat_map(|pane| pane.tabs.iter())
+                    .filter(|(_, panel)| matches!(panel, Panel::SystemPrompt(_)))
+                    .filter_map(|(_, panel)| ws.saved_tab(group, panel, cx))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        cx.dispatch_action(ShowSystemPrompt);
+        cx.run_until_parked();
+        assert_eq!(saved(&ws, cx), [SavedTab::SystemPrompt]);
+        assert_eq!(active_tabs(&ws, cx).1, 1);
+        wait_until(cx, |cx| {
+            match ws.read(cx).active_group().and_then(|g| g.active_panel()) {
+                Some(Panel::SystemPrompt(view)) => view.read(cx).is_loaded(),
+                _ => false,
+            }
+        });
+
+        // Showing it again uses the same tab.
+        ws.update_in(cx, |ws, window, cx| {
+            ws.activate_tab_in_active_pane(Some(0), window, cx)
+        });
+        cx.dispatch_action(ShowSystemPrompt);
+        cx.run_until_parked();
+        assert_eq!(saved(&ws, cx), [SavedTab::SystemPrompt]);
+        assert_eq!(active_tabs(&ws, cx).1, 1);
     }
 
     #[gpui::test]
