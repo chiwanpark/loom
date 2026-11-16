@@ -118,7 +118,9 @@ actions!(
         /// wrapping them.
         ToggleLineWrap,
         /// Saves the focused file.
-        Save
+        Save,
+        /// Looks for a newer release of Loom and offers to install it.
+        CheckForUpdates
     ]
 );
 
@@ -126,6 +128,10 @@ const CONTEXT: &str = "Workspace";
 const RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const CHANGES_POLL: Duration = Duration::from_secs(2);
+/// How long after the start the client first looks for a newer release.
+const UPDATE_CHECK_DELAY: Duration = Duration::from_secs(10);
+/// How often the client looks for a newer release after that.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const RECONNECT_ATTEMPTS: usize = 20;
 const OUTSIDE_TERMINAL: &str = "Workspace && !Terminal";
 const DROP_TARGET_SIZE: f32 = 0.2;
@@ -384,6 +390,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("agent: providers and sign-in", Box::new(ShowProviders)),
         ("hosts: add ssh host", Box::new(AddSshHost)),
         ("hosts: pair with a relay", Box::new(PairRelay)),
+        ("app: check for updates", Box::new(CheckForUpdates)),
         ("app: quit", Box::new(Quit)),
     ]
 }
@@ -721,6 +728,25 @@ impl Workspace {
             }
         })
         .detach();
+        // Debug builds are for development, where a release would replace
+        // the build.
+        if this.config.check_for_updates && !cfg!(debug_assertions) {
+            let handle = window.window_handle();
+            cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+                let mut delay = UPDATE_CHECK_DELAY;
+                loop {
+                    cx.background_executor().timer(delay).await;
+                    delay = UPDATE_CHECK_INTERVAL;
+                    let checked = handle.update(cx, |_, window, cx| {
+                        this.update(cx, |ws, cx| ws.check_for_updates(false, window, cx))
+                    });
+                    if !matches!(checked, Ok(Ok(()))) {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         this
     }
 
@@ -1945,6 +1971,31 @@ impl Workspace {
     fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let unsaved = self.unsaved_everywhere(cx);
         self.guard_unsaved(unsaved, window, cx, |_, _, cx| cx.quit());
+    }
+
+    /// Starts `binary`, the updated client, in place of this one, after
+    /// asking about unsaved changes.
+    pub fn restart(&mut self, binary: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let unsaved = self.unsaved_everywhere(cx);
+        self.guard_unsaved(unsaved, window, cx, move |ws, _, cx| {
+            ws.save_layout(cx);
+            cx.set_restart_path(binary);
+            cx.restart();
+        });
+    }
+
+    fn check_for_updates(&mut self, manual: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx.entity().downgrade();
+        crate::ui::update::check(workspace, self.backend.clone(), manual, window, cx);
+    }
+
+    fn on_check_for_updates(
+        &mut self,
+        _: &CheckForUpdates,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.check_for_updates(true, window, cx);
     }
 
     /// The title bar's close button, or a close request from the window
@@ -4572,6 +4623,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_find_session))
             .on_action(cx.listener(Self::on_find_agent))
+            .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_select_theme))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_terminal))

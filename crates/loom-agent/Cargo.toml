@@ -23,6 +23,7 @@ loom-proto = { path = "../loom-proto" }
 loom-telemetry = { path = "../loom-telemetry" }
 loom-tools = { path = "../loom-tools" }
 loom-transport = { path = "../loom-transport" }
+loom-update = { path = "../loom-update" }
 loom-version = { path = "../loom-version" }
 nix = { version = "0.31.3", features = ["signal"] }
 qrcode = { version = "0.14.1", default-features = false }

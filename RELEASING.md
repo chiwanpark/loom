@@ -12,7 +12,7 @@ Loom's binaries are published as archives on [GitHub releases](https://github.co
 
 Each architecture is built natively, the arm64 archives on GitHub's `ubuntu-24.04-arm` runners.
 
-`scripts/install.sh` downloads the agent and relay archives and `SHA256SUMS` from the latest published release, so keep those names when changing the build. Drafts are not visible to it, and until a release is published it can only build from source (`--source`).
+`scripts/install.sh`, `loom-agent update`, and the desktop client's update download the archives and `SHA256SUMS` from the latest published release, so keep those names and the layout of the archives when changing the build. Drafts are not visible to them, and until a release is published `scripts/install.sh` can only build from source (`--source`).
 
 Every crate shares the version in `[workspace.package]` of `Cargo.toml`. The binaries print it with `--version`, followed by the commit they were built from: `loom-agent 0.1.0 (b89ff2d9f 2026-11-11)`.
 

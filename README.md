@@ -64,6 +64,16 @@ Options go after the component, for example `| sh -s agent --version 0.2.0`:
 
 Agents, relays, and desktop clients that are already running keep their version until you restart them (`loom-agent stop --all`, `systemctl restart loom-relay`); the installer says when that is the case for agents and relays, and restarts the services it installed. Non-interactive SSH commands often run without `~/.local/bin` on `PATH`, so set `remote_bin` for the host in `client.yaml` (see [Remote hosts over SSH](#remote-hosts-over-ssh)).
 
+### Updating
+
+The agent and the desktop client update themselves from the GitHub releases. They download the archive for the machine, check it against `SHA256SUMS`, make sure that each new binary runs, and then replace the binaries in the directory of the running binary. If a step fails, the old binaries stay.
+
+- `loom-agent update` installs the latest release of `loom-agent`. `--check` only tells whether a newer release is out, and exits with status 1 if one is. `--version <version>` installs that release, also an older one. Running agents keep their version until you restart them (`loom-agent stop --all`).
+- The desktop client looks for a newer release when it starts and once a day after that. When it finds one, it shows a notification with an **Update** button. The update replaces `loom` and the `loom-agent` next to it, and then the client offers to restart. To look for a release yourself, choose **app: check for updates** in the command palette. Set `check_for_updates: false` in `client.yaml` to stop the automatic checks. Debug builds never check by themselves.
+- `loom update` updates the desktop client and its agent without opening a window, with the same `--check` and `--version` options.
+
+The updates do not change the desktop entry, the icons, or the systemd units; run `scripts/install.sh` again for those. The relay does not update itself. The directory of the binaries must be writable, so a system-wide install needs the installer with root.
+
 ## Building
 
 You need a recent stable Rust toolchain (edition 2024).
@@ -256,6 +266,7 @@ An agent that rejects the file keeps the configuration it has, and every connect
 | `loom-agent clients list \| revoke <label>` | Manage clients paired through a relay. |
 | `loom-agent host [--json]` | Print this host's ID and public key. |
 | `loom-agent config init \| check \| schema \| path \| fetch-telemetry` | Manage the configuration. |
+| `loom-agent update [--check] [--version <version>]` | Update `loom-agent` from the latest release, or another one; see [Updating](#updating). |
 
 ## Client configuration
 
@@ -263,6 +274,7 @@ The client reads `~/.config/loom/client.yaml`. Besides `hosts`, it has:
 
 - `appearance`: theme, UI and monospace fonts and sizes, fallback fonts for glyphs the monospace font lacks (for example Hangul in terminals), and `wrap_lines`, whether file and diff views open with long lines wrapped (off by default).
 - `keymap`: overrides for the default key bindings.
+- `check_for_updates`: whether the desktop client looks for a newer release when it starts and once a day after that (on by default); see [Updating](#updating).
 
 Useful default key bindings:
 

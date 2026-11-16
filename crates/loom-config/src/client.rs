@@ -18,6 +18,13 @@ pub struct ClientConfig {
     pub hosts: Vec<HostEntry>,
     pub appearance: AppearanceConfig,
     pub keymap: BTreeMap<String, String>,
+    /// Whether the desktop client looks for a newer release when it starts.
+    #[serde(skip_serializing_if = "is_true")]
+    pub check_for_updates: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl Default for ClientConfig {
@@ -29,6 +36,7 @@ impl Default for ClientConfig {
             }],
             appearance: AppearanceConfig::default(),
             keymap: BTreeMap::new(),
+            check_for_updates: true,
         }
     }
 }

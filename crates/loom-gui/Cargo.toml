@@ -21,6 +21,7 @@ hayro = "0.9.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
+loom-update = { path = "../loom-update" }
 loom-version = { path = "../loom-version" }
 loom-view-model = { path = "../loom-view-model" }
 loom-vt = { path = "../loom-vt" }

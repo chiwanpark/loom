@@ -51,6 +51,24 @@ enum CliCommand {
     Pair(PairArgs),
     #[command(subcommand)]
     Clients(ClientsCommand),
+    /// Updates loom-agent from the latest release, or another one, where it
+    /// is installed.
+    Update(UpdateArgs),
+}
+
+#[derive(Args)]
+struct UpdateArgs {
+    /// Install this release, such as 0.4.0, instead of the latest. Also
+    /// installs an older release.
+    #[arg(long = "version", value_name = "VERSION")]
+    release: Option<loom_update::Version>,
+    /// Only tell whether a newer release is out; exits with 0 when this is
+    /// the latest and 1 when it is not.
+    #[arg(long, conflicts_with = "release")]
+    check: bool,
+    /// Install the release also when it is the version that runs.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args)]
@@ -320,7 +338,66 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                 }
             }
         }
+        CliCommand::Update(args) => {
+            init_logging("warn");
+            update(&ctx, args).await
+        }
     }
+}
+
+async fn update(ctx: &Ctx, args: UpdateArgs) -> anyhow::Result<i32> {
+    use loom_update::{Package, Updater, current_version, install_dir};
+    let updater = Updater::new();
+    let current = current_version();
+    let release = updater
+        .release(Package::Agent, args.release.as_ref())
+        .await?;
+    if args.check {
+        if release.version > current {
+            println!("loom-agent {} is out; this is {current}", release.version);
+            println!("Run `loom-agent update` to install it.");
+            return Ok(1);
+        }
+        println!("loom-agent {current} is the latest release");
+        return Ok(0);
+    }
+    if args.release.is_none() && release.version < current {
+        println!(
+            "loom-agent {current} is newer than the latest release, {}",
+            release.version
+        );
+        return Ok(0);
+    }
+    if release.version == current && !args.force {
+        println!("loom-agent {current} is up to date");
+        return Ok(0);
+    }
+    let dir = install_dir()?;
+    eprintln!("Downloading {}", release.archive);
+    let installed = updater
+        .install(Package::Agent, &release, &dir, |_, _| {})
+        .await?;
+    for item in &installed {
+        println!(
+            "Replaced {} at {} with {}",
+            item.old.as_deref().unwrap_or(item.binary),
+            item.path.display(),
+            item.new
+        );
+    }
+    // Agents report the version they run; name the ones on another.
+    let config = ctx.load().ok();
+    let running = match &config {
+        Some(config) => ctx.registry(config).list().unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let version = release.version.to_string();
+    let old = running.iter().filter(|e| e.version != version).count();
+    if old > 0 {
+        println!("{old} running agent(s) have another version. Restart them to use this one:");
+        println!("  loom-agent stop --all");
+    }
+    Ok(0)
 }
 
 async fn pair(ctx: &Ctx, config: &AgentConfig, args: PairArgs) -> anyhow::Result<i32> {
