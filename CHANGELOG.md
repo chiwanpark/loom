@@ -2,6 +2,12 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### New features
+
+- **Desktop client installer.** `scripts/install.sh desktop` installs the desktop app `loom` and `loom-agent`. It also installs a desktop entry and icons, so that the application menu shows Loom. The release archive of the desktop app contains these files in its `share` directory.
+
 ## 0.3.0
 
 ### Upgrade notes

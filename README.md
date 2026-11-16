@@ -23,12 +23,12 @@ The other crates are libraries: the agent core (`loom-agent-core`), model provid
 
 The [releases page](https://github.com/chiwanpark/loom/releases) has prebuilt archives for Linux:
 
-- `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` holds the desktop client `loom` together with `loom-agent`, for x86-64. It needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, a Wayland session, and a Vulkan driver.
+- `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` holds the desktop client `loom` together with `loom-agent`, for x86-64. It needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, a Wayland session, and a Vulkan driver. Its `share` directory holds the desktop entry and icons, laid out as in `~/.local/share`.
 - `loom-agent-<version>-<arch>-unknown-linux-musl.tar.gz` and `loom-relay-<version>-<arch>-unknown-linux-musl.tar.gz` are statically linked and run on any Linux, such as the remote hosts you reach over SSH. `<arch>` is `x86_64` for x86-64 and `aarch64` for arm64.
 
 Unpack an archive and put its binaries on your `PATH`, for example in `~/.local/bin`. `SHA256SUMS` on the release page lists the archive checksums. Every binary prints its version and the commit it was built from with `--version`. [RELEASING.md](RELEASING.md) describes how releases are made.
 
-### Installing the agent or relay
+### Installing the agent, relay, or desktop client
 
 `scripts/install.sh agent` installs `loom-agent` for the current user. It downloads the static binary for the host's architecture from the latest release, checks it against `SHA256SUMS`, puts it in `~/.local/bin`, and writes `~/.config/loom/agent.yaml` if there is none. Run it again to upgrade.
 
@@ -48,15 +48,21 @@ ssh devbox sh -s agent < scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/chiwanpark/loom/main/scripts/install.sh | sudo sh -s relay --systemd
 ```
 
+`scripts/install.sh desktop` installs the desktop client `loom` and the `loom-agent` it starts, for the current user, from the x86-64 archive. It also installs the desktop entry `dev.loom.Loom.desktop` in `~/.local/share/applications` and the icons in `~/.local/share/icons`, so that the desktop's application menu lists Loom:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chiwanpark/loom/main/scripts/install.sh | sh -s desktop
+```
+
 Options go after the component, for example `| sh -s agent --version 0.2.0`:
 
 - `--version <version>` installs that release instead of the latest.
 - `--bin-dir <dir>` installs somewhere other than `~/.local/bin` (or `/usr/local/bin`).
-- `--source` builds the binary with Cargo instead, for hosts without a prebuilt binary (anything but x86-64 or arm64 Linux). Without `--version` it builds the `main` branch.
-- `--systemd` also installs and starts the systemd service: for the agent, the user service described under [Through a relay](#through-a-relay); for the relay, the system service, which needs root.
+- `--source` builds the binaries with Cargo instead, for hosts without a prebuilt binary (anything but x86-64 or arm64 Linux, or anything but x86-64 Linux for the desktop client). Without `--version` it builds the `main` branch. The desktop client needs the packages listed under [Building](#building).
+- `--systemd` also installs and starts the systemd service: for the agent, the user service described under [Through a relay](#through-a-relay); for the relay, the system service, which needs root. The desktop client has no service.
 - `--no-config` leaves the configuration alone.
 
-Agents and relays that are already running keep their version until you restart them (`loom-agent stop --all`, `systemctl restart loom-relay`); the installer says when that is the case, and restarts the services it installed. Non-interactive SSH commands often run without `~/.local/bin` on `PATH`, so set `remote_bin` for the host in `client.yaml` (see [Remote hosts over SSH](#remote-hosts-over-ssh)).
+Agents, relays, and desktop clients that are already running keep their version until you restart them (`loom-agent stop --all`, `systemctl restart loom-relay`); the installer says when that is the case for agents and relays, and restarts the services it installed. Non-interactive SSH commands often run without `~/.local/bin` on `PATH`, so set `remote_bin` for the host in `client.yaml` (see [Remote hosts over SSH](#remote-hosts-over-ssh)).
 
 ## Building
 
@@ -82,7 +88,7 @@ cargo install --path crates/loom-gui      # installs `loom`
 cargo install --path crates/loom-relay    # only if you run a relay
 ```
 
-Install `loom-agent` on every machine where you want an agent to run, including remote hosts you reach over SSH. [`scripts/install.sh agent --source`](#installing-the-agent-or-relay) does this with Cargo, too.
+Install `loom-agent` on every machine where you want an agent to run, including remote hosts you reach over SSH. [`scripts/install.sh agent --source`](#installing-the-agent-relay-or-desktop-client) does this with Cargo, too.
 
 ### The Android app
 

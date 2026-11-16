@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Loom
+GenericName=Coding agent client
+Comment=Follow and steer the sessions of Loom's coding agents
+Exec=loom
+Icon=dev.loom.Loom
+Terminal=false
+Categories=Development;
+Keywords=agent;AI;code;LLM;
+StartupWMClass=dev.loom.Loom

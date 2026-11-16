@@ -4,7 +4,7 @@ Loom's binaries are published as archives on [GitHub releases](https://github.co
 
 | Archive | Contents | Runs on |
 | --- | --- | --- |
-| `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` | `loom` (GUI) and `loom-agent` | x86-64 Linux with glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, Wayland, and a Vulkan driver |
+| `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` | `loom` (GUI) and `loom-agent`, with the desktop entry and icons under `share/` | x86-64 Linux with glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, Wayland, and a Vulkan driver |
 | `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any x86-64 Linux; statically linked |
 | `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-relay` and its systemd unit | any x86-64 Linux; statically linked |
 | `loom-agent-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any arm64 Linux; statically linked |
