@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    AnyElement, App, AsyncApp, Context, Entity, EventEmitter, ExternalPaths, FocusHandle,
+    Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder, px, uniform_list,
 };
@@ -13,7 +14,7 @@ use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::proto::{ChangeStatus, DirEntry, EntryKind};
 
 use crate::state::AgentConnection;
-use crate::ui::download;
+use crate::ui::{download, upload};
 
 const ROW_HEIGHT: f32 = 24.;
 const INDENT: f32 = 14.;
@@ -124,6 +125,43 @@ impl FileTreeView {
     pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.expanded.clear();
         cx.notify();
+    }
+
+    /// The folder that uploads go to: the selected folder, the folder of the
+    /// selected file, or the workspace's top folder.
+    pub fn upload_folder(&self) -> String {
+        let Some(selected) = self.selected.as_deref() else {
+            return String::new();
+        };
+        let (parent, name) = selected.rsplit_once('/').unwrap_or(("", selected));
+        let is_dir = self
+            .dirs
+            .get(parent)
+            .and_then(|state| state.entries.as_ref())
+            .and_then(|entries| entries.iter().find(|e| e.name == name))
+            .is_some_and(|entry| entry.kind == EntryKind::Directory);
+        if is_dir {
+            selected.to_owned()
+        } else {
+            parent.to_owned()
+        }
+    }
+
+    /// Asks for files of this machine and uploads them to `dir`.
+    pub fn prompt_upload(&self, dir: String, window: &mut Window, cx: &mut Context<Self>) {
+        let tree = cx.entity().downgrade();
+        upload::prompt(self.connection.clone(), dir, Some(tree), window, cx);
+    }
+
+    fn upload_dropped(
+        &self,
+        dir: String,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tree = cx.entity().downgrade();
+        upload::upload_paths(self.connection.clone(), dir, paths, Some(tree), window, cx);
     }
 
     fn load(&mut self, path: String, cx: &mut Context<Self>) {
@@ -278,6 +316,15 @@ impl FileTreeView {
         let path = row.path.clone();
         let menu_path = row.path.clone();
         let connection = self.connection.clone();
+        // Files dropped on a folder go into it; on a file, next to it.
+        let drop_dir = if is_dir {
+            row.path.clone()
+        } else {
+            row.path
+                .rsplit_once('/')
+                .map(|(dir, _)| dir.to_owned())
+                .unwrap_or_default()
+        };
         let row_element = h_flex()
             .id(SharedString::from(row.path.clone()))
             .h(px(ROW_HEIGHT))
@@ -288,6 +335,10 @@ impl FileTreeView {
             .cursor_pointer()
             .when(selected, |el| el.bg(theme.list_active))
             .hover(|el| el.bg(theme.list_hover))
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                this.upload_dropped(drop_dir.clone(), paths.paths().to_vec(), window, cx);
+            }))
             .child(div().w(px(12.)).flex_none().when(is_dir, |el| {
                 el.child(
                     Icon::new(if row.loading {
@@ -329,7 +380,26 @@ impl FileTreeView {
                 }
             }));
         if is_dir {
-            return row_element.into_any_element();
+            let tree = cx.entity().downgrade();
+            return row_element
+                .context_menu(move |menu, _, _| {
+                    let (connection, dir, tree) =
+                        (connection.clone(), menu_path.clone(), tree.clone());
+                    menu.item(
+                        PopupMenuItem::new("Upload files…")
+                            .icon(Icon::new(gpui_kit_assets::IconName::Upload))
+                            .on_click(move |_, window, cx| {
+                                upload::prompt(
+                                    connection.clone(),
+                                    dir.clone(),
+                                    Some(tree.clone()),
+                                    window,
+                                    cx,
+                                )
+                            }),
+                    )
+                })
+                .into_any_element();
         }
         row_element
             .context_menu(move |menu, _, _| {
@@ -365,6 +435,10 @@ impl Render for FileTreeView {
         v_flex()
             .size_full()
             .track_focus(&self.focus)
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.upload_dropped(String::new(), paths.paths().to_vec(), window, cx);
+            }))
             .when(root_loading, |el| {
                 el.child(
                     div()

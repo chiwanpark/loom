@@ -1267,6 +1267,112 @@ async fn a_dropped_download_leaves_nothing_behind() {
 }
 
 #[tokio::test]
+async fn files_upload_in_chunks_to_the_workspace() {
+    let setup = setup(vec![]);
+    let (client, _notes) = connect(&setup).await;
+    let workspace = &setup.info.workspace;
+    std::fs::create_dir(workspace.join("assets")).unwrap();
+    let local = setup.dir.path().join("local");
+    std::fs::create_dir(&local).unwrap();
+    let len = 3 * 1024 * 1024 + 12345;
+    let bytes: Vec<u8> = (0..len).map(|i| (i * 7 % 256) as u8).collect();
+    std::fs::write(local.join("data.bin"), &bytes).unwrap();
+    std::fs::write(local.join("empty"), b"").unwrap();
+
+    let mut seen = Vec::new();
+    let size = client
+        .upload_file(
+            &local.join("data.bin"),
+            "assets/data.bin",
+            false,
+            |done, total| seen.push((done, total)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(size, len as u64);
+    assert_eq!(
+        std::fs::read(workspace.join("assets/data.bin")).unwrap(),
+        bytes
+    );
+    let mib = 1024 * 1024;
+    assert_eq!(
+        seen,
+        vec![
+            (mib, len as u64),
+            (2 * mib, len as u64),
+            (3 * mib, len as u64),
+            (len as u64, len as u64)
+        ]
+    );
+    let size = client
+        .upload_file(&local.join("empty"), "empty", false, |_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(size, 0);
+    assert_eq!(std::fs::read(workspace.join("empty")).unwrap(), b"");
+
+    // An existing file is replaced only when asked.
+    let err = client
+        .upload_file(&local.join("empty"), "assets/data.bin", false, |_, _| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.api().map(|e| e.code),
+        Some(ErrorCode::Conflict),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read(workspace.join("assets/data.bin")).unwrap(),
+        bytes
+    );
+    client
+        .upload_file(&local.join("empty"), "assets/data.bin", true, |_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(workspace.join("assets/data.bin")).unwrap(),
+        b""
+    );
+
+    for (path, code) in [
+        ("missing/a.bin", ErrorCode::NotFound),
+        ("../outside", ErrorCode::BadRequest),
+        ("", ErrorCode::BadRequest),
+    ] {
+        let err = client
+            .upload_file(&local.join("data.bin"), path, false, |_, _| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.api().map(|e| e.code), Some(code), "{path}: {err}");
+    }
+    assert_eq!(entries(&workspace.join("assets")), vec!["data.bin"]);
+
+    // A dropped upload leaves nothing behind.
+    let (started, mut cancel) = tokio::sync::oneshot::channel();
+    let mut started = Some(started);
+    let src = local.join("data.bin");
+    let upload = client.upload_file(&src, "assets/big.bin", false, |_, _| {
+        if let Some(started) = started.take() {
+            let _ = started.send(());
+        }
+    });
+    tokio::select! {
+        biased;
+        _ = &mut cancel => {}
+        _ = upload => panic!("the upload finished before it was cancelled"),
+    }
+    // The cancel goes out before this request, so it is done once this is.
+    assert!(client.list_sessions().await.unwrap().is_empty());
+    for _ in 0..100 {
+        if entries(&workspace.join("assets")) == vec!["data.bin"] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(entries(&workspace.join("assets")), vec!["data.bin"]);
+}
+
+#[tokio::test]
 async fn files_are_read_in_chunks_through_a_relay() {
     let setup = setup(vec![]);
     std::fs::write(setup.info.workspace.join("a.txt"), "a").unwrap();

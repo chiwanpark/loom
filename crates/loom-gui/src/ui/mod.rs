@@ -16,6 +16,7 @@ pub mod session;
 pub mod tab;
 pub mod tabs;
 pub mod tasks_view;
+pub mod upload;
 pub mod workspace;
 
 pub use workspace::{Workspace, bind_keys};

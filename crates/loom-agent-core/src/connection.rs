@@ -19,6 +19,7 @@ use crate::session::Session;
 use crate::supervisor::Supervisor;
 use crate::terminals::{ConnectionId, Viewer, interactive_shell};
 use crate::tunnels::Tunnels;
+use crate::uploads::Uploads;
 
 pub type Reply = Result<Payload, ApiError>;
 
@@ -48,6 +49,7 @@ pub struct Connection {
     /// The name the client gave in its hello.
     program: String,
     tunnels: Tunnels,
+    uploads: Arc<Uploads>,
 }
 
 fn protocol_error(message: &str) -> ApiError {
@@ -74,6 +76,7 @@ impl Connection {
             client_key: None,
             client_label: None,
             program: String::new(),
+            uploads: Arc::default(),
         }
     }
 
@@ -213,6 +216,20 @@ impl Connection {
         self.send(ServerMessage::Response { id, result }).await;
     }
 
+    /// Runs `work` in the background and answers the request with
+    /// [`Payload::Ok`] or its error when it is done.
+    fn reply_later(
+        &mut self,
+        id: RequestId,
+        work: impl Future<Output = Result<(), ApiError>> + Send + 'static,
+    ) {
+        let out = self.out.clone();
+        self.tasks.push(tokio::spawn(async move {
+            let result = work.await.map(|()| Payload::Ok);
+            let _ = out.send(ServerMessage::Response { id, result }).await;
+        }));
+    }
+
     async fn request(&mut self, id: RequestId, command: Command) {
         match command {
             Command::ListAgents | Command::SpawnAgent { .. } | Command::StopAgent { .. } => {
@@ -309,6 +326,38 @@ impl Connection {
                     };
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
+            }
+            Command::UploadChunk {
+                upload,
+                path,
+                offset,
+                data,
+            } => {
+                let workspace = self.agent.workspace().clone();
+                let uploads = self.uploads.clone();
+                self.reply_later(id, async move {
+                    uploads
+                        .chunk(workspace.root(), upload, &path, offset, data)
+                        .await
+                });
+            }
+            Command::FinishUpload {
+                upload,
+                size,
+                overwrite,
+            } => {
+                let workspace = self.agent.workspace().clone();
+                let uploads = self.uploads.clone();
+                self.reply_later(id, async move {
+                    uploads.finish(&workspace, upload, size, overwrite).await
+                });
+            }
+            Command::CancelUpload { upload } => {
+                let uploads = self.uploads.clone();
+                self.reply_later(id, async move {
+                    uploads.cancel(upload).await;
+                    Ok(())
+                });
             }
             Command::ListModels { .. }
             | Command::GetUsageLimits { .. }
@@ -663,7 +712,10 @@ impl Connection {
             | Command::ListDirectory { .. }
             | Command::ReadFile { .. }
             | Command::ReadFileChunk { .. }
-            | Command::WriteFile { .. } => Err(ApiError::new(
+            | Command::WriteFile { .. }
+            | Command::UploadChunk { .. }
+            | Command::FinishUpload { .. }
+            | Command::CancelUpload { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),

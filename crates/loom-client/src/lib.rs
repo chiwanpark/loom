@@ -5,6 +5,7 @@ mod error;
 mod forward;
 mod login;
 mod relay;
+mod upload;
 
 pub use client::{Client, Notification, Notifications, terminal_owner};
 pub use connect::{

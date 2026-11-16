@@ -2950,7 +2950,20 @@ impl Workspace {
             })
             .when_some(tree.clone(), |el, tree| {
                 let collapse = tree.clone();
+                let upload = tree.clone();
                 el.child(
+                    Button::new("upload-files")
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(gpui_kit_assets::IconName::Upload))
+                        .tooltip("Upload files to the selected folder")
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            upload.update(cx, |tree, cx| {
+                                tree.prompt_upload(tree.upload_folder(), window, cx)
+                            })
+                        })),
+                )
+                .child(
                     Button::new("refresh-files")
                         .ghost()
                         .xsmall()

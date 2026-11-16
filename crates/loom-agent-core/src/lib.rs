@@ -21,6 +21,7 @@ pub mod supervisor;
 pub mod tasks;
 pub mod terminals;
 pub mod tunnels;
+pub mod uploads;
 pub mod watcher;
 pub mod web_search;
 

@@ -25,6 +25,9 @@ pub type TunnelId = u64;
 /// earlier connection still holds (as when the agent has not yet noticed
 /// that connection is gone).
 pub type TerminalOwner = u64;
+/// A file that a client uploads; the client picks the number, unique among
+/// its connection's uploads.
+pub type UploadId = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InstanceId(pub String);
@@ -368,7 +371,41 @@ pub enum Command {
     MarkSessionSeen {
         session: SessionId,
     },
+    /// Writes bytes of a file that the client uploads to the workspace, at
+    /// most [`MAX_UPLOAD_CHUNK`] of them, at `offset` of the upload's
+    /// temporary file. The first chunk of an upload creates that file next
+    /// to `path`, whose directory must exist; the chunks may come in any
+    /// order. Answered with [`Payload::Ok`]. A connection has at most
+    /// [`MAX_UPLOADS`] uploads, and the agent removes their temporary files
+    /// when it closes.
+    UploadChunk {
+        upload: UploadId,
+        path: String,
+        offset: u64,
+        data: Vec<u8>,
+    },
+    /// Ends an upload once every chunk was answered: the temporary file,
+    /// which must have `size` bytes, replaces the file at the upload's path.
+    /// Fails with [`ErrorCode::Conflict`] when that file exists and
+    /// `overwrite` is not set; the upload then stays, to finish again or
+    /// cancel. Answered with [`Payload::Ok`].
+    FinishUpload {
+        upload: UploadId,
+        size: u64,
+        overwrite: bool,
+    },
+    /// Stops an upload and removes its temporary file. Answered with
+    /// [`Payload::Ok`], also for an upload the agent does not know.
+    CancelUpload {
+        upload: UploadId,
+    },
 }
+
+/// The most bytes in one [`Command::UploadChunk`].
+pub const MAX_UPLOAD_CHUNK: u32 = 4 * 1024 * 1024;
+
+/// The most uploads one connection has at once.
+pub const MAX_UPLOADS: usize = 16;
 
 /// The most bytes of a tunnel the agent sends ahead of the client's
 /// [`Command::TunnelAck`]s.

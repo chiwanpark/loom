@@ -12,6 +12,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 - **Completed sessions.** A session has the new state **Completed** after a turn completes. The agents panel and the Android app show these sessions in their own group. When you open the session in a client, it becomes idle again.
 - **Responding state.** A session has the new state **Responding** while the model streams text or tool calls. **Thinking** now means that the model streams its reasoning or has not sent output yet. Clients show "Responding…" while the model writes tool calls.
+- **File upload.** The desktop app uploads files from your computer to the workspace. Drag files onto a folder in the files panel, or use **Upload files…**. Uploads also work through a relay. See [Client configuration](README.md#client-configuration).
 - **Desktop client installer.** `scripts/install.sh desktop` installs the desktop app `loom` and `loom-agent`. It also installs a desktop entry and icons, so that the application menu shows Loom. The release archive of the desktop app contains these files in its `share` directory.
 
 ### Changes

@@ -312,6 +312,8 @@ The **Ports** tab of the right panel (also **panel: ports** in the command palet
 
 To copy a workspace file to your machine, right-click it in the files panel and choose **Download…**, or use the download button in its file view. Downloads work over every kind of connection, also through a relay.
 
+To copy files of your machine to the workspace, drag them onto a folder in the files panel, right-click a folder and choose **Upload files…**, or use the upload button above the panel, which uploads to the selected folder. Files dropped on a file go into its folder. When a file of the same name is in the folder, the client asks before it replaces it. A file appears in the workspace only once all of it arrived; a cancelled or failed upload leaves nothing behind. Uploads work over every kind of connection, also through a relay. The Android app cannot upload files.
+
 When you open a session, the client loads its latest 50 messages and tool calls, and loads earlier ones as you scroll to the top. The **Changes** panel loads the whole session, to list every file it changed.
 
 To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its tasks, and the tool approvals you gave it, and the agent's notes stay.

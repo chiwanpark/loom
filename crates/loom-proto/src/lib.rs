@@ -283,6 +283,18 @@ mod tests {
             Command::MarkSessionSeen {
                 session: session.clone(),
             },
+            Command::UploadChunk {
+                upload: 5,
+                path: "assets/logo.png".into(),
+                offset: 1 << 20,
+                data: vec![0x89, b'P', b'N', b'G'],
+            },
+            Command::FinishUpload {
+                upload: 5,
+                size: (1 << 20) + 4,
+                overwrite: true,
+            },
+            Command::CancelUpload { upload: 5 },
             Command::UpdateTasks {
                 session: session.clone(),
                 changes: vec![
