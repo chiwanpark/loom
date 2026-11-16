@@ -131,13 +131,39 @@ pub struct ToolResult {
     pub details: Option<ToolResultDetails>,
 }
 
+/// What a session does. New variants go last: postcard stores the variant's
+/// position, and stored [`SessionEvent::StateChanged`] events must keep
+/// decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
+    /// The user saw the finished session.
     Idle,
+    /// The model works on its answer: it streams its reasoning, or it has
+    /// not sent output yet.
     Thinking,
+    /// The agent runs tool calls, also while a call waits for the workspace
+    /// lock.
     RunningTool,
+    /// A tool call waits for the user's approval.
     WaitingApproval,
-    WaitingLock,
+    /// The model streams its answer: text or tool calls.
+    ///
+    /// Agents before protocol 15 sent a state for waiting for the workspace
+    /// lock at this position. Their stored events read back as this state,
+    /// which a later event of the turn always replaces.
+    Responding,
+    /// The turn completed, but the user did not open the session since. A
+    /// client marks it seen with [`crate::Command::MarkSessionSeen`], which
+    /// makes it idle; the next turn also ends this state.
+    Completed,
+}
+
+impl SessionState {
+    /// Whether a turn or a compaction runs: the session is neither idle nor
+    /// completed.
+    pub fn is_busy(self) -> bool {
+        !matches!(self, Self::Idle | Self::Completed)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

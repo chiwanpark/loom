@@ -34,7 +34,7 @@ async fn clearing_starts_the_conversation_over_and_survives_a_restart() {
         matches!(
             e,
             SessionEvent::StateChanged {
-                state: SessionState::Idle
+                state: SessionState::Completed
             }
         )
     })

@@ -330,10 +330,16 @@ impl App {
         }
     }
 
+    /// Whether no turn runs: the session is idle, or completed and not yet
+    /// seen.
     fn idle(&self) -> bool {
         self.last
             .as_ref()
-            .is_some_and(|u| u.status == SessionStatus::Idle)
+            .is_some_and(|u| matches!(u.status, SessionStatus::Idle | SessionStatus::Completed))
+    }
+
+    fn status(&self) -> Option<SessionStatus> {
+        self.last.as_ref().map(|u| u.status)
     }
 
     fn texts(&self) -> Vec<String> {
@@ -423,6 +429,16 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
         app.texts(),
         ["user: say hello", "assistant: hello from the agent"]
     );
+    // The completed turn waits to be seen.
+    app.until(&conn, "the completed state", |app| {
+        app.status() == Some(SessionStatus::Completed)
+    })
+    .await;
+    conn.clone().mark_seen(session.id.clone()).await.unwrap();
+    app.until(&conn, "the seen session to be idle", |app| {
+        app.status() == Some(SessionStatus::Idle)
+    })
+    .await;
     assert!(
         app.sessions
             .iter()

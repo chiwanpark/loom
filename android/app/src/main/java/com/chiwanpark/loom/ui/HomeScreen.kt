@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.filter
 private enum class Group(val title: String) {
     NeedsApproval("Needs approval"),
     Working("Working"),
+    Completed("Completed"),
     Idle("Idle"),
     Offline("Offline"),
     Archived("Archived"),
@@ -57,7 +58,8 @@ private enum class Group(val title: String) {
 
 private fun groupOf(status: SessionStatus): Group = when (status) {
     SessionStatus.WAITING_APPROVAL -> Group.NeedsApproval
-    SessionStatus.THINKING, SessionStatus.RUNNING_TOOL, SessionStatus.WAITING_LOCK -> Group.Working
+    SessionStatus.THINKING, SessionStatus.RESPONDING, SessionStatus.RUNNING_TOOL -> Group.Working
+    SessionStatus.COMPLETED -> Group.Completed
     SessionStatus.IDLE -> Group.Idle
 }
 
@@ -378,9 +380,10 @@ private fun Message(text: String, action: @Composable () -> Unit = {}) {
 fun statusLabel(status: SessionStatus): String = when (status) {
     SessionStatus.IDLE -> "Idle"
     SessionStatus.THINKING -> "Thinking"
+    SessionStatus.RESPONDING -> "Responding"
     SessionStatus.RUNNING_TOOL -> "Running a tool"
     SessionStatus.WAITING_APPROVAL -> "Waiting for approval"
-    SessionStatus.WAITING_LOCK -> "Waiting for the workspace"
+    SessionStatus.COMPLETED -> "Completed"
 }
 
 /** What a session is doing, as an icon; an idle one has a quiet dot. */
@@ -400,6 +403,12 @@ fun SessionStatusIcon(status: SessionStatus) {
             size = 20.dp,
             tint = MaterialTheme.colorScheme.primary,
         )
+        SessionStatus.RESPONDING -> LoomIcon(
+            LoomIcons.Pencil,
+            description,
+            size = 20.dp,
+            tint = MaterialTheme.colorScheme.primary,
+        )
         SessionStatus.RUNNING_TOOL -> SpinningIcon(description, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
         SessionStatus.WAITING_APPROVAL -> LoomIcon(
             LoomIcons.TriangleAlert,
@@ -407,11 +416,11 @@ fun SessionStatusIcon(status: SessionStatus) {
             size = 20.dp,
             tint = LoomColors.warning,
         )
-        SessionStatus.WAITING_LOCK -> LoomIcon(
-            LoomIcons.Lock,
+        SessionStatus.COMPLETED -> LoomIcon(
+            LoomIcons.CircleCheck,
             description,
             size = 20.dp,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = LoomColors.success,
         )
     }
 }

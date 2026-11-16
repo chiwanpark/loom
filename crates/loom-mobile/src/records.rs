@@ -52,9 +52,10 @@ impl From<&AgentInfo> for Agent {
 pub enum SessionStatus {
     Idle,
     Thinking,
+    Responding,
     RunningTool,
     WaitingApproval,
-    WaitingLock,
+    Completed,
 }
 
 impl From<SessionState> for SessionStatus {
@@ -62,9 +63,10 @@ impl From<SessionState> for SessionStatus {
         match state {
             SessionState::Idle => Self::Idle,
             SessionState::Thinking => Self::Thinking,
+            SessionState::Responding => Self::Responding,
             SessionState::RunningTool => Self::RunningTool,
             SessionState::WaitingApproval => Self::WaitingApproval,
-            SessionState::WaitingLock => Self::WaitingLock,
+            SessionState::Completed => Self::Completed,
         }
     }
 }
@@ -288,16 +290,14 @@ impl From<CallDetails> for ToolArguments {
 /// What a busy session is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Activity {
-    /// The model is thinking, before its answer streams in.
+    /// The model streams its reasoning, or has not sent output yet.
     Thinking,
-    /// The model is streaming its answer.
+    /// The model streams its answer: text or tool calls.
     Responding,
     /// Tool calls are running.
     RunningTools { count: u32 },
     /// Tool calls wait for the user's approval.
     WaitingApproval { count: u32 },
-    /// The session waits for another one to release the workspace.
-    WaitingLock,
 }
 
 impl From<conversation::Activity> for Activity {
@@ -312,7 +312,6 @@ impl From<conversation::Activity> for Activity {
             A::WaitingApproval(count) => Self::WaitingApproval {
                 count: count as u32,
             },
-            A::WaitingLock => Self::WaitingLock,
         }
     }
 }

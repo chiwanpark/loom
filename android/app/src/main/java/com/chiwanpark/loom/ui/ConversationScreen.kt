@@ -53,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -146,6 +147,18 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     LaunchedEffect(link.host, session) {
         app.push.clear(link.host, session)
     }
+    // A completed session on screen has been seen, so the agent makes it idle.
+    val foreground by app.foreground.collectAsState()
+    val completed = conversation.status == SessionStatus.COMPLETED
+    LaunchedEffect(link, session, connected, foreground, completed) {
+        if (connected && foreground && completed) {
+            try {
+                link.connection().markSeen(session)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -212,7 +225,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
             Composer(
                 text = draft,
                 onTextChange = { draft = it },
-                busy = conversation.status != SessionStatus.IDLE,
+                busy = conversation.status != SessionStatus.IDLE && !completed,
                 enabled = connected,
                 info = {
                     SessionInfo(
@@ -373,8 +386,8 @@ private fun gapBefore(previous: ConversationItem?, item: ConversationItem): Dp =
 
 /**
  * The row under the items while the session does something no item shows:
- * the model thinking before any reasoning streams in, or waiting for the
- * workspace. Running tools, approvals, and answers show on their own blocks.
+ * the model thinking before any reasoning streams in, or writing tool calls.
+ * Running tools, approvals, and answers show on their own blocks.
  */
 private fun statusRow(conversation: ConversationState): (@Composable () -> Unit)? =
     when (conversation.activity) {
@@ -383,12 +396,14 @@ private fun statusRow(conversation: ConversationState): (@Composable () -> Unit)
         } else {
             { Block(header = { ReasoningHeader("Thinking…", busy = true) }) }
         }
-        is Activity.WaitingLock -> {
+        is Activity.Responding -> if (answerStreams(conversation)) {
+            null
+        } else {
             {
                 Block(header = {
                     SpinningIcon(null, tint = MaterialTheme.colorScheme.primary)
                     Text(
-                        "Waiting for the workspace…",
+                        "Responding…",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = pulse()),
                         modifier = Modifier.weight(1f),
@@ -403,6 +418,12 @@ private fun statusRow(conversation: ConversationState): (@Composable () -> Unit)
 private fun reasoningStreams(conversation: ConversationState): Boolean {
     val last = conversation.items.lastOrNull()?.item
     return last is ConversationItem.Assistant && last.streaming && last.reasoning.isNotEmpty()
+}
+
+/** Whether the text of the answer being written streams in, so the answer shows that the model responds. */
+private fun answerStreams(conversation: ConversationState): Boolean {
+    val last = conversation.items.lastOrNull()?.item
+    return last is ConversationItem.Assistant && last.streaming && last.text.isNotEmpty()
 }
 
 /**

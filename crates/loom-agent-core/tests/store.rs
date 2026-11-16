@@ -61,7 +61,8 @@ async fn sessions_survive_a_restart() {
     assert_eq!(info.title.as_deref(), Some("Write a file"));
     assert_eq!(info.model.as_deref(), Some(MODEL_REF));
     assert_eq!(info.reasoning, Some(loom_proto::ReasoningEffort::High));
-    assert_eq!(info.state, SessionState::Idle);
+    // Nobody saw the completed turn before the restart.
+    assert_eq!(info.state, SessionState::Completed);
     assert!(info.created_at > 0);
 
     let restored = agent.session(&info.id).unwrap();

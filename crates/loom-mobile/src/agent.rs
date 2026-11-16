@@ -910,6 +910,15 @@ impl AgentConnection {
         .await
     }
 
+    /// Tells the agent that the user saw the session: a completed session
+    /// becomes idle.
+    pub async fn mark_seen(self: Arc<Self>, session: String) -> Result<()> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client.mark_session_seen(&session_id(session)).await?)
+        })
+        .await
+    }
+
     /// The agent's notes, which its sessions share.
     pub async fn notes(self: Arc<Self>) -> Result<Notes> {
         with_client(&self.shared, move |client| async move {

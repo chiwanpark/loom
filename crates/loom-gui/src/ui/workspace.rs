@@ -700,6 +700,10 @@ impl Workspace {
             })
             .unwrap_or(true)
         });
+        this.subscriptions
+            .push(cx.observe_window_activation(window, |this, window, cx| {
+                this.see_active_session(window, cx);
+            }));
         for ix in 0..this.hosts.len() {
             this.refresh_host(ix, window, cx);
         }
@@ -1216,7 +1220,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.subscriptions
-            .push(cx.observe(conn, |_, _, cx| cx.notify()));
+            .push(cx.observe_in(conn, window, |this, conn, window, cx| {
+                if this.active_group().is_some_and(|g| g.connection == conn) {
+                    this.see_active_session(window, cx);
+                }
+                cx.notify()
+            }));
         self.subscriptions.push(cx.subscribe_in(
             conn,
             window,
@@ -1687,7 +1696,22 @@ impl Workspace {
         self.active_group = Some(ix);
         self.active_connection = Some(group.connection.clone());
         self.focus_active_panel(window, cx);
+        self.see_active_session(window, cx);
         cx.notify();
+    }
+
+    /// Tells the agent that the user sees the active session, while the
+    /// window is active, so that a completed session becomes idle.
+    fn see_active_session(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !window.is_window_active() {
+            return;
+        }
+        if let Some(group) = self.active_group() {
+            let session = group.session.clone();
+            group
+                .connection
+                .update(cx, |conn, cx| conn.mark_seen(&session, cx));
+        }
     }
 
     fn focus_active_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3590,6 +3614,7 @@ impl Workspace {
         let color = match group {
             Group::NeedsApproval => theme.warning,
             Group::Working => theme.info,
+            Group::Completed => theme.success,
             _ => theme.muted_foreground,
         };
         h_flex()
@@ -3682,6 +3707,14 @@ impl Workspace {
                             Some((label, theme.warning)),
                         ),
                         Group::Working => (spinner(theme.info), title, Some((label, theme.info))),
+                        Group::Completed => (
+                            Icon::new(IconName::CircleCheck)
+                                .xsmall()
+                                .text_color(theme.success)
+                                .into_any_element(),
+                            title,
+                            None,
+                        ),
                         Group::Archived => (
                             Icon::new(gpui_kit_assets::IconName::Archive)
                                 .xsmall()

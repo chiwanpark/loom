@@ -11,7 +11,7 @@ use loom_proto::{
     ContentPart, Decision, Delivery, PendingMessage, SequencedEvent, SessionEvent, SessionId,
     SessionInfo, SessionState, Task, TaskChange, TasksContent, ToolCall, ToolResult, TurnOutcome,
 };
-use loom_tools::{FileTracker, LockWaitHook, TasksAccess, ToolContext, ToolError, Workspace};
+use loom_tools::{FileTracker, TasksAccess, ToolContext, ToolError, Workspace};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -607,6 +607,15 @@ impl Session {
         Ok(())
     }
 
+    /// A person saw the session: a completed session becomes idle.
+    pub fn mark_seen(&self) {
+        // Observers read the session, so the state changes outside its lock.
+        let idle = self.core.lock().turn.is_none();
+        if idle && self.core.hub.state() == SessionState::Completed {
+            self.core.hub.set_state(SessionState::Idle);
+        }
+    }
+
     pub fn interrupt(&self) -> bool {
         match &self.core.lock().turn {
             Some(turn) => {
@@ -677,7 +686,11 @@ async fn run_turn(core: Arc<Core>, cancel: CancellationToken) {
         return;
     }
     if core.lock().turn.is_none() {
-        core.hub.set_state(SessionState::Idle);
+        core.hub.set_state(if outcome == TurnOutcome::Completed {
+            SessionState::Completed
+        } else {
+            SessionState::Idle
+        });
     }
 }
 
@@ -789,6 +802,8 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
             session_id: Some(core.id.0.clone()),
             capabilities,
         };
+        // Until the first output, the model counts as thinking; the stream
+        // then tells reasoning from the answer.
         core.hub.set_state(SessionState::Thinking);
         let message = tokio::select! {
             result = stream_response(core, provider.as_ref(), request) => result?,
@@ -915,7 +930,7 @@ async fn compact(
             Ok(())
         }
         compaction::Plan::Summarize { split } => {
-            core.hub.set_state(SessionState::Thinking);
+            core.hub.set_state(SessionState::Responding);
             let mut request = compaction::summary_request(&model.model, &history[..split]);
             request.capabilities = capabilities.clone();
             let summary = tokio::select! {
@@ -968,12 +983,18 @@ async fn stream_response(
         .map_err(|e| TurnError::Failed(e.to_string()))?;
     while let Some(chunk) = stream.next().await {
         match chunk.map_err(|e| TurnError::Failed(e.to_string()))? {
+            CompletionChunk::ReasoningStart { .. } => core.hub.set_state(SessionState::Thinking),
             CompletionChunk::TextDelta { delta, .. } => {
+                core.hub.set_state(SessionState::Responding);
                 core.emit(SessionEvent::AssistantDelta { text: delta })
             }
             CompletionChunk::ReasoningDelta { delta, .. } => {
+                core.hub.set_state(SessionState::Thinking);
                 core.emit(SessionEvent::ReasoningDelta { text: delta })
             }
+            CompletionChunk::TextStart { .. }
+            | CompletionChunk::ToolCallStart { .. }
+            | CompletionChunk::ToolCallDelta { .. } => core.hub.set_state(SessionState::Responding),
             CompletionChunk::Done(message) => return Ok(message),
             _ => {}
         }
@@ -1096,20 +1117,12 @@ async fn run_tool_call(
     });
     core.hub.set_state(SessionState::RunningTool);
     let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL);
-    let hook_core = core.clone();
     let ctx = ToolContext::new(core.workspace.clone())
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_files(core.files.clone())
         .with_cancel(cancel.child_token())
-        .with_output(output_tx)
-        .with_lock_wait(LockWaitHook::new(move |waiting| {
-            hook_core.hub.set_state(if waiting {
-                SessionState::WaitingLock
-            } else {
-                SessionState::RunningTool
-            });
-        }));
+        .with_output(output_tx);
     let args = call.arguments.clone();
     let run = async move {
         let result = tool.call(&ctx, args).await;

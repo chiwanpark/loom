@@ -25,6 +25,22 @@ mod tests {
         assert_eq!(decoded.event, event);
     }
 
+    // Stored events keep their states only while the positions stay.
+    #[test]
+    fn session_states_keep_their_positions() {
+        let states = [
+            SessionState::Idle,
+            SessionState::Thinking,
+            SessionState::RunningTool,
+            SessionState::WaitingApproval,
+            SessionState::Responding,
+            SessionState::Completed,
+        ];
+        for (position, state) in states.into_iter().enumerate() {
+            assert_eq!(encode(&state).unwrap(), vec![position as u8], "{state:?}");
+        }
+    }
+
     #[test]
     fn events_roundtrip_through_postcard() {
         roundtrip(SessionEvent::UserMessage {
@@ -76,7 +92,10 @@ mod tests {
             },
         });
         roundtrip(SessionEvent::StateChanged {
-            state: SessionState::WaitingLock,
+            state: SessionState::Responding,
+        });
+        roundtrip(SessionEvent::StateChanged {
+            state: SessionState::Completed,
         });
         roundtrip(SessionEvent::AssistantMessage {
             text: "done".into(),
@@ -261,6 +280,9 @@ mod tests {
                 token: Some("fcm-token".into()),
             },
             Command::SetPushToken { token: None },
+            Command::MarkSessionSeen {
+                session: session.clone(),
+            },
             Command::UpdateTasks {
                 session: session.clone(),
                 changes: vec![

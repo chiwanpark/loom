@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use loom_agent_core::{Agent, AgentOptions, watch_config};
 use loom_config::{AgentConfig, CONFIG_ENV, Dirs};
 use loom_llm::ReasoningEffort;
-use loom_proto::{ContentPart, Decision, SessionEvent, SessionState};
+use loom_proto::{ContentPart, Decision, SessionEvent};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -122,9 +122,6 @@ async fn main() -> AnyResult<()> {
                         let first = result.content.lines().next().unwrap_or_default();
                         let mark = if result.is_error { "failed" } else { "done" };
                         eprintln!("\x1b[36m[{mark}] {first}\x1b[0m");
-                    }
-                    SessionEvent::StateChanged { state: SessionState::WaitingLock } => {
-                        eprintln!("[waiting for a workspace lock]")
                     }
                     SessionEvent::Usage { usage } => {
                         eprintln!("\x1b[2m[tokens: in {} (cached {}), out {}]\x1b[0m", usage.input, usage.cache_read, usage.output)

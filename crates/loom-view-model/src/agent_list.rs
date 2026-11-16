@@ -26,15 +26,17 @@ pub struct AgentEntry {
 pub enum Group {
     NeedsApproval,
     Working,
+    Completed,
     Idle,
     Offline,
     Archived,
 }
 
 impl Group {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::NeedsApproval,
         Self::Working,
+        Self::Completed,
         Self::Idle,
         Self::Offline,
         Self::Archived,
@@ -44,6 +46,7 @@ impl Group {
         match self {
             Self::NeedsApproval => "Needs approval",
             Self::Working => "Working",
+            Self::Completed => "Completed",
             Self::Idle => "Idle",
             Self::Offline => "Offline",
             Self::Archived => "Archived",
@@ -53,9 +56,10 @@ impl Group {
     pub fn of(state: SessionState) -> Self {
         match state {
             SessionState::WaitingApproval => Self::NeedsApproval,
-            SessionState::Thinking | SessionState::RunningTool | SessionState::WaitingLock => {
+            SessionState::Thinking | SessionState::Responding | SessionState::RunningTool => {
                 Self::Working
             }
+            SessionState::Completed => Self::Completed,
             SessionState::Idle => Self::Idle,
         }
     }
@@ -179,6 +183,7 @@ mod tests {
                     session("s1", SessionState::Idle, false),
                     session("s2", SessionState::RunningTool, false),
                     session("s3", SessionState::Idle, true),
+                    session("s8", SessionState::Completed, false),
                 ],
             ),
             agent(
@@ -192,7 +197,7 @@ mod tests {
                 vec![
                     session("s4", SessionState::WaitingApproval, false),
                     session("s5", SessionState::Thinking, false),
-                    session("s6", SessionState::WaitingLock, false),
+                    session("s6", SessionState::Responding, false),
                 ],
             ),
             agent("d", Link::Connected, vec![]),
@@ -214,6 +219,7 @@ mod tests {
                     Group::Working,
                     vec!["0:s2".to_owned(), "2:s5".to_owned(), "2:s6".to_owned()]
                 ),
+                (Group::Completed, vec!["0:s8".to_owned()]),
                 // Agents without live sessions still get a row, so they can
                 // start one.
                 (

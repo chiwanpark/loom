@@ -390,7 +390,7 @@ impl Recorder {
 
     fn state(&self, session: &SessionId, track: &mut Track, state: SessionState) {
         let now = Instant::now();
-        if state == SessionState::Idle {
+        if !state.is_busy() {
             if let Some(since) = track.busy_since.take()
                 && let Some(counters) = &self.counters
             {
@@ -403,7 +403,7 @@ impl Recorder {
         } else {
             track.busy_since.get_or_insert(now);
         }
-        if state == SessionState::Thinking {
+        if matches!(state, SessionState::Thinking | SessionState::Responding) {
             track.request_started.get_or_insert(now);
         }
     }

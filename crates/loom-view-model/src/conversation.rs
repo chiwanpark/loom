@@ -95,21 +95,21 @@ pub enum Item<I = Attachment> {
 /// What a busy session is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activity {
+    /// The model streams its reasoning, or has not sent output yet.
     Thinking,
-    /// The model is streaming its answer.
+    /// The model streams its answer: text or tool calls.
     Responding,
     /// Summaries of the tool calls that are running.
     RunningTools(Vec<String>),
     /// The number of tool calls waiting for the user.
     WaitingApproval(usize),
-    WaitingLock,
 }
 
 impl Activity {
     pub fn label(&self) -> String {
         match self {
             Self::Thinking => "Thinking…".into(),
-            Self::Responding => "Writing a response…".into(),
+            Self::Responding => "Responding…".into(),
             Self::RunningTools(tools) => match tools.as_slice() {
                 [] => "Running a tool…".into(),
                 [one] => format!("Running {}…", one.lines().next().unwrap_or_default()),
@@ -119,7 +119,6 @@ impl Activity {
                 "Waiting for your approval of the tool call above".into()
             }
             Self::WaitingApproval(n) => format!("Waiting for your approval of {n} tool calls"),
-            Self::WaitingLock => "Waiting for another session to release the workspace…".into(),
         }
     }
 }
@@ -161,9 +160,10 @@ pub fn state_label(state: SessionState) -> &'static str {
     match state {
         SessionState::Idle => "Idle",
         SessionState::Thinking => "Thinking",
+        SessionState::Responding => "Responding",
         SessionState::RunningTool => "Running a tool",
         SessionState::WaitingApproval => "Waiting for approval",
-        SessionState::WaitingLock => "Waiting for the workspace lock",
+        SessionState::Completed => "Completed",
     }
 }
 
@@ -369,22 +369,16 @@ impl<I> Conversation<I> {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.state != SessionState::Idle
+        self.state.is_busy()
     }
 
     /// What the session is doing now, shown as the last block of the
-    /// conversation; `None` while it is idle.
+    /// conversation; `None` while it is idle or completed.
     pub fn activity(&self) -> Option<Activity> {
         Some(match self.state {
-            SessionState::Idle => return None,
-            SessionState::Thinking => match self.items.last() {
-                Some(Item::Assistant {
-                    streaming: true,
-                    text,
-                    ..
-                }) if !text.is_empty() => Activity::Responding,
-                _ => Activity::Thinking,
-            },
+            SessionState::Idle | SessionState::Completed => return None,
+            SessionState::Thinking => Activity::Thinking,
+            SessionState::Responding => Activity::Responding,
             SessionState::RunningTool => Activity::RunningTools(
                 self.items
                     .iter()
@@ -399,7 +393,6 @@ impl<I> Conversation<I> {
             SessionState::WaitingApproval => {
                 Activity::WaitingApproval(self.pending_approvals().count())
             }
-            SessionState::WaitingLock => Activity::WaitingLock,
         })
     }
 
@@ -1544,9 +1537,12 @@ mod tests {
         assert_eq!(conv.activity(), Some(Activity::Thinking));
         feed(
             &mut conv,
-            vec![SessionEvent::AssistantDelta {
-                text: "Let me".into(),
-            }],
+            vec![
+                state(SessionState::Responding),
+                SessionEvent::AssistantDelta {
+                    text: "Let me".into(),
+                },
+            ],
         );
         assert_eq!(conv.activity(), Some(Activity::Responding));
         feed(
@@ -1590,14 +1586,18 @@ mod tests {
         );
         let activity = conv.activity().unwrap();
         assert_eq!(activity, Activity::WaitingApproval(1));
-        feed(&mut conv, vec![state(SessionState::WaitingLock)]);
-        assert_eq!(conv.activity(), Some(Activity::WaitingLock));
+        feed(&mut conv, vec![state(SessionState::Completed)]);
+        assert_eq!(conv.activity(), None);
+        assert!(!conv.is_busy());
+        feed(&mut conv, vec![state(SessionState::Thinking)]);
         feed(&mut conv, vec![state(SessionState::Idle)]);
         assert_eq!(conv.activity(), None);
     }
 
     #[test]
     fn activity_labels() {
+        assert_eq!(Activity::Thinking.label(), "Thinking…");
+        assert_eq!(Activity::Responding.label(), "Responding…");
         assert_eq!(Activity::RunningTools(vec![]).label(), "Running a tool…");
         assert_eq!(
             Activity::RunningTools(vec!["a".into(), "b".into()]).label(),

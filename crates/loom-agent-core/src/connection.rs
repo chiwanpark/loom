@@ -554,6 +554,10 @@ impl Connection {
                 session(&id)?.clear().map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Ok)
             }
+            Command::MarkSessionSeen { session: id } => {
+                session(&id)?.mark_seen();
+                Ok(Payload::Ok)
+            }
             Command::GetHistory {
                 session: id,
                 before_seq,

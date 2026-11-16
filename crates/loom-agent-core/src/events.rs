@@ -58,11 +58,21 @@ impl EventHub {
     pub fn restore(store: Option<(EventStore, SessionId)>, events: Vec<SequencedEvent>) -> Self {
         let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
         let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(1);
+        // A session that was completed stays so; any other state was of a
+        // turn that the agent's restart ended.
+        let completed = events.iter().rev().find_map(|e| match e.event {
+            SessionEvent::StateChanged { state } => Some(state),
+            _ => None,
+        }) == Some(SessionState::Completed);
         Self {
             log: Mutex::new(Log {
                 next_seq,
                 events,
-                state: SessionState::Idle,
+                state: if completed {
+                    SessionState::Completed
+                } else {
+                    SessionState::Idle
+                },
             }),
             tx,
             store,

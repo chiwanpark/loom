@@ -13,7 +13,7 @@ use crate::session::{
     SessionInfo, ToolCallId, UsageSoFar,
 };
 
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -358,6 +358,15 @@ pub enum Command {
     /// Closes a tunnel in both directions at once.
     CloseTunnel {
         tunnel: TunnelId,
+    },
+    /// Tells that a person saw the session, for example in a client that
+    /// shows it: a [`SessionState::Completed`] session becomes
+    /// [`SessionState::Idle`]. Answered with [`Payload::Ok`].
+    ///
+    /// [`SessionState::Completed`]: crate::SessionState::Completed
+    /// [`SessionState::Idle`]: crate::SessionState::Idle
+    MarkSessionSeen {
+        session: SessionId,
     },
 }
 

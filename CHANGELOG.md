@@ -4,9 +4,19 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ## Unreleased
 
+### Upgrade notes
+
+- The protocol version is now 15. Clients and agents of 0.3.0 (protocol 14) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+
 ### New features
 
+- **Completed sessions.** A session has the new state **Completed** after a turn completes. The agents panel and the Android app show these sessions in their own group. When you open the session in a client, it becomes idle again.
+- **Responding state.** A session has the new state **Responding** while the model streams text or tool calls. **Thinking** now means that the model streams its reasoning or has not sent output yet. Clients show "Responding…" while the model writes tool calls.
 - **Desktop client installer.** `scripts/install.sh desktop` installs the desktop app `loom` and `loom-agent`. It also installs a desktop entry and icons, so that the application menu shows Loom. The release archive of the desktop app contains these files in its `share` directory.
+
+### Changes
+
+- **No lock waiting state.** A session that waits for another session to release a file or the workspace now shows **Running a tool**. Clients no longer show a separate message for this wait.
 
 ## 0.3.0
 

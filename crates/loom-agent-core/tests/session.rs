@@ -3,8 +3,8 @@ mod common;
 use std::time::Duration;
 
 use common::{
-    Harness, MODEL_REF, Script, calls, collect_until, next_event, outcome, run_turn, test_config,
-    text,
+    Harness, MODEL_REF, Script, calls, collect_until, next_event, outcome, reasoned, run_turn,
+    test_config, text,
 };
 use loom_agent_core::CoreError;
 use loom_config::{AgentConfig, PolicyAction, PolicyRule};
@@ -125,7 +125,7 @@ async fn text_turn_streams_and_builds_request() {
     assert_eq!(
         next_event(&mut sub).await,
         SessionEvent::StateChanged {
-            state: SessionState::Idle
+            state: SessionState::Completed
         }
     );
 
@@ -219,6 +219,53 @@ async fn allowed_tool_calls_run_and_feed_results_back() {
         &last[4],
         Message::ToolResult { call_id, is_error: false, .. } if call_id == "c2"
     ));
+}
+
+// The model thinks until it streams reasoning or an answer, responds while
+// it streams text or tool calls, and the turn ends completed.
+#[tokio::test]
+async fn states_follow_the_model_and_the_tools() {
+    let h = Harness::new(
+        test_config(PolicyAction::Ask),
+        vec![
+            calls(&[("c1", "write", json!({"path": "a.txt", "content": "A"}))]),
+            reasoned("the file is written", "Done"),
+        ],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    session
+        .send_prompt(vec![ContentPart::text("write a file")])
+        .unwrap();
+    collect_until(&mut sub, |e| {
+        matches!(e, SessionEvent::ApprovalRequired { .. })
+    })
+    .await;
+    session.resolve_approval("c1", Decision::Allow).unwrap();
+    collect_until(&mut sub, |e| matches!(e, SessionEvent::TurnFinished { .. })).await;
+    next_event(&mut sub).await;
+    let states: Vec<SessionState> = session
+        .subscribe(None)
+        .backlog
+        .iter()
+        .filter_map(|e| match e.event {
+            SessionEvent::StateChanged { state } => Some(state),
+            _ => None,
+        })
+        .collect();
+    use SessionState::*;
+    assert_eq!(
+        states,
+        [
+            Thinking,
+            Responding,
+            WaitingApproval,
+            RunningTool,
+            Thinking,
+            Responding,
+            Completed
+        ]
+    );
 }
 
 #[tokio::test]
@@ -533,9 +580,15 @@ async fn sessions_wait_for_conflicting_locks() {
     h.provider.push(text("done"));
     h.provider.push(text("done"));
     let events = run_turn(&b, &mut sub_b, "read").await;
-    assert!(events.contains(&SessionEvent::StateChanged {
-        state: SessionState::WaitingLock
-    }));
+    // Waiting for the lock is part of running the tool.
+    let states: Vec<SessionState> = events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::StateChanged { state } => Some(*state),
+            _ => None,
+        })
+        .collect();
+    assert!(states.contains(&SessionState::RunningTool), "{states:?}");
     assert_eq!(outcome(&events), Some(TurnOutcome::Completed));
     collect_until(&mut sub_a, |e| {
         matches!(e, SessionEvent::TurnFinished { .. })

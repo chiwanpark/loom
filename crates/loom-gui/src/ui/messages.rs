@@ -291,7 +291,9 @@ impl MessageList {
                         cx.theme(),
                     ))
                     .into_any_element(),
-                Some(Activity::WaitingLock) => lock_block(cx.theme()),
+                Some(Activity::Responding) if !answer_streams(conversation) => {
+                    responding_block(cx.theme())
+                }
                 // Everything else shows on the items themselves: the answer as
                 // it streams, running tool calls, and calls awaiting approval.
                 _ => return div().into_any_element(),
@@ -918,6 +920,19 @@ fn reasoning_streams(conversation: &Conversation) -> bool {
     )
 }
 
+/// Whether the text of the answer being written is streaming in, so the
+/// answer itself shows that the model responds.
+fn answer_streams(conversation: &Conversation) -> bool {
+    matches!(
+        conversation.items.last(),
+        Some(Item::Assistant {
+            streaming: true,
+            text,
+            ..
+        }) if !text.is_empty()
+    )
+}
+
 /// The frame of a card: a tool call, or the reasoning of an answer. The
 /// cards that can be clicked darken their border while the cursor is over
 /// them, which needs an id on the card to keep the hover state.
@@ -954,9 +969,9 @@ fn reasoning_row(label: &'static str, icon_selector: String, busy: bool, theme: 
         })
 }
 
-/// The status row while the session waits for another one to release the
-/// workspace, which no item shows.
-fn lock_block(theme: &Theme) -> AnyElement {
+/// The status row while the model writes tool calls, which no item shows
+/// until they are complete.
+fn responding_block(theme: &Theme) -> AnyElement {
     h_flex()
         .id("activity")
         .debug_selector(|| "status-block".into())
@@ -981,8 +996,8 @@ fn lock_block(theme: &Theme) -> AnyElement {
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .child(shimmering_label(
-                    "shimmer-lock",
-                    Activity::WaitingLock.label(),
+                    "shimmer-responding",
+                    Activity::Responding.label(),
                     theme,
                 )),
         )
@@ -1874,14 +1889,24 @@ mod view_tests {
     }
 
     #[gpui::test]
-    fn waiting_for_the_workspace_lock_has_its_own_status_block(cx: &mut TestAppContext) {
+    fn tool_calls_being_written_have_a_status_block(cx: &mut TestAppContext) {
         let (conversation, _, _, cx) = open(1, cx);
-        feed(&conversation, vec![state(SessionState::WaitingLock)], cx);
+        feed(&conversation, vec![state(SessionState::Responding)], cx);
         assert!(shown("status-block", cx));
-        assert!(shown("shimmer-lock", cx));
+        assert!(shown("shimmer-responding", cx));
+        // An answer that streams shows itself.
+        feed(
+            &conversation,
+            vec![SessionEvent::AssistantDelta {
+                text: "Hello".into(),
+            }],
+            cx,
+        );
+        assert!(!shown("status-block", cx));
+        feed(&conversation, vec![state(SessionState::Completed)], cx);
+        assert!(!shown("shimmer-responding", cx));
         feed(&conversation, vec![state(SessionState::Idle)], cx);
         assert!(!shown("status-block", cx));
-        assert!(!shown("shimmer-lock", cx));
     }
 
     #[gpui::test]

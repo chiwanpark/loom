@@ -52,6 +52,21 @@ pub fn text(reply: &str) -> Script {
     })
 }
 
+/// A reply that reasons before it answers with `reply`.
+pub fn reasoned(reasoning: &str, reply: &str) -> Script {
+    let Script::Reply(mut message) = text(reply) else {
+        unreachable!("text makes a reply");
+    };
+    message.content.insert(
+        0,
+        AssistantContent::Reasoning {
+            summary: reasoning.into(),
+            provider_data: None,
+        },
+    );
+    Script::Reply(message)
+}
+
 pub fn calls(calls: &[(&str, &str, Value)]) -> Script {
     Script::Reply(AssistantMessage {
         provider: ProviderId::from_static(PROVIDER),
@@ -133,17 +148,35 @@ impl LlmProvider for ScriptedProvider {
             Script::Hang => futures::stream::pending().boxed(),
             Script::Reply(message) => {
                 let mut chunks = vec![Ok(CompletionChunk::Start { response_id: None })];
-                let reply = message.text();
-                if !reply.is_empty() {
-                    let mid = reply.len() / 2;
-                    let mid = (mid..=reply.len())
-                        .find(|i| reply.is_char_boundary(*i))
-                        .unwrap_or(reply.len());
-                    for part in [&reply[..mid], &reply[mid..]] {
-                        chunks.push(Ok(CompletionChunk::TextDelta {
-                            index: 0,
-                            delta: part.into(),
-                        }));
+                for (index, content) in message.content.iter().enumerate() {
+                    match content {
+                        AssistantContent::Reasoning { summary, .. } => {
+                            chunks.push(Ok(CompletionChunk::ReasoningStart { index }));
+                            chunks.push(Ok(CompletionChunk::ReasoningDelta {
+                                index,
+                                delta: summary.clone(),
+                            }));
+                        }
+                        AssistantContent::Text { text: reply, .. } if !reply.is_empty() => {
+                            let mid = reply.len() / 2;
+                            let mid = (mid..=reply.len())
+                                .find(|i| reply.is_char_boundary(*i))
+                                .unwrap_or(reply.len());
+                            for part in [&reply[..mid], &reply[mid..]] {
+                                chunks.push(Ok(CompletionChunk::TextDelta {
+                                    index,
+                                    delta: part.into(),
+                                }));
+                            }
+                        }
+                        AssistantContent::Text { .. } => {}
+                        AssistantContent::ToolCall(call) => {
+                            chunks.push(Ok(CompletionChunk::ToolCallStart {
+                                index,
+                                call_id: call.call_id.clone(),
+                                name: call.name.clone(),
+                            }));
+                        }
                     }
                 }
                 chunks.push(Ok(CompletionChunk::Done(message)));

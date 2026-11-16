@@ -8,8 +8,8 @@ use gpui::{AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Task, 
 use loom_client::proto::{
     AgentInfo, ApiError, Command, DirectoryListing, ErrorCode, FileContent, FileDiff, FileVersion,
     ListeningPort, NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo,
-    TaskChange, TasksContent, TelemetryStatus, TerminalHolder, TerminalId, TerminalInfo,
-    TerminalOwner, UsageLimits, WorkspaceChanges,
+    SessionState, TaskChange, TasksContent, TelemetryStatus, TerminalHolder, TerminalId,
+    TerminalInfo, TerminalOwner, UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications, PortForward, terminal_owner};
 use loom_config::HostEntry;
@@ -138,6 +138,8 @@ pub struct AgentConnection {
     loading_history: HashSet<SessionId>,
     /// Sessions to fetch every older event of, as the Changes panel needs.
     loading_all_history: HashSet<SessionId>,
+    /// Completed sessions that the agent is being told were seen.
+    marking_seen: HashSet<SessionId>,
     /// The terminals that have a view here, held here or not.
     terminals: HashMap<TerminalId, TerminalEntry>,
     /// The agent's terminals, as it last listed them.
@@ -209,6 +211,7 @@ impl AgentConnection {
             conversations: HashMap::new(),
             loading_history: HashSet::new(),
             loading_all_history: HashSet::new(),
+            marking_seen: HashSet::new(),
             terminals: HashMap::new(),
             listed: Vec::new(),
             terminal_owner: terminal_owner(),
@@ -276,6 +279,35 @@ impl AgentConnection {
     /// The open conversation of a session, if any.
     pub fn open_conversation(&self, id: &SessionId) -> Option<&Entity<Conversation>> {
         self.conversations.get(id)
+    }
+
+    /// Tells the agent that the user saw a session, when it is completed, so
+    /// that it becomes idle.
+    pub fn mark_seen(&mut self, id: &SessionId, cx: &mut Context<Self>) {
+        let completed = self
+            .sessions
+            .iter()
+            .any(|s| s.id == *id && s.state == SessionState::Completed);
+        if !completed
+            || self.status != LinkStatus::Connected
+            || !self.marking_seen.insert(id.clone())
+        {
+            return;
+        }
+        let client = self.client.clone();
+        let session = id.clone();
+        let task = self
+            .backend
+            .run(async move { client.mark_session_seen(&session).await });
+        let id = id.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let result = task.await;
+            if let Some(Err(err)) = result {
+                tracing::warn!(session = %id, error = %err, "marking a session seen failed");
+            }
+            let _ = this.update(cx, |this, _| this.marking_seen.remove(&id));
+        })
+        .detach();
     }
 
     fn handle(&mut self, note: Notification, cx: &mut Context<Self>) {

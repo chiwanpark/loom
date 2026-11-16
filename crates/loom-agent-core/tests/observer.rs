@@ -37,7 +37,8 @@ fn agent_with(h: &Harness, recorder: &Arc<Recorder>, scripts: Vec<common::Script
 }
 
 // Observers run without the session lock; if a turn held it while changing
-// state, `info()` would deadlock and this test would hang.
+// state, `info()` would deadlock and this test would hang. A completed
+// session becomes idle once a client marks it seen.
 #[tokio::test]
 async fn state_changes_are_announced_to_every_client() {
     let h = Harness::new(test_config(PolicyAction::Ask), vec![text("hi")]);
@@ -47,7 +48,12 @@ async fn state_changes_are_announced_to_every_client() {
     run_turn(&session, &mut sub, "hello").await;
 
     let mut states = Vec::new();
+    let mut marked = false;
     while !states.ends_with(&[SessionState::Idle]) || states.len() < 2 {
+        if !marked && states.ends_with(&[SessionState::Completed]) {
+            session.mark_seen();
+            marked = true;
+        }
         let notice = tokio::time::timeout(Duration::from_secs(10), notices.recv())
             .await
             .expect("timed out waiting for a notice")
@@ -63,9 +69,14 @@ async fn state_changes_are_announced_to_every_client() {
         [
             SessionState::Idle,
             SessionState::Thinking,
+            SessionState::Responding,
+            SessionState::Completed,
             SessionState::Idle
         ]
     );
+    // Marking an idle session seen changes nothing.
+    session.mark_seen();
+    assert_eq!(session.info().state, SessionState::Idle);
 }
 
 #[tokio::test]

@@ -777,6 +777,15 @@ impl Client {
         .await
     }
 
+    /// Tells the agent that the user saw a session, so that a completed
+    /// session becomes idle.
+    pub async fn mark_session_seen(&self, session: &SessionId) -> Result<()> {
+        self.ok(Command::MarkSessionSeen {
+            session: session.clone(),
+        })
+        .await
+    }
+
     /// The agent's notes, which its sessions share. Every connection gets a
     /// `NotesChanged` notice when they change.
     pub async fn notes(&self) -> Result<loom_proto::NotesContent> {
