@@ -851,6 +851,17 @@ impl Client {
         }
     }
 
+    /// Has the agent install a release of `loom-agent`, `version` or the
+    /// latest, in place of its binary. Every agent of the host that runs
+    /// that binary then restarts at once, this one too, which closes this
+    /// connection.
+    pub async fn update_agent(&self, version: Option<String>) -> Result<loom_proto::AgentUpdate> {
+        match self.request(Command::UpdateAgent { version }).await? {
+            Payload::AgentUpdated(update) => Ok(update),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Attaches a terminal to this connection: one opened over an earlier
     /// connection, or one another client holds, with `take_over`. Its
     /// recent output comes first, so clear the screen before. Fails with

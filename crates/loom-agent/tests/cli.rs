@@ -562,3 +562,140 @@ async fn reload_asks_agents_to_read_their_config_again() {
     assert!(stopped.status.success(), "{stopped:?}");
     assert!(server.wait().unwrap().success());
 }
+
+/// A release of `loom-agent` whose binary is a script that runs this
+/// build, served the way GitHub serves releases.
+async fn serve_release(server: &wiremock::MockServer, version: &str) {
+    use sha2::Digest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let target = match std::env::consts::ARCH {
+        "aarch64" => "aarch64-unknown-linux-musl",
+        _ => "x86_64-unknown-linux-musl",
+    };
+    let stem = format!("loom-agent-{version}-{target}");
+    let script = format!("#!/bin/sh\nexec '{BIN}' \"$@\"\n");
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::fast(),
+    ));
+    let mut header = tar::Header::new_gnu();
+    header.set_size(script.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    tar.append_data(&mut header, format!("{stem}/loom-agent"), script.as_bytes())
+        .unwrap();
+    let archive = tar.into_inner().unwrap().finish().unwrap();
+    let name = format!("{stem}.tar.gz");
+    let sha: String = sha2::Sha256::digest(&archive)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let dir = format!("/download/v{version}");
+    Mock::given(method("GET"))
+        .and(path(format!("{dir}/{name}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{dir}/SHA256SUMS")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("{sha}  {name}\n")))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_restarts_the_agents_of_the_binary_in_place() {
+    let env = Env::new();
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(env.config_path(), "allowed_roots:\n- ~/work\n").unwrap();
+    let releases = wiremock::MockServer::start().await;
+    let version = env!("CARGO_PKG_VERSION");
+    serve_release(&releases, version).await;
+    // The agents to update run a copy, which the update replaces.
+    let bin = env.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let copy = bin.join("loom-agent");
+    std::fs::copy(BIN, &copy).unwrap();
+    let mut server = Command::new(&copy);
+    env.apply(&mut server);
+    let mut server = server
+        .env("LOOM_RELEASES_URL", releases.uri())
+        .args(["serve", "--workspace", "~/work/ws1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // This one runs another binary, so the update leaves it alone.
+    let mut other = env
+        .command(&["serve", "--workspace", "~/work/ws3"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    env.wait_for_agents(2).await;
+    let target = AgentTarget::Workspace {
+        path: env.ws("ws1"),
+        spawn: false,
+    };
+    let stream = connect_local(&env.registry(), &target, Path::new(BIN))
+        .await
+        .unwrap();
+    let (client, _notes) = Client::connect(stream, "test").await.unwrap();
+    let sibling = client.spawn_agent(env.ws("ws2")).await.unwrap();
+    let before = env.wait_for_agents(3).await;
+
+    let err = client
+        .update_agent(Some("not a version".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.api().unwrap().code,
+        loom_client::proto::ErrorCode::BadRequest
+    );
+    let update = client.update_agent(Some(version.into())).await.unwrap();
+    assert_eq!(update.path, path_arg(&copy));
+    assert!(update.version.starts_with("loom-agent "), "{update:?}");
+    let mut restarting: Vec<_> = update
+        .restarting
+        .iter()
+        .map(|a| a.workspace.clone())
+        .collect();
+    restarting.sort();
+    assert_eq!(restarting, [env.ws("ws1"), env.ws("ws2")]);
+    assert!(update.not_restarted.is_empty(), "{update:?}");
+    assert!(std::fs::read_to_string(&copy).unwrap().contains(BIN));
+
+    // The agents start again in their processes, as new instances.
+    let pid = |agents: &[AgentEntry], ws: &str| {
+        let entry = agents.iter().find(|a| a.workspace == env.ws(ws)).unwrap();
+        (entry.pid, entry.instance.clone())
+    };
+    let mut after = env.ps();
+    for _ in 0..400 {
+        after = env.ps();
+        let restarted = ["ws1", "ws2"].iter().all(|ws| {
+            after.iter().any(|a| a.workspace == env.ws(ws))
+                && pid(&after, ws).1 != pid(&before, ws).1
+        });
+        if after.len() == 3 && restarted {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for ws in ["ws1", "ws2"] {
+        let (old, new) = (pid(&before, ws), pid(&after, ws));
+        assert_eq!(old.0, new.0, "{ws} kept its process");
+        assert_ne!(old.1, new.1, "{ws} started again");
+    }
+    assert_eq!(pid(&before, "ws3"), pid(&after, "ws3"));
+    assert_eq!(pid(&after, "ws2").0, sibling.pid);
+
+    let stopped = env.run(&["stop", "--all"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    assert!(server.wait().unwrap().success());
+    assert!(other.wait().unwrap().success());
+}

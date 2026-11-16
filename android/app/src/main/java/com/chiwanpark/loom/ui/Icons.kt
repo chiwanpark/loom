@@ -41,6 +41,7 @@ object LoomIcons {
     val ClipboardPaste = Lucide.drawable.lucide_ic_clipboard_paste
     val Copy = Lucide.drawable.lucide_ic_copy
     val CornerDownRight = Lucide.drawable.lucide_ic_corner_down_right
+    val Download = Lucide.drawable.lucide_ic_download
     val Eraser = Lucide.drawable.lucide_ic_eraser
     val ExternalLink = Lucide.drawable.lucide_ic_external_link
     val Eye = Lucide.drawable.lucide_ic_eye

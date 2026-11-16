@@ -405,6 +405,14 @@ pub enum Command {
     GetSystemPrompt {
         session: SessionId,
     },
+    /// Installs a release of `loom-agent`, `version` (such as `0.4.0`) or
+    /// the latest, in place of the binary that the agent runs. Then every
+    /// agent of the host that runs that binary restarts at once, this one
+    /// too: their running turns stop, and their connections close. Answered
+    /// with [`Payload::AgentUpdated`] before the restart.
+    UpdateAgent {
+        version: Option<String>,
+    },
 }
 
 /// The most bytes in one [`Command::UploadChunk`].
@@ -533,6 +541,7 @@ pub enum Payload {
     Terminals(Vec<TerminalInfo>),
     Ports(Vec<ListeningPort>),
     SystemPrompt(SystemPrompt),
+    AgentUpdated(AgentUpdate),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].
@@ -572,6 +581,22 @@ pub struct TasksContent {
     pub tasks: Vec<Task>,
     /// The most tasks the list may hold.
     pub max_tasks: u32,
+}
+
+/// What a [`Command::UpdateAgent`] installed, and which agents restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentUpdate {
+    /// What the replaced binary printed for `--version`.
+    pub previous: String,
+    /// What the new binary prints for `--version`.
+    pub version: String,
+    /// Where the binary is on the agent's host.
+    pub path: String,
+    /// The agents that restart with the new binary.
+    pub restarting: Vec<AgentInfo>,
+    /// The agents of another build that run from the same path; they keep
+    /// their version until they are restarted by other means.
+    pub not_restarted: Vec<AgentInfo>,
 }
 
 /// A session's system prompt and tools, from [`Command::GetSystemPrompt`].

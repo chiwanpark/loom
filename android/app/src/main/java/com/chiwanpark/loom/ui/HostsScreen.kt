@@ -43,7 +43,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.chiwanpark.loom.AgentLink
 import com.chiwanpark.loom.LoomApplication
+import com.chiwanpark.loom.LinkState
 import com.chiwanpark.loom.Screen
 import com.chiwanpark.loom.core.Host
 import com.chiwanpark.loom.core.Loom
@@ -61,6 +63,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Host?>(null) }
     var removing by remember { mutableStateOf<Host?>(null) }
+    var updating by remember { mutableStateOf<Host?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -97,6 +100,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
                         host,
                         onRename = { renaming = host },
                         onRemove = { removing = host },
+                        onUpdate = { updating = host },
                     )
                     HorizontalDivider()
                 }
@@ -141,10 +145,32 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
             onDismiss = { removing = null },
         )
     }
+    updating?.let { host ->
+        val links = app.links.all.filter { it.host == host.name && it.state == LinkState.Connected }
+        UpdateAgentsDialog(
+            host = host.name,
+            links = links,
+            onConfirm = { version ->
+                scope.attempt(snackbar) {
+                    val link = links.firstOrNull { it.state == LinkState.Connected }
+                        ?: throw IllegalStateException("No agent on ${host.name} is connected.")
+                    val update = link.connection().updateAgent(version)
+                    val count = update.restarting.size
+                    var message = "Installed ${update.version}; " +
+                        if (count == 1) "1 agent restarts." else "$count agents restart."
+                    if (update.notRestarted.isNotEmpty()) {
+                        message += " ${update.notRestarted.size} of another build keep their version."
+                    }
+                    snackbar.showSnackbar(message)
+                }
+            },
+            onDismiss = { updating = null },
+        )
+    }
 }
 
 @Composable
-private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit) {
+private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit, onUpdate: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     CompactListItem(
         modifier = Modifier.clickable { menu = true },
@@ -156,10 +182,68 @@ private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit) {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
                     MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
+                    MenuEntry("Update agents…", LoomIcons.Download, close, onUpdate)
                     MenuEntry("Remove", LoomIcons.Trash, close, onRemove)
                 }
             }
         },
+    )
+}
+
+/**
+ * Asks for the release of loom-agent to install on a host. Empty means the
+ * latest release; the default is the app's own version.
+ */
+@Composable
+private fun UpdateAgentsDialog(
+    host: String,
+    links: List<AgentLink>,
+    onConfirm: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val appVersion = remember {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    }
+    var version by remember { mutableStateOf(appVersion) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Update agents on $host") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (links.isEmpty()) {
+                    Text("Open an agent on $host first. The update goes through a connected agent.")
+                } else {
+                    Text(
+                        "All agents on $host that run the replaced binary restart at once. " +
+                            "Their running turns stop.",
+                    )
+                    links.forEach { link ->
+                        Text(
+                            "${link.workspace ?: link.instance}: ${link.agent?.version ?: "unknown"}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedTextField(
+                        value = version,
+                        onValueChange = { version = it },
+                        label = { Text("Version") },
+                        supportingText = { Text("Leave empty for the latest release") },
+                        singleLine = true,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = links.isNotEmpty(),
+                onClick = {
+                    onDismiss()
+                    onConfirm(version.trim().ifEmpty { null })
+                },
+            ) { Text("Update") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 

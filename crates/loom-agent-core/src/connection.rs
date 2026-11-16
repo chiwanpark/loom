@@ -370,6 +370,29 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
+            Command::UpdateAgent { version } => {
+                let supervisor = self.supervisor.clone();
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let Some(supervisor) = supervisor else {
+                        let result = Err(ApiError::new(
+                            ErrorCode::Unsupported,
+                            "this agent cannot update itself",
+                        ));
+                        let _ = out.send(ServerMessage::Response { id, result }).await;
+                        return;
+                    };
+                    let result = supervisor.update(version).await;
+                    let update = result.as_ref().ok().cloned();
+                    let result = result.map(Payload::AgentUpdated);
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                    // The restart closes this connection, so it must not
+                    // be one of its tasks.
+                    if let Some(update) = update {
+                        tokio::spawn(async move { supervisor.restart(&update).await });
+                    }
+                }));
+            }
             Command::ListModels { .. }
             | Command::GetUsageLimits { .. }
             | Command::StartLogin { .. }
@@ -727,7 +750,8 @@ impl Connection {
             | Command::UploadChunk { .. }
             | Command::FinishUpload { .. }
             | Command::CancelUpload { .. }
-            | Command::GetSystemPrompt { .. } => Err(ApiError::new(
+            | Command::GetSystemPrompt { .. }
+            | Command::UpdateAgent { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),

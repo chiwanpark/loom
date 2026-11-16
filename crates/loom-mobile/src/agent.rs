@@ -16,9 +16,9 @@ use tokio::sync::Notify;
 use crate::error::{LoomError, Result};
 use crate::hosts::CLIENT_NAME;
 use crate::records::{
-    Agent, AgentUpdate, ApprovalDecision, ConversationUpdate, Delivery, ImageData, Model, Notes,
-    Policy, Reasoning, SessionSummary, SystemPromptInfo, TakenBack, TaskEdit, TaskItem,
-    notice_message, parse_version, task_items, version_text,
+    Agent, AgentUpdate, AgentUpdateInfo, ApprovalDecision, ConversationUpdate, Delivery, ImageData,
+    Model, Notes, Policy, Reasoning, SessionSummary, SystemPromptInfo, TakenBack, TaskEdit,
+    TaskItem, notice_message, parse_version, task_items, version_text,
 };
 use crate::runtime::{run, spawn};
 use crate::terminal::{TermShared, Terminals};
@@ -965,6 +965,16 @@ impl AgentConnection {
     pub async fn system_prompt(self: Arc<Self>, session: String) -> Result<SystemPromptInfo> {
         with_client(&self.shared, move |client| async move {
             Ok(client.system_prompt(&session_id(session)).await?.into())
+        })
+        .await
+    }
+
+    /// Installs a release of `loom-agent`, `version` or the latest, on the
+    /// agent's host. The agents there that run the same binary restart at
+    /// once, this one too.
+    pub async fn update_agent(self: Arc<Self>, version: Option<String>) -> Result<AgentUpdateInfo> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client.update_agent(version).await?.into())
         })
         .await
     }

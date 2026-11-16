@@ -2590,6 +2590,143 @@ impl Workspace {
         );
     }
 
+    /// Asks for the release to install on a host, through one of its
+    /// connected agents.
+    fn update_agents_dialog(
+        &mut self,
+        host_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.hosts.get(host_ix) else {
+            return;
+        };
+        let name = host.entry.name().to_owned();
+        let agents: Vec<loom_client::proto::AgentInfo> = self
+            .connections
+            .iter()
+            .map(|c| c.read(cx))
+            .filter(|c| c.host.name() == name && c.status == LinkStatus::Connected)
+            .map(|c| c.info.clone())
+            .collect();
+        if agents.is_empty() {
+            notify::error(
+                window,
+                cx,
+                format!("Connect to an agent on {name} to update its agents."),
+            );
+            return;
+        }
+        let mut description = format!(
+            "Install a release of loom-agent on {name}. All agents on {name} that run the replaced binary restart at once. Their running turns stop.\n\nConnected agents:"
+        );
+        for agent in &agents {
+            description.push_str(&format!(
+                "\n• {}: {}",
+                agent.workspace.display(),
+                agent.version
+            ));
+        }
+        description.push_str("\n\nClear the version to install the latest release.");
+        let this = cx.entity();
+        open_form(
+            "Update agents",
+            Some(description),
+            vec![
+                FormField::new("Version", "latest")
+                    .value(loom_update::current_version().to_string()),
+            ],
+            "Update",
+            move |values, window, cx| {
+                let version = values.into_iter().next().unwrap_or_default();
+                let version = (!version.trim().is_empty()).then(|| version.trim().to_owned());
+                this.update(cx, |ws, cx| ws.update_agents(&name, version, window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn update_agents(
+        &mut self,
+        host: &str,
+        version: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(conn) = self
+            .connections
+            .iter()
+            .find(|c| {
+                let c = c.read(cx);
+                c.host.name() == host && c.status == LinkStatus::Connected
+            })
+            .cloned()
+        else {
+            notify::error(window, cx, format!("No agent on {host} is connected."));
+            return;
+        };
+        let read = conn.read(cx);
+        let client = read.client.clone();
+        let task = read
+            .backend
+            .run(async move { client.update_agent(version).await });
+        notify::info(window, cx, format!("Updating the agents on {host}…"));
+        let host = host.to_owned();
+        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
+            let result = task.await;
+            let _ = this.update_in(cx, |_, window, cx| match result {
+                Some(Ok(update)) => {
+                    let mut message = format!(
+                        "Installed {} on {host}; {} restart{}.",
+                        update.version,
+                        match update.restarting.len() {
+                            1 => "1 agent".to_owned(),
+                            n => format!("{n} agents"),
+                        },
+                        if update.restarting.len() == 1 {
+                            "s"
+                        } else {
+                            ""
+                        },
+                    );
+                    if !update.not_restarted.is_empty() {
+                        message.push_str(&format!(
+                            " {} of another build keep{} {} version until you restart {}.",
+                            match update.not_restarted.len() {
+                                1 => "1 agent".to_owned(),
+                                n => format!("{n} agents"),
+                            },
+                            if update.not_restarted.len() == 1 {
+                                "s"
+                            } else {
+                                ""
+                            },
+                            if update.not_restarted.len() == 1 {
+                                "its"
+                            } else {
+                                "their"
+                            },
+                            if update.not_restarted.len() == 1 {
+                                "it"
+                            } else {
+                                "them"
+                            },
+                        ));
+                    }
+                    notify::success(window, cx, message);
+                }
+                Some(Err(err)) => notify::error(
+                    window,
+                    cx,
+                    format!("Could not update the agents on {host}: {err}"),
+                ),
+                None => {}
+            });
+        })
+        .detach();
+    }
+
     fn add_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         open_form(
@@ -4222,6 +4359,16 @@ impl Workspace {
                                     .tooltip("Start an agent for a workspace")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.spawn_dialog(hix, window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new(("update-agents", hix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit_assets::IconName::Download)
+                                    .tooltip("Update agents…")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.update_agents_dialog(hix, window, cx)
                                     })),
                             )
                             .when(!matches!(host.entry, HostEntry::Local { .. }), |el| {

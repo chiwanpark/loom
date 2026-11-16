@@ -298,6 +298,10 @@ mod tests {
             Command::GetSystemPrompt {
                 session: session.clone(),
             },
+            Command::UpdateAgent { version: None },
+            Command::UpdateAgent {
+                version: Some("0.4.0".into()),
+            },
             Command::UpdateTasks {
                 session: session.clone(),
                 changes: vec![
@@ -496,6 +500,28 @@ mod tests {
                     name: "read".into(),
                     description: "Read a file.".into(),
                     parameters: "{\n  \"type\": \"object\"\n}".into(),
+                }],
+            })),
+        });
+        let agent = AgentInfo {
+            instance: InstanceId("a1".into()),
+            workspace: "/work".into(),
+            pid: 42,
+            started_at: 1,
+            version: "0.3.0 (abc 2026-11-16)".into(),
+            default_model: None,
+        };
+        message_roundtrip(ServerMessage::Response {
+            id: 14,
+            result: Ok(Payload::AgentUpdated(AgentUpdate {
+                previous: "loom-agent 0.3.0 (abc 2026-11-16)".into(),
+                version: "loom-agent 0.4.0 (def 2026-12-01)".into(),
+                path: "/home/me/.local/bin/loom-agent".into(),
+                restarting: vec![agent.clone()],
+                not_restarted: vec![AgentInfo {
+                    pid: 43,
+                    version: "0.2.0 (old 2026-11-01)".into(),
+                    ..agent
                 }],
             })),
         });

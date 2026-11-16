@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -28,6 +29,15 @@ pub struct ServeOptions {
     pub dirs: Dirs,
 }
 
+/// How an agent ended.
+pub enum Served {
+    /// The agent stopped; the process exits with this code.
+    Exit(i32),
+    /// The agent stopped to start again with the binary at this path, as
+    /// after an update.
+    Restart(PathBuf),
+}
+
 pub fn new_instance_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -39,7 +49,7 @@ fn now_unix() -> u64 {
         .unwrap_or_default()
 }
 
-pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
+pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
     let ServeOptions {
         workspace,
         config_path,
@@ -53,7 +63,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         Ok(registration) => registration,
         Err(RegistryError::AlreadyRunning(path)) => {
             eprintln!("an agent is already running for {}", path.display());
-            return Ok(EXIT_ALREADY_RUNNING);
+            return Ok(Served::Exit(EXIT_ALREADY_RUNNING));
         }
         Err(err) => return Err(err).context("could not register the agent"),
     };
@@ -118,14 +128,18 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         default_model: None,
     };
     let shutdown = CancellationToken::new();
+    let restart = Arc::new(AtomicBool::new(false));
+    let exe = std::env::current_exe().context("cannot locate the loom-agent binary")?;
     let supervisor = LocalSupervisor {
         agent: agent.clone(),
         registry: registry.clone(),
-        exe: std::env::current_exe().context("cannot locate the loom-agent binary")?,
+        exe: exe.clone(),
         config_path,
         dirs,
         instance: info.instance.clone(),
         shutdown: shutdown.clone(),
+        restart: restart.clone(),
+        updating: tokio::sync::Mutex::new(()),
     };
     let ctx = ServerContext {
         agent,
@@ -147,15 +161,22 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
             tracing::warn!(relay = %url, "not registered with the relay yet; continuing in the background");
         }
     }
+    let mut term = signal(SignalKind::terminate())?;
+    let mut int = signal(SignalKind::interrupt())?;
+    // Before the agent is listed, where an update finds it to restart it.
+    let mut usr1 = signal(SignalKind::user_defined1())?;
     registration.publish(entry)?;
     tracing::info!(%instance, workspace = %workspace.display(), socket = %socket.display(), "agent ready");
     let signals = shutdown.clone();
-    let mut term = signal(SignalKind::terminate())?;
-    let mut int = signal(SignalKind::interrupt())?;
+    let restart_signal = restart.clone();
     tokio::spawn(async move {
         tokio::select! {
             _ = term.recv() => tracing::info!("received SIGTERM"),
             _ = int.recv() => tracing::info!("received SIGINT"),
+            _ = usr1.recv() => {
+                tracing::info!("received SIGUSR1; restarting");
+                restart_signal.store(true, Ordering::SeqCst);
+            }
         }
         signals.cancel();
     });
@@ -166,8 +187,12 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         // Flushing blocks while the exporters send what is left.
         let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
     }
+    if restart.load(Ordering::SeqCst) {
+        tracing::info!(exe = %exe.display(), "agent stopped; starting it again");
+        return Ok(Served::Restart(exe));
+    }
     tracing::info!("agent stopped");
-    Ok(0)
+    Ok(Served::Exit(0))
 }
 
 /// The running exporter, if any, and what clients are told about it.

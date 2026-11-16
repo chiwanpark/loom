@@ -40,12 +40,15 @@ workspace = true
 
 [dev-dependencies]
 async-trait = "0.1.92"
+flate2 = "1.1.11"
 futures = "0.3.34"
 loom-client = { path = "../loom-client" }
 loom-crypto = { path = "../loom-crypto" }
 loom-llm = { path = "../loom-llm" }
 loom-relay = { path = "../loom-relay" }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
+tar = "0.4"
 tempfile = "3.27.0"
 tokio-util = "0.7.20"
 wiremock = "0.6"

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use loom_agent::logging::{init as init_logging, level_name};
-use loom_agent::serve::{ServeOptions, serve};
+use loom_agent::serve::{ServeOptions, Served, serve};
 use loom_agent::stdio::{StdioTarget, bridge, find_target};
 use loom_agent::workspace::canonical_workspace;
 use loom_agent_core::data_dir;
@@ -194,6 +194,17 @@ fn sandbox_exec(args: &[std::ffi::OsString]) -> ! {
     std::process::exit(127);
 }
 
+/// Runs `exe` in place of this process, with the same arguments, so that
+/// the agent keeps its PID, as systemd expects. Returns only on failure.
+fn restart(exe: &std::path::Path) -> anyhow::Error {
+    use std::os::unix::process::CommandExt;
+    let _ = std::io::stdout().flush();
+    let err = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    anyhow::anyhow!("could not start {} again: {err}", exe.display())
+}
+
 fn main() {
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if raw
@@ -233,13 +244,17 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             if workspace.is_none() && !args.default {
                 bail!("pass --workspace <path> or --default");
             }
-            serve(ServeOptions {
+            let served = serve(ServeOptions {
                 workspace,
                 config_path: ctx.config_path,
                 config,
                 dirs: ctx.dirs,
             })
-            .await
+            .await?;
+            match served {
+                Served::Exit(code) => Ok(code),
+                Served::Restart(exe) => Err(restart(&exe)),
+            }
         }
         CliCommand::Stdio(args) => {
             init_logging("warn");

@@ -605,6 +605,32 @@ pub fn version_text(version: &proto::FileVersion) -> String {
     version.0.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// What an agent update installed, and which agents restart.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentUpdateInfo {
+    /// What the replaced binary printed for `--version`.
+    pub previous: String,
+    /// What the new binary prints for `--version`.
+    pub version: String,
+    /// Where the binary is on the agent's host.
+    pub path: String,
+    pub restarting: Vec<Agent>,
+    /// The agents of another build that keep their version.
+    pub not_restarted: Vec<Agent>,
+}
+
+impl From<proto::AgentUpdate> for AgentUpdateInfo {
+    fn from(update: proto::AgentUpdate) -> Self {
+        Self {
+            previous: update.previous,
+            version: update.version,
+            path: update.path,
+            restarting: update.restarting.iter().map(Agent::from).collect(),
+            not_restarted: update.not_restarted.iter().map(Agent::from).collect(),
+        }
+    }
+}
+
 /// What a session sends to the model besides the conversation.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SystemPromptInfo {
