@@ -36,6 +36,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -309,7 +310,16 @@ private fun PdfPages(pdf: PdfDocument) {
     // The zoom pages are drawn at: it follows `zoom` when a pinch ends.
     var settled by remember { mutableFloatStateOf(1f) }
     val pages = pdf.pages
-    val page = list.firstVisibleItemIndex + 1
+    // The page at the middle of the screen, or the last one at the end.
+    val page by remember {
+        derivedStateOf {
+            val info = list.layoutInfo
+            val middle = (info.viewportStartOffset + info.viewportEndOffset) / 2
+            val index = if (!list.canScrollForward && info.visibleItemsInfo.isNotEmpty()) info.visibleItemsInfo.last().index
+            else info.visibleItemsInfo.firstOrNull { it.offset + it.size > middle }?.index ?: list.firstVisibleItemIndex
+            index + 1
+        }
+    }
     InfoRow(
         listOfNotNull(
             "PDF",
