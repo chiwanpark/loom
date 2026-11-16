@@ -87,7 +87,7 @@ jobs:
       run: |
         yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
         "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
-          "platforms;android-37" "build-tools;37.0.0" "ndk;$NDK_VERSION" >/dev/null
+          "platforms;android-37.0" "build-tools;37.0.0" "ndk;$NDK_VERSION" >/dev/null
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: aarch64-linux-android
