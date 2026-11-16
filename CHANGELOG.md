@@ -2,7 +2,7 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
-## Unreleased
+## 0.3.0
 
 ### Upgrade notes
 
