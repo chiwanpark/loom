@@ -1,5 +1,6 @@
-//! The agents panel as a flat list: one row per session (or per agent that
-//! has none), grouped by what it is doing.
+//! The sessions panel as a flat list: one row per session of the connected
+//! agents, grouped by what it is doing. Agents without sessions get no row;
+//! the panel lists the agents under their hosts.
 
 use loom_proto::{SessionInfo, SessionState};
 
@@ -28,17 +29,15 @@ pub enum Group {
     Working,
     Completed,
     Idle,
-    Offline,
     Archived,
 }
 
 impl Group {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::NeedsApproval,
         Self::Working,
         Self::Completed,
         Self::Idle,
-        Self::Offline,
         Self::Archived,
     ];
 
@@ -48,7 +47,6 @@ impl Group {
             Self::Working => "Working",
             Self::Completed => "Completed",
             Self::Idle => "Idle",
-            Self::Offline => "Offline",
             Self::Archived => "Archived",
         }
     }
@@ -65,16 +63,16 @@ impl Group {
     }
 }
 
-/// One row: an agent's session, or the agent itself when it is offline or
-/// has no sessions. `agent` indexes the input.
+/// One row: a session of the agent that `agent` indexes in the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub agent: usize,
-    pub session: Option<SessionInfo>,
+    pub session: SessionInfo,
 }
 
 /// The rows of each non-empty group, in [`Group::ALL`] order; each group
-/// keeps the agents' order and each agent's session order.
+/// keeps the agents' order and each agent's session order. Only connected
+/// agents have rows.
 pub fn group(agents: &[AgentEntry]) -> Vec<(Group, Vec<Row>)> {
     let mut groups: Vec<(Group, Vec<Row>)> = Group::ALL.iter().map(|g| (*g, Vec::new())).collect();
     let mut push = |group: Group, row: Row| {
@@ -84,37 +82,19 @@ pub fn group(agents: &[AgentEntry]) -> Vec<(Group, Vec<Row>)> {
     };
     for (agent, entry) in agents.iter().enumerate() {
         if entry.link != Link::Connected {
-            push(
-                Group::Offline,
-                Row {
-                    agent,
-                    session: None,
-                },
-            );
             continue;
         }
-        let mut live = false;
         for session in &entry.sessions {
             let group = if session.archived {
                 Group::Archived
             } else {
-                live = true;
                 Group::of(session.state)
             };
             push(
                 group,
                 Row {
                     agent,
-                    session: Some(session.clone()),
-                },
-            );
-        }
-        if !live {
-            push(
-                Group::Idle,
-                Row {
-                    agent,
-                    session: None,
+                    session: session.clone(),
                 },
             );
         }
@@ -167,10 +147,7 @@ mod tests {
 
     fn ids(rows: &[Row]) -> Vec<String> {
         rows.iter()
-            .map(|row| match &row.session {
-                Some(s) => format!("{}:{}", row.agent, s.id.0),
-                None => format!("{}:-", row.agent),
-            })
+            .map(|row| format!("{}:{}", row.agent, row.session.id.0))
             .collect()
     }
 
@@ -221,13 +198,9 @@ mod tests {
                     vec!["0:s2".to_owned(), "2:s5".to_owned(), "2:s6".to_owned()]
                 ),
                 (Group::Completed, vec!["0:s8".to_owned()]),
-                // Agents without live sessions still get a row, so they can
-                // start one.
-                (
-                    Group::Idle,
-                    vec!["0:s1".to_owned(), "3:-".to_owned(), "5:-".to_owned()]
-                ),
-                (Group::Offline, vec!["1:-".to_owned(), "4:-".to_owned()]),
+                // Agents without sessions and agents that are not connected
+                // get no rows.
+                (Group::Idle, vec!["0:s1".to_owned()]),
                 (Group::Archived, vec!["0:s3".to_owned(), "5:s7".to_owned()]),
             ]
         );

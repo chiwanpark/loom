@@ -7,6 +7,7 @@ pub mod files;
 pub mod image_preview;
 pub mod media_view;
 pub mod messages;
+pub mod new_session;
 pub mod notes_view;
 pub mod notify;
 pub mod panes;

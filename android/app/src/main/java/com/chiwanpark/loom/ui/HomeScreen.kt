@@ -46,7 +46,7 @@ import com.chiwanpark.loom.core.SessionSummary
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 
-/** The home screen's sections, in the order they are shown, as in the desktop's Agents panel. */
+/** The home screen's sections, in the order they are shown, as in the desktop's Sessions panel. */
 private enum class Group(val title: String) {
     NeedsApproval("Needs approval"),
     Working("Working"),

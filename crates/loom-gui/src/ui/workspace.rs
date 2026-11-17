@@ -37,6 +37,7 @@ use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::{DiffKind, DiffView};
 use crate::ui::file_view::FileView;
 use crate::ui::files::{FileTreeEvent, FileTreeView};
+use crate::ui::new_session::{self, NewSessionView, Pick, WorkspaceChoice};
 use crate::ui::notes_view::NotesView;
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
@@ -51,10 +52,10 @@ use crate::ui::tasks_view::TasksView;
 actions!(
     loom,
     [
-        /// Shows the Agents tab of the right panel, or hides the panel when
-        /// it is already showing. The agents list used to be a left panel.
-        #[action(deprecated_aliases = ["loom::ToggleLeftDock"])]
-        ToggleAgents,
+        /// Shows the Sessions tab of the right panel, or hides the panel
+        /// when it is already showing. The tab used to be the Agents tab.
+        #[action(deprecated_aliases = ["loom::ToggleLeftDock", "loom::ToggleAgents"])]
+        ToggleSessions,
         NewSession,
         NewTerminal,
         CloseTab,
@@ -106,8 +107,9 @@ actions!(
         RenameSession,
         ShowChanges,
         ShowFiles,
-        /// Shows the Agents tab of the right panel.
-        ShowAgents,
+        /// Shows the Sessions tab of the right panel.
+        #[action(deprecated_aliases = ["loom::ShowAgents"])]
+        ShowSessions,
         /// Shows the active agent's notes in the right panel.
         ShowNotes,
         /// Shows the active session's task list in the right panel.
@@ -141,7 +143,7 @@ const DROP_TARGET_SIZE: f32 = 0.2;
 
 pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("ctrl-b", ToggleAgents, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-b", ToggleSessions, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-b", ToggleRightDock, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-e", ShowFiles, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(CONTEXT)),
@@ -167,7 +169,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("alt-9", ActivateLastTab, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-pageup", MoveTabLeft, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-pagedown", MoveTabRight, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-b", ShowAgents, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-b", ShowSessions, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-n", ShowNotes, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-t", ShowTasks, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-m", ChooseModel, Some(CONTEXT)),
@@ -208,7 +210,11 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
 /// What a row menu item does to the workspace.
 type MenuAction = dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
-/// An agent in the agents panel, with what it takes to act on it.
+/// What to do with a connection once the client is connected.
+pub(crate) type AfterConnect =
+    Box<dyn FnOnce(&mut Workspace, Entity<AgentConnection>, &mut Window, &mut Context<Workspace>)>;
+
+/// An agent in the Sessions tab, with what it takes to act on it.
 struct PanelAgent {
     entry: AgentEntry,
     host_ix: Option<usize>,
@@ -243,7 +249,7 @@ enum PanelKind {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightTab {
-    Agents,
+    Sessions,
     Changes,
     Files,
     Notes,
@@ -360,6 +366,24 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// The small round state mark of a row in the Sessions tab.
+fn dot(color: gpui::Hsla) -> AnyElement {
+    div()
+        .size(px(7.))
+        .rounded_full()
+        .bg(color)
+        .into_any_element()
+}
+
+/// The spinning state mark of a row in the Sessions tab.
+fn spinner(color: gpui::Hsla) -> AnyElement {
+    Spinner::new()
+        .icon(IconName::LoaderCircle)
+        .xsmall()
+        .color(color)
+        .into_any_element()
+}
+
 fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
     vec![
         ("workspace: new session", Box::new(NewSession)),
@@ -371,9 +395,9 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: last tab", Box::new(ActivateLastTab)),
         ("workspace: move tab left", Box::new(MoveTabLeft)),
         ("workspace: move tab right", Box::new(MoveTabRight)),
-        ("workspace: toggle agents", Box::new(ToggleAgents)),
+        ("workspace: toggle sessions", Box::new(ToggleSessions)),
         ("workspace: toggle right panel", Box::new(ToggleRightDock)),
-        ("panel: agents", Box::new(ShowAgents)),
+        ("panel: sessions", Box::new(ShowSessions)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
         ("panel: notes", Box::new(ShowNotes)),
@@ -672,7 +696,7 @@ impl Workspace {
             next_panel: 0,
             show_right: true,
             changes_cache: None,
-            right_tab: RightTab::Agents,
+            right_tab: RightTab::Sessions,
             file_trees: Vec::new(),
             poll_ticks: 0,
             focus: cx.focus_handle(),
@@ -1045,7 +1069,7 @@ impl Workspace {
     }
 
     /// Connects in the background to the host's agents that have no
-    /// connection yet, so the agents panel can list their sessions and follow
+    /// connection yet, so the Sessions tab can list their sessions and follow
     /// their state. Agents whose last connection failed wait for a click.
     fn connect_discovered(&mut self, host_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.hosts.get(host_ix) else {
@@ -1064,7 +1088,7 @@ impl Workspace {
             })
             .collect();
         for instance in pending {
-            self.connect_with(host_ix, Target::Instance(instance), true, window, cx);
+            self.connect_with(host_ix, Target::Instance(instance), true, None, window, cx);
         }
     }
 
@@ -1099,16 +1123,31 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.connect_with(host_ix, target, false, window, cx);
+        self.connect_with(host_ix, target, false, None, window, cx);
+    }
+
+    /// Connects to an agent, and runs `then` with its connection once the
+    /// client is connected.
+    pub(crate) fn connect_then(
+        &mut self,
+        host_ix: usize,
+        target: Target,
+        then: AfterConnect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.connect_with(host_ix, target, false, Some(then), window, cx);
     }
 
     /// Connects to an agent. A `background` connection neither reports
-    /// errors nor replaces the active agent.
+    /// errors nor replaces the active agent. `then` runs once the client
+    /// is connected.
     fn connect_with(
         &mut self,
         host_ix: usize,
         target: Target,
         background: bool,
+        then: Option<AfterConnect>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1125,6 +1164,13 @@ impl Workspace {
         );
         let by_instance = matches!(target, Target::Instance(_));
         if !self.connecting.insert(key.clone()) {
+            if then.is_some() {
+                notify::info(
+                    window,
+                    cx,
+                    "The client is connecting to this agent. Try again when it is connected.",
+                );
+            }
             return;
         }
         let env = self.env.clone();
@@ -1185,7 +1231,7 @@ impl Workspace {
                             }
                         };
                         if !background || this.active_connection.is_none() {
-                            this.active_connection = Some(conn);
+                            this.active_connection = Some(conn.clone());
                         }
                         if let Some(old) = &replaced {
                             this.forget_agent(entry.name(), old);
@@ -1194,6 +1240,9 @@ impl Workspace {
                             && let Some(ix) = this.hosts.iter().position(|h| h.entry == entry)
                         {
                             this.list_host(ix, !background, window, cx);
+                        }
+                        if let Some(then) = then {
+                            then(this, conn, window, cx);
                         }
                     }
                     Some(Err(err)) => {
@@ -1238,7 +1287,7 @@ impl Workspace {
                         let target = reconnect_target(conn.read(cx));
                         let host = conn.read(cx).host.name().to_owned();
                         if let Some(ix) = this.hosts.iter().position(|h| h.entry.name() == host) {
-                            this.connect_with(ix, target, true, window, cx);
+                            this.connect_with(ix, target, true, None, window, cx);
                         }
                         true
                     })
@@ -2634,28 +2683,91 @@ impl Workspace {
         cx.notify();
     }
 
-    fn spawn_dialog(&mut self, host_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let this = cx.entity();
-        let name = self.hosts[host_ix].entry.name().to_owned();
-        open_form(
-            "Start an agent",
-            Some(format!(
-                "Start an agent on {name} for a workspace directory. The path is on the agent host."
-            )),
-            vec![FormField::new("Workspace directory", "/home/me/project")],
-            "Start",
-            move |values, window, cx| {
-                let path = values.into_iter().next().unwrap_or_default();
-                if path.is_empty() {
-                    return;
-                }
-                this.update(cx, |ws, cx| {
-                    ws.connect(host_ix, Target::Workspace(PathBuf::from(path)), window, cx)
-                });
-            },
+    /// Asks where to start a session on a host: in the workspace of one of
+    /// its agents, or in a new directory, for which an agent starts.
+    fn new_session_dialog(
+        &mut self,
+        host_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<NewSessionView>> {
+        let name = self.hosts.get(host_ix)?.entry.name().to_owned();
+        let choices = self
+            .panel_agents(cx)
+            .into_iter()
+            .filter(|agent| agent.host_ix == Some(host_ix))
+            .map(|agent| WorkspaceChoice {
+                label: agent.entry.workspace.clone(),
+                detail: match &agent.entry.link {
+                    Link::Connected => None,
+                    Link::Connecting => Some("Connecting…".to_owned()),
+                    Link::Offline(_) if agent.conn.is_some() => Some("Disconnected".to_owned()),
+                    Link::Offline(_) => Some("Not connected".to_owned()),
+                },
+                instance: agent.instance,
+            })
+            .collect();
+        let this = cx.entity().downgrade();
+        let view = new_session::open(
+            name,
+            choices,
+            Rc::new(move |pick, window, cx| {
+                let _ = this.update(cx, |ws, cx| ws.start_session(host_ix, pick, window, cx));
+            }),
             window,
             cx,
         );
+        Some(view)
+    }
+
+    /// Starts a session where the new session dialog says, after it
+    /// connects to the agent or starts one.
+    fn start_session(
+        &mut self,
+        host_ix: usize,
+        pick: Pick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (target, worktree) = match pick {
+            Pick::Agent { instance, worktree } => {
+                let connected = self
+                    .hosts
+                    .get(host_ix)
+                    .and_then(|host| self.find_connection(host.entry.name(), &instance, cx))
+                    .filter(|conn| conn.read(cx).status == LinkStatus::Connected);
+                if let Some(conn) = connected {
+                    self.active_connection = Some(conn.clone());
+                    self.create_session(conn, worktree, window, cx);
+                    return;
+                }
+                (Target::Instance(instance), worktree)
+            }
+            Pick::Directory(path) => (Target::Workspace(path), false),
+        };
+        self.connect_then(
+            host_ix,
+            target,
+            Box::new(move |ws, conn, window, cx| ws.create_session(conn, worktree, window, cx)),
+            window,
+            cx,
+        );
+    }
+
+    /// Creates a session in the agent's workspace, or after asking for the
+    /// branch, in a new worktree.
+    fn create_session(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        worktree: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if worktree {
+            self.new_worktree_session(conn, window, cx);
+        } else {
+            self.new_session(conn, window, cx);
+        }
     }
 
     /// Asks for the release to install on a host, through one of its
@@ -2894,19 +3006,19 @@ impl Workspace {
         }
     }
 
-    fn on_toggle_agents(&mut self, _: &ToggleAgents, _: &mut Window, cx: &mut Context<Self>) {
-        if self.show_right && self.right_tab == RightTab::Agents {
+    fn on_toggle_sessions(&mut self, _: &ToggleSessions, _: &mut Window, cx: &mut Context<Self>) {
+        if self.show_right && self.right_tab == RightTab::Sessions {
             self.show_right = false;
         } else {
             self.show_right = true;
-            self.right_tab = RightTab::Agents;
+            self.right_tab = RightTab::Sessions;
         }
         cx.notify();
     }
 
-    fn on_show_agents(&mut self, _: &ShowAgents, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_show_sessions(&mut self, _: &ShowSessions, _: &mut Window, cx: &mut Context<Self>) {
         self.show_right = true;
-        self.right_tab = RightTab::Agents;
+        self.right_tab = RightTab::Sessions;
         cx.notify();
     }
 
@@ -3096,7 +3208,7 @@ impl Workspace {
             }
         }
         let body = match (tab, &tree) {
-            (RightTab::Agents, _) => self.render_agents_panel(cx),
+            (RightTab::Sessions, _) => self.render_sessions_panel(cx),
             (RightTab::Notes, _) => match self.notes_view(window, cx) {
                 Some(view) => div().flex_1().min_h_0().child(view).into_any_element(),
                 None => div()
@@ -3133,7 +3245,7 @@ impl Workspace {
                 .p_3()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child("Connect to an agent in the Agents tab to see its changes and files.")
+                .child("Connect to an agent in the Sessions tab to see its changes and files.")
                 .into_any_element(),
             _ => body,
         };
@@ -3149,15 +3261,15 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("right-agents")
-                    .debug_selector(|| "right-agents".into())
+                Button::new("right-sessions")
+                    .debug_selector(|| "right-sessions".into())
                     .ghost()
                     .xsmall()
-                    .label("Agents")
-                    .selected(tab == RightTab::Agents)
-                    .tooltip("Agents and their sessions (ctrl-shift-b)")
+                    .label("Sessions")
+                    .selected(tab == RightTab::Sessions)
+                    .tooltip("Sessions, hosts, and agents (ctrl-shift-b)")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.right_tab = RightTab::Agents;
+                        this.right_tab = RightTab::Sessions;
                         cx.notify();
                     })),
             )
@@ -3284,7 +3396,7 @@ impl Workspace {
                         })),
                 )
             })
-            .when(tab == RightTab::Agents, |el| {
+            .when(tab == RightTab::Sessions, |el| {
                 el.child(
                     Button::new("add-ssh")
                         .ghost()
@@ -4013,7 +4125,9 @@ impl Workspace {
         agents
     }
 
-    fn render_agents_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// The Sessions tab: the sessions of the connected agents by state, then
+    /// the hosts with their agents.
+    fn render_sessions_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let agents = self.panel_agents(cx);
         let entries: Vec<AgentEntry> = agents.iter().map(|a| a.entry.clone()).collect();
@@ -4027,7 +4141,7 @@ impl Workspace {
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .whitespace_normal()
-                    .child("No running agents. Start one for a workspace with + under Remotes."),
+                    .child("No sessions. To start one, click + next to a host under Remotes."),
             );
         }
         for (group, rows) in groups {
@@ -4037,7 +4151,7 @@ impl Workspace {
                 continue;
             }
             for (ix, row) in rows.into_iter().enumerate() {
-                list = list.child(self.render_agent_row(
+                list = list.child(self.render_session_row(
                     group,
                     ix,
                     &agents[row.agent],
@@ -4046,9 +4160,9 @@ impl Workspace {
                 ));
             }
         }
-        list = list.child(self.render_remotes(cx));
+        list = list.child(self.render_remotes(&agents, cx));
         div()
-            .id("agents-scroll")
+            .id("sessions-scroll")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -4104,130 +4218,75 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// One agent session, or an agent without one: its state, the session
-    /// name, and where it runs.
-    fn render_agent_row(
+    /// One session: its state, its name, and where it runs.
+    fn render_session_row(
         &self,
         group: Group,
         ix: usize,
         agent: &PanelAgent,
-        session: Option<SessionInfo>,
+        info: SessionInfo,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = agent.conn.clone();
-        let unlinked = conn.is_none() && matches!(agent.entry.link, Link::Offline(_));
-        let activity = session.as_ref().and_then(|s| {
-            conn.as_ref()?
-                .read(cx)
-                .open_conversation(&s.id)?
-                .read(cx)
-                .activity()
-        });
-        let dot = |color| {
-            div()
-                .size(px(7.))
-                .rounded_full()
-                .bg(color)
-                .into_any_element()
+        let activity = conn
+            .as_ref()
+            .and_then(|c| c.read(cx).open_conversation(&info.id))
+            .and_then(|c| c.read(cx).activity());
+        let title = info
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
+        let label = activity
+            .as_ref()
+            .map(Activity::label)
+            .unwrap_or_else(|| state_label(info.state).to_owned());
+        let (indicator, detail): (AnyElement, Option<(String, gpui::Hsla)>) = match group {
+            Group::NeedsApproval => (
+                Icon::new(IconName::TriangleAlert)
+                    .xsmall()
+                    .text_color(theme.warning)
+                    .into_any_element(),
+                Some((label, theme.warning)),
+            ),
+            Group::Working => (spinner(theme.info), Some((label, theme.info))),
+            Group::Completed => (
+                Icon::new(IconName::CircleCheck)
+                    .xsmall()
+                    .text_color(theme.success)
+                    .into_any_element(),
+                None,
+            ),
+            Group::Archived => (
+                Icon::new(gpui_kit_assets::IconName::Archive)
+                    .xsmall()
+                    .text_color(theme.muted_foreground)
+                    .into_any_element(),
+                None,
+            ),
+            Group::Idle => (dot(theme.success), None),
         };
-        let spinner = |color| {
-            Spinner::new()
-                .icon(IconName::LoaderCircle)
-                .xsmall()
-                .color(color)
-                .into_any_element()
-        };
-        let link = &agent.entry.link;
-        let (indicator, title, detail): (AnyElement, String, Option<(String, gpui::Hsla)>) =
-            match &session {
-                Some(info) => {
-                    let title = info
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
-                    let label = activity
-                        .as_ref()
-                        .map(Activity::label)
-                        .unwrap_or_else(|| state_label(info.state).to_owned());
-                    match group {
-                        Group::NeedsApproval => (
-                            Icon::new(IconName::TriangleAlert)
-                                .xsmall()
-                                .text_color(theme.warning)
-                                .into_any_element(),
-                            title,
-                            Some((label, theme.warning)),
-                        ),
-                        Group::Working => (spinner(theme.info), title, Some((label, theme.info))),
-                        Group::Completed => (
-                            Icon::new(IconName::CircleCheck)
-                                .xsmall()
-                                .text_color(theme.success)
-                                .into_any_element(),
-                            title,
-                            None,
-                        ),
-                        Group::Archived => (
-                            Icon::new(gpui_kit_assets::IconName::Archive)
-                                .xsmall()
-                                .text_color(theme.muted_foreground)
-                                .into_any_element(),
-                            title,
-                            None,
-                        ),
-                        _ => (dot(theme.success), title, None),
-                    }
-                }
-                None => match link {
-                    Link::Connected => (dot(theme.muted_foreground), "No sessions".into(), None),
-                    Link::Connecting => {
-                        (spinner(theme.muted_foreground), "Connecting…".into(), None)
-                    }
-                    Link::Offline(reason) => (
-                        dot(if reason.is_some() {
-                            theme.danger
-                        } else {
-                            theme.muted_foreground
-                        }),
-                        if agent.conn.is_some() {
-                            "Disconnected".into()
-                        } else {
-                            "Not connected".into()
-                        },
-                        reason.clone().map(|r| (r, theme.danger)),
-                    ),
-                },
-            };
-        let placeholder = session.is_none();
-        let active = session.as_ref().is_some_and(|s| {
-            conn.as_ref()
-                .is_some_and(|c| self.active_group().is_some_and(|g| g.is(c, &s.id)))
-        });
+        let active = conn
+            .as_ref()
+            .is_some_and(|c| self.active_group().is_some_and(|g| g.is(c, &info.id)));
         let place = format!("{} · {}", agent.entry.remote, agent.entry.workspace);
-        let tooltip = SharedString::from(match &session {
-            Some(info) => match &info.worktree {
-                Some(worktree) => format!(
-                    "{place}\nWorktree on {} (from {})\n{}",
-                    worktree.branch,
-                    worktree.base,
-                    state_label(info.state)
-                ),
-                None => format!("{place}\n{}", state_label(info.state)),
-            },
-            None => place.clone(),
+        let tooltip = SharedString::from(match &info.worktree {
+            Some(worktree) => format!(
+                "{place}\nWorktree on {} (from {})\n{}",
+                worktree.branch,
+                worktree.base,
+                state_label(info.state)
+            ),
+            None => format!("{place}\n{}", state_label(info.state)),
         });
-        let title = match session.as_ref().and_then(|s| s.worktree.as_ref()) {
+        let title = match &info.worktree {
             Some(worktree) => format!("{title} · {}", worktree.branch),
             None => title,
         };
         let click_conn = conn.clone();
-        let click_session = session.clone();
-        let host_ix = agent.host_ix;
-        let instance = agent.instance.clone();
-        let connecting = *link == Link::Connecting;
+        let click_session = info.clone();
         h_flex()
-            .id(SharedString::from(format!("agent-row-{group:?}-{ix}")))
+            .id(SharedString::from(format!("session-row-{group:?}-{ix}")))
             .w_full()
             .items_start()
             .gap_2()
@@ -4236,32 +4295,22 @@ impl Workspace {
             .rounded_md()
             .when(active, |el| el.bg(theme.list_active))
             .hover(|s| s.bg(theme.list_hover))
-            .when(!connecting, |el| el.cursor_pointer())
+            .cursor_pointer()
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                match (&click_conn, &click_session) {
-                    (Some(conn), Some(info)) if event.click_count() >= 2 => {
-                        crate::ui::session::open_rename(
-                            conn.clone(),
-                            info.id.clone(),
-                            info.title.clone().unwrap_or_default(),
-                            window,
-                            cx,
-                        )
-                    }
-                    (Some(conn), Some(info)) => {
-                        this.open_session(conn.clone(), info.clone(), window, cx)
-                    }
-                    (Some(conn), None) if conn.read(cx).status == LinkStatus::Connected => {
-                        this.new_session(conn.clone(), window, cx)
-                    }
-                    (Some(conn), None) => this.reconnect(conn, window, cx),
-                    (None, _) if !connecting => {
-                        if let Some(hix) = host_ix {
-                            this.connect(hix, Target::Instance(instance.clone()), window, cx);
-                        }
-                    }
-                    _ => {}
+                let (Some(conn), info) = (&click_conn, &click_session) else {
+                    return;
+                };
+                if event.click_count() >= 2 {
+                    crate::ui::session::open_rename(
+                        conn.clone(),
+                        info.id.clone(),
+                        info.title.clone().unwrap_or_default(),
+                        window,
+                        cx,
+                    )
+                } else {
+                    this.open_session(conn.clone(), info.clone(), window, cx)
                 }
             }))
             .child(div().h(px(20.)).flex().items_center().child(indicator))
@@ -4275,7 +4324,7 @@ impl Workspace {
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .text_sm()
-                            .when(placeholder || group == Group::Archived, |el| {
+                            .when(group == Group::Archived, |el| {
                                 el.text_color(theme.muted_foreground)
                             })
                             .child(title),
@@ -4302,10 +4351,113 @@ impl Workspace {
                     }),
             )
             .when_some(conn, |el, conn| {
-                el.child(self.render_row_menu(group, ix, conn, session, cx))
+                let id = SharedString::from(format!("session-menu-{group:?}-{ix}"));
+                el.child(self.render_row_menu(id, conn, Some(info), cx))
+            })
+            .into_any_element()
+    }
+
+    /// One agent of a host under Remotes: its workspace and how the client
+    /// is linked to it. A click connects to an agent that is not connected.
+    fn render_host_agent(
+        &self,
+        host_ix: usize,
+        ix: usize,
+        agent: &PanelAgent,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let conn = agent.conn.clone();
+        let link = agent.entry.link.clone();
+        let (indicator, detail): (AnyElement, Option<(String, gpui::Hsla)>) = match &link {
+            Link::Connected => {
+                let count = agent.entry.sessions.iter().filter(|s| !s.archived).count();
+                let text = match count {
+                    0 => "No sessions".to_owned(),
+                    1 => "1 session".to_owned(),
+                    n => format!("{n} sessions"),
+                };
+                (dot(theme.success), Some((text, theme.muted_foreground)))
+            }
+            Link::Connecting => (
+                spinner(theme.muted_foreground),
+                Some(("Connecting…".to_owned(), theme.muted_foreground)),
+            ),
+            Link::Offline(reason) => {
+                let state = if conn.is_some() {
+                    "Disconnected"
+                } else {
+                    "Not connected"
+                };
+                match reason {
+                    Some(reason) => (dot(theme.danger), Some((reason.clone(), theme.danger))),
+                    None => (
+                        dot(theme.muted_foreground),
+                        Some((state.to_owned(), theme.muted_foreground)),
+                    ),
+                }
+            }
+        };
+        let unlinked = conn.is_none() && matches!(link, Link::Offline(_));
+        let instance = agent.instance.clone();
+        let click_conn = conn.clone();
+        let workspace_label = agent.entry.workspace.clone();
+        h_flex()
+            .id(SharedString::from(format!("host-agent-{host_ix}-{ix}")))
+            .w_full()
+            .items_start()
+            .gap_2()
+            .pl_5()
+            .pr_1()
+            .py_0p5()
+            .rounded_md()
+            .hover(|s| s.bg(theme.list_hover))
+            .when(link != Link::Connecting, |el| el.cursor_pointer())
+            .on_click(
+                cx.listener(move |this, _, window, cx| match (&click_conn, &link) {
+                    (_, Link::Connecting) => {}
+                    (Some(conn), Link::Connected) => {
+                        this.active_connection = Some(conn.clone());
+                        cx.notify();
+                    }
+                    (Some(conn), Link::Offline(_)) => this.reconnect(conn, window, cx),
+                    (None, _) => {
+                        this.connect(host_ix, Target::Instance(instance.clone()), window, cx)
+                    }
+                }),
+            )
+            .child(div().h(px(20.)).flex().items_center().child(indicator))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .child(workspace_label),
+                    )
+                    .when_some(detail, |el, (text, color)| {
+                        el.child(
+                            div()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_xs()
+                                .text_color(color)
+                                .child(text),
+                        )
+                    }),
+            )
+            .when_some(conn, |el, conn| {
+                let id = SharedString::from(format!("host-agent-menu-{host_ix}-{ix}"));
+                el.child(self.render_row_menu(id, conn, None, cx))
             })
             .when(unlinked, |el| {
-                el.child(self.render_unlinked_menu(group, ix, agent, cx))
+                let id = SharedString::from(format!("host-agent-menu-{host_ix}-{ix}"));
+                el.child(self.render_unlinked_menu(id, agent, cx))
             })
             .into_any_element()
     }
@@ -4314,8 +4466,7 @@ impl Workspace {
     /// to, such as one that failed to connect or has exited.
     fn render_unlinked_menu(
         &self,
-        group: Group,
-        ix: usize,
+        id: SharedString,
         agent: &PanelAgent,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -4326,7 +4477,7 @@ impl Workspace {
         div()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                Button::new(SharedString::from(format!("agent-menu-{group:?}-{ix}")))
+                Button::new(id)
                     .ghost()
                     .xsmall()
                     .icon(IconName::Ellipsis)
@@ -4364,10 +4515,10 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The menu of a session, or with `session` of `None`, of its agent.
     fn render_row_menu(
         &self,
-        group: Group,
-        ix: usize,
+        id: SharedString,
         conn: Entity<AgentConnection>,
         session: Option<SessionInfo>,
         cx: &mut Context<Self>,
@@ -4378,7 +4529,7 @@ impl Workspace {
             // The menu is inside the row, which must not see its clicks.
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                Button::new(SharedString::from(format!("agent-menu-{group:?}-{ix}")))
+                Button::new(id)
                     .ghost()
                     .xsmall()
                     .icon(IconName::Ellipsis)
@@ -4487,6 +4638,7 @@ impl Workspace {
                                     ws.delete_session(c.clone(), i.clone(), window, cx)
                                 }),
                             ));
+                            return menu;
                         }
                         let c = conn.clone();
                         menu = menu.separator().item(item(
@@ -4510,8 +4662,9 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The configured hosts, with their discovery errors and actions.
-    fn render_remotes(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The configured hosts, with their agents, discovery errors, and
+    /// actions.
+    fn render_remotes(&self, agents: &[PanelAgent], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut section = v_flex().w_full().gap_0p5().child(
             div()
@@ -4572,13 +4725,13 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                Button::new(("spawn", hix))
+                                Button::new(("new-session", hix))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Plus)
-                                    .tooltip("Start an agent for a workspace")
+                                    .tooltip("New session")
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.spawn_dialog(hix, window, cx)
+                                        this.new_session_dialog(hix, window, cx);
                                     })),
                             )
                             .child(
@@ -4615,6 +4768,27 @@ impl Workspace {
                         )
                     }),
             );
+            for (ix, agent) in agents
+                .iter()
+                .filter(|agent| agent.host_ix == Some(hix))
+                .enumerate()
+            {
+                section = section.child(self.render_host_agent(hix, ix, agent, cx));
+            }
+        }
+        let others: Vec<&PanelAgent> = agents.iter().filter(|a| a.host_ix.is_none()).collect();
+        if !others.is_empty() {
+            section = section.child(
+                div()
+                    .px_1()
+                    .pt_2()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("Agents of removed hosts"),
+            );
+            for (ix, agent) in others.into_iter().enumerate() {
+                section = section.child(self.render_host_agent(usize::MAX, ix, agent, cx));
+            }
         }
         section.into_any_element()
     }
@@ -4629,10 +4803,10 @@ impl Workspace {
                 .gap_2()
                 .text_color(theme.muted_foreground)
                 .child(div().text_xl().child("Loom"))
-                .child("Pick an agent in the Agents tab on the right, then open or create a session.")
+                .child("Open a session in the Sessions tab on the right, or start one with + next to a host.")
                 .child(
                     div().text_sm().child(
-                        "ctrl-shift-p commands · ctrl-p sessions · ctrl-n new session · ctrl-` terminal · ctrl-b agents",
+                        "ctrl-shift-p commands · ctrl-p sessions · ctrl-n new session · ctrl-` terminal · ctrl-b sessions panel",
                     ),
                 )
                 .into_any_element();
@@ -5064,7 +5238,7 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .on_action(cx.listener(Self::on_toggle_agents))
+            .on_action(cx.listener(Self::on_toggle_sessions))
             .on_action(cx.listener(Self::on_toggle_right))
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_find_session))
@@ -5114,7 +5288,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(Self::on_move_tab_left))
             .on_action(cx.listener(Self::on_move_tab_right))
-            .on_action(cx.listener(Self::on_show_agents))
+            .on_action(cx.listener(Self::on_show_sessions))
             .on_action(cx.listener(Self::on_providers))
             .on_action(cx.listener(Self::on_choose_model))
             .on_action(cx.listener(Self::on_add_ssh))
@@ -5510,8 +5684,12 @@ mod tests {
 
     #[test]
     fn keymaps_naming_the_old_left_panel_action_still_work() {
-        assert_eq!(ToggleAgents.name(), "loom::ToggleAgents");
-        assert_eq!(ToggleAgents::deprecated_aliases(), ["loom::ToggleLeftDock"]);
+        assert_eq!(ToggleSessions.name(), "loom::ToggleSessions");
+        assert_eq!(
+            ToggleSessions::deprecated_aliases(),
+            ["loom::ToggleLeftDock", "loom::ToggleAgents"]
+        );
+        assert_eq!(ShowSessions::deprecated_aliases(), ["loom::ShowAgents"]);
     }
 
     #[gpui::test]
@@ -6124,11 +6302,11 @@ mod tests {
 
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();
-        assert!(right(cx) == (true, RightTab::Agents));
+        assert!(right(cx) == (true, RightTab::Sessions));
         // Showing is not toggling: a second press keeps the panel.
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();
-        assert!(right(cx) == (true, RightTab::Agents));
+        assert!(right(cx) == (true, RightTab::Sessions));
     }
 
     /// The Changes panel lists the commits that the upstream branch does
@@ -6228,5 +6406,52 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
+    }
+
+    /// An agent without sessions has no row among the sessions, only under
+    /// its host, and the host's + button starts sessions in its workspace.
+    #[gpui::test]
+    fn the_new_session_dialog_starts_sessions_in_running_agents(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, conn, cx) = connected(&agent, cx);
+        cx.run_until_parked();
+        let listed = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, cx| {
+                let agents = ws.panel_agents(cx);
+                let entries: Vec<AgentEntry> = agents.iter().map(|a| a.entry.clone()).collect();
+                let sessions: usize = agent_list::group(&entries)
+                    .iter()
+                    .map(|(_, rows)| rows.len())
+                    .sum();
+                let under_host = agents.iter().filter(|a| a.host_ix == Some(0)).count();
+                (sessions, under_host)
+            })
+        };
+        assert_eq!(listed(&ws, cx), (0, 1));
+
+        let dialog = ws
+            .update_in(cx, |ws, window, cx| ws.new_session_dialog(0, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(has_dialog(cx));
+        let choices = dialog.read_with(cx, |view, _| view.choices().to_vec());
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].instance, "test-instance");
+        assert_eq!(choices[0].detail, None);
+        click("workspace-choice-0", cx);
+        assert!(!has_dialog(cx));
+        wait_until(cx, |cx| {
+            ws.read(cx).active_group.is_some() && conn.read(cx).sessions.len() == 1
+        });
+        assert_eq!(listed(&ws, cx), (1, 1));
+
+        // The worktree button asks for the branch of the new worktree.
+        ws.update_in(cx, |ws, window, cx| ws.new_session_dialog(0, window, cx));
+        cx.run_until_parked();
+        click("worktree-choice-0", cx);
+        // The new session dialog closed, and the worktree form is open.
+        assert!(cx.debug_bounds("workspace-choice-0").is_none());
+        assert!(has_dialog(cx));
+        assert_eq!(conn.read_with(cx, |conn, _| conn.sessions.len()), 1);
     }
 }
