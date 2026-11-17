@@ -4225,12 +4225,6 @@ impl Workspace {
     ) -> AnyElement {
         let workspace = cx.entity().downgrade();
         let connected = conn.read(cx).status == LinkStatus::Connected;
-        // An open session closes from here; its conversation tab cannot be closed.
-        let open = session.as_ref().map(|info| info.id.clone()).filter(|id| {
-            self.groups
-                .iter()
-                .any(|g| g.connection == conn && g.session == *id)
-        });
         div()
             // The menu is inside the row, which must not see its clicks.
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -4247,15 +4241,6 @@ impl Workspace {
                                 let _ = workspace.update(cx, |ws, cx| run(ws, window, cx));
                             })
                         };
-                        if let Some(id) = &open {
-                            let (c, id) = (conn.clone(), id.clone());
-                            menu = menu.item(item(
-                                "Close session",
-                                Rc::new(move |ws, window, cx| {
-                                    ws.close_session(c.clone(), id.clone(), window, cx)
-                                }),
-                            ));
-                        }
                         if !connected {
                             let c = conn.clone();
                             menu = menu.item(item(

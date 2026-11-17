@@ -353,7 +353,7 @@ A session has one of these states:
 
 The agents panel groups the sessions by state: **Needs approval** (waiting for approval), **Working** (thinking, responding, or running a tool), **Completed**, and **Idle**, then the offline agents and the archived sessions. A completed session becomes idle when you show it in a client while the client's window is active, and the agent tells all clients.
 
-A session's conversation tab stays while the session is open. To close a session with all its tabs, choose **Close session** in its menu in the agents panel, or **session: close** in the command palette; the session stays on the agent, and you can open it again.
+A session's conversation tab stays while the session is open. To close a session with all its tabs, use **session: close** in the command palette; the session stays on the agent, and you can open it again.
 
 A terminal is open on one client at a time, and every client shows the agent's terminals. A terminal that another client opened, such as the Android app, gets a tab in the agent's active session, titled with where it is open. The tab shows the terminal dimmed; press **Take over** on it to move the terminal here with its recent output (up to 128 KiB); the other client can take it back the same way. Such a tab cannot be closed until you take the terminal over, since closing a terminal's tab ends its shell; closing its session moves the tab to another open session of the agent.
 

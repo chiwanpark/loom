@@ -28,6 +28,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### Changes
 
 - **No lock waiting state.** A session that waits for another session to release a file or the workspace now shows **Running a tool**. Clients no longer show a separate message for this wait.
+- The menu of a session in the agents panel no longer has **Close session**. To close a session's tabs, use **session: close** in the command palette.
 
 ## 0.3.0
 
