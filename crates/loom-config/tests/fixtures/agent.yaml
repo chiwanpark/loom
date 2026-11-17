@@ -27,6 +27,16 @@ instructions:
   # system_prompt: |
   #   You are a careful coding agent.
 
+skills:
+  enabled: true
+  # More directories of skills. The agent also looks in
+  # <workspace>/.loom/skills, <workspace>/.agents/skills,
+  # ~/.config/loom/skills, and ~/.agents/skills.
+  paths:
+  - ~/shared-skills
+  disabled:
+  - slow-review
+
 llm:
   default_model: openai/gpt-5
   providers:

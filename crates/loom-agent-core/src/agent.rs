@@ -155,6 +155,7 @@ impl Agent {
         let runtime = Runtime::build(
             options.config,
             &auth,
+            &options.dirs,
             &options.providers,
             options.sandbox_exe.as_deref(),
         )?;
@@ -296,6 +297,7 @@ impl Agent {
         let runtime = Runtime::build(
             next,
             &self.inner.auth,
+            &self.inner.dirs,
             &self.inner.overrides,
             self.inner.sandbox_exe.as_deref(),
         )?;

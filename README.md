@@ -238,11 +238,12 @@ The main sections:
 - `allowed_roots`: directories an agent may serve as a workspace (default `~`).
 - `llm`: the default model and provider settings.
 - `tools`: output limits for the `read` and `shell` tools, the shell program, the `search_web` tool (its model, source limits, and timeout), `notes.max_bytes`, the largest [notes](#notes-and-tasks) (64 KiB by default), and `tasks.max_items`, the most tasks in a task list (100 by default). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it.
-- `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes and tasks tools are allowed unless a rule says otherwise.
+- `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes, tasks, and `skill` tools are allowed unless a rule says otherwise.
 - `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths.
 - `context`: tool output limits and when to compact a long conversation.
 - `limits`: `max_rounds_per_turn`, the most model calls the agent makes for one message before the turn stops (200 by default; `0` for no limit). It guards against a model stuck in a loop while no one is watching. The conversation is kept, so you can send another message to go on.
 - `instructions`: extra instructions for the model. `AGENTS.md` files in the workspace are included too.
+- `skills`: `enabled` (on by default), `paths`, more directories of [skills](#skills), and `disabled`, the names of skills not to offer.
 - `relay`: relay connection settings.
 - `telemetry`: OpenTelemetry (OTLP) export of metrics and events, off by default. `loom-agent config fetch-telemetry` prints this section from the settings your organization publishes for Claude Code.
 
@@ -354,6 +355,22 @@ Each agent has notes, and each session has a task list, for the agent's work. Bo
 The **Notes** tab of the right panel (`ctrl-shift-n`, or **panel: notes** in the command palette) shows the notes of the active session's agent, and you can edit them there too: **Save** (`ctrl-s`) stores your text, **Revert** throws your changes away, and **Clear notes** empties them. When a session changes the notes while you have unsaved changes, yours stay and the tab offers to reload the agent's text or overwrite it with yours. So that changes are not lost unseen, `notes_write` refuses to replace non-empty notes that a session has not read since you or another session last changed them, or since its conversation was compacted or cleared.
 
 The **Tasks** tab (`ctrl-shift-t`, or **panel: tasks**) shows the task list, with each task's number, such as `#3`, which the agent uses to refer to it. A task keeps its number when others are removed. Type a task in the box at the bottom and press `enter` to add it (`shift-enter` starts a new line). Click a task's circle to move it on from created to in progress to done, click its text to edit it (`enter` saves, `escape` cancels), and click the trash icon to remove it; **Clear done** removes the tasks that are done. Your changes apply at once, and when you and the agent change the list at the same time, the later change wins.
+
+### Skills
+
+Skills give the agent instructions for special tasks, in the [Agent Skills](https://agentskills.io) format. A skill is a directory with a `SKILL.md` file. The file starts with YAML frontmatter that has the skill's `name` and `description`, and then has the instructions in Markdown. The directory can also hold other files, such as references and scripts.
+
+The agent looks for skills in these directories, in this order:
+
+1. `.loom/skills/` and `.agents/skills/` in the workspace
+2. `~/.config/loom/skills/` and `~/.agents/skills/`
+3. The directories in `skills.paths` in `agent.yaml`. A relative path is relative to the workspace. A directory can hold skills or be one skill.
+
+When two skills have the same name, the first one found wins, so a skill of the workspace replaces a skill of the user. The agent reads the directories before each model call, so new and changed skills apply at once.
+
+The system prompt lists the name and the description of each skill. When a task matches a skill, the model calls the `skill` tool with the skill's name. The tool returns the instructions without the frontmatter, the skill's directory, and a list of its other files. The `read` tool can read the files in the directory of each listed skill, also outside the workspace; the other file tools cannot change them. The model runs the scripts of a skill with the `shell` tool, which follows the normal policy. When the conversation is compacted, the instructions of the loaded skills stay in the context.
+
+A skill without a description, or without frontmatter, is skipped, and the agent shows why as a warning. The agent ignores the other fields of the frontmatter, such as `allowed-tools`. Set `skills.enabled: false` to turn off skills, or list the names of single skills in `skills.disabled`. To see the skills that a session offers, open its system prompt (see [Client configuration](#client-configuration)).
 
 ## Development
 

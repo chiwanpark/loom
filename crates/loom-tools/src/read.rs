@@ -41,7 +41,7 @@ impl Tool for ReadTool {
         ToolSpec {
             name: "read".into(),
             description: format!(
-                "Read a text file in the workspace. Output is limited to {} lines or {} (whichever is reached first). Use offset and limit to page through large files.",
+                "Read a text file in the workspace or in the directory of a skill. Output is limited to {} lines or {} (whichever is reached first). Use offset and limit to page through large files.",
                 self.limits.max_lines,
                 format_size(self.limits.max_bytes as u64)
             ),
@@ -75,7 +75,7 @@ impl Tool for ReadTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput> {
         let args: ReadArgs = parse_args(args)?;
         ctx.ensure_not_cancelled()?;
-        let path = ctx.workspace.resolve(&args.path)?;
+        let path = ctx.workspace.resolve_readable(&args.path, &ctx.readable)?;
         let display = ctx.workspace.display_path(&path);
         let _guard = ctx.lock_file(&path, FileAccess::Read).await;
 
@@ -349,6 +349,35 @@ mod tests {
             .call(&ctx, json!({"path": "missing.txt"}))
             .await;
         assert!(matches!(result, Err(ToolError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn reads_in_readable_directories_outside_the_workspace() {
+        let outside = tempfile::tempdir().unwrap();
+        let skill = outside.path().canonicalize().unwrap().join("skill");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("REFERENCE.md"), "ref\n").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+        let (_dir, ctx) = context();
+        let tool = ReadTool::default();
+        let read = |ctx: ToolContext, path: std::path::PathBuf| {
+            let tool = &tool;
+            async move {
+                tool.call(&ctx, json!({"path": path.to_str().unwrap()}))
+                    .await
+            }
+        };
+        let reference = skill.join("REFERENCE.md");
+        assert!(matches!(
+            read(ctx.clone(), reference.clone()).await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        let ctx = ctx.with_readable(Arc::new(vec![skill.clone()]));
+        assert_eq!(read(ctx.clone(), reference).await.unwrap().content, "ref\n");
+        assert!(matches!(
+            read(ctx, skill.join("../secret.txt")).await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
     }
 
     #[tokio::test]

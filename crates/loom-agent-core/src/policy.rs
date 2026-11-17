@@ -150,12 +150,16 @@ pub fn evaluate(
             reason: describe(rule, "configured"),
         };
     }
-    // They touch nothing but the session's own notes and tasks; asking for
-    // each one would make them too costly to use. Rules still decide.
-    if crate::notes::is_notes_tool(tool) || crate::tasks::is_tasks_tool(tool) {
+    // They touch nothing but the session's own notes and tasks, or only read
+    // the skills; asking for each one would make them too costly to use.
+    // Rules still decide.
+    if crate::notes::is_notes_tool(tool)
+        || crate::tasks::is_tasks_tool(tool)
+        || tool == crate::skills::SKILL_TOOL
+    {
         return Verdict {
             action: PolicyAction::Allow,
-            reason: "notes and tasks tools are allowed unless a rule says otherwise".into(),
+            reason: "notes, tasks, and skill tools are allowed unless a rule says otherwise".into(),
         };
     }
     match session.default {
@@ -300,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_and_tasks_tools_are_allowed_unless_a_rule_says_otherwise() {
+    fn notes_tasks_and_skill_tools_are_allowed_unless_a_rule_says_otherwise() {
         let defaults = [None, Some(PolicyAction::Ask), Some(PolicyAction::Deny)];
         for tool in [
             "notes_read",
@@ -308,6 +312,7 @@ mod tests {
             "notes_write",
             "tasks_read",
             "tasks_update",
+            "skill",
         ] {
             for default in defaults {
                 let session = SessionPolicy {
@@ -331,6 +336,7 @@ mod tests {
         config
             .rules
             .push(rule("tasks_update", PolicyAction::Ask, &[]));
+        config.rules.push(rule("skill", PolicyAction::Deny, &[]));
         let session = SessionPolicy {
             default: None,
             rules: vec![rule("notes_read", PolicyAction::Ask, &[])],
@@ -339,5 +345,6 @@ mod tests {
         assert_eq!(eval("notes_write"), PolicyAction::Deny);
         assert_eq!(eval("tasks_update"), PolicyAction::Ask);
         assert_eq!(eval("notes_read"), PolicyAction::Ask);
+        assert_eq!(eval("skill"), PolicyAction::Deny);
     }
 }

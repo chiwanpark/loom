@@ -64,7 +64,7 @@ pub fn tool_result(output: ToolOutput) -> ToolResult {
         // The sources are in the content; clients have no view of their own.
         ToolDetails::WebSearch { .. } => None,
         // Not files: clients must not count them among the workspace changes.
-        ToolDetails::Notes { .. } | ToolDetails::Tasks { .. } => None,
+        ToolDetails::Notes { .. } | ToolDetails::Tasks { .. } | ToolDetails::Skill { .. } => None,
         ToolDetails::Read {
             path,
             start_line,

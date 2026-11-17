@@ -208,6 +208,68 @@ async fn system_prompt_is_what_the_next_model_call_sends() {
 }
 
 #[tokio::test]
+async fn skills_are_listed_and_loaded_and_their_files_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().canonicalize().unwrap().join("pdf");
+    let reference = skill_dir.join("REFERENCE.md");
+    let mut config = test_config(PolicyAction::Ask);
+    // The user's skills are outside the workspace.
+    config.skills.paths = vec![skill_dir.clone()];
+    let h = Harness::new(
+        config,
+        vec![
+            calls(&[("c1", "skill", json!({"name": "pdf"}))]),
+            calls(&[("c2", "read", json!({"path": reference}))]),
+            calls(&[("c3", "read", json!({"path": dir.path().join("secret.txt")}))]),
+            text("done"),
+        ],
+    );
+    std::fs::write(dir.path().join("secret.txt"), "secret").unwrap();
+    let session = h.agent.create_session(None).unwrap();
+    let tools = |prompt: &loom_proto::SystemPrompt| -> Vec<String> {
+        prompt.tools.iter().map(|t| t.name.clone()).collect()
+    };
+    let prompt = session.system_prompt().await;
+    assert!(!prompt.text.contains("# Skills"), "{}", prompt.text);
+    assert!(!tools(&prompt).contains(&"skill".to_owned()));
+
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: pdf\ndescription: Work with PDF files.\n---\n\nUse pdftotext.\n",
+    )
+    .unwrap();
+    std::fs::write(&reference, "PDF REFERENCE\n").unwrap();
+    let prompt = session.system_prompt().await;
+    assert!(
+        prompt.text.contains("# Skills") && prompt.text.contains("- pdf: Work with PDF files."),
+        "{}",
+        prompt.text
+    );
+    assert!(tools(&prompt).contains(&"skill".to_owned()));
+
+    let mut sub = session.subscribe(None);
+    let events = run_turn(&session, &mut sub, "read the PDF").await;
+    assert_eq!(outcome(&events), Some(TurnOutcome::Completed));
+    // No approval was asked: the default rule allows read, and skill is allowed.
+    let results = finished_results(&events);
+    assert_eq!(results.len(), 3);
+    let (content, is_error) = &results[0];
+    assert!(!is_error, "{content}");
+    assert!(
+        content.starts_with("<skill_content name=\"pdf\">\nUse pdftotext.\n"),
+        "{content}"
+    );
+    assert!(content.contains(&format!("Skill directory: {}", skill_dir.display())));
+    assert_eq!(results[1], ("PDF REFERENCE\n".to_owned(), false));
+    let (content, is_error) = &results[2];
+    assert!(
+        *is_error && content.contains("outside the workspace"),
+        "{content}"
+    );
+}
+
+#[tokio::test]
 async fn allowed_tool_calls_run_and_feed_results_back() {
     let h = Harness::new(
         test_config(PolicyAction::Allow),

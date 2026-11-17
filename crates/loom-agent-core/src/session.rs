@@ -27,6 +27,7 @@ use crate::notes::{AgentNotes, NOTES_READ_TOOL};
 use crate::observer::SessionObserver;
 use crate::policy::{self, SessionPolicy};
 use crate::runtime::{Runtime, RuntimeCell};
+use crate::skills::{Catalog, SKILL_TOOL};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
 use crate::tasks::TaskList;
 use loom_config::PolicyAction;
@@ -80,6 +81,9 @@ struct Core {
     workspace: Arc<Workspace>,
     files: Arc<FileTracker>,
     system_agents_md: PathBuf,
+    /// The directories of the skills that the last system prompt listed,
+    /// which the read tool may read.
+    skill_dirs: Mutex<Arc<Vec<PathBuf>>>,
     removed: CancellationToken,
     notices: Option<broadcast::Sender<AgentNotice>>,
 }
@@ -366,6 +370,7 @@ impl Session {
                 workspace: params.workspace,
                 files: Arc::new(FileTracker::default()),
                 system_agents_md: params.system_agents_md,
+                skill_dirs: Mutex::default(),
                 removed: CancellationToken::new(),
                 notices: params.notices,
             }),
@@ -753,13 +758,28 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
 
 /// The system prompt and the tools of a model call with `runtime`.
 async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<ToolSpec>) {
-    let specs = runtime.tools.available_specs().await;
+    let mut specs = runtime.tools.available_specs().await;
+    let catalog = if runtime.skills.enabled() {
+        let sources = runtime.skills.clone();
+        let workspace = core.workspace.root().to_path_buf();
+        tokio::task::spawn_blocking(move || sources.discover(&workspace))
+            .await
+            .unwrap_or_default()
+    } else {
+        Catalog::default()
+    };
+    *core.skill_dirs.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(catalog.dirs());
+    // Without skills, the skill tool has nothing to load.
+    if catalog.skills.is_empty() {
+        specs.retain(|spec| spec.name != SKILL_TOOL);
+    }
     let prompt = build_system_prompt(&PromptInputs {
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,
         workspace_root: core.workspace.root(),
         max_bytes: runtime.config.instructions.max_bytes.as_usize(),
         tools: &specs,
+        skills: Some(&catalog),
     })
     .await;
     (prompt, specs)
@@ -1143,9 +1163,15 @@ async fn run_tool_call(
     });
     core.hub.set_state(SessionState::RunningTool);
     let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_CHANNEL);
+    let skill_dirs = core
+        .skill_dirs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let ctx = ToolContext::new(core.workspace.clone())
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
+        .with_readable(skill_dirs)
         .with_files(core.files.clone())
         .with_cancel(cancel.child_token())
         .with_output(output_tx);

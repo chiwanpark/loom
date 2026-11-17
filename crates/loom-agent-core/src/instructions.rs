@@ -5,6 +5,7 @@ use loom_config::AGENTS_MD;
 use loom_tools::ToolSpec;
 
 use crate::notes::NOTES_READ_TOOL;
+use crate::skills::Catalog;
 use crate::tasks::{self, TASKS_READ_TOOL};
 
 pub const BUILTIN_INSTRUCTIONS: &str = "\
@@ -32,6 +33,8 @@ pub struct PromptInputs<'a> {
     pub workspace_root: &'a Path,
     pub max_bytes: usize,
     pub tools: &'a [ToolSpec],
+    /// The skills to list, if any.
+    pub skills: Option<&'a Catalog>,
 }
 
 pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
@@ -65,6 +68,12 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
             }
             Ok(None) => {}
             Err(err) => warnings.push(format!("cannot read {}: {err}", path.display())),
+        }
+    }
+    if let Some(catalog) = inputs.skills {
+        warnings.extend(catalog.warnings.iter().cloned());
+        if let Some(section) = catalog.prompt_section() {
+            sections.push(section);
         }
     }
     if inputs
@@ -179,6 +188,7 @@ mod tests {
                     workspace_root: &dir,
                     max_bytes: 1024,
                     tools: &tools,
+                    skills: None,
                 })
                 .await
                 .text
@@ -211,22 +221,46 @@ mod tests {
         std::fs::write(&system, "SYSTEM RULE").unwrap();
         std::fs::write(workspace.join("AGENTS.md"), "WORKSPACE RULE").unwrap();
         let tools = tools();
+        let catalog = Catalog {
+            skills: vec![crate::skills::Skill {
+                name: "pdf".into(),
+                description: "PDF files.".into(),
+                dir: dir.path().join("pdf"),
+            }],
+            warnings: vec!["skipped the skill in /x: no description".into()],
+        };
         let prompt = build_system_prompt(&PromptInputs {
             base: None,
             system_agents_md: &system,
             workspace_root: &workspace,
             max_bytes: 1024,
             tools: &tools,
+            skills: Some(&catalog),
         })
         .await;
         let text = &prompt.text;
         let builtin = text.find("You are Loom").unwrap();
         let sys = text.find("SYSTEM RULE").unwrap();
         let ws = text.find("WORKSPACE RULE").unwrap();
+        let skills = text.find("# Skills").unwrap();
         let env = text.find("# Environment").unwrap();
-        assert!(builtin < sys && sys < ws && ws < env);
+        assert!(builtin < sys && sys < ws && ws < skills && skills < env);
+        assert!(text.contains("\n- pdf: PDF files."));
         assert!(text.contains("- Tools: read"));
-        assert!(prompt.warnings.is_empty());
+        assert_eq!(prompt.warnings, catalog.warnings);
+
+        let empty = Catalog::default();
+        let inputs = |skills| PromptInputs {
+            base: None,
+            system_agents_md: &system,
+            workspace_root: &workspace,
+            max_bytes: 1024,
+            tools: &tools,
+            skills,
+        };
+        let without = build_system_prompt(&inputs(Some(&empty))).await;
+        assert!(!without.text.contains("# Skills"));
+        assert!(without.warnings.is_empty());
     }
 
     #[tokio::test]
@@ -240,6 +274,7 @@ mod tests {
             workspace_root: dir.path(),
             max_bytes: 7,
             tools: &tools,
+            skills: None,
         })
         .await;
         assert!(prompt.text.contains("가나\n") || prompt.text.contains("가나\n\n"));
@@ -260,6 +295,7 @@ mod tests {
             workspace_root: dir.path(),
             max_bytes: 1024,
             tools: &tools,
+            skills: None,
         })
         .await;
         let text = &prompt.text;

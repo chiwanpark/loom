@@ -16,6 +16,7 @@ pub mod policy;
 pub mod ports;
 pub mod runtime;
 mod session;
+pub mod skills;
 pub mod store;
 pub mod supervisor;
 pub mod tasks;

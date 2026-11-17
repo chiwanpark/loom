@@ -739,6 +739,7 @@ pub fn tool_summary(call: &ToolCall) -> String {
                 1 => "1 change".into(),
                 n => format!("{n} changes"),
             }),
+        "skill" => field("name"),
         "search_web" => field("query").map(|query| {
             let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
             // The tool takes numbers or numeric strings, in either case.
@@ -1163,6 +1164,12 @@ mod tests {
             summary(r#"{"query":"rust","freshness":"cached","max_sources":"1"}"#),
             "search_web rust (1 source)"
         );
+    }
+
+    #[test]
+    fn skill_summary_shows_the_skill() {
+        let summary = |args: &str| tool_summary(&call("c", "skill", args));
+        assert_eq!(summary(r#"{"name":"pdf"}"#), "skill pdf");
     }
 
     #[test]

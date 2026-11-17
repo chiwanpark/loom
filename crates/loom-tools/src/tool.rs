@@ -77,6 +77,9 @@ pub struct ToolContext {
     pub notes: Option<Arc<dyn NotesAccess>>,
     /// The session's task list; `None` outside a session.
     pub tasks: Option<Arc<dyn TasksAccess>>,
+    /// Directories outside the workspace that the read tool may read, such
+    /// as the directories of skills. Canonical paths.
+    pub readable: Arc<Vec<PathBuf>>,
 }
 
 impl ToolContext {
@@ -88,6 +91,7 @@ impl ToolContext {
             output: None,
             notes: None,
             tasks: None,
+            readable: Arc::default(),
         }
     }
 
@@ -98,6 +102,11 @@ impl ToolContext {
 
     pub fn with_tasks(mut self, tasks: Arc<dyn TasksAccess>) -> Self {
         self.tasks = Some(tasks);
+        self
+    }
+
+    pub fn with_readable(mut self, readable: Arc<Vec<PathBuf>>) -> Self {
+        self.readable = readable;
         self
     }
 
@@ -188,6 +197,10 @@ pub enum ToolDetails {
     /// The task list after a tasks tool read or changed it.
     Tasks {
         tasks: usize,
+    },
+    /// A skill's instructions.
+    Skill {
+        name: String,
     },
 }
 

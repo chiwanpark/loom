@@ -21,6 +21,7 @@ pub struct AgentConfig {
     pub storage: StorageConfig,
     pub lifecycle: LifecycleConfig,
     pub instructions: InstructionsConfig,
+    pub skills: SkillsConfig,
     pub llm: LlmConfig,
     pub tools: ToolsConfig,
     pub terminal: TerminalConfig,
@@ -42,6 +43,7 @@ impl Default for AgentConfig {
             storage: StorageConfig::default(),
             lifecycle: LifecycleConfig::default(),
             instructions: InstructionsConfig::default(),
+            skills: SkillsConfig::default(),
             llm: LlmConfig::default(),
             tools: ToolsConfig::default(),
             terminal: TerminalConfig::default(),
@@ -127,6 +129,32 @@ impl Default for InstructionsConfig {
         Self {
             max_bytes: ByteSize::kib(64),
             system_prompt: None,
+        }
+    }
+}
+
+/// Skills in the Agent Skills format: directories with a `SKILL.md` file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkillsConfig {
+    /// Whether the agent offers skills to the model.
+    pub enabled: bool,
+    /// More directories of skills, after the ones of the workspace and the
+    /// user. A relative path is relative to the workspace. A directory can
+    /// hold skills or be one skill.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<PathBuf>,
+    /// The names of skills not to offer.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            paths: Vec::new(),
+            disabled: Vec::new(),
         }
     }
 }
@@ -569,6 +597,7 @@ impl AgentConfig {
         self.lifecycle.default_workspace.iter_mut().for_each(expand);
         self.terminal.shell.iter_mut().for_each(expand);
         self.sandbox.writable.iter_mut().for_each(expand);
+        self.skills.paths.iter_mut().for_each(expand);
         expand(&mut self.tools.shell.program);
     }
 

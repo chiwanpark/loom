@@ -99,6 +99,11 @@ mod tests {
         assert_eq!(config.policy.rules[1].command_prefix.len(), 4);
         assert_eq!(config.llm.providers.0.len(), 3);
         assert!(config.llm.default_model.is_some());
+        assert_eq!(
+            config.skills.paths,
+            [PathBuf::from("/home/u/shared-skills")]
+        );
+        assert_eq!(config.skills.disabled, ["slow-review"]);
     }
 
     #[test]

@@ -41,6 +41,13 @@ impl Workspace {
     }
 
     pub fn resolve(&self, input: &str) -> Result<PathBuf> {
+        self.resolve_readable(input, &[])
+    }
+
+    /// Like [`Workspace::resolve`], but also accepts paths in `extra`, the
+    /// canonical paths of directories that may be read outside the
+    /// workspace.
+    pub fn resolve_readable(&self, input: &str, extra: &[PathBuf]) -> Result<PathBuf> {
         if input.trim().is_empty() {
             return Err(ToolError::InvalidArguments("path must not be empty".into()));
         }
@@ -52,7 +59,7 @@ impl Workspace {
         };
         let normalized = normalize_lexically(&joined);
         let resolved = resolve_existing_prefix(&normalized);
-        if resolved.starts_with(&self.root) {
+        if resolved.starts_with(&self.root) || extra.iter().any(|dir| resolved.starts_with(dir)) {
             Ok(resolved)
         } else {
             Err(ToolError::OutsideWorkspace(normalized))

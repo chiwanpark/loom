@@ -2,13 +2,14 @@ use std::sync::{Arc, RwLock};
 
 use std::path::Path;
 
-use loom_config::{AgentConfig, SandboxBackend};
+use loom_config::{AgentConfig, Dirs, SandboxBackend};
 use loom_llm::{Auth, LlmError, LlmProvider, ModelRef, ProviderSet};
 use loom_tools::sandbox::{LauncherKind, SandboxLauncher, SandboxPolicy, find_bwrap};
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
 use crate::models::ModelCatalog;
 use crate::notes::{NotesEditTool, NotesReadTool, NotesWriteTool};
+use crate::skills::{SkillSources, SkillTool};
 use crate::tasks::{TasksReadTool, TasksUpdateTool};
 use crate::web_search::SearchWebTool;
 
@@ -17,6 +18,8 @@ pub struct Runtime {
     pub config: Arc<AgentConfig>,
     pub providers: ProviderSet,
     pub tools: ToolRegistry,
+    /// Where the sessions find their skills.
+    pub skills: Arc<SkillSources>,
     /// Rebuilt with the runtime, since the providers may have changed.
     pub models: Arc<ModelCatalog>,
 }
@@ -25,6 +28,7 @@ impl Runtime {
     pub fn build(
         config: AgentConfig,
         auth: &Auth,
+        dirs: &Dirs,
         overrides: &[Arc<dyn LlmProvider>],
         sandbox_exe: Option<&Path>,
     ) -> Result<Self, LlmError> {
@@ -48,11 +52,17 @@ impl Runtime {
         tools.register(Arc::new(NotesWriteTool));
         tools.register(Arc::new(TasksReadTool));
         tools.register(Arc::new(TasksUpdateTool));
+        let skills = Arc::new(SkillSources::new(&config.skills, dirs));
+        tools.register(Arc::new(SkillTool::new(
+            skills.clone(),
+            config.tools.read.max_bytes.as_usize(),
+        )));
         providers.activate(auth);
         Ok(Self {
             config: Arc::new(config),
             providers,
             tools,
+            skills,
             models: Arc::default(),
         })
     }

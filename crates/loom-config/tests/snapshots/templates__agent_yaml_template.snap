@@ -12,6 +12,8 @@ storage: {}
 lifecycle: {}
 instructions:
   max_bytes: 64KiB
+skills:
+  enabled: true
 llm:
   providers: {}
 tools:
