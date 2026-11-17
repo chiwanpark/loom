@@ -104,7 +104,6 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
         inputs.workspace_root,
         inputs.worktree,
         inputs.allowed_dirs,
-        inputs.tools,
     ));
     SystemPrompt {
         text: sections.join("\n\n"),
@@ -162,9 +161,7 @@ fn runtime_section(
     workspace_root: &Path,
     worktree: Option<&WorktreeInfo>,
     allowed_dirs: &[PathBuf],
-    tools: &[ToolSpec],
 ) -> String {
-    let tools: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     let worktree = worktree
         .map(|w| {
             format!(
@@ -186,11 +183,10 @@ fn runtime_section(
         )
     };
     format!(
-        "# Environment\n\n- Date: {}\n- Workspace: {}{worktree}{allowed}\n- OS: {}\n- Tools: {}",
+        "# Environment\n\n- Date: {}\n- Workspace: {}{worktree}{allowed}\n- OS: {}",
         today(),
         workspace_root.display(),
         os_description(),
-        tools.join(", ")
     )
 }
 
@@ -343,7 +339,7 @@ mod tests {
         assert!(text.contains("- Secret: `LAKECTL_SECRET`."));
         assert!(text.contains("- Not secret: `AWS_REGION`."));
         assert!(text.contains("\n- pdf: PDF files."));
-        assert!(text.contains("- Tools: read"));
+        assert!(!text.contains("- Tools:"));
         assert!(text.contains("on the branch `loom/abc`, made from `main`"));
         assert!(text.contains("\n- Allowed directories: `/srv/notes`, `/tmp/x`. "));
         let mut warnings = catalog.warnings.clone();

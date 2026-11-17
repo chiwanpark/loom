@@ -8,6 +8,10 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 - **Allowed directories.** The new `tools.allowed_dirs` setting lists directories outside the workspace. The `read`, `edit`, and `write` tools can read and change the files in these directories. The system prompt tells the model about them. See [Agent configuration](README.md#agent-configuration).
 
+### Changes
+
+- **Tools in the system prompt.** The system prompt no longer lists the names of the tools. The model gets the tools from the `tools` field of the API request.
+
 ## 0.4.1
 
 ### Fixes
