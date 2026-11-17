@@ -22,6 +22,7 @@ use crate::convert;
 use crate::environment::Environment;
 use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
+use crate::harmful;
 use crate::instructions::{PromptInputs, SystemPrompt, build_system_prompt};
 use crate::metrics::Metrics;
 use crate::notes::{AgentNotes, NOTES_READ_TOOL};
@@ -1273,7 +1274,7 @@ async fn run_tool_call(
         );
     }
 
-    let verdict = {
+    let mut verdict = {
         let state = core.lock();
         policy::evaluate(
             &runtime.config.policy,
@@ -1282,6 +1283,33 @@ async fn run_tool_call(
             &call.arguments,
         )
     };
+    if matches!(verdict.action, PolicyAction::Allow | PolicyAction::Ask) {
+        let config = runtime.config.policy.harmful.clone();
+        let writable = runtime.config.sandbox.writable.clone();
+        let allowed_dirs = runtime.config.tools.allowed_dirs.clone();
+        let workspace = core.workspace();
+        let env = environment.command.clone();
+        let (name, args) = (call.name.clone(), call.arguments.clone());
+        let checked = tokio::task::spawn_blocking(move || {
+            harmful::check(
+                &config,
+                &writable,
+                &allowed_dirs,
+                workspace,
+                &env,
+                &name,
+                &args,
+            )
+        })
+        .await
+        .unwrap_or_else(|err| Err(format!("the check failed: {err}")));
+        if let Err(reason) = checked {
+            verdict = policy::Verdict {
+                action: PolicyAction::Ask,
+                reason: format!("{} ({reason})", harmful::POSSIBLY_HARMFUL),
+            };
+        }
+    }
     match verdict.action {
         PolicyAction::Deny => {
             return finish(
@@ -1319,7 +1347,7 @@ async fn run_tool_call(
                 Decision::Allow => {}
             }
         }
-        PolicyAction::Allow => {}
+        PolicyAction::Allow | PolicyAction::AllowHarmful => {}
     }
 
     core.emit(SessionEvent::ToolCallStarted {

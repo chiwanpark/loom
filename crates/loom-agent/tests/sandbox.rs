@@ -61,7 +61,7 @@ async fn run_shell(backend: SandboxBackend, network: bool, command: &str, root: 
     };
     let mut config = AgentConfig::default();
     config.llm.default_model = Some("scripted/m".into());
-    config.policy.default = PolicyAction::Allow;
+    config.policy.default = PolicyAction::AllowHarmful;
     config.sandbox.backend = backend;
     config.sandbox.network = network;
     let call = message(

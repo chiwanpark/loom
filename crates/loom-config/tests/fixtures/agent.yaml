@@ -82,6 +82,8 @@ policy:
   - tool: shell
     command_prefix: ["rm -rf /", "sudo"]
     action: deny
+  harmful:
+    deny_paths: [./infra/production]
 
 # The environment of shell tool calls and terminals. Variables are built in
 # this order: the agent's environment, `inherit`, the default excludes

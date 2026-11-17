@@ -9,7 +9,7 @@ mod units;
 
 pub use agent::{
     AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, CommentGuardConfig, CommentGuardMode,
-    ContextConfig, DEFAULT_WINDOW_TOKENS, EnvironmentConfig, InheritEnvironment,
+    ContextConfig, DEFAULT_WINDOW_TOKENS, EnvironmentConfig, HarmfulConfig, InheritEnvironment,
     InstructionsConfig, LifecycleConfig, LimitsConfig, LlmConfig, LogLevel, LoggingConfig,
     NotesToolConfig, OtlpProtocol, PolicyAction, PolicyConfig, PolicyRule, ProviderSetting,
     ProvidersConfig, ReadToolConfig, RedactionConfig, RelayConfig, SandboxBackend, SandboxConfig,

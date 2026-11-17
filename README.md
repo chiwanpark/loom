@@ -128,7 +128,7 @@ Without it, debug builds are signed with the SDK's debug key. Keep the key and i
 
 Notifications need a Firebase project. In the [Firebase console](https://console.firebase.google.com), create one, add an Android app with the package name `com.chiwanpark.loom`, and put its `google-services.json` in `~/.config/loom-android/` (or the file that `LOOM_ANDROID_GOOGLE_SERVICES` or `-Ploom.googleServices` names). Builds without it, such as CI's, work the same without notifications.
 
-The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing as in the desktop's Sessions panel, and you can start, rename, archive, and delete sessions there. A completed session becomes idle when you open it in the app. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model, the reasoning effort, what happens to tool calls that no policy rule matches (ask, allow, or deny, or the agent's default), and the [comment guard](#comment-guard) from the row above the prompt box (which also shows the context used), compact or clear the conversation, rewind it to one of your messages (long-press the message; see [Rewinding a conversation](#rewinding-a-conversation)), queue messages or steer a running turn with them, and edit the agent's notes and the session's tasks. **Font** in the menu of the start screen or a session opens a screen with a preview, where you set the text size, from 80% to 130% of the system's; the size of the text in blocks (tool calls' arguments and output, and the reasoning of answers), from 70% to 130% of the app's text; the font of the app's text; and the font of code: tool arguments and output, code in answers, notes, and keys. Code is shown in JetBrains Mono, which the app bundles, unless you pick another. Besides the system's fonts, you can search all of Google Fonts by name, with filters by script (such as Korean, Japanese, or Chinese) and, for text, by category; the code tab lists monospaced fonts only. Each of the two fonts can also have a fallback font from Google Fonts, which draws the characters that the font does not have, such as Hangul in JetBrains Mono, before the system's fonts do. Google Play services downloads a Google font when it is first shown. The app's list of Google Fonts is `android/app/src/main/assets/google-fonts.tsv`, which `scripts/fonts/generate.py` writes from the directory of the Google Play services font provider and the metadata of fonts.google.com; run it again to pick up new fonts. Scanning the QR code needs Google Play services too; pasting the link works without them.
+The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing as in the desktop's Sessions panel, and you can start, rename, archive, and delete sessions there. A completed session becomes idle when you open it in the app. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model, the reasoning effort, what happens to tool calls that no policy rule matches (ask, allow, allow harmful, or deny, or the agent's default), and the [comment guard](#comment-guard) from the row above the prompt box (which also shows the context used), compact or clear the conversation, rewind it to one of your messages (long-press the message; see [Rewinding a conversation](#rewinding-a-conversation)), queue messages or steer a running turn with them, and edit the agent's notes and the session's tasks. **Font** in the menu of the start screen or a session opens a screen with a preview, where you set the text size, from 80% to 130% of the system's; the size of the text in blocks (tool calls' arguments and output, and the reasoning of answers), from 70% to 130% of the app's text; the font of the app's text; and the font of code: tool arguments and output, code in answers, notes, and keys. Code is shown in JetBrains Mono, which the app bundles, unless you pick another. Besides the system's fonts, you can search all of Google Fonts by name, with filters by script (such as Korean, Japanese, or Chinese) and, for text, by category; the code tab lists monospaced fonts only. Each of the two fonts can also have a fallback font from Google Fonts, which draws the characters that the font does not have, such as Hangul in JetBrains Mono, before the system's fonts do. Google Play services downloads a Google font when it is first shown. The app's list of Google Fonts is `android/app/src/main/assets/google-fonts.tsv`, which `scripts/fonts/generate.py` writes from the directory of the Google Play services font provider and the metadata of fonts.google.com; run it again to pick up new fonts. Scanning the QR code needs Google Play services too; pasting the link works without them.
 
 The **+** button on the start screen asks where the session goes: to one of the connected agents, or **In another directory…** on one of their hosts. Type the directory (`~` is your home directory on the host) or pick one where you started sessions before or one next to a running agent; the host's agent starts an agent there, or uses the one that already runs there, and the session opens once the app reaches it through the relay. The directory has to be under one of the `allowed_roots` of the host's agent configuration, as for `loom-agent serve` and the desktop's **New session** dialog.
 
@@ -239,10 +239,10 @@ The main sections:
 - `llm`: the default model and provider settings.
 - `tools`: output limits for the `read` and `shell` tools, the shell program, the `search_web` tool (its model, source limits, and timeout), `notes.max_bytes`, the largest [notes](#notes-and-tasks) (64 KiB by default), and `tasks.max_items`, the most tasks in a task list (100 by default). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it. `allowed_dirs` lists directories outside the workspace that the `read`, `edit`, and `write` tools can read and change, for example `~/notes`. Each path must be absolute or start with `~`. The system prompt lists these directories. The policy still applies to each tool call, and the sandbox of shell commands does not change.
 - `tools.comment_guard`: stops the model from adding comments to code. See [Comment guard](#comment-guard).
-- `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes, tasks, and `skill` tools are allowed unless a rule says otherwise.
+- `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes, tasks, and `skill` tools are allowed unless a rule says otherwise. `allow` still asks for tool calls that may be harmful, and `allow_harmful` allows them too. See [Harmful tool calls](#harmful-tool-calls).
 - `environment`: the environment variables of shell commands and terminals, and the env file with secrets for them. See [Environment variables and secrets](#environment-variables-and-secrets).
 - `worktrees`: `dir`, the directory of the git worktrees of sessions (`~/.config/loom/worktrees` by default). See [Sessions in a worktree](#sessions-in-a-worktree).
-- `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths.
+- `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths. Changes in the writable paths are not [harmful](#harmful-tool-calls), also when the sandbox is off.
 - `context`: tool output limits and when to compact a long conversation.
 - `limits`: `max_rounds_per_turn`, the most model calls the agent makes for one message before the turn stops (200 by default; `0` for no limit). It guards against a model stuck in a loop while no one is watching. The conversation is kept, so you can send another message to go on.
 - `instructions`: extra instructions for the model. `AGENTS.md` files in the workspace are included too.
@@ -332,6 +332,45 @@ tools:
 In `block` mode, the tool rejects a change with new comments and tells the model which comments to remove. In `warn` mode, the tool makes the change and tells the model about the new comments. While the guard is on, the system prompt tells the model not to add comments.
 
 You can turn the guard on or off for one session. In the desktop app, use **Comment guard** in the status bar. In the Android app, use the comment guard item in the row above the prompt box. **Default** uses the `mode` of `agent.yaml`. **On** uses `block` when `mode` is `off`.
+
+### Harmful tool calls
+
+When the policy allows a `shell`, `edit`, or `write` call, the agent first checks if the call may be harmful. If it may be harmful, the agent asks for your approval, and shows the reason. These calls may be harmful:
+
+- `rm`, `rmdir`, `unlink`, `shred`, `mv`, `cp`, `chmod`, `chown`, `chgrp`, `tee`, `touch`, `truncate`, `dd`, and `ln` on a path outside the workspace.
+- Output redirects (`>` and `>>`) to a path outside the workspace.
+- `find -delete`, `find -exec rm`, `xargs rm`, and `rsync --delete` on a path outside the workspace.
+- Changes to the `.env` files (but not `.env.example`) and to the `.git` directory at the root of the workspace.
+- Destructive git commands: `git checkout --`, `git restore` (but not `git restore --staged`), `git reset --hard`, `git reset --merge`, `git push --force`, `git clean -f`, `git branch -D`, `git stash drop`, and `git stash clear`.
+- `edit` and `write` calls on a protected path or a denied path.
+
+Changes in the temporary directories (`/tmp`, `/var/tmp`, and `$TMPDIR`) and in `sandbox.writable` are not harmful. Changes by the `edit` and `write` tools in `tools.allowed_dirs` are not harmful too, but changes by shell commands there are. Changes to `/dev/null` and the standard streams are not harmful, but their deletion is.
+
+The check examines each command in `&&`, `||`, `;`, `|`, and newline chains. It follows `cd`, variables set earlier in the command, and the environment of commands. It resolves symbolic links, also of files that do not exist yet. It does not examine heredoc bodies, quoted text, and shell comments. If it cannot find the path of a target, such as `$(...)`, the call may be harmful.
+
+The policy actions and the check:
+
+- `ask`: the agent asks for each call. For a call that may be harmful, the approval request shows the reason.
+- `allow`: the agent runs the call without asking, unless the call may be harmful.
+- `allow_harmful`: the agent runs the call without the check.
+- `deny`: the agent refuses the call.
+
+Rules can use `allow_harmful` too, for example to allow `git push --force` in a workspace. You can also pick **Allow harmful** for one session in the desktop app and in the Android app. **Allow for session** on the approval of a call that may be harmful adds an `allow` rule, so the agent asks again for the next call that may be harmful.
+
+```yaml
+policy:
+  default: allow
+  harmful:
+    deny_paths: [./infra/production]  # paths whose changes are always harmful
+sandbox:
+  writable: [~/.cargo, ~/scratch]    # paths whose changes are not harmful
+```
+
+The paths in `sandbox.writable` can be absolute paths or paths that start with `~`. A writable path also allows the `.env` and `.git` paths and the deletion of `/dev/null` in it.
+
+The paths in `deny_paths` can be absolute paths, paths that start with `~`, or paths relative to the workspace. `deny_paths` has priority over `sandbox.writable` and over the workspace. Changes to the parent directories of a denied path are harmful too. This also applies to glob patterns that can include a denied path.
+
+The check is not a sandbox. It cannot find all harmful commands, for example commands in a script file. To confine commands, use `sandbox` too.
 
 ### Reloading the configuration
 

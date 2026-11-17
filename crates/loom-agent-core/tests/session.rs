@@ -311,6 +311,44 @@ async fn allowed_tool_calls_run_and_feed_results_back() {
 }
 
 #[tokio::test]
+async fn allow_asks_for_harmful_calls_and_allow_harmful_does_not() {
+    let stash = || calls(&[("c1", "shell", json!({"command": "git stash clear"}))]);
+    let h = Harness::new(
+        test_config(PolicyAction::Allow),
+        vec![stash(), text("denied"), stash(), text("ran")],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    session
+        .send_prompt(vec![ContentPart::text("clear")])
+        .unwrap();
+    let events = collect_until(&mut sub, |e| {
+        matches!(e, SessionEvent::ApprovalRequired { .. })
+    })
+    .await;
+    let Some(SessionEvent::ApprovalRequired { reason, .. }) = events.last() else {
+        panic!("expected an approval request");
+    };
+    assert!(
+        reason.contains(loom_agent_core::harmful::POSSIBLY_HARMFUL),
+        "{reason}"
+    );
+    assert!(reason.contains("git stash clear"), "{reason}");
+    session.resolve_approval("c1", Decision::Deny).unwrap();
+    let events = collect_until(&mut sub, |e| matches!(e, SessionEvent::TurnFinished { .. })).await;
+    assert!(finished_results(&events)[0].0.contains("denied"));
+
+    session.set_policy_default(Some(PolicyAction::AllowHarmful));
+    let events = run_turn(&session, &mut sub, "clear").await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ApprovalRequired { .. }))
+    );
+    assert!(!finished_results(&events)[0].0.contains("denied"));
+}
+
+#[tokio::test]
 async fn the_comment_guard_follows_the_session_setting() {
     let write = || {
         calls(&[(

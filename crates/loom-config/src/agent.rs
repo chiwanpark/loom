@@ -361,6 +361,7 @@ pub enum SearchReasoningEffort {
 pub struct PolicyConfig {
     pub default: PolicyAction,
     pub rules: Vec<PolicyRule>,
+    pub harmful: HarmfulConfig,
 }
 
 impl Default for PolicyConfig {
@@ -372,8 +373,15 @@ impl Default for PolicyConfig {
                 action: PolicyAction::Allow,
                 command_prefix: Vec::new(),
             }],
+            harmful: HarmfulConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HarmfulConfig {
+    pub deny_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -392,6 +400,7 @@ pub enum PolicyAction {
     #[default]
     Ask,
     Deny,
+    AllowHarmful,
 }
 
 /// The environment variables of the commands that the agent runs: shell

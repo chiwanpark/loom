@@ -12,10 +12,11 @@ pub const REASONING_CHOICES: [(Option<ReasoningEffort>, &str); 7] = [
     (Some(ReasoningEffort::Xhigh), "Extra high"),
 ];
 
-pub const POLICY_CHOICES: [(Option<PolicyAction>, &str); 4] = [
+pub const POLICY_CHOICES: [(Option<PolicyAction>, &str); 5] = [
     (None, "Default"),
     (Some(PolicyAction::Ask), "Ask"),
     (Some(PolicyAction::Allow), "Allow"),
+    (Some(PolicyAction::AllowHarmful), "Allow harmful"),
     (Some(PolicyAction::Deny), "Deny"),
 ];
 

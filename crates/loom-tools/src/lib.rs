@@ -3,6 +3,7 @@ mod edit;
 pub mod env;
 mod error;
 mod fsutil;
+pub mod harmful;
 pub mod patch;
 pub mod pty;
 mod read;
@@ -15,7 +16,7 @@ pub mod vtext;
 mod workspace;
 mod write;
 
-pub use edit::EditTool;
+pub use edit::{EditTool, patch_paths};
 pub use error::{Result, ToolError};
 pub use fsutil::write_file;
 pub use read::ReadTool;
