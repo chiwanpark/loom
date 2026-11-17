@@ -271,6 +271,10 @@ mod tests {
                 "tools:\n  tasks:\n    max_items: 0\n",
                 "tools.tasks.max_items",
             ),
+            (
+                "tools:\n  comment_guard:\n    allow_patterns: [\"(\"]\n",
+                "tools.comment_guard.allow_patterns[0]",
+            ),
             ("allowed_roots:\n- relative/path\n", "allowed_roots[0]"),
             (
                 "tools:\n  allowed_dirs:\n  - /tmp\n  - relative\n",

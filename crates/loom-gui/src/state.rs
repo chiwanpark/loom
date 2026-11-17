@@ -525,6 +525,7 @@ impl AgentConnection {
                             conv.info.model = info.model.clone();
                             conv.info.reasoning = info.reasoning;
                             conv.info.policy_default = info.policy_default;
+                            conv.info.comment_guard = info.comment_guard;
                             conv.state = info.state;
                             cx.notify();
                         });
@@ -541,6 +542,7 @@ impl AgentConnection {
                 conv.info.model = info.model.clone();
                 conv.info.reasoning = info.reasoning;
                 conv.info.policy_default = info.policy_default;
+                conv.info.comment_guard = info.comment_guard;
                 conv.info.archived = info.archived;
                 conv.info.worktree = info.worktree.clone();
                 if info.title.is_some() {
@@ -559,6 +561,7 @@ impl AgentConnection {
                 existing.model = info.model;
                 existing.reasoning = info.reasoning;
                 existing.policy_default = info.policy_default;
+                existing.comment_guard = info.comment_guard;
                 existing.archived = info.archived;
                 existing.worktree = info.worktree;
                 if info.title.is_some() {
@@ -649,6 +652,19 @@ impl AgentConnection {
         let task = self
             .backend
             .run(async move { client.set_policy(&id, default).await });
+        self.apply_info(task, cx);
+    }
+
+    pub fn set_comment_guard(
+        &mut self,
+        id: SessionId,
+        enabled: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let client = self.client.clone();
+        let task = self
+            .backend
+            .run(async move { client.set_comment_guard(&id, enabled).await });
         self.apply_info(task, cx);
     }
 

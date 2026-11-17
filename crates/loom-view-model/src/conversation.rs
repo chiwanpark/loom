@@ -874,6 +874,7 @@ mod tests {
             model: None,
             reasoning: None,
             policy_default: None,
+            comment_guard: None,
             state: SessionState::Idle,
             last_seq: 0,
             created_at: 0,

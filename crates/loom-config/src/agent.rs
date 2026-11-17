@@ -209,6 +209,36 @@ pub struct ToolsConfig {
     pub web_search: WebSearchToolConfig,
     pub notes: NotesToolConfig,
     pub tasks: TasksToolConfig,
+    pub comment_guard: CommentGuardConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommentGuardConfig {
+    pub mode: CommentGuardMode,
+    pub allow_directives: bool,
+    pub allow_patterns: Vec<String>,
+    pub ignore_paths: Vec<String>,
+}
+
+impl Default for CommentGuardConfig {
+    fn default() -> Self {
+        Self {
+            mode: CommentGuardMode::Block,
+            allow_directives: true,
+            allow_patterns: Vec::new(),
+            ignore_paths: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentGuardMode {
+    Off,
+    Warn,
+    #[default]
+    Block,
 }
 
 /// The notes: a text scratchpad each session keeps for the agent's work,
@@ -808,6 +838,7 @@ impl AgentConfig {
 
         self.telemetry.validate(origin)?;
         self.tools.web_search.validate(origin)?;
+        self.tools.comment_guard.validate(origin)?;
 
         if self.instructions.max_bytes.as_u64() == 0 {
             return Err(invalid(
@@ -1009,6 +1040,21 @@ impl EnvironmentConfig {
 /// Whether `name` can be the name of an environment variable.
 pub fn valid_variable_name(name: &str) -> bool {
     !name.is_empty() && !name.contains(['=', '\0']) && !name.chars().any(char::is_whitespace)
+}
+
+impl CommentGuardConfig {
+    fn validate(&self, origin: &str) -> Result<(), ConfigError> {
+        for (index, pattern) in self.allow_patterns.iter().enumerate() {
+            if let Err(err) = regex::Regex::new(pattern) {
+                return Err(ConfigError::invalid(
+                    origin,
+                    format!("tools.comment_guard.allow_patterns[{index}]"),
+                    err.to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl WebSearchToolConfig {

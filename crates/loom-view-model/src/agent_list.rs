@@ -127,6 +127,7 @@ mod tests {
             model: None,
             reasoning: None,
             policy_default: None,
+            comment_guard: None,
             state,
             last_seq: 0,
             created_at: 0,

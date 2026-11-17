@@ -383,6 +383,10 @@ mod tests {
                 session: session.clone(),
                 force: false,
             },
+            Command::SetCommentGuard {
+                session: session.clone(),
+                enabled: Some(false),
+            },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
         }

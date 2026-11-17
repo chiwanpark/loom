@@ -13,7 +13,7 @@ use crate::session::{
     SessionId, SessionInfo, ToolCallId, UsageSoFar, WorktreeOptions, WorktreeStatus,
 };
 
-pub const PROTOCOL_VERSION: u16 = 18;
+pub const PROTOCOL_VERSION: u16 = 19;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -479,6 +479,10 @@ pub enum Command {
     RemoveWorktree {
         session: SessionId,
         force: bool,
+    },
+    SetCommentGuard {
+        session: SessionId,
+        enabled: Option<bool>,
     },
 }
 

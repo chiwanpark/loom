@@ -1,3 +1,4 @@
+pub mod comments;
 mod edit;
 pub mod env;
 mod error;

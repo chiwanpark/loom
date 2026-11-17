@@ -68,6 +68,7 @@ object LoomIcons {
     val Loader = Lucide.drawable.lucide_ic_loader
     val LoaderCircle = Lucide.drawable.lucide_ic_loader_circle
     val Lock = Lucide.drawable.lucide_ic_lock
+    val MessageSquareCode = Lucide.drawable.lucide_ic_message_square_code
     val More = Lucide.drawable.lucide_ic_ellipsis_vertical
     val Notes = Lucide.drawable.lucide_ic_notebook_pen
     val Pencil = Lucide.drawable.lucide_ic_pencil

@@ -22,6 +22,11 @@ Work carefully and efficiently:
 - Do not run destructive commands unless the user asked for them.
 - Keep responses concise. Show file paths clearly when referring to files.";
 
+pub const COMMENTS_SECTION: &str = "\
+# Comments
+
+Do not add comments to code unless the user asks for them. The edit and write tools check each change for new comments. You may change existing comments and add lines next to them, and you may add tool directives such as `eslint-disable`.";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPrompt {
     pub text: String,
@@ -46,6 +51,7 @@ pub struct PromptInputs<'a> {
     /// The directories outside the workspace that the file tools may read
     /// and change.
     pub allowed_dirs: &'a [PathBuf],
+    pub comment_guard: bool,
 }
 
 pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
@@ -93,6 +99,14 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
         .any(|tool| tool.name == NOTES_READ_TOOL || tool.name == TASKS_READ_TOOL)
     {
         sections.push(tasks::PROMPT_SECTION.to_owned());
+    }
+    if inputs.comment_guard
+        && inputs
+            .tools
+            .iter()
+            .any(|tool| tool.name == "edit" || tool.name == "write")
+    {
+        sections.push(COMMENTS_SECTION.to_owned());
     }
     if let Some(environment) = inputs.environment {
         warnings.extend(environment.warnings.iter().cloned());
@@ -267,6 +281,7 @@ mod tests {
                     environment: None,
                     worktree: None,
                     allowed_dirs: &[],
+                    comment_guard: false,
                 })
                 .await
                 .text
@@ -281,6 +296,44 @@ mod tests {
             let env = with.find("# Environment").unwrap();
             assert!(ws < section && section < env, "{read}");
         }
+        assert!(!without.contains("# Comments"));
+    }
+
+    #[tokio::test]
+    async fn explains_the_comment_guard_when_it_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.md");
+        let prompt = |tools: Vec<ToolSpec>, comment_guard| {
+            let dir = dir.path().to_path_buf();
+            let missing = missing.clone();
+            async move {
+                build_system_prompt(&PromptInputs {
+                    base: None,
+                    system_agents_md: &missing,
+                    workspace_root: &dir,
+                    max_bytes: 1024,
+                    tools: &tools,
+                    skills: None,
+                    environment: None,
+                    worktree: None,
+                    allowed_dirs: &[],
+                    comment_guard,
+                })
+                .await
+                .text
+            }
+        };
+        assert!(
+            prompt(vec![tool("edit")], true)
+                .await
+                .contains("# Comments")
+        );
+        assert!(
+            !prompt(vec![tool("edit")], false)
+                .await
+                .contains("# Comments")
+        );
+        assert!(!prompt(tools(), true).await.contains("# Comments"));
     }
 
     #[test]
@@ -330,6 +383,7 @@ mod tests {
                 pull_request: None,
             }),
             allowed_dirs: &[PathBuf::from("/srv/notes"), PathBuf::from("/tmp/x")],
+            comment_guard: false,
         })
         .await;
         let text = &prompt.text;
@@ -361,6 +415,7 @@ mod tests {
             environment: None,
             worktree: None,
             allowed_dirs: &[],
+            comment_guard: false,
         };
         let without = build_system_prompt(&inputs(Some(&empty))).await;
         assert!(!without.text.contains("# Skills"));
@@ -383,6 +438,7 @@ mod tests {
             environment: None,
             worktree: None,
             allowed_dirs: &[],
+            comment_guard: false,
         })
         .await;
         assert!(prompt.text.contains("가나\n") || prompt.text.contains("가나\n\n"));
@@ -407,6 +463,7 @@ mod tests {
             environment: None,
             worktree: None,
             allowed_dirs: &[],
+            comment_guard: false,
         })
         .await;
         let text = &prompt.text;

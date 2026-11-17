@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::comments::CommentGuard;
 use crate::edit::EditTool;
 use crate::error::{Result, ToolError};
 use crate::read::ReadTool;
@@ -15,6 +16,7 @@ use crate::write::WriteTool;
 pub struct BuiltinConfig {
     pub read_limits: Limits,
     pub shell: ShellConfig,
+    pub comments: CommentGuard,
 }
 
 #[derive(Clone, Default)]
@@ -36,10 +38,11 @@ impl ToolRegistry {
     }
 
     pub fn builtin(config: BuiltinConfig) -> Self {
+        let comments = Arc::new(config.comments);
         let mut registry = Self::new();
         registry.register(Arc::new(ReadTool::new(config.read_limits)));
-        registry.register(Arc::new(EditTool));
-        registry.register(Arc::new(WriteTool));
+        registry.register(Arc::new(EditTool::new(comments.clone())));
+        registry.register(Arc::new(WriteTool::new(comments)));
         registry.register(Arc::new(ShellTool::new(config.shell)));
         registry
     }
