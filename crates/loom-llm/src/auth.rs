@@ -83,6 +83,15 @@ pub struct AccountInfo {
     pub label: Option<String>,
 }
 
+/// Who the signed-in account of a provider is: what telemetry reports as
+/// `user.email`, `user.account_uuid`, and `organization.id`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountIdentity {
+    pub email: Option<String>,
+    pub account_uuid: Option<String>,
+    pub organization_uuid: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountStatus {
     pub id: String,
@@ -240,6 +249,14 @@ impl Auth {
     pub async fn provider_status(&self, provider: &ProviderId) -> Result<ProviderStatus> {
         require_kind(&self.shared, provider)?
             .status(&self.shared)
+            .await
+    }
+
+    /// Who the signed-in account of `provider` is, from the stored sign-in
+    /// only. `None` when the provider has no account or does not tell.
+    pub async fn account_identity(&self, provider: &ProviderId) -> Result<Option<AccountIdentity>> {
+        require_kind(&self.shared, provider)?
+            .account_identity(&self.shared)
             .await
     }
 

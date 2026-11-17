@@ -10,8 +10,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::auth::{
-    AccountInfo, AccountStatus, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
-    ProviderStatus, RedirectSpec,
+    AccountIdentity, AccountInfo, AccountStatus, LoginInput, LoginMethod, LoginMethodInfo,
+    LoginPrompt, ProviderStatus, RedirectSpec,
 };
 use crate::error::{LlmError, Result};
 use crate::kind::{
@@ -194,5 +194,16 @@ impl ProviderKind for Kind {
             .store
             .update_section::<Credential, _, _>(ID.as_str(), |s| *s = None)
             .await
+    }
+
+    async fn account_identity(&self, shared: &Shared) -> Result<Option<AccountIdentity>> {
+        let credential = shared.store.load_section::<Credential>(ID.as_str()).await?;
+        Ok(credential
+            .filter(|c| !c.access_token.is_empty())
+            .map(|c| AccountIdentity {
+                email: c.label,
+                account_uuid: c.account_id,
+                organization_uuid: c.organization_id,
+            }))
     }
 }

@@ -59,6 +59,19 @@ pub struct AgentIdentity {
     pub version: String,
     pub instance: String,
     pub workspace: std::path::PathBuf,
+    pub user: UserIdentity,
+}
+
+/// Who uses the agent. Every metric and event gets these as Claude Code's
+/// standard attributes, so that dashboards that group by them include Loom.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserIdentity {
+    /// `user.email`.
+    pub email: Option<String>,
+    /// `user.account_uuid`, and from it `user.account_id`.
+    pub account_uuid: Option<String>,
+    /// `organization.id`.
+    pub organization_id: Option<String>,
 }
 
 /// A running exporter. Drop it or call [`Telemetry::shutdown`] to flush.
@@ -259,7 +272,13 @@ impl Telemetry {
             .as_ref()
             .map(|provider| Counters::new(&provider.meter(SCOPE), &config.prefix));
         let logger = logs.as_ref().map(|provider| provider.logger(SCOPE));
-        let recorder = Recorder::new(config.clone(), identity.version.clone(), counters, logger);
+        let recorder = Recorder::new(
+            config.clone(),
+            identity.version.clone(),
+            user_attributes(config, &identity.user),
+            counters,
+            logger,
+        );
         Self {
             meters,
             logs,
@@ -326,6 +345,26 @@ fn resource(config: &TelemetryConfig, identity: &AgentIdentity) -> Resource {
                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone())),
         )
         .build()
+}
+
+/// The user attributes of every metric and event, as Claude Code names them.
+fn user_attributes(config: &TelemetryConfig, user: &UserIdentity) -> Vec<KeyValue> {
+    let mut attributes = Vec::new();
+    if let Some(organization) = &user.organization_id {
+        attributes.push(KeyValue::new("organization.id", organization.clone()));
+    }
+    if let Some(email) = &user.email {
+        attributes.push(KeyValue::new("user.email", email.clone()));
+    }
+    if config.include_account_uuid
+        && let Some(account) = &user.account_uuid
+    {
+        attributes.push(KeyValue::new("user.account_uuid", account.clone()));
+        if let Some(tagged) = mappers::tagged_account_id(account) {
+            attributes.push(KeyValue::new("user.account_id", tagged));
+        }
+    }
+    attributes
 }
 
 fn workspace_label(path: &Path) -> String {

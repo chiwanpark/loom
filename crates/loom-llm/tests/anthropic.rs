@@ -6,8 +6,9 @@ use base64::Engine;
 use common::{Harness, id, now, sse_body};
 use futures::StreamExt;
 use loom_llm::{
-    AssistantContent, CompletionChunk, CompletionRequest, InputContent, LlmError, LoginInput,
-    LoginMethod, LoginPrompt, Message, ReasoningEffort, StopReason, ToolDefinition, collect,
+    AccountIdentity, AssistantContent, CompletionChunk, CompletionRequest, InputContent, LlmError,
+    LoginInput, LoginMethod, LoginPrompt, Message, ReasoningEffort, StopReason, ToolDefinition,
+    collect,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -103,6 +104,7 @@ async fn browser_login_uses_pkce_and_persists_account() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "access_token": "access", "refresh_token": "refresh", "expires_in": 3600,
             "account": {"uuid": "account-1", "email_address": "me@example.com"},
+            "organization": {"uuid": "org-1", "name": "Example"},
         }))).expect(1).mount(&h.server).await;
     let account = h
         .auth
@@ -120,9 +122,18 @@ async fn browser_login_uses_pkce_and_persists_account() {
     let status = h.auth.provider_status(&id(ID)).await.unwrap();
     assert!(status.signed_in());
     assert!(!status.api_key_set);
+    assert_eq!(
+        h.auth.account_identity(&id(ID)).await.unwrap(),
+        Some(AccountIdentity {
+            email: Some("me@example.com".into()),
+            account_uuid: Some("account-1".into()),
+            organization_uuid: Some("org-1".into()),
+        })
+    );
     h.auth.logout(&id(ID)).await.unwrap();
     assert!(h.section(ID).await.is_null());
     assert!(!h.auth.provider_status(&id(ID)).await.unwrap().signed_in());
+    assert_eq!(h.auth.account_identity(&id(ID)).await.unwrap(), None);
 }
 
 #[tokio::test]

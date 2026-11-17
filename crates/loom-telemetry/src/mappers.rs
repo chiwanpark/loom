@@ -145,6 +145,27 @@ pub fn truncate(text: &str, max: usize) -> String {
     out
 }
 
+/// Claude Code's `user.account_id`: the account UUID as `user_01` and its
+/// 128 bits in base58, padded to 22 digits. `None` when it is not a UUID.
+pub fn tagged_account_id(account_uuid: &str) -> Option<String> {
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const DIGITS: usize = 22;
+    let hex: String = account_uuid.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut value = u128::from_str_radix(&hex, 16).ok()?;
+    let mut digits = [ALPHABET[0]; DIGITS];
+    for digit in digits.iter_mut().rev() {
+        if value == 0 {
+            break;
+        }
+        *digit = ALPHABET[(value % 58) as usize];
+        value /= 58;
+    }
+    Some(format!("user_01{}", String::from_utf8_lossy(&digits)))
+}
+
 /// The tool arguments as JSON, with long strings shortened, for `tool_input`.
 pub fn tool_input(arguments: &Value) -> String {
     const VALUE_LIMIT: usize = 512;

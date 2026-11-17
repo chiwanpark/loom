@@ -68,6 +68,7 @@ telemetry:
   temporality: cumulative
   prefix: loom
   service_name: loom-agent
+  include_account_uuid: true
   log_user_prompts: false
   log_assistant_responses: false
   log_tool_details: false

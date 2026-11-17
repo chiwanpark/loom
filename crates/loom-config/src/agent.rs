@@ -569,6 +569,22 @@ pub struct TelemetryConfig {
     /// Added to the resource of every metric and event.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub resource_attributes: BTreeMap<String, String>,
+    /// The `user.email` attribute of every metric and event. Unset, it is
+    /// the email of the Anthropic sign-in, else `git config --global
+    /// user.email`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_email: Option<String>,
+    /// The `user.account_uuid` attribute of every metric and event. Unset,
+    /// it is the account of the Anthropic sign-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_uuid: Option<String>,
+    /// The `organization.id` attribute of every metric and event. Unset, it
+    /// is the organization of the Anthropic sign-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    /// Add `user.account_uuid` and `user.account_id`, as Claude Code does
+    /// unless `OTEL_METRICS_INCLUDE_ACCOUNT_UUID` is false.
+    pub include_account_uuid: bool,
     /// Include the prompt text in `user_prompt` events instead of `<REDACTED>`.
     pub log_user_prompts: bool,
     /// Include the response text in `assistant_response` events.
@@ -594,6 +610,10 @@ impl Default for TelemetryConfig {
             prefix: "loom".into(),
             service_name: "loom-agent".into(),
             resource_attributes: BTreeMap::new(),
+            user_email: None,
+            account_uuid: None,
+            organization_id: None,
+            include_account_uuid: true,
             log_user_prompts: false,
             log_assistant_responses: false,
             log_tool_details: false,
@@ -631,6 +651,18 @@ impl TelemetryConfig {
                 "telemetry.service_name",
                 "must not be empty".into(),
             ));
+        }
+        for (field, value) in [
+            ("telemetry.user_email", &self.user_email),
+            ("telemetry.account_uuid", &self.account_uuid),
+            ("telemetry.organization_id", &self.organization_id),
+        ] {
+            if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
+                return Err(invalid(
+                    field,
+                    "must not be empty; leave it out to use the sign-in".into(),
+                ));
+            }
         }
         Ok(())
     }

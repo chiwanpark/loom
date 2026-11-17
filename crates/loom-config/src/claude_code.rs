@@ -236,6 +236,9 @@ pub fn telemetry_from_claude_code(
         .or(prompts)
         .unwrap_or(false);
     config.log_tool_details = flag("OTEL_LOG_TOOL_DETAILS", &mut notes).unwrap_or(false);
+    if let Some(include) = flag("OTEL_METRICS_INCLUDE_ACCOUNT_UUID", &mut notes) {
+        config.include_account_uuid = include;
+    }
 
     if let Some(value) = env.remove(CONTENT_MAX_LENGTH) {
         match parse_positive(&value).and_then(|n| usize::try_from(n).ok()) {
@@ -293,6 +296,7 @@ mod tests {
             "OTEL_LOG_TOOL_DETAILS": "0",
             "CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH": "1000",
             "OTEL_METRICS_INCLUDE_SESSION_ID": "false",
+            "OTEL_METRICS_INCLUDE_ACCOUNT_UUID": "false",
             "ANTHROPIC_API_KEY": "not telemetry",
         }))
         .unwrap()
@@ -323,6 +327,7 @@ mod tests {
         assert_eq!(config.resource_attributes["cost_center"], "42");
         assert!(config.log_user_prompts && config.log_assistant_responses);
         assert!(!config.log_tool_details);
+        assert!(!config.include_account_uuid);
         assert_eq!(config.content_max_length, 1000);
         assert_eq!(config.prefix, "loom");
         assert_eq!(config.service_name, "loom-agent");

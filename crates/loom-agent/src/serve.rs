@@ -9,8 +9,9 @@ use loom_agent_core::{
 };
 use loom_config::{AgentConfig, Dirs};
 use loom_crypto::HostIdentity;
+use loom_llm::{Auth, CredentialStore, ProviderId};
 use loom_proto::{AgentInfo, InstanceId, TelemetryStatus};
-use loom_telemetry::{AgentIdentity, Telemetry};
+use loom_telemetry::{AgentIdentity, Telemetry, UserIdentity};
 use loom_transport::{AgentEntry, Registry, RegistryError, UnixFrameListener};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
@@ -80,7 +81,8 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         HostIdentity::load_or_create(&data_dir).context("could not load the host identity")?,
     );
     let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
-    let (telemetry, report) = start_telemetry(&config, &instance, &workspace);
+    let user = telemetry_user(&config, &data_dir).await;
+    let (telemetry, report) = start_telemetry(&config, &instance, &workspace, user);
     let mut options = AgentOptions::new(&workspace, config, dirs.clone());
     options.config_path = Some(config_path.clone());
     options.sandbox_exe = std::env::current_exe().ok();
@@ -200,11 +202,13 @@ fn start_telemetry(
     config: &AgentConfig,
     instance: &str,
     workspace: &Path,
+    user: UserIdentity,
 ) -> (Option<Telemetry>, Option<TelemetryReport>) {
     let identity = AgentIdentity {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         instance: instance.to_owned(),
         workspace: workspace.to_path_buf(),
+        user,
     };
     match Telemetry::start(&config.telemetry, &identity) {
         Ok(Some(telemetry)) => {
@@ -214,6 +218,7 @@ fn start_telemetry(
                     .endpoint
                     .as_deref()
                     .unwrap_or("from the environment"),
+                user = identity.user.email.as_deref().unwrap_or("unknown"),
                 "exporting telemetry"
             );
             let report = telemetry.reporter();
@@ -231,6 +236,53 @@ fn start_telemetry(
     }
 }
 
+/// Who uses the agent, for telemetry. Each value comes from the
+/// configuration, else from the Anthropic sign-in; the email comes last
+/// from `git config --global user.email`. The agent reads them when it
+/// starts.
+async fn telemetry_user(config: &AgentConfig, data_dir: &Path) -> UserIdentity {
+    let telemetry = &config.telemetry;
+    let mut user = UserIdentity {
+        email: telemetry.user_email.clone(),
+        account_uuid: telemetry.account_uuid.clone(),
+        organization_id: telemetry.organization_id.clone(),
+    };
+    if !telemetry.enabled {
+        return user;
+    }
+    let auth = Auth::new(CredentialStore::in_dir(data_dir), loom_llm::http_client());
+    match auth.account_identity(&ProviderId::from("anthropic")).await {
+        Ok(Some(account)) => {
+            user.email = user.email.or(account.email);
+            user.account_uuid = user.account_uuid.or(account.account_uuid);
+            user.organization_id = user.organization_id.or(account.organization_uuid);
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!(error = %err, "could not read the Anthropic sign-in"),
+    }
+    if user.email.is_none() {
+        user.email = git_user_email().await;
+    }
+    user
+}
+
+/// `git config --global user.email`, if git is there and has one.
+async fn git_user_email() -> Option<String> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::process::Command::new("git")
+            .args(["config", "--global", "--get", "user.email"])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let email = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (output.status.success() && !email.is_empty()).then_some(email)
+}
+
 fn start_watcher(
     agent: &Agent,
     config_path: &Path,
@@ -245,5 +297,47 @@ fn start_watcher(
             tracing::warn!(error = %err, path = %config_path.display(), "config hot-reload is disabled");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn the_telemetry_user_comes_from_the_config_then_the_anthropic_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::in_dir(dir.path());
+        let guard = store.lock().await.unwrap();
+        let mut credentials = guard.load().await.unwrap();
+        credentials.set_section(
+            "anthropic",
+            Some(json!({
+                "access_token": "access", "refresh_token": "refresh", "expires_at": 0,
+                "account_id": "account-1", "label": "me@example.com",
+                "organization_id": "org-1",
+            })),
+        );
+        guard.save(credentials).await.unwrap();
+        drop(guard);
+
+        let mut config = AgentConfig::default();
+        config.telemetry.enabled = true;
+        config.telemetry.user_email = Some("set@example.com".into());
+        assert_eq!(
+            telemetry_user(&config, dir.path()).await,
+            UserIdentity {
+                email: Some("set@example.com".into()),
+                account_uuid: Some("account-1".into()),
+                organization_id: Some("org-1".into()),
+            }
+        );
+
+        // Without telemetry, the agent does not look at the sign-in.
+        config.telemetry.enabled = false;
+        let user = telemetry_user(&config, dir.path()).await;
+        assert_eq!(user.account_uuid, None);
     }
 }

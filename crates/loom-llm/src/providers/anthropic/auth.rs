@@ -26,6 +26,10 @@ pub(super) struct Credential {
     pub expires_at: u64,
     pub account_id: Option<String>,
     pub label: Option<String>,
+    /// The organization of the account. Sign-ins from before this field
+    /// get it at the next token refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
 }
 
 impl Credential {
@@ -200,6 +204,10 @@ impl Client {
                 .as_str()
                 .map(str::to_owned)
                 .or_else(|| previous.and_then(|c| c.label.clone())),
+            organization_id: data["organization"]["uuid"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| previous.and_then(|c| c.organization_id.clone())),
         })
     }
 }

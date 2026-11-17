@@ -247,7 +247,7 @@ The main sections:
 - `instructions`: extra instructions for the model. `AGENTS.md` files in the workspace are included too.
 - `skills`: `enabled` (on by default), `paths`, more directories of [skills](#skills), and `disabled`, the names of skills not to offer.
 - `relay`: relay connection settings.
-- `telemetry`: OpenTelemetry (OTLP) export of metrics and events, off by default. `loom-agent config fetch-telemetry` prints this section from the settings your organization publishes for Claude Code.
+- `telemetry`: OpenTelemetry (OTLP) export of metrics and events, off by default. See [Telemetry](#telemetry).
 
 `crates/loom-config/tests/fixtures/agent.yaml` is an example that uses most of these settings.
 
@@ -287,6 +287,26 @@ The model does not get the values of the variables from the env file and `set`, 
 Redaction is best effort. A command can still change a value in ways that the agent does not detect, for example when it prints the value backwards, and it can send a value over the network. Thus, give the agent credentials with the least privileges, and set `sandbox.network: false` when the commands do not need the network.
 
 When systemd runs the agent, `~/.config/loom/agent.env` sets variables of the agent's own environment. Commands get these variables too, unless the rules above remove them.
+
+### Telemetry
+
+The `telemetry` section makes the agent export metrics and events over OTLP. The data is modelled on the telemetry of Claude Code. `loom-agent config fetch-telemetry` prints this section from the settings that your organization publishes for Claude Code. It uses the Anthropic sign-in of the agent host.
+
+To give the data the names of Claude Code's data, set these values:
+
+```yaml
+telemetry:
+  prefix: claude_code        # metric names such as claude_code.token.usage
+  service_name: claude-code  # the service.name resource attribute
+```
+
+Each metric and event tells who uses the agent, with the attributes of Claude Code:
+
+- `user.email`: `telemetry.user_email`, else the email of the Anthropic sign-in, else `git config --global user.email`.
+- `user.account_uuid`: `telemetry.account_uuid`, else the account of the Anthropic sign-in. `user.account_id` is the same account in the form of Claude Code, such as `user_01…`. Set `include_account_uuid: false` to leave out both. `fetch-telemetry` copies this choice from `OTEL_METRICS_INCLUDE_ACCOUNT_UUID`.
+- `organization.id`: `telemetry.organization_id`, else the organization of the Anthropic sign-in. A sign-in from Loom 0.4.0 or earlier gets its organization at its next token refresh.
+
+The agent reads these values when it starts. After you sign in, or after you change the `telemetry` section, restart the agent.
 
 ### Reloading the configuration
 

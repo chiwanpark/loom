@@ -7,7 +7,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::HttpClient;
 use crate::auth::{
-    AccountInfo, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt, ProviderStatus,
+    AccountIdentity, AccountInfo, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
+    ProviderStatus,
 };
 use crate::error::{LlmError, Result};
 use crate::provider::{LlmProvider, ProviderId};
@@ -90,6 +91,12 @@ pub(crate) trait ProviderKind: Send + Sync {
     async fn status(&self, shared: &Shared) -> Result<ProviderStatus>;
 
     async fn logout(&self, shared: &Shared) -> Result<()>;
+
+    /// Who the active account is, as far as the stored sign-in tells,
+    /// without network calls.
+    async fn account_identity(&self, _shared: &Shared) -> Result<Option<AccountIdentity>> {
+        Ok(None)
+    }
 
     async fn set_api_key(&self, _shared: &Shared, _key: Option<String>) -> Result<()> {
         Err(LlmError::Unsupported(format!(

@@ -102,6 +102,8 @@ struct ToolTrack {
 pub(crate) struct Recorder {
     config: TelemetryConfig,
     version: String,
+    /// Who uses the agent; every metric and event gets these.
+    user: Attributes,
     counters: Option<Counters>,
     logger: Option<SdkLogger>,
     sequence: AtomicU64,
@@ -178,12 +180,14 @@ impl Recorder {
     pub(crate) fn new(
         config: TelemetryConfig,
         version: String,
+        user: Attributes,
         counters: Option<Counters>,
         logger: Option<SdkLogger>,
     ) -> Self {
         Self {
             config,
             version,
+            user,
             counters,
             logger,
             sequence: AtomicU64::new(0),
@@ -192,10 +196,12 @@ impl Recorder {
     }
 
     fn base(&self, session: &SessionId) -> Attributes {
-        vec![
+        let mut attributes = vec![
             kv("session.id", session.0.clone()),
             kv("app.version", self.version.clone()),
-        ]
+        ];
+        attributes.extend(self.user.iter().cloned());
+        attributes
     }
 
     fn content(&self, enabled: bool, text: &str) -> String {

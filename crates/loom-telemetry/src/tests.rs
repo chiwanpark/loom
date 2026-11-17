@@ -16,6 +16,11 @@ fn identity() -> AgentIdentity {
         version: "0.1.0".into(),
         instance: "inst-1".into(),
         workspace: "/work/loom".into(),
+        user: UserIdentity {
+            email: Some("dev@example.com".into()),
+            account_uuid: Some("ce981faa-6215-4839-84d4-5435845a6352".into()),
+            organization_id: Some("org-1".into()),
+        },
     }
 }
 
@@ -74,11 +79,19 @@ fn any_to_string(value: &AnyValue) -> String {
 }
 
 fn run(config: TelemetryConfig, feed: impl FnOnce(&dyn SessionObserver)) -> Exported {
+    run_as(config, identity(), feed)
+}
+
+fn run_as(
+    config: TelemetryConfig,
+    identity: AgentIdentity,
+    feed: impl FnOnce(&dyn SessionObserver),
+) -> Exported {
     let metrics = InMemoryMetricExporter::default();
     let logs = InMemoryLogExporter::default();
     let telemetry = Telemetry::with_exporters(
         &config,
-        &identity(),
+        &identity,
         Some(metrics.clone()),
         Some(logs.clone()),
     );
@@ -601,4 +614,73 @@ fn reports_only_the_enabled_signals() {
             .collect::<Vec<_>>(),
         ["metrics"]
     );
+}
+
+#[test]
+fn every_metric_and_event_names_the_user() {
+    let out = run(enabled(), turn);
+    let user = [
+        ("user.email", "dev@example.com"),
+        ("user.account_uuid", "ce981faa-6215-4839-84d4-5435845a6352"),
+        ("user.account_id", "user_01SWeTu6bba167t5S7FHQ1us"),
+        ("organization.id", "org-1"),
+    ];
+    assert!(!out.points.is_empty() && !out.events.is_empty());
+    for (name, attributes, _) in &out.points {
+        for (key, value) in user {
+            assert_eq!(
+                attributes.get(key).map(String::as_str),
+                Some(value),
+                "{name}"
+            );
+        }
+    }
+    for (body, attributes) in &out.events {
+        for (key, value) in user {
+            assert_eq!(
+                attributes.get(key).map(String::as_str),
+                Some(value),
+                "{body}"
+            );
+        }
+    }
+    // They are not resource attributes, as in Claude Code.
+    assert!(!out.resource.contains_key("user.email"));
+}
+
+#[test]
+fn the_account_can_be_left_out_and_unknown_users_add_nothing() {
+    let config = TelemetryConfig {
+        include_account_uuid: false,
+        ..enabled()
+    };
+    let out = run(config, turn);
+    let (_, attributes) = &out.events[0];
+    assert_eq!(attributes["user.email"], "dev@example.com");
+    assert!(!attributes.contains_key("user.account_uuid"));
+    assert!(!attributes.contains_key("user.account_id"));
+
+    let anonymous = AgentIdentity {
+        user: UserIdentity::default(),
+        ..identity()
+    };
+    let out = run_as(enabled(), anonymous, turn);
+    let (_, attributes) = &out.events[0];
+    for key in ["user.email", "user.account_uuid", "organization.id"] {
+        assert!(!attributes.contains_key(key), "{key}");
+    }
+}
+
+#[test]
+fn account_ids_are_tagged_as_claude_code_tags_them() {
+    let tagged = mappers::tagged_account_id;
+    assert_eq!(
+        tagged("00000000-0000-0000-0000-000000000001").as_deref(),
+        Some("user_011111111111111111111112")
+    );
+    assert_eq!(
+        tagged("ffffffff-ffff-ffff-ffff-ffffffffffff").as_deref(),
+        Some("user_01YcVfxkQb6JRzqk5kF2tNLv")
+    );
+    assert_eq!(tagged("not-a-uuid"), None);
 }

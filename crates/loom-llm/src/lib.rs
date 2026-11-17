@@ -14,8 +14,8 @@ mod usage;
 mod web_search;
 
 pub use auth::{
-    AccountInfo, AccountStatus, Auth, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
-    LoginStarted, ProviderStatus, RedirectSpec,
+    AccountIdentity, AccountInfo, AccountStatus, Auth, LoginInput, LoginMethod, LoginMethodInfo,
+    LoginPrompt, LoginStarted, ProviderStatus, RedirectSpec,
 };
 pub use error::{LlmError, Result};
 pub use provider::{ChunkStream, LlmProvider, ProviderId, collect};

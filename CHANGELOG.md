@@ -2,6 +2,12 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### Fixes
+
+- **User attributes in telemetry.** Claude Code adds `user.email`, `user.account_uuid`, `user.account_id`, and `organization.id` to each metric and event. Loom did not add them, so dashboards that group by these attributes did not show Loom's data. Now Loom adds them too. The agent gets the values from the Anthropic sign-in. If the sign-in has no email, the agent uses `git config --global user.email`. To set the values yourself, use the new `telemetry` settings `user_email`, `account_uuid`, and `organization_id`. Set `include_account_uuid: false` to leave out the account. See [Telemetry](README.md#telemetry).
+
 ## 0.4.0
 
 ### Upgrade notes
