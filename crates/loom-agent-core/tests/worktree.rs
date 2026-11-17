@@ -162,9 +162,10 @@ async fn worktrees_end_with_a_merge_or_a_squash_merge() {
     assert!(main.join("a.txt").exists());
     assert!(agent.worktree_status(merged.id()).await.unwrap().merged);
     agent.remove_worktree(merged.id(), false).await.unwrap();
-    assert!(merged.info().worktree.is_none());
     assert!(!path.exists());
-    assert_eq!(merged.workspace().root(), main.canonicalize().unwrap());
+    assert!(agent.session(merged.id()).is_err());
+    let ids: Vec<_> = agent.list_sessions().into_iter().map(|s| s.id).collect();
+    assert!(!ids.contains(merged.id()));
 
     let squashed = create().await.unwrap();
     let path = PathBuf::from(squashed.info().worktree.unwrap().path);
@@ -180,7 +181,7 @@ async fn worktrees_end_with_a_merge_or_a_squash_merge() {
     assert_eq!(git(main, &["log", "-1", "--format=%s"]), "Add b and c");
     assert_eq!(git(main, &["rev-list", "--count", "HEAD^@"]), "3");
     assert!(main.join("c.txt").exists() && !path.exists());
-    assert!(squashed.info().worktree.is_none());
+    assert!(agent.session(squashed.id()).is_err());
 
     let conflicted = create().await.unwrap();
     let path = PathBuf::from(conflicted.info().worktree.unwrap().path);
@@ -209,11 +210,9 @@ async fn worktrees_end_with_a_merge_or_a_squash_merge() {
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(agent.session(conflicted.id()).is_ok());
     agent.remove_worktree(conflicted.id(), true).await.unwrap();
-    agent
-        .delete_session_and_worktree(conflicted.id())
-        .await
-        .unwrap();
+    assert!(agent.session(conflicted.id()).is_err());
     assert!(!path.exists());
     assert_eq!(git(main, &["branch", "--list", "loom/*"]), "");
 }

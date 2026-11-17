@@ -1,5 +1,5 @@
 //! The actions of sessions in git worktrees: create one, merge its branch,
-//! open a pull request, and remove the worktree.
+//! open a pull request, and remove the worktree with its session.
 
 use std::future::Future;
 
@@ -101,7 +101,7 @@ impl Workspace {
         dialogs::open_form(
             "Merge worktree",
             Some(format!(
-                "Merges {} into {} in the workspace, which must have {} checked out and no uncommitted changes. Enter a commit message to squash the branch into one commit, or make it empty for a merge commit that keeps the commits of the branch. The worktree stays; remove it from the session's menu.",
+                "Merges {} into {} in the workspace, which must have {} checked out and no uncommitted changes. Enter a commit message to squash the branch into one commit, or make it empty for a merge commit that keeps the commits of the branch. The worktree and the session stay; to delete both, choose Remove worktree in the session's menu.",
                 worktree.branch, worktree.base, worktree.base
             )),
             vec![FormField::new("Squash commit message", "empty for a merge commit").value(title)],
@@ -206,14 +206,14 @@ impl Workspace {
                 dialogs::confirm(
                     "Remove the worktree?",
                     format!(
-                        "Removes the worktree and the branch {}. The session goes on in the workspace.{warning}",
+                        "Removes the worktree, the branch {}, and the session with its history. This cannot be undone.{warning}",
                         worktree.branch
                     ),
                     "Remove",
                     move |window, cx| {
-                        let task = conn.read(cx).remove_worktree(info.id.clone(), true);
+                        let (conn, id) = (conn.clone(), info.id.clone());
                         let _ = this.update(cx, |ws, cx| {
-                            ws.worktree_action(task, |(), _, _| {}, window, cx)
+                            ws.drop_session_guarded(conn, id, window, cx)
                         });
                     },
                     window,

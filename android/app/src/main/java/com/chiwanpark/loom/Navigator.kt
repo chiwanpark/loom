@@ -108,6 +108,16 @@ class Navigator {
         stack.add(Screen.Home)
     }
 
+    /** Drops the conversation of a session that is gone, with the screens opened from it. */
+    fun leaveSession(host: String, instance: String, session: String) {
+        val first = stack.indexOfFirst {
+            it is Screen.Conversation && it.host == host && it.instance == instance && it.session == session
+        }
+        if (first > 0) {
+            while (stack.size > first) stack.removeAt(stack.lastIndex)
+        }
+    }
+
     /** Drops the screens of `host`, as when it is removed. */
     fun leaveHost(host: String) {
         stack.removeAll { screen -> screen is AgentScreen && screen.host == host }

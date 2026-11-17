@@ -577,9 +577,10 @@ impl AgentConnection {
             .any(|s| s.id == id && s.worktree.is_some());
         let task = self.backend.run(async move {
             if worktree {
-                client.remove_worktree(&session, true).await?;
+                client.remove_worktree(&session, true).await
+            } else {
+                client.delete_session(&session).await
             }
-            client.delete_session(&session).await
         });
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = task.await;
@@ -886,18 +887,6 @@ impl AgentConnection {
                 .open_pull_request(&session, &title, &body, draft)
                 .await
         })
-    }
-
-    /// Removes the worktree of a session, which then goes on in the
-    /// workspace.
-    pub fn remove_worktree(
-        &self,
-        session: SessionId,
-        force: bool,
-    ) -> impl Future<Output = Option<loom_client::Result<()>>> + use<> {
-        let client = self.client.clone();
-        self.backend
-            .run(async move { client.remove_worktree(&session, force).await })
     }
 
     /// Where the branch of a session's worktree is against its base.

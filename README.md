@@ -391,9 +391,9 @@ When the work is done, use the session's menu (in the agents panel, or the conve
 
 - **Merge worktree** merges the branch into its base in the workspace. The workspace must have the base checked out and no uncommitted changes to tracked files. With a commit message, the agent squashes the branch into one commit; without one, it makes a merge commit that keeps the commits of the branch. If the merge has conflicts, the workspace stays as it was and the error lists the files: resolve them in the worktree, for example by merging the base into the branch there, then merge again.
 - **Open pull request** pushes the branch to the remote of the base (`origin` if the base has none) and runs `gh pr create` with your title, description, and draft choice. The [GitHub CLI](https://cli.github.com/) (`gh`) must be installed and signed in on the agent's host. The session keeps the URL of the pull request; after that, the menu pushes new commits to it and opens it in the browser.
-- **Remove worktree** removes the worktree and its branch, and the session goes on in the workspace. If the worktree has uncommitted changes or commits that were not merged, the dialog tells you that you lose them.
+- **Remove worktree** removes the worktree, its branch, and the session. A session does not continue without its worktree. If the worktree has uncommitted changes or commits that were not merged, the dialog tells you that you lose them.
 
-Deleting a session also removes its worktree and branch. Archiving a session keeps them. A merge and a pull request keep the worktree, so you can go on working in it. If the worktree directory is gone, the session does not start turns until you remove the worktree.
+Deleting a session also removes its worktree and branch. Archiving a session keeps them. A merge and a pull request keep the worktree and the session, so you can go on working in it. If the worktree directory is gone, the session does not start turns; remove the worktree to delete the session.
 
 Worktrees are full checkouts of your repository. If a dotfile manager or a backup tool syncs `~/.config`, exclude `~/.config/loom/worktrees`, or set `worktrees.dir` to another directory.
 

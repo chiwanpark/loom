@@ -476,7 +476,8 @@ impl Agent {
         worktree.merged_head = crate::worktree::branch_head(root, &worktree.branch).await;
         if remove {
             crate::worktree::remove(root, &worktree, true).await?;
-            self.worktree_changed(&session, None);
+            self.delete_session(id)
+                .map_err(|e| convert::api_error(&e))?;
         } else {
             self.worktree_changed(&session, Some(worktree));
         }
@@ -508,18 +509,17 @@ impl Agent {
         Ok(url)
     }
 
-    /// Removes the session's worktree and its branch; the session goes on in
-    /// the workspace.
+    /// Removes the session's worktree and its branch, and deletes the
+    /// session: a session does not go on without its worktree.
     pub async fn remove_worktree(
         &self,
         id: &SessionId,
         force: bool,
     ) -> std::result::Result<(), ApiError> {
-        let (session, worktree) = self.idle_worktree(id)?;
+        let (_, worktree) = self.idle_worktree(id)?;
         let _guard = self.inner.worktree_lock.lock().await;
         crate::worktree::remove(self.workspace_root(), &worktree, force).await?;
-        self.worktree_changed(&session, None);
-        Ok(())
+        self.delete_session(id).map_err(|e| convert::api_error(&e))
     }
 
     /// Deletes a session; one with a worktree loses it too, unless it has
@@ -530,9 +530,10 @@ impl Agent {
     ) -> std::result::Result<(), ApiError> {
         let session = self.session(id).map_err(|e| convert::api_error(&e))?;
         if session.worktree().is_some() {
-            self.remove_worktree(id, false).await?;
+            self.remove_worktree(id, false).await
+        } else {
+            self.delete_session(id).map_err(|e| convert::api_error(&e))
         }
-        self.delete_session(id).map_err(|e| convert::api_error(&e))
     }
 
     pub fn delete_session(&self, id: &SessionId) -> Result<()> {

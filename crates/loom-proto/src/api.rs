@@ -451,8 +451,8 @@ pub enum Command {
     /// workspace, which must have the base checked out and no uncommitted
     /// changes. Fails with [`ErrorCode::Conflict`] when the merge has
     /// conflicts; the workspace then stays as it was. With `remove`, removes
-    /// the worktree and its branch after the merge, and the session goes on
-    /// in the workspace. Answered with [`Payload::Merged`].
+    /// the worktree and its branch after the merge, and deletes the session.
+    /// Answered with [`Payload::Merged`].
     MergeWorktree {
         session: SessionId,
         strategy: MergeStrategy,
@@ -468,10 +468,10 @@ pub enum Command {
         body: String,
         draft: bool,
     },
-    /// Removes the session's worktree and its branch; the session goes on in
-    /// the workspace. Without `force`, fails with [`ErrorCode::Conflict`]
-    /// when the worktree has uncommitted changes or commits that were not
-    /// merged. A session with a worktree is deleted only after this.
+    /// Removes the session's worktree and its branch, and deletes the
+    /// session. Without `force`, fails with [`ErrorCode::Conflict`] when the
+    /// worktree has uncommitted changes or commits that were not merged.
+    /// [`Command::DeleteSession`] fails in the same way.
     RemoveWorktree {
         session: SessionId,
         force: bool,

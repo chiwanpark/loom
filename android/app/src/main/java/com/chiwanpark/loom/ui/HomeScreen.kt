@@ -266,8 +266,11 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
             onConfirm = {
                 scope.attempt(snackbar) {
                     val connection = row.link.connection()
-                    if (worktree != null) connection.removeWorktree(row.session.id, true)
-                    connection.deleteSession(row.session.id)
+                    if (worktree != null) {
+                        connection.removeWorktree(row.session.id, true)
+                    } else {
+                        connection.deleteSession(row.session.id)
+                    }
                 }
             },
             onDismiss = { deleting = null },

@@ -2273,16 +2273,41 @@ impl Workspace {
             ),
             "Delete",
             move |window, cx| {
-                let conn = conn.clone();
-                let id = info.id.clone();
                 this.update(cx, |ws, cx| {
-                    ws.remove_groups(window, cx, |g| g.is(&conn, &id));
-                    conn.update(cx, |conn, cx| conn.delete_session(id.clone(), cx));
+                    ws.drop_session(conn.clone(), info.id.clone(), window, cx)
                 });
             },
             window,
             cx,
         );
+    }
+
+    /// Closes a session's tabs and deletes the session on the agent; with a
+    /// worktree, also the worktree and its branch.
+    pub(crate) fn drop_session(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remove_groups(window, cx, |g| g.is(&conn, &id));
+        conn.update(cx, |conn, cx| conn.delete_session(id, cx));
+    }
+
+    /// Like [`Workspace::drop_session`], after asking what to do with
+    /// unsaved changes in the session's tabs.
+    pub(crate) fn drop_session_guarded(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let unsaved = self.unsaved_in(|g| g.is(&conn, &id), cx);
+        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
+            ws.drop_session(conn, id, window, cx)
+        });
     }
 
     fn archive_session(

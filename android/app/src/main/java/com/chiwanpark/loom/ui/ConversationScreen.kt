@@ -374,10 +374,15 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
         removingWorktree?.let { warning ->
             ConfirmDialog(
                 title = "Remove the worktree?",
-                text = "The agent removes the worktree and the branch ${worktree.branch}. " +
-                    "The session goes on in the workspace.$warning",
+                text = "The agent removes the worktree, the branch ${worktree.branch}, " +
+                    "and this session with its conversation. This cannot be undone.$warning",
                 confirm = "Remove",
-                onConfirm = { scope.attempt(snackbar) { link.connection().removeWorktree(session, true) } },
+                onConfirm = {
+                    scope.attempt(snackbar) {
+                        link.connection().removeWorktree(session, true)
+                        app.navigator.leaveSession(link.host, link.instance, session)
+                    }
+                },
                 onDismiss = { removingWorktree = null },
             )
         }

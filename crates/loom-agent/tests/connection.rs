@@ -494,7 +494,16 @@ async fn worktree_sessions_through_the_client() {
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
     client.remove_worktree(&session.id, true).await.unwrap();
     assert!(!path.exists());
-    client.delete_session(&session.id).await.unwrap();
+    let gone = client.delete_session(&session.id).await.unwrap_err();
+    assert_eq!(gone.api().unwrap().code, ErrorCode::NotFound);
+    assert!(
+        !client
+            .list_sessions()
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.id == session.id)
+    );
 
     let missing = client
         .in_session(Some(SessionId("nope".into())))

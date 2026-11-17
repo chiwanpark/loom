@@ -693,9 +693,9 @@ impl AgentConnection {
         .await
     }
 
-    /// Removes the session's worktree and its branch; the session goes on in
-    /// the workspace. Without `force`, fails when the worktree has changes
-    /// that were not merged.
+    /// Removes the session's worktree and its branch, and deletes the
+    /// session. Without `force`, fails when the worktree has changes that
+    /// were not merged.
     pub async fn remove_worktree(self: Arc<Self>, session: String, force: bool) -> Result<()> {
         with_client(&self.shared, move |client| async move {
             Ok(client.remove_worktree(&session_id(session), force).await?)
