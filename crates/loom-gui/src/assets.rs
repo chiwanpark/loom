@@ -48,6 +48,7 @@ gpui_kit_assets::icon_assets!(
         ShieldCheck,
         TextWrap,
         Trash,
+        Undo2,
         Unplug,
         Upload
     ]

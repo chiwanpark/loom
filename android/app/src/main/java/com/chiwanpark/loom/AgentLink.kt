@@ -79,6 +79,9 @@ class ConversationState(val session: String) {
     /** Messages sent while a turn ran, waiting to be delivered. */
     var waiting by mutableStateOf<List<WaitingMessage>>(emptyList())
 
+    /** The key of the first user message the conversation can go back to; a compaction summarized the ones before. */
+    var rewindFrom by mutableStateOf(0L)
+
     /** Counts the updates, so the screen can follow every change, also one that only grows the last item. */
     var revision by mutableStateOf(0L)
         private set
@@ -102,6 +105,7 @@ class ConversationState(val session: String) {
         contextTokens = update.contextTokens
         pendingApprovals = update.pendingApprovals.toInt()
         waiting = update.waiting
+        rewindFrom = update.rewindFrom.toLong()
         loaded = true
         revision++
     }

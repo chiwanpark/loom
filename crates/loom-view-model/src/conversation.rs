@@ -348,6 +348,44 @@ impl<I> Conversation<I> {
         self.events.push(event.clone());
     }
 
+    /// Drops the events from `from` on and makes the items again from the
+    /// ones before, as [`SessionEvent::Rewound`] says.
+    fn rewind(&mut self, from: u64) {
+        let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut self.events)
+            .into_iter()
+            .partition(|e| e.seq < from);
+        let total = &mut self.total_usage;
+        for event in &dropped {
+            if let SessionEvent::Usage { usage } = &event.event {
+                total.input = total.input.saturating_sub(usage.input);
+                total.output = total.output.saturating_sub(usage.output);
+                total.cache_read = total.cache_read.saturating_sub(usage.cache_read);
+                total.cache_write = total.cache_write.saturating_sub(usage.cache_write);
+                total.reasoning = total.reasoning.saturating_sub(usage.reasoning);
+                total.total = total.total.saturating_sub(usage.total);
+            }
+        }
+        if !dropped.is_empty() {
+            let mut last = UsageSoFar::default();
+            for event in &kept {
+                last.apply(&event.event);
+            }
+            self.last_usage = last.last;
+        }
+        let mut all = Conversation::with_images(self.info.clone(), self.decode);
+        for event in &kept {
+            all.apply(event);
+        }
+        self.items = all.items;
+        self.item_keys = all.item_keys;
+        self.tools = all.tools;
+        self.item_revisions = vec![self.revision; self.items.len()];
+        self.events = kept;
+        self.prepended = 0;
+        self.generation += 1;
+        self.changes_revision += 1;
+    }
+
     fn touch(&mut self, index: usize) {
         if let Some(revision) = self.item_revisions.get_mut(index) {
             *revision = self.revision;
@@ -370,6 +408,36 @@ impl<I> Conversation<I> {
 
     pub fn is_busy(&self) -> bool {
         self.state.is_busy()
+    }
+
+    /// Whether the conversation can go back to before the user message that
+    /// event `seq` made: not while a turn runs, and not to a message that a
+    /// summary replaced. A summary keeps the last user message before it.
+    pub fn can_rewind(&self, seq: u64) -> bool {
+        !self.is_busy() && seq >= self.rewind_from()
+    }
+
+    /// The sequence number of the first event that the conversation can go
+    /// back to, while it is idle: the user messages from this one on were
+    /// not replaced by a summary.
+    pub fn rewind_from(&self) -> u64 {
+        let summary = self.events.iter().rposition(|e| {
+            matches!(
+                e.event,
+                SessionEvent::ContextCompacted {
+                    summarized: true,
+                    ..
+                }
+            )
+        });
+        match summary {
+            None => 0,
+            Some(index) => self.events[..index]
+                .iter()
+                .rev()
+                .find(|e| matches!(e.event, SessionEvent::UserMessage { .. }))
+                .map_or(self.events[index].seq, |e| e.seq),
+        }
     }
 
     /// What the session is doing now, shown as the last block of the
@@ -403,6 +471,9 @@ impl<I> Conversation<I> {
         self.last_seq = self.last_seq.max(event.seq);
         self.revision += 1;
         self.current_seq = event.seq;
+        if let SessionEvent::Rewound { seq } = &event.event {
+            self.rewind(*seq);
+        }
         self.record(event);
         let mut usage = UsageSoFar {
             total: self.total_usage,
@@ -577,7 +648,9 @@ impl<I> Conversation<I> {
             }
             SessionEvent::Cleared => self.clear_items(),
             // Kept above.
-            SessionEvent::PendingAdded { .. } | SessionEvent::PendingRemoved { .. } => {}
+            SessionEvent::PendingAdded { .. }
+            | SessionEvent::PendingRemoved { .. }
+            | SessionEvent::Rewound { .. } => {}
         }
         true
     }
@@ -1328,6 +1401,122 @@ mod tests {
         assert_eq!(conv.items.len(), 2);
         assert!(matches!(&conv.items[0], Item::User { text, .. } if text == "Next"));
         assert!(matches!(&conv.items[1], Item::Tool(tool) if tool.status == ToolStatus::Requested));
+    }
+
+    #[test]
+    fn rewinding_drops_the_later_items_and_their_usage() {
+        let usage = |input: u64| SessionEvent::Usage {
+            usage: Usage {
+                input,
+                total: input,
+                ..Usage::default()
+            },
+        };
+        let waiting = PendingMessage {
+            id: 1,
+            content: vec![ContentPart::text("later")],
+            delivery: Delivery::Queue,
+        };
+        let mut conv = Conversation::new(info());
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("one")],
+                },
+                SessionEvent::AssistantMessage {
+                    text: "one done".into(),
+                    reasoning: None,
+                    model: "m".into(),
+                },
+                usage(10),
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("two")],
+                },
+                SessionEvent::ToolCallRequested {
+                    call: call("c1", "shell", r#"{"command":"ls"}"#),
+                },
+                usage(20),
+                SessionEvent::PendingAdded {
+                    message: waiting.clone(),
+                },
+            ],
+        );
+        assert_eq!(conv.items.len(), 4);
+        assert_eq!(conv.total_usage.input, 30);
+        feed(
+            &mut conv,
+            vec![
+                SessionEvent::Rewound { seq: 4 },
+                SessionEvent::PendingAdded {
+                    message: waiting.clone(),
+                },
+            ],
+        );
+        assert_eq!(conv.items.len(), 2);
+        assert!(matches!(&conv.items[0], Item::User { text, .. } if text == "one"));
+        assert_eq!(conv.item_keys(), [1, 2]);
+        assert_eq!(conv.total_usage.input, 10);
+        assert_eq!(conv.last_usage.map(|u| u.input), Some(10));
+        assert_eq!(conv.pending, vec![waiting]);
+        assert_eq!(conv.generation, 1);
+        assert_eq!(conv.first_seq(), Some(1));
+        // Events of the dropped tool call find nothing.
+        feed(
+            &mut conv,
+            vec![SessionEvent::ToolCallStarted {
+                call_id: "c1".into(),
+            }],
+        );
+        assert_eq!(conv.items.len(), 2);
+
+        // Rewound to before everything it holds, it keeps the rewind's
+        // event, before which older events are fetched.
+        let mut tail = Conversation::new(info());
+        tail.start_window(&EventWindow {
+            has_older: true,
+            usage: UsageSoFar::default(),
+            pending: Vec::new(),
+        });
+        tail.apply(&SequencedEvent {
+            seq: 50,
+            event: SessionEvent::UserMessage {
+                content: vec![ContentPart::text("late")],
+            },
+        });
+        tail.apply(&SequencedEvent {
+            seq: 51,
+            event: SessionEvent::Rewound { seq: 40 },
+        });
+        assert!(tail.items.is_empty());
+        assert!(tail.has_older);
+        assert_eq!(tail.first_seq(), Some(51));
+    }
+
+    #[test]
+    fn messages_that_a_summary_replaced_cannot_be_rewound() {
+        let user = |text: &str| SessionEvent::UserMessage {
+            content: vec![ContentPart::text(text)],
+        };
+        let compacted = |summarized| SessionEvent::ContextCompacted {
+            removed_messages: 2,
+            summarized,
+        };
+        let mut conv = Conversation::new(info());
+        feed(&mut conv, vec![user("one"), user("two"), compacted(false)]);
+        assert!(conv.can_rewind(1));
+        feed(&mut conv, vec![compacted(true), user("three")]);
+        assert!(!conv.can_rewind(1));
+        // The summary kept the last message before it.
+        assert!(conv.can_rewind(2));
+        assert!(conv.can_rewind(5));
+        feed(
+            &mut conv,
+            vec![SessionEvent::StateChanged {
+                state: SessionState::Thinking,
+            }],
+        );
+        assert!(!conv.can_rewind(5));
     }
 
     #[test]

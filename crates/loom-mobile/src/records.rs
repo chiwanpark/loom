@@ -454,6 +454,9 @@ pub struct ConversationUpdate {
     /// Whether the session has items before these, which `load_earlier`
     /// fetches.
     pub has_older: bool,
+    /// The key of the first user message that `rewind_session` can go back
+    /// to while the session is idle: a compaction summarized the ones before.
+    pub rewind_from: u64,
     pub reset: bool,
     pub len: u32,
     pub items: Vec<ChangedItem>,
@@ -492,6 +495,7 @@ impl ConversationUpdate {
                 .map(WaitingMessage::from)
                 .collect(),
             has_older: conversation.has_older,
+            rewind_from: conversation.rewind_from(),
             reset,
             len: conversation.items.len() as u32,
             items,
@@ -539,7 +543,8 @@ impl From<&proto::PendingMessage> for WaitingMessage {
     }
 }
 
-/// A waiting message taken back, to be edited and sent again.
+/// A waiting message taken back, or the message a rewind removed, to be
+/// edited and sent again.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct TakenBack {
     pub text: String,
@@ -548,9 +553,15 @@ pub struct TakenBack {
 
 impl From<proto::PendingMessage> for TakenBack {
     fn from(message: proto::PendingMessage) -> Self {
+        message.content.into()
+    }
+}
+
+impl From<Vec<proto::ContentPart>> for TakenBack {
+    fn from(content: Vec<proto::ContentPart>) -> Self {
         let mut text = Vec::new();
         let mut images = Vec::new();
-        for part in message.content {
+        for part in content {
             match part {
                 proto::ContentPart::Text { text: part } => text.push(part),
                 proto::ContentPart::Image { mime_type, data } => {

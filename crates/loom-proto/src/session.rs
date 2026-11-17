@@ -279,6 +279,13 @@ pub enum SessionEvent {
     PendingRemoved {
         id: u64,
     },
+    /// The conversation went back to before the user message of event
+    /// `seq`: clients drop the events from `seq` on, and what they showed
+    /// for them. Messages still waiting are added again, or removed, right
+    /// after it, so that the events before it and these tell which wait.
+    Rewound {
+        seq: u64,
+    },
 }
 
 /// How a message a client sends goes into the conversation.
@@ -306,10 +313,16 @@ pub struct PendingMessage {
     pub delivery: Delivery,
 }
 
-/// Applies what `event` changes to the waiting messages.
+/// Applies what `event` changes to the waiting messages. A message added
+/// again, as after [`SessionEvent::Rewound`], replaces the one it repeats.
 pub fn apply_pending(pending: &mut Vec<PendingMessage>, event: &SessionEvent) {
     match event {
-        SessionEvent::PendingAdded { message } => pending.push(message.clone()),
+        SessionEvent::PendingAdded { message } => {
+            match pending.iter_mut().find(|m| m.id == message.id) {
+                Some(existing) => *existing = message.clone(),
+                None => pending.push(message.clone()),
+            }
+        }
         SessionEvent::PendingRemoved { id } => pending.retain(|message| message.id != *id),
         SessionEvent::Cleared => pending.clear(),
         _ => {}

@@ -386,6 +386,9 @@ fn render_event(
         SessionEvent::Cleared => {
             let _ = writeln!(out, "[conversation cleared]");
         }
+        SessionEvent::Rewound { seq } => {
+            let _ = writeln!(out, "[conversation rewound to before event {seq}]");
+        }
     }
     None
 }

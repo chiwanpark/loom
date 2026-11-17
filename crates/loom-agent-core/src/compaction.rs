@@ -43,7 +43,7 @@ pub(crate) fn plan(history: &[Message]) -> Plan {
     }
 }
 
-fn is_summary(message: &Message) -> bool {
+pub(crate) fn is_summary(message: &Message) -> bool {
     match message {
         Message::User { content } => content.iter().any(|part| match part {
             InputContent::Text { text } => text.starts_with(SUMMARY_PREFIX),

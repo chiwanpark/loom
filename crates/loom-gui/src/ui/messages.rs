@@ -18,7 +18,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::clipboard::Clipboard;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewState};
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable, Theme, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, Theme, h_flex, v_flex};
 use loom_client::proto::{Decision, ToolCall, ToolResultDetails};
 use loom_vt::{AlacrittyTerminal, TerminalEmulator};
 
@@ -111,6 +111,11 @@ pub enum MessagesEvent {
     },
     /// The top of the list is in view and the session has older items.
     LoadEarlier,
+    /// Take the conversation back to before the user message that event
+    /// `seq` made.
+    Rewind {
+        seq: u64,
+    },
 }
 
 pub struct MessageList {
@@ -399,6 +404,29 @@ impl MessageList {
         let theme = cx.theme().clone();
         match item {
             Item::User { text, images } => {
+                let conversation = self.conversation.read(cx);
+                let seq = conversation.item_keys()[ix];
+                let (enabled, tooltip) = if conversation.is_busy() {
+                    (false, "Wait for the turn to end to rewind")
+                } else if conversation.can_rewind(seq) {
+                    (true, "Rewind the conversation to before this message")
+                } else {
+                    (
+                        false,
+                        "A compaction summarized this message, so the conversation cannot go back to it",
+                    )
+                };
+                let rewind = div().debug_selector(move || format!("rewind-{ix}")).child(
+                    Button::new(("rewind", ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(gpui_kit_assets::IconName::Undo2))
+                        .tooltip(tooltip)
+                        .disabled(!enabled)
+                        .on_click(
+                            cx.listener(move |_, _, _, cx| cx.emit(MessagesEvent::Rewind { seq })),
+                        ),
+                );
                 v_flex()
                     .w_full()
                     .p(CARD_PADDING)
@@ -407,14 +435,21 @@ impl MessageList {
                     .border_1()
                     .border_color(theme.border)
                     .gap_2()
-                    .when(!text.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .debug_selector(|| format!("user-text-{ix}"))
-                                .whitespace_normal()
-                                .child(text.clone()),
-                        )
-                    })
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_start()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .debug_selector(|| format!("user-text-{ix}"))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_normal()
+                                    .child(text.clone()),
+                            )
+                            .child(rewind),
+                    )
                     .when(!images.is_empty(), |el| {
                         el.child(h_flex().flex_wrap().gap_2().children(
                             images.iter().enumerate().map(|(image_ix, image)| {
@@ -1211,6 +1246,8 @@ mod tests {
 
 #[cfg(test)]
 mod view_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use gpui::{
@@ -1224,7 +1261,7 @@ mod view_tests {
         SessionState, ToolCall, ToolResult,
     };
 
-    use super::{MessageList, gap_before, header_highlights, pane};
+    use super::{MessageList, MessagesEvent, gap_before, header_highlights, pane};
     use crate::conversation::{Conversation, Item, ToolItem, ToolStatus};
 
     fn info() -> SessionInfo {
@@ -1806,6 +1843,42 @@ mod view_tests {
         let table = copy("copy-table", cx);
         assert!(table.contains("| a | b |"), "{table}");
         assert!(table.contains("| 1 | 2 |"), "{table}");
+    }
+
+    #[gpui::test]
+    fn the_rewind_button_of_a_prompt_asks_to_rewind(cx: &mut TestAppContext) {
+        let (conversation, _, messages, cx) = open(0, cx);
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let seen = asked.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&messages, move |_, event: &MessagesEvent, _| {
+                if let MessagesEvent::Rewind { seq } = event {
+                    seen.borrow_mut().push(*seq);
+                }
+            })
+            .detach()
+        });
+        feed(
+            &conversation,
+            vec![
+                state(SessionState::Thinking),
+                SessionEvent::UserMessage {
+                    content: vec![ContentPart::text("a prompt")],
+                },
+            ],
+            cx,
+        );
+        let click = |cx: &mut VisualTestContext| {
+            let bounds = cx.debug_bounds("rewind-0").expect("rewind-0");
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+        };
+        // Not while the turn runs.
+        click(cx);
+        assert!(asked.borrow().is_empty());
+        feed(&conversation, vec![state(SessionState::Idle)], cx);
+        click(cx);
+        assert_eq!(*asked.borrow(), [2]);
     }
 
     fn feed(

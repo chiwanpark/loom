@@ -1,5 +1,7 @@
 package com.chiwanpark.loom.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -9,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +40,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -131,6 +135,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var pickReasoning by remember { mutableStateOf(false) }
     var pickPolicy by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
+    var rewinding by remember { mutableStateOf<Long?>(null) }
     var draft by rememberSaveable { mutableStateOf("") }
 
     // Follows the conversation while it is on the back stack, also after reconnecting
@@ -228,6 +233,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                         onDecide = { callId, decision ->
                             scope.attempt(snackbar) { link.connection().resolveApproval(session, callId, decision) }
                         },
+                        onRewind = { key -> rewinding = key },
                     )
                 }
             }
@@ -286,6 +292,22 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
             onDismiss = { clearing = false },
         )
     }
+    rewinding?.let { key ->
+        ConfirmDialog(
+            title = "Rewind to before this message?",
+            text = "The agent forgets this message and everything after it. " +
+                "The message goes back into the prompt box, so you can edit it and send it again. " +
+                "Files in the workspace stay as they are now: the agent does not undo its changes.",
+            confirm = "Rewind",
+            onConfirm = {
+                scope.attempt(snackbar) {
+                    val taken = link.connection().rewindSession(session, key.toULong())
+                    draft = listOf(draft.trimEnd(), taken.text).filter { it.isNotEmpty() }.joinToString("\n\n")
+                }
+            },
+            onDismiss = { rewinding = null },
+        )
+    }
 }
 
 /**
@@ -297,6 +319,7 @@ private fun Messages(
     conversation: ConversationState,
     onLoadEarlier: () -> Unit,
     onDecide: (String, ApprovalDecision) -> Unit,
+    onRewind: (Long) -> Unit,
 ) {
     val items = conversation.items
     val listState = rememberLazyListState()
@@ -341,9 +364,14 @@ private fun Messages(
             items(count = items.size, key = { items[items.size - 1 - it].key }) { reversed ->
                 val index = items.size - 1 - reversed
                 val item = items[index].item
+                val key = items[index].key
+                val idle = conversation.status == SessionStatus.IDLE || conversation.status == SessionStatus.COMPLETED
                 Box(Modifier.padding(top = gapBefore(items.getOrNull(index - 1)?.item, item))) {
                     when (item) {
-                        is ConversationItem.User -> UserMessage(item)
+                        is ConversationItem.User -> UserMessage(
+                            item,
+                            rewind = if (idle && key >= conversation.rewindFrom) ({ onRewind(key) }) else null,
+                        )
                         is ConversationItem.Assistant -> AssistantMessage(item)
                         is ConversationItem.Tool -> ToolCall(item, onDecide)
                         is ConversationItem.Notice -> Notice(item)
@@ -513,16 +541,22 @@ private fun pulse(): Float {
     return alpha
 }
 
+/** A prompt of the user. A long press opens its menu: copy it, or rewind the conversation to before it, when [rewind] is set. */
 @Composable
-private fun UserMessage(item: ConversationItem.User) {
+private fun UserMessage(item: ConversationItem.User, rewind: (() -> Unit)?) {
+    val context = LocalContext.current
+    var menu by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
         Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
             shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.widthIn(max = 360.dp),
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .combinedClickable(onClick = {}, onLongClick = { menu = true }),
         ) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (item.text.isNotEmpty()) SelectionContainer { Text(item.text) }
+                if (item.text.isNotEmpty()) Text(item.text)
                 if (item.images.isNotEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         LoomIcon(LoomIcons.Image, "Images", size = 14.dp)
@@ -530,6 +564,24 @@ private fun UserMessage(item: ConversationItem.User) {
                     }
                 }
             }
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            val close = { menu = false }
+            if (item.text.isNotEmpty()) {
+                MenuEntry("Copy", LoomIcons.Copy, close) {
+                    context.getSystemService(ClipboardManager::class.java)
+                        ?.setPrimaryClip(ClipData.newPlainText("Message", item.text))
+                }
+            }
+            DropdownMenuItem(
+                text = { Text("Rewind to here") },
+                leadingIcon = { LoomIcon(LoomIcons.Undo, null, size = 18.dp) },
+                enabled = rewind != null,
+                onClick = {
+                    close()
+                    rewind?.invoke()
+                },
+            )
         }
     }
 }

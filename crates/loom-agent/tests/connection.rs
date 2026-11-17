@@ -414,6 +414,44 @@ async fn sessions_are_cleared_through_the_client() {
 }
 
 #[tokio::test]
+async fn sessions_are_rewound_through_the_client() {
+    let setup = setup(vec![text("one done"), text("two done")]);
+    let (client, mut notes) = connect(&setup).await;
+    let session = client.create_session(None).await.unwrap();
+    client.subscribe(&session.id, None, None).await.unwrap();
+    let mut users = Vec::new();
+    for prompt in ["one", "two"] {
+        client.send_text(&session.id, prompt).await.unwrap();
+        let seq = loop {
+            if let (_, seq, SessionEvent::UserMessage { .. }) = next_event(&mut notes).await {
+                break seq;
+            }
+        };
+        users.push(seq);
+        until_turn_finished(&mut notes).await;
+    }
+
+    let content = client.rewind_session(&session.id, users[1]).await.unwrap();
+    assert_eq!(content, vec![ContentPart::text("two")]);
+    loop {
+        if let (_, _, SessionEvent::Rewound { seq }) = next_event(&mut notes).await {
+            assert_eq!(seq, users[1]);
+            break;
+        }
+    }
+    let err = client
+        .rewind_session(&session.id, users[1])
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+    let err = client
+        .rewind_session(&SessionId("nope".into()), users[0])
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
 async fn session_settings_and_errors() {
     let setup = setup(vec![]);
     let (client, _notes) = connect(&setup).await;

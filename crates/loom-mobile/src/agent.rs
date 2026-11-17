@@ -910,6 +910,19 @@ impl AgentConnection {
         .await
     }
 
+    /// Takes the session's conversation back to before the user message
+    /// with item key `key`, and returns that message to be edited and sent
+    /// again. The files of the workspace stay as they are.
+    pub async fn rewind_session(self: Arc<Self>, session: String, key: u64) -> Result<TakenBack> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client
+                .rewind_session(&session_id(session), key)
+                .await?
+                .into())
+        })
+        .await
+    }
+
     /// Tells the agent that the user saw the session: a completed session
     /// becomes idle.
     pub async fn mark_seen(self: Arc<Self>, session: String) -> Result<()> {

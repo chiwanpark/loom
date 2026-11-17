@@ -111,6 +111,7 @@ mod tests {
             reasoning: None,
         });
         roundtrip(SessionEvent::Cleared);
+        roundtrip(SessionEvent::Rewound { seq: 12 });
     }
 
     /// Events stored by an earlier agent still decode: these are the bytes
@@ -153,6 +154,30 @@ mod tests {
         assert_eq!(so_far.total.output, 4);
         so_far.apply(&SessionEvent::Cleared);
         assert_eq!(so_far, UsageSoFar::default());
+    }
+
+    #[test]
+    fn a_pending_message_added_again_replaces_the_one_it_repeats() {
+        let message = |id: u64, text: &str| PendingMessage {
+            id,
+            content: vec![ContentPart::text(text)],
+            delivery: Delivery::Queue,
+        };
+        let mut pending = Vec::new();
+        for event in [
+            SessionEvent::PendingAdded {
+                message: message(1, "a"),
+            },
+            SessionEvent::PendingAdded {
+                message: message(2, "b"),
+            },
+            SessionEvent::PendingAdded {
+                message: message(1, "a"),
+            },
+        ] {
+            apply_pending(&mut pending, &event);
+        }
+        assert_eq!(pending, vec![message(1, "a"), message(2, "b")]);
     }
 
     fn message_roundtrip<T>(message: T)
@@ -316,6 +341,10 @@ mod tests {
                     },
                     TaskChange::Remove { id: 1 },
                 ],
+            },
+            Command::Rewind {
+                session: session.clone(),
+                seq: 12,
             },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });
@@ -524,6 +553,10 @@ mod tests {
                     ..agent
                 }],
             })),
+        });
+        message_roundtrip(ServerMessage::Response {
+            id: 15,
+            result: Ok(Payload::Rewound(vec![ContentPart::text("try again")])),
         });
         for reload in [
             ConfigReload::Applied {

@@ -13,7 +13,7 @@ use crate::session::{
     SessionInfo, ToolCallId, UsageSoFar,
 };
 
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -413,6 +413,18 @@ pub enum Command {
     UpdateAgent {
         version: Option<String>,
     },
+    /// Takes the conversation back to before the user message of event
+    /// `seq`: the agent forgets that message and everything after it, and
+    /// sends [`SessionEvent::Rewound`]. The files of the workspace, the
+    /// tasks, and the notes stay as they are. Fails while the session is
+    /// busy, and for a message that a compaction summarized. Answered with
+    /// [`Payload::Rewound`].
+    ///
+    /// [`SessionEvent::Rewound`]: crate::SessionEvent::Rewound
+    Rewind {
+        session: SessionId,
+        seq: u64,
+    },
 }
 
 /// The most bytes in one [`Command::UploadChunk`].
@@ -542,6 +554,9 @@ pub enum Payload {
     Ports(Vec<ListeningPort>),
     SystemPrompt(SystemPrompt),
     AgentUpdated(AgentUpdate),
+    /// The user message that [`Command::Rewind`] removed, for the client to
+    /// edit and send again.
+    Rewound(Vec<ContentPart>),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].

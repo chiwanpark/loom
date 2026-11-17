@@ -83,6 +83,7 @@ object LoomIcons {
     val Terminal = Lucide.drawable.lucide_ic_square_terminal
     val Trash = Lucide.drawable.lucide_ic_trash_2
     val TriangleAlert = Lucide.drawable.lucide_ic_triangle_alert
+    val Undo = Lucide.drawable.lucide_ic_undo_2
     val WrapText = Lucide.drawable.lucide_ic_text_wrap
     val X = Lucide.drawable.lucide_ic_x
 }

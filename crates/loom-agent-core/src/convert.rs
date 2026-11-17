@@ -192,7 +192,8 @@ pub fn api_error(err: &crate::CoreError) -> loom_proto::ApiError {
     use loom_proto::ErrorCode;
     let code = match err {
         CoreError::Busy => ErrorCode::Busy,
-        CoreError::UnknownPending(_) => ErrorCode::NotFound,
+        CoreError::UnknownPending(_) | CoreError::UnknownMessage(_) => ErrorCode::NotFound,
+        CoreError::MessageCompacted | CoreError::HistoryMismatch => ErrorCode::Conflict,
         CoreError::NoModel
         | CoreError::EmptyPrompt
         | CoreError::NothingToCompact

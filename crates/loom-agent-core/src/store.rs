@@ -142,6 +142,11 @@ enum Op {
         session: SessionId,
         seq: u64,
     },
+    /// Drops a session's events from `seq` on.
+    DropFrom {
+        session: SessionId,
+        seq: u64,
+    },
     Flush(oneshot::Sender<()>),
 }
 
@@ -234,6 +239,14 @@ impl EventStore {
     /// Drops the session's events numbered below `seq`.
     pub fn truncate(&self, session: &SessionId, seq: u64) {
         let _ = self.tx.send(Op::Truncate {
+            session: session.clone(),
+            seq,
+        });
+    }
+
+    /// Drops the session's events numbered `seq` or higher.
+    pub fn drop_from(&self, session: &SessionId, seq: u64) {
+        let _ = self.tx.send(Op::DropFrom {
             session: session.clone(),
             seq,
         });
@@ -379,6 +392,7 @@ fn apply(
         | Op::Session { session, .. }
         | Op::Tasks { session, .. }
         | Op::Truncate { session, .. }
+        | Op::DropFrom { session, .. }
             if deleted.contains(&session) => {}
         #[cfg(test)]
         Op::Notes { session, .. } if deleted.contains(&session) => {}
@@ -438,6 +452,12 @@ fn apply(
         Op::Truncate { session, seq } => {
             conn.execute(
                 "DELETE FROM events WHERE session_id = ?1 AND seq < ?2",
+                params![session.0, seq as i64],
+            )?;
+        }
+        Op::DropFrom { session, seq } => {
+            conn.execute(
+                "DELETE FROM events WHERE session_id = ?1 AND seq >= ?2",
                 params![session.0, seq as i64],
             )?;
         }

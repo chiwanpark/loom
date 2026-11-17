@@ -30,6 +30,7 @@ fn kinds(events: &[loom_proto::SequencedEvent]) -> Vec<&'static str> {
             SessionEvent::Cleared => "cleared",
             SessionEvent::PendingAdded { .. } => "pending",
             SessionEvent::PendingRemoved { .. } => "delivered",
+            SessionEvent::Rewound { .. } => "rewound",
         })
         .collect()
 }

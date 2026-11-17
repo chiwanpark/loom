@@ -18,6 +18,14 @@ pub enum CoreError {
     EmptyPrompt,
     #[error("there is nothing to compact in this session yet")]
     NothingToCompact,
+    #[error("event {0} is not a user message of this conversation")]
+    UnknownMessage(u64),
+    #[error(
+        "this message was summarized when the context was compacted, so the conversation cannot go back to it"
+    )]
+    MessageCompacted,
+    #[error("the conversation does not match its events, so it cannot go back to this message")]
+    HistoryMismatch,
     #[error(
         "the notes would be {size} bytes, more than the {max}-byte limit (tools.notes.max_bytes)"
     )]

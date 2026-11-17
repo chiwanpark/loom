@@ -777,6 +777,21 @@ impl Client {
         .await
     }
 
+    /// Takes a session's conversation back to before the user message of
+    /// event `seq`, and returns that message. Subscribers get a `Rewound`
+    /// event. Fails with `Busy` while a turn is running, and with `Conflict`
+    /// for a message that a compaction summarized.
+    pub async fn rewind_session(&self, session: &SessionId, seq: u64) -> Result<Vec<ContentPart>> {
+        let command = Command::Rewind {
+            session: session.clone(),
+            seq,
+        };
+        match self.request(command).await? {
+            Payload::Rewound(content) => Ok(content),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Tells the agent that the user saw a session, so that a completed
     /// session becomes idle.
     pub async fn mark_session_seen(&self, session: &SessionId) -> Result<()> {

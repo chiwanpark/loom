@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use loom_proto::{
-    EventWindow, History, SequencedEvent, SessionEvent, SessionId, SessionState, UsageSoFar,
+    EventWindow, History, PendingMessage, SequencedEvent, SessionEvent, SessionId, SessionState,
+    UsageSoFar,
 };
 
 use crate::observer::SessionObserver;
@@ -115,6 +116,14 @@ impl EventHub {
                     store.truncate(session, seq);
                 }
             }
+            // A rewound session forgets the events from the rewound one on;
+            // this event follows the ones before it.
+            SessionEvent::Rewound { seq: from } => {
+                log.events.retain(|e| e.seq < *from);
+                if let Some((store, session)) = &self.store {
+                    store.drop_from(session, *from);
+                }
+            }
             _ => {}
         }
         let record = SequencedEvent { seq, event };
@@ -145,6 +154,11 @@ impl EventHub {
 
     pub fn last_seq(&self) -> u64 {
         self.lock().next_seq - 1
+    }
+
+    /// The waiting messages that the events of the log tell of.
+    pub fn logged_pending(&self) -> Vec<PendingMessage> {
+        pending_of(&self.lock().events)
     }
 
     pub fn subscribe(&self, since_seq: Option<u64>) -> Subscription {

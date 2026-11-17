@@ -12,7 +12,7 @@ use gpui_component::input::{InputEvent, Paste, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Disableable, Icon, IconName, Sizable, h_flex, v_flex};
-use loom_client::proto::{ContentPart, Decision, Delivery, PendingMessage, SessionId, UsageLimit};
+use loom_client::proto::{ContentPart, Decision, Delivery, SessionId, UsageLimit};
 
 use crate::attachments::{self, AttachError};
 use crate::conversation::{Conversation, delivery_label, pending_text};
@@ -94,6 +94,7 @@ impl SessionView {
                             conn.load_earlier(&id, crate::conversation::PAGE_ITEMS, cx)
                         });
                     }
+                    MessagesEvent::Rewind { seq } => this.confirm_rewind(*seq, window, cx),
                 },
             ),
         ];
@@ -257,8 +258,9 @@ impl SessionView {
             window,
             async move |this, cx: &mut AsyncWindowContext| match task.await {
                 Some(Ok(message)) => {
-                    let _ =
-                        this.update_in(cx, |this, window, cx| this.restore(message, window, cx));
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.restore(message.content, window, cx)
+                    });
                 }
                 Some(Err(err)) => {
                     let _ = cx.update(|window, cx| notify::error(window, cx, err.to_string()));
@@ -269,9 +271,9 @@ impl SessionView {
         .detach();
     }
 
-    fn restore(&mut self, message: PendingMessage, window: &mut Window, cx: &mut Context<Self>) {
+    fn restore(&mut self, content: Vec<ContentPart>, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim_end().to_owned();
-        for part in message.content {
+        for part in content {
             match part {
                 ContentPart::Text { text: part } => {
                     if !text.is_empty() {
@@ -391,6 +393,50 @@ impl SessionView {
             "Clear",
             move |window, cx| {
                 let _ = this.update(cx, |this, cx| this.clear(window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Takes the conversation back to before the message of event `seq`,
+    /// and puts that message into the composer to be edited and sent again.
+    fn rewind(&mut self, seq: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.connection.read(cx);
+        let client = conn.client.clone();
+        let session = self.session_id(cx);
+        let task = conn
+            .backend
+            .run(async move { client.rewind_session(&session, seq).await });
+        cx.spawn_in(
+            window,
+            async move |this, cx: &mut AsyncWindowContext| match task.await {
+                Some(Ok(content)) => {
+                    let _ =
+                        this.update_in(cx, |this, window, cx| this.restore(content, window, cx));
+                }
+                Some(Err(err)) => {
+                    let _ = cx.update(|window, cx| {
+                        notify::error(window, cx, format!("Could not rewind the session: {err}"))
+                    });
+                }
+                None => {}
+            },
+        )
+        .detach();
+    }
+
+    fn confirm_rewind(&mut self, seq: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        dialogs::confirm(
+            "Rewind to before this message?",
+            "The agent forgets this message and everything after it. \
+             The message goes back into the prompt box, so you can edit it and send it again. \
+             Files in the workspace stay as they are now: the agent does not undo its changes. \
+             This cannot be undone.",
+            "Rewind",
+            move |window, cx| {
+                let _ = this.update(cx, |this, cx| this.rewind(seq, window, cx));
             },
             window,
             cx,
@@ -1117,7 +1163,9 @@ mod tests {
 
             let input = view.read_with(cx, |view, _| view.input.clone());
             input.update_in(cx, |input, window, cx| input.set_value("first", window, cx));
-            view.update_in(cx, |view, window, cx| view.restore(message, window, cx));
+            view.update_in(cx, |view, window, cx| {
+                view.restore(message.content, window, cx)
+            });
             assert_eq!(
                 input.read_with(cx, |input, _| input.value().to_string()),
                 "first\n\nthen this"

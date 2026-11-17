@@ -612,6 +612,76 @@ impl Session {
         Ok(())
     }
 
+    /// Takes the conversation back to before the user message of event
+    /// `seq`, and returns that message. The history and the events lose the
+    /// message and all that came after it. The files, the tasks, the notes,
+    /// and the settings stay. Messages that wait stay waiting.
+    pub fn rewind(&self, seq: u64) -> Result<Vec<ContentPart>> {
+        let mut state = self.core.lock();
+        if state.turn.is_some() {
+            return Err(CoreError::Busy);
+        }
+        let events = self.core.hub.events();
+        let index = events
+            .iter()
+            .position(|e| e.seq == seq)
+            .ok_or(CoreError::UnknownMessage(seq))?;
+        let SessionEvent::UserMessage { content } = &events[index].event else {
+            return Err(CoreError::UnknownMessage(seq));
+        };
+        let content = content.clone();
+        let later = events[index + 1..]
+            .iter()
+            .filter(|e| matches!(e.event, SessionEvent::UserMessage { .. }))
+            .count();
+        // The user messages of the history are the last ones of the events:
+        // a compaction replaces the ones before it with a summary.
+        let users: Vec<usize> = state
+            .history
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| {
+                matches!(m, Message::User { .. }) && !(*i == 0 && compaction::is_summary(m))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let cut = users
+            .len()
+            .checked_sub(later + 1)
+            .map(|n| users[n])
+            .ok_or(CoreError::MessageCompacted)?;
+        let expected: Vec<_> = content.iter().map(convert::input_content).collect();
+        if !matches!(&state.history[cut], Message::User { content } if *content == expected) {
+            return Err(CoreError::HistoryMismatch);
+        }
+        if state.title.is_none() {
+            state.title = title(&state.history);
+        }
+        state.history.truncate(cut);
+        state.context_tokens = None;
+        // What the session read may be in the messages it forgot.
+        self.core.notes.unsee(&self.core.id);
+        self.core.files.clear();
+        self.core.persist_state(&state);
+        // Under the lock, like a prompt, so no prompt lands between these.
+        self.core.emit(SessionEvent::Rewound { seq });
+        let logged = self.core.hub.logged_pending();
+        for message in &logged {
+            if !state.pending.iter().any(|m| m.id == message.id) {
+                self.core
+                    .emit(SessionEvent::PendingRemoved { id: message.id });
+            }
+        }
+        for message in &state.pending {
+            if !logged.contains(message) {
+                self.core.emit(SessionEvent::PendingAdded {
+                    message: message.clone(),
+                });
+            }
+        }
+        Ok(content)
+    }
+
     /// A person saw the session: a completed session becomes idle.
     pub fn mark_seen(&self) {
         // Observers read the session, so the state changes outside its lock.

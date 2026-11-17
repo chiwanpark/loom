@@ -6,10 +6,11 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ### Upgrade notes
 
-- The protocol version is now 15. Clients and agents of 0.3.0 (protocol 14) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+- The protocol version is now 16. Clients and agents of 0.3.0 (protocol 14) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
 
 ### New features
 
+- **Rewind.** You can take a conversation back to before one of your messages. On the desktop, click the rewind button on the message. In the Android app, long-press the message and choose **Rewind to here**. The agent forgets the message and everything after it. The message goes back into the prompt box, so you can edit it and send it again. Files in the workspace do not change. You cannot rewind to a message that a compaction summarized. See [Rewinding a conversation](README.md#rewinding-a-conversation).
 - **Completed sessions.** A session has the new state **Completed** after a turn completes. The agents panel and the Android app show these sessions in their own group. When you open the session in a client, it becomes idle again.
 - **Responding state.** A session has the new state **Responding** while the model streams text or tool calls. **Thinking** now means that the model streams its reasoning or has not sent output yet. Clients show "Responding…" while the model writes tool calls.
 - **File upload.** The desktop app uploads files from your computer to the workspace. Drag files onto a folder in the files panel, or use **Upload files…**. Uploads also work through a relay. See [Client configuration](README.md#client-configuration).
