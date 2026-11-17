@@ -8,13 +8,14 @@ mod relay_server;
 mod units;
 
 pub use agent::{
-    AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, ContextConfig, DEFAULT_WINDOW_TOKENS,
-    EnvironmentConfig, InheritEnvironment, InstructionsConfig, LifecycleConfig, LimitsConfig,
-    LlmConfig, LogLevel, LoggingConfig, NotesToolConfig, OtlpProtocol, PolicyAction, PolicyConfig,
-    PolicyRule, ProviderSetting, ProvidersConfig, ReadToolConfig, RedactionConfig, RelayConfig,
-    SandboxBackend, SandboxConfig, SearchReasoningEffort, ShellToolConfig, SkillsConfig,
-    SocketConfig, StorageConfig, TasksToolConfig, TelemetryConfig, Temporality, TerminalConfig,
-    ToolsConfig, WebSearchToolConfig, WorktreesConfig, valid_variable_name,
+    AgentConfig, CONFIG_VERSION, CloudflareAccessConfig, CommentGuardConfig, CommentGuardMode,
+    ContextConfig, DEFAULT_WINDOW_TOKENS, EnvironmentConfig, InheritEnvironment,
+    InstructionsConfig, LifecycleConfig, LimitsConfig, LlmConfig, LogLevel, LoggingConfig,
+    NotesToolConfig, OtlpProtocol, PolicyAction, PolicyConfig, PolicyRule, ProviderSetting,
+    ProvidersConfig, ReadToolConfig, RedactionConfig, RelayConfig, SandboxBackend, SandboxConfig,
+    SearchReasoningEffort, ShellToolConfig, SkillsConfig, SocketConfig, StorageConfig,
+    TasksToolConfig, TelemetryConfig, Temporality, TerminalConfig, ToolsConfig,
+    WebSearchToolConfig, WorktreesConfig, valid_variable_name,
 };
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};

@@ -128,7 +128,7 @@ Without it, debug builds are signed with the SDK's debug key. Keep the key and i
 
 Notifications need a Firebase project. In the [Firebase console](https://console.firebase.google.com), create one, add an Android app with the package name `com.chiwanpark.loom`, and put its `google-services.json` in `~/.config/loom-android/` (or the file that `LOOM_ANDROID_GOOGLE_SERVICES` or `-Ploom.googleServices` names). Builds without it, such as CI's, work the same without notifications.
 
-The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing as in the desktop's Sessions panel, and you can start, rename, archive, and delete sessions there. A completed session becomes idle when you open it in the app. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model, the reasoning effort, and what happens to tool calls that no policy rule matches (ask, allow, or deny, or the agent's default) from the row above the prompt box (which also shows the context used), compact or clear the conversation, rewind it to one of your messages (long-press the message; see [Rewinding a conversation](#rewinding-a-conversation)), queue messages or steer a running turn with them, and edit the agent's notes and the session's tasks. **Font** in the menu of the start screen or a session opens a screen with a preview, where you set the text size, from 80% to 130% of the system's; the size of the text in blocks (tool calls' arguments and output, and the reasoning of answers), from 70% to 130% of the app's text; the font of the app's text; and the font of code: tool arguments and output, code in answers, notes, and keys. Code is shown in JetBrains Mono, which the app bundles, unless you pick another. Besides the system's fonts, you can search all of Google Fonts by name, with filters by script (such as Korean, Japanese, or Chinese) and, for text, by category; the code tab lists monospaced fonts only. Each of the two fonts can also have a fallback font from Google Fonts, which draws the characters that the font does not have, such as Hangul in JetBrains Mono, before the system's fonts do. Google Play services downloads a Google font when it is first shown. The app's list of Google Fonts is `android/app/src/main/assets/google-fonts.tsv`, which `scripts/fonts/generate.py` writes from the directory of the Google Play services font provider and the metadata of fonts.google.com; run it again to pick up new fonts. Scanning the QR code needs Google Play services too; pasting the link works without them.
+The app reaches agents through a relay only (see [Through a relay](#through-a-relay)). After pairing, its start screen lists every session of every agent on the paired hosts, grouped by what they are doing as in the desktop's Sessions panel, and you can start, rename, archive, and delete sessions there. A completed session becomes idle when you open it in the app. In a session you can read the conversation, open tool calls to see their arguments and output, approve or deny tool calls, send messages, stop a turn, pick the model, the reasoning effort, what happens to tool calls that no policy rule matches (ask, allow, or deny, or the agent's default), and the [comment guard](#comment-guard) from the row above the prompt box (which also shows the context used), compact or clear the conversation, rewind it to one of your messages (long-press the message; see [Rewinding a conversation](#rewinding-a-conversation)), queue messages or steer a running turn with them, and edit the agent's notes and the session's tasks. **Font** in the menu of the start screen or a session opens a screen with a preview, where you set the text size, from 80% to 130% of the system's; the size of the text in blocks (tool calls' arguments and output, and the reasoning of answers), from 70% to 130% of the app's text; the font of the app's text; and the font of code: tool arguments and output, code in answers, notes, and keys. Code is shown in JetBrains Mono, which the app bundles, unless you pick another. Besides the system's fonts, you can search all of Google Fonts by name, with filters by script (such as Korean, Japanese, or Chinese) and, for text, by category; the code tab lists monospaced fonts only. Each of the two fonts can also have a fallback font from Google Fonts, which draws the characters that the font does not have, such as Hangul in JetBrains Mono, before the system's fonts do. Google Play services downloads a Google font when it is first shown. The app's list of Google Fonts is `android/app/src/main/assets/google-fonts.tsv`, which `scripts/fonts/generate.py` writes from the directory of the Google Play services font provider and the metadata of fonts.google.com; run it again to pick up new fonts. Scanning the QR code needs Google Play services too; pasting the link works without them.
 
 The **+** button on the start screen asks where the session goes: to one of the connected agents, or **In another directory…** on one of their hosts. Type the directory (`~` is your home directory on the host) or pick one where you started sessions before or one next to a running agent; the host's agent starts an agent there, or uses the one that already runs there, and the session opens once the app reaches it through the relay. The directory has to be under one of the `allowed_roots` of the host's agent configuration, as for `loom-agent serve` and the desktop's **New session** dialog.
 
@@ -238,6 +238,7 @@ The main sections:
 - `allowed_roots`: directories an agent may serve as a workspace (default `~`).
 - `llm`: the default model and provider settings.
 - `tools`: output limits for the `read` and `shell` tools, the shell program, the `search_web` tool (its model, source limits, and timeout), `notes.max_bytes`, the largest [notes](#notes-and-tasks) (64 KiB by default), and `tasks.max_items`, the most tasks in a task list (100 by default). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it. `allowed_dirs` lists directories outside the workspace that the `read`, `edit`, and `write` tools can read and change, for example `~/notes`. Each path must be absolute or start with `~`. The system prompt lists these directories. The policy still applies to each tool call, and the sandbox of shell commands does not change.
+- `tools.comment_guard`: stops the model from adding comments to code. See [Comment guard](#comment-guard).
 - `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes, tasks, and `skill` tools are allowed unless a rule says otherwise.
 - `environment`: the environment variables of shell commands and terminals, and the env file with secrets for them. See [Environment variables and secrets](#environment-variables-and-secrets).
 - `worktrees`: `dir`, the directory of the git worktrees of sessions (`~/.config/loom/worktrees` by default). See [Sessions in a worktree](#sessions-in-a-worktree).
@@ -307,6 +308,30 @@ Each metric and event tells who uses the agent, with the attributes of Claude Co
 - `organization.id`: `telemetry.organization_id`, else the organization of the Anthropic sign-in. A sign-in from Loom 0.4.0 or earlier gets its organization at its next token refresh.
 
 The agent reads these values when it starts. After you sign in, or after you change the `telemetry` section, restart the agent.
+
+### Comment guard
+
+The comment guard stops the model from adding comments to code. The `edit` and `write` tools compare each change with the file before the change, and find the comments that the change adds. The guard allows these comments:
+
+- Changes to existing comments, for example new words in a comment.
+- New comment lines next to an existing comment, for example one more line in a doc comment.
+- Comments that the change moves, also from one file to a different file in one patch.
+- Tool directives, such as `eslint-disable`, `@ts-expect-error`, `# noqa`, `# type: ignore`, and `#!/usr/bin/env`.
+
+The guard knows the comments of common languages by the file extension, such as `.rs`, `.ts`, `.py`, `.go`, `.sh`, `.yaml`, `.sql`, and `.html`. It does not check other files.
+
+```yaml
+tools:
+  comment_guard:
+    mode: block              # block (default), warn, or off
+    allow_directives: true   # allow tool directives
+    allow_patterns: ["TODO\\(#\\d+\\)"]   # regular expressions of comments to allow
+    ignore_paths: [vendor, docs/examples] # paths in the workspace not to check
+```
+
+In `block` mode, the tool rejects a change with new comments and tells the model which comments to remove. In `warn` mode, the tool makes the change and tells the model about the new comments. While the guard is on, the system prompt tells the model not to add comments.
+
+You can turn the guard on or off for one session. In the desktop app, use **Comment guard** in the status bar. In the Android app, use the comment guard item in the row above the prompt box. **Default** uses the `mode` of `agent.yaml`. **On** uses `block` when `mode` is `off`.
 
 ### Reloading the configuration
 

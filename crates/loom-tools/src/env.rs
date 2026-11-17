@@ -338,28 +338,33 @@ mod tests {
             .unwrap();
         assert_eq!(page.content, "REGION=eu\n");
 
-        let write = WriteTool
+        let write = WriteTool::default()
             .call(&ctx, json!({"path": ".env", "content": "X=1\n"}))
             .await
             .unwrap_err();
         assert!(write.to_string().contains("Ask the user"), "{write}");
         let patch =
             "--- a/.env\n+++ b/.env\n@@ -1,2 +1,2 @@\n-TOKEN=hidden-value\n+TOKEN=x\n REGION=eu\n";
-        let edit = EditTool
+        let edit = EditTool::default()
             .call(&ctx, json!({"patch": patch}))
             .await
             .unwrap_err();
         assert!(edit.to_string().contains("Ask the user"), "{edit}");
         let moved = "--- a/other\n+++ b/.env\n@@ -1 +1 @@\n-a\n+b\n";
         std::fs::write(root.join("other"), "a\n").unwrap();
-        assert!(EditTool.call(&ctx, json!({"patch": moved})).await.is_err());
+        assert!(
+            EditTool::default()
+                .call(&ctx, json!({"patch": moved}))
+                .await
+                .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(&env_file).unwrap(),
             "TOKEN=hidden-value\nREGION=eu\n"
         );
 
         // Other files are not touched.
-        WriteTool
+        WriteTool::default()
             .call(&ctx, json!({"path": "a.txt", "content": "TOKEN=x\n"}))
             .await
             .unwrap();

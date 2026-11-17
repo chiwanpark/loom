@@ -34,6 +34,11 @@ tools:
     max_bytes: 64KiB
   tasks:
     max_items: 100
+  comment_guard:
+    mode: block
+    allow_directives: true
+    allow_patterns: []
+    ignore_paths: []
 terminal:
   detached_timeout: 10m
 policy:

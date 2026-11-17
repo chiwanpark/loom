@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use loom_proto::{FileChangeKind, PatchedFile};
@@ -6,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use similar::TextDiff;
 
+use crate::comments::{CommentGuard, FileText};
 use crate::error::{Result, ToolError};
 use crate::fsutil::{current_stamp, write_file};
 use crate::patch::{FilePatch, Hunk, apply_hunks, parse_patch};
@@ -16,7 +18,15 @@ const BOM: &str = "\u{feff}";
 const MAX_DIFF: usize = 256 * 1024;
 
 #[derive(Debug, Default, Clone)]
-pub struct EditTool;
+pub struct EditTool {
+    comments: Arc<CommentGuard>,
+}
+
+impl EditTool {
+    pub fn new(comments: Arc<CommentGuard>) -> Self {
+        Self { comments }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct EditArgs {
@@ -272,6 +282,34 @@ fn count_changes(diff: &str) -> (usize, usize) {
     })
 }
 
+fn review_comments(
+    workspace: &Workspace,
+    comments: &CommentGuard,
+    session: Option<bool>,
+    prepared: &[Prepared],
+) -> Result<Option<String>> {
+    let changed: Vec<(String, &Prepared)> = prepared
+        .iter()
+        .filter_map(|file| {
+            let path = file
+                .planned
+                .target
+                .as_ref()
+                .or(file.planned.source.as_ref())?;
+            Some((workspace.display_path(path), file))
+        })
+        .collect();
+    let files: Vec<FileText<'_>> = changed
+        .iter()
+        .map(|(display, file)| FileText {
+            display,
+            old: &file.old_text,
+            new: &file.new_text,
+        })
+        .collect();
+    comments.review(session, &files).map_err(ToolError::failed)
+}
+
 #[async_trait]
 impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
@@ -341,11 +379,15 @@ impl Tool for EditTool {
             }
         }
 
+        let comments = self.comments.clone();
+        let session_guard = ctx.comment_guard;
         let outcome = tokio::task::spawn_blocking(move || {
             let prepared = planned
                 .into_iter()
                 .map(|planned| prepare(&workspace, planned))
                 .collect::<Result<Vec<_>>>()
+                .map_err(|err| (err, Written::default()))?;
+            let warning = review_comments(&workspace, &comments, session_guard, &prepared)
                 .map_err(|err| (err, Written::default()))?;
             let mut written = Written::default();
             for (index, file) in prepared.iter().enumerate() {
@@ -379,7 +421,7 @@ impl Tool for EditTool {
                 .collect();
             let summaries: Vec<String> =
                 files.iter().map(|file| summary(&workspace, file)).collect();
-            Ok((files, summaries, written))
+            Ok((files, summaries, written, warning))
         })
         .await
         .map_err(|err| ToolError::failed(format!("edit task failed: {err}")))?;
@@ -392,7 +434,7 @@ impl Tool for EditTool {
                 ctx.files.forget(&path);
             }
         };
-        let (files, summaries, written) = match outcome {
+        let (files, summaries, written, warning) = match outcome {
             Ok(done) => done,
             Err((err, written)) => {
                 record(written);
@@ -401,7 +443,11 @@ impl Tool for EditTool {
         };
         record(written);
         Ok(ToolOutput {
-            content: format!("Applied the patch: {}.", summaries.join(", ")),
+            content: format!(
+                "Applied the patch: {}.{}",
+                summaries.join(", "),
+                warning.unwrap_or_default()
+            ),
             is_error: false,
             details: ToolDetails::Patch { files },
         })
@@ -428,6 +474,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::comments::CommentGuardMode;
     use crate::read::ReadTool;
     use crate::workspace::Workspace;
 
@@ -438,7 +485,9 @@ mod tests {
     }
 
     async fn edit(ctx: &ToolContext, patch: &str) -> Result<ToolOutput> {
-        EditTool.call(ctx, json!({ "patch": patch })).await
+        EditTool::default()
+            .call(ctx, json!({ "patch": patch }))
+            .await
     }
 
     fn patched(output: ToolOutput) -> Vec<PatchedFile> {
@@ -655,5 +704,39 @@ diff --git a/a.txt b/a.txt
             format!("Applied the patch: modified {header} (+1 -1).")
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nc\n");
+    }
+
+    #[tokio::test]
+    async fn comment_guard_allows_extending_comments_only() {
+        let (dir, ctx) = context();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "/// Adds.\nfn add() {}\n\nfn sub() {}\n").unwrap();
+        let tool = EditTool::new(Arc::new(CommentGuard {
+            mode: CommentGuardMode::Block,
+            ..CommentGuard::default()
+        }));
+        let call = |patch: &str| tool.call(&ctx, json!({ "patch": patch }));
+
+        let new = "--- a/a.rs\n+++ b/a.rs\n@@\n fn add() {}\n \n+// Subtracts.\n fn sub() {}\n";
+        let error = call(new).await.unwrap_err().to_string();
+        assert!(error.contains("a.rs:4: // Subtracts."), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "/// Adds.\nfn add() {}\n\nfn sub() {}\n"
+        );
+
+        call("--- a/a.rs\n+++ b/a.rs\n@@\n /// Adds.\n+/// Wraps on overflow.\n fn add() {}\n")
+            .await
+            .unwrap();
+        call("--- a/a.rs\n+++ b/a.rs\n@@\n-/// Adds.\n+/// Adds two numbers.\n /// Wraps on overflow.\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "/// Adds two numbers.\n/// Wraps on overflow.\nfn add() {}\n\nfn sub() {}\n"
+        );
+
+        let ctx = ctx.clone().with_comment_guard(Some(false));
+        tool.call(&ctx, json!({ "patch": new })).await.unwrap();
     }
 }

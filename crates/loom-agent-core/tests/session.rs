@@ -310,6 +310,46 @@ async fn allowed_tool_calls_run_and_feed_results_back() {
     ));
 }
 
+#[tokio::test]
+async fn the_comment_guard_follows_the_session_setting() {
+    let write = || {
+        calls(&[(
+            "c1",
+            "write",
+            json!({"path": "a.rs", "content": "// Why.\nfn a() {}\n"}),
+        )])
+    };
+    let h = Harness::new(
+        test_config(PolicyAction::Allow),
+        vec![write(), text("blocked"), write(), text("written")],
+    );
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    let prompt = || {
+        h.provider
+            .requests()
+            .last()
+            .unwrap()
+            .system
+            .clone()
+            .unwrap_or_default()
+    };
+
+    let events = run_turn(&session, &mut sub, "write").await;
+    let results = finished_results(&events);
+    assert!(results[0].1, "{}", results[0].0);
+    assert!(results[0].0.contains("a.rs:1: // Why."), "{}", results[0].0);
+    assert!(!h.workspace.join("a.rs").exists());
+    assert!(prompt().contains("# Comments"));
+
+    session.set_comment_guard(Some(false));
+    assert_eq!(session.info().comment_guard, Some(false));
+    let events = run_turn(&session, &mut sub, "write").await;
+    assert!(!finished_results(&events)[0].1);
+    assert!(h.workspace.join("a.rs").exists());
+    assert!(!prompt().contains("# Comments"));
+}
+
 // The model thinks until it streams reasoning or an answer, responds while
 // it streams text or tool calls, and the turn ends completed.
 #[tokio::test]

@@ -821,6 +821,14 @@ impl Connection {
                 handle.set_policy_default(default.map(convert::policy_from_proto));
                 Ok(Payload::Session(handle.info()))
             }
+            Command::SetCommentGuard {
+                session: id,
+                enabled,
+            } => {
+                let handle = session(&id)?;
+                handle.set_comment_guard(enabled);
+                Ok(Payload::Session(handle.info()))
+            }
             Command::RenameSession { session: id, title } => self
                 .agent
                 .rename_session(&id, title)

@@ -19,6 +19,9 @@ pub const POLICY_CHOICES: [(Option<PolicyAction>, &str); 4] = [
     (Some(PolicyAction::Deny), "Deny"),
 ];
 
+pub const COMMENT_GUARD_CHOICES: [(Option<bool>, &str); 3] =
+    [(None, "Default"), (Some(true), "On"), (Some(false), "Off")];
+
 pub fn reasoning_label(effort: Option<ReasoningEffort>) -> &'static str {
     REASONING_CHOICES
         .iter()
@@ -31,6 +34,14 @@ pub fn policy_label(policy: Option<PolicyAction>) -> &'static str {
     POLICY_CHOICES
         .iter()
         .find(|(value, _)| *value == policy)
+        .map(|(_, label)| *label)
+        .unwrap_or("Default")
+}
+
+pub fn comment_guard_label(enabled: Option<bool>) -> &'static str {
+    COMMENT_GUARD_CHOICES
+        .iter()
+        .find(|(value, _)| *value == enabled)
         .map(|(_, label)| *label)
         .unwrap_or("Default")
 }

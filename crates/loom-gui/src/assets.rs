@@ -39,6 +39,7 @@ gpui_kit_assets::icon_assets!(
         GitBranch,
         Hourglass,
         ImagePlus,
+        MessageSquareCode,
         Pencil,
         Plug,
         Rows2,

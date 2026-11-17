@@ -2,8 +2,9 @@ use std::sync::{Arc, RwLock};
 
 use std::path::Path;
 
-use loom_config::{AgentConfig, Dirs, SandboxBackend};
+use loom_config::{AgentConfig, CommentGuardMode, Dirs, SandboxBackend};
 use loom_llm::{Auth, LlmError, LlmProvider, ModelRef, ProviderSet};
+use loom_tools::comments::{self, CommentGuard};
 use loom_tools::sandbox::{LauncherKind, SandboxLauncher, SandboxPolicy, find_bwrap};
 use loom_tools::{BuiltinConfig, Limits, ShellConfig, ToolRegistry};
 
@@ -109,6 +110,21 @@ pub fn builtin_tools(
     sandbox_exe: Option<&Path>,
 ) -> Result<BuiltinConfig, LlmError> {
     let shell = &config.tools.shell;
+    let guard = &config.tools.comment_guard;
+    let comments = CommentGuard::new(
+        match guard.mode {
+            CommentGuardMode::Off => comments::CommentGuardMode::Off,
+            CommentGuardMode::Warn => comments::CommentGuardMode::Warn,
+            CommentGuardMode::Block => comments::CommentGuardMode::Block,
+        },
+        guard.allow_directives,
+        &guard.allow_patterns,
+        guard.ignore_paths.clone(),
+    )
+    .map_err(|err| LlmError::Config {
+        field: "tools.comment_guard.allow_patterns".into(),
+        message: err.to_string(),
+    })?;
     Ok(BuiltinConfig {
         read_limits: Limits {
             max_lines: config.tools.read.max_lines,
@@ -126,6 +142,7 @@ pub fn builtin_tools(
             max_saved_output: Some(config.sandbox.max_output.as_u64()),
             ..ShellConfig::default()
         },
+        comments,
     })
 }
 

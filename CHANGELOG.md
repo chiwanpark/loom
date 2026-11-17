@@ -4,9 +4,15 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ## Unreleased
 
+### Upgrade notes
+
+- The protocol version is now 19. Clients and agents of 0.4.1 (protocol 18) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+- The comment guard is on by default. To turn it off, set `tools.comment_guard.mode: off` in `agent.yaml`.
+
 ### New features
 
 - **Allowed directories.** The new `tools.allowed_dirs` setting lists directories outside the workspace. The `read`, `edit`, and `write` tools can read and change the files in these directories. The system prompt tells the model about them. See [Agent configuration](README.md#agent-configuration).
+- **Comment guard.** The `edit` and `write` tools now reject changes that add comments to code. The guard allows changes to existing comments and new lines next to an existing comment. It also allows moved comments and tool directives, such as `eslint-disable`. The new `tools.comment_guard` section of `agent.yaml` sets the mode (`block`, `warn`, or `off`), comments to allow, and paths not to check. You can turn the guard on or off for one session in the status bar of the desktop app and in the Android app. See [Comment guard](README.md#comment-guard).
 
 ### Changes
 

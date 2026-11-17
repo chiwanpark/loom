@@ -136,6 +136,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var pickModel by remember { mutableStateOf(false) }
     var pickReasoning by remember { mutableStateOf(false) }
     var pickPolicy by remember { mutableStateOf(false) }
+    var pickCommentGuard by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
     var rewinding by remember { mutableStateOf<Long?>(null) }
     var merging by remember { mutableStateOf(false) }
@@ -289,11 +290,13 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                         model = conversation.model ?: link.agent?.defaultModel,
                         reasoning = conversation.reasoning,
                         policy = conversation.policy,
+                        commentGuard = conversation.commentGuard,
                         contextTokens = conversation.contextTokens,
                         enabled = connected,
                         onModel = { pickModel = true },
                         onReasoning = { pickReasoning = true },
                         onPolicy = { pickPolicy = true },
+                        onCommentGuard = { pickCommentGuard = true },
                     )
                 },
                 onSend = { text, delivery ->
@@ -318,6 +321,11 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
         PolicyDialog(current = conversation.policy, onPick = { policy ->
             scope.attempt(snackbar) { link.connection().setPolicy(session, policy) }
         }, onDismiss = { pickPolicy = false })
+    }
+    if (pickCommentGuard) {
+        CommentGuardDialog(current = conversation.commentGuard, onPick = { enabled ->
+            scope.attempt(snackbar) { link.connection().setCommentGuard(session, enabled) }
+        }, onDismiss = { pickCommentGuard = false })
     }
     if (clearing) {
         ConfirmDialog(
@@ -1192,6 +1200,43 @@ private fun policyDetail(policy: Policy?): String = when (policy) {
     Policy.DENY -> "Refuse them"
 }
 
+@Composable
+private fun CommentGuardDialog(current: Boolean?, onPick: (Boolean?) -> Unit, onDismiss: () -> Unit) {
+    val choices = listOf<Boolean?>(null, true, false)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Comment guard") },
+        text = {
+            Column {
+                Text(
+                    "Whether the edit and write tools of this session check changes for new comments.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                choices.forEach { choice ->
+                    ChoiceRow(commentGuardLabel(choice), commentGuardDetail(choice), selected = current == choice) {
+                        onDismiss()
+                        onPick(choice)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+fun commentGuardLabel(enabled: Boolean?): String = when (enabled) {
+    null -> "Default"
+    true -> "On"
+    false -> "Off"
+}
+
+private fun commentGuardDetail(enabled: Boolean?): String = when (enabled) {
+    null -> "As the agent's configuration says"
+    true -> "Stop new comments, but allow changes to existing comments"
+    false -> "Allow all comments"
+}
+
 fun reasoningLabel(reasoning: Reasoning): String = when (reasoning) {
     Reasoning.NONE -> "None"
     Reasoning.MINIMAL -> "Minimal"
@@ -1216,11 +1261,13 @@ private fun SessionInfo(
     model: String?,
     reasoning: Reasoning?,
     policy: Policy?,
+    commentGuard: Boolean?,
     contextTokens: ULong?,
     enabled: Boolean,
     onModel: () -> Unit,
     onReasoning: () -> Unit,
     onPolicy: () -> Unit,
+    onCommentGuard: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth(),
@@ -1249,6 +1296,12 @@ private fun SessionInfo(
                 policyLabel(policy),
                 description = "Tool calls without a rule",
                 onClick = onPolicy.takeIf { enabled },
+            )
+            InfoItem(
+                LoomIcons.MessageSquareCode,
+                commentGuardLabel(commentGuard),
+                description = "Comment guard",
+                onClick = onCommentGuard.takeIf { enabled },
             )
         }
         contextTokens?.let { InfoItem(LoomIcons.Gauge, formatTokens(it), description = "Context used", onClick = null) }

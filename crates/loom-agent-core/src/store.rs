@@ -85,6 +85,8 @@ pub struct SessionState {
     /// The git worktree that the session works in.
     #[serde(default)]
     pub worktree: Option<crate::worktree::Worktree>,
+    #[serde(default)]
+    pub comment_guard: Option<bool>,
 }
 
 /// The model and reasoning effort a request was sent with.

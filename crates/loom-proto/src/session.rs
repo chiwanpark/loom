@@ -397,6 +397,7 @@ pub struct SessionInfo {
     pub model: Option<String>,
     pub reasoning: Option<ReasoningEffort>,
     pub policy_default: Option<PolicyAction>,
+    pub comment_guard: Option<bool>,
     pub state: SessionState,
     pub last_seq: u64,
     pub created_at: u64,

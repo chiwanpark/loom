@@ -90,6 +90,7 @@ pub struct ToolContext {
     /// More directories that sandboxed commands may write, such as the git
     /// directory of a worktree's repository.
     pub writable: Vec<PathBuf>,
+    pub comment_guard: Option<bool>,
 }
 
 impl ToolContext {
@@ -105,6 +106,7 @@ impl ToolContext {
             allowed: Arc::default(),
             env: None,
             writable: Vec::new(),
+            comment_guard: None,
         }
     }
 
@@ -154,6 +156,11 @@ impl ToolContext {
             .cloned()
             .collect();
         self.workspace.resolve_in(input, &extra)
+    }
+
+    pub fn with_comment_guard(mut self, comment_guard: Option<bool>) -> Self {
+        self.comment_guard = comment_guard;
+        self
     }
 
     /// Whether `path`, an absolute path, holds secrets that the model must

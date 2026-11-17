@@ -504,7 +504,8 @@ pub fn open_rename(
 }
 
 pub use loom_view_model::labels::{
-    POLICY_CHOICES, REASONING_CHOICES, policy_label, reasoning_label,
+    COMMENT_GUARD_CHOICES, POLICY_CHOICES, REASONING_CHOICES, comment_guard_label, policy_label,
+    reasoning_label,
 };
 
 /// How close a plan limit is to running out, as in pi-enhanced's status bar.
@@ -774,6 +775,36 @@ impl SessionView {
                                         let session = this.session_id(cx);
                                         this.connection.update(cx, |conn, cx| {
                                             conn.set_policy(session, value, cx)
+                                        });
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+                .into_any_element(),
+        );
+
+        let current = conv.info.comment_guard;
+        let menu_view = weak.clone();
+        items.push(
+            Button::new("status-comment-guard")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(gpui_kit_assets::IconName::MessageSquareCode))
+                .label(format!("Comment guard: {}", comment_guard_label(current)))
+                .tooltip("Whether the edit and write tools of this session check changes for new comments")
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (value, label) in COMMENT_GUARD_CHOICES {
+                        let view = menu_view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(value == current)
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        let session = this.session_id(cx);
+                                        this.connection.update(cx, |conn, cx| {
+                                            conn.set_comment_guard(session, value, cx)
                                         });
                                     });
                                 }),

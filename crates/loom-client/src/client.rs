@@ -605,6 +605,18 @@ impl Client {
         .await
     }
 
+    pub async fn set_comment_guard(
+        &self,
+        session: &SessionId,
+        enabled: Option<bool>,
+    ) -> Result<SessionInfo> {
+        self.session(Command::SetCommentGuard {
+            session: session.clone(),
+            enabled,
+        })
+        .await
+    }
+
     /// Sets where the host's agents send this client's notifications; none
     /// stops them. Only through a relay.
     pub async fn set_push_token(&self, token: Option<&str>) -> Result<()> {

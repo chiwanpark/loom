@@ -63,6 +63,10 @@ tools:
     program: /bin/bash
     timeout: 10m
     pty: false
+  comment_guard:
+    mode: block
+    allow_patterns: ["TODO\\(#\\d+\\)"]
+    ignore_paths: [vendor]
 
 terminal:
   shell: null

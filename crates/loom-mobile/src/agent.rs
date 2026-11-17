@@ -128,6 +128,7 @@ impl State {
             conversation.info.model = info.model.clone();
             conversation.info.reasoning = info.reasoning;
             conversation.info.policy_default = info.policy_default;
+            conversation.info.comment_guard = info.comment_guard;
             conversation.info.archived = info.archived;
             if info.title.is_some() {
                 conversation.info.title = info.title.clone();
@@ -301,6 +302,7 @@ impl Shared {
             conversation.info.model = info.model;
             conversation.info.reasoning = info.reasoning;
             conversation.info.policy_default = info.policy_default;
+            conversation.info.comment_guard = info.comment_guard;
             conversation.state = info.state;
             open.changed = true;
         }
@@ -968,6 +970,22 @@ impl AgentConnection {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
                 .set_policy(&session_id(session), policy.map(Into::into))
+                .await?)
+        })
+        .await?;
+        self.shared.lock().session_updated(info);
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn set_comment_guard(
+        self: Arc<Self>,
+        session: String,
+        enabled: Option<bool>,
+    ) -> Result<()> {
+        let info = with_client(&self.shared, move |client| async move {
+            Ok(client
+                .set_comment_guard(&session_id(session), enabled)
                 .await?)
         })
         .await?;

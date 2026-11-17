@@ -32,7 +32,7 @@ use crate::skills::{Catalog, SKILL_TOOL};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
 use crate::tasks::TaskList;
 use crate::worktree::Worktree;
-use loom_config::PolicyAction;
+use loom_config::{CommentGuardMode, PolicyAction};
 
 const CHARS_PER_TOKEN: usize = 4;
 const OUTPUT_CHANNEL: usize = 64;
@@ -61,6 +61,7 @@ struct State {
     next_pending: u64,
     /// The git worktree that the session works in.
     worktree: Option<Worktree>,
+    comment_guard: Option<bool>,
 }
 
 /// What became of a message sent to a session.
@@ -159,6 +160,7 @@ impl Core {
                     last_used: state.last_used.clone(),
                     pending: state.pending.clone(),
                     worktree: state.worktree.clone(),
+                    comment_guard: state.comment_guard,
                 },
             );
         }
@@ -384,6 +386,7 @@ impl Session {
                     next_pending: state.pending.iter().map(|m| m.id + 1).max().unwrap_or(1),
                     pending: state.pending,
                     worktree: None,
+                    comment_guard: state.comment_guard,
                 }),
                 runtime: params.runtime,
                 workspace: Mutex::new(params.workspace.clone()),
@@ -409,12 +412,13 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        let (model, reasoning, policy_default, title, archived, worktree) = {
+        let (model, reasoning, policy_default, comment_guard, title, archived, worktree) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
                 state.reasoning,
                 state.policy.default,
+                state.comment_guard,
                 state.title.clone().or_else(|| title(&state.history)),
                 state.archived,
                 state.worktree.as_ref().map(Worktree::info),
@@ -425,6 +429,7 @@ impl Session {
             model,
             reasoning: reasoning.map(convert::reasoning_to_proto),
             policy_default: policy_default.map(convert::policy_to_proto),
+            comment_guard,
             created_at: self.core.created_at,
             title,
             archived,
@@ -525,6 +530,11 @@ impl Session {
 
     pub fn set_policy_default(&self, default: Option<PolicyAction>) {
         self.core.lock().policy.default = default;
+        self.core.persist();
+    }
+
+    pub fn set_comment_guard(&self, comment_guard: Option<bool>) {
+        self.core.lock().comment_guard = comment_guard;
         self.core.persist();
     }
 
@@ -911,7 +921,15 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         specs.retain(|spec| spec.name != SKILL_TOOL);
     }
     let environment = core.environment.snapshot(&runtime.config.environment);
-    let worktree = core.lock().worktree.as_ref().map(Worktree::info);
+    let (worktree, comment_guard) = {
+        let state = core.lock();
+        (
+            state.worktree.as_ref().map(Worktree::info),
+            state.comment_guard,
+        )
+    };
+    let comment_guard =
+        comment_guard.unwrap_or(runtime.config.tools.comment_guard.mode != CommentGuardMode::Off);
     let prompt = build_system_prompt(&PromptInputs {
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,
@@ -922,6 +940,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         environment: Some(&environment),
         worktree: worktree.as_ref(),
         allowed_dirs: &runtime.config.tools.allowed_dirs,
+        comment_guard,
     })
     .await;
     (prompt, specs)
@@ -1322,15 +1341,14 @@ async fn run_tool_call(
             .map(|dir| loom_tools::canonical_dir(dir))
             .collect(),
     );
-    let writable = core
-        .lock()
-        .worktree
-        .as_ref()
-        .and_then(|w| w.git_dir.clone())
-        .into_iter()
-        .collect();
+    let (writable, comment_guard) = {
+        let state = core.lock();
+        let writable = state.worktree.as_ref().and_then(|w| w.git_dir.clone());
+        (writable.into_iter().collect(), state.comment_guard)
+    };
     let ctx = ToolContext::new(core.workspace())
         .with_writable(writable)
+        .with_comment_guard(comment_guard)
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_readable(skill_dirs)
