@@ -43,6 +43,9 @@ pub struct PromptInputs<'a> {
     /// The git worktree that the session works in, which the prompt names
     /// with its branch.
     pub worktree: Option<&'a WorktreeInfo>,
+    /// The directories outside the workspace that the file tools may read
+    /// and change.
+    pub allowed_dirs: &'a [PathBuf],
 }
 
 pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
@@ -100,6 +103,7 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
     sections.push(runtime_section(
         inputs.workspace_root,
         inputs.worktree,
+        inputs.allowed_dirs,
         inputs.tools,
     ));
     SystemPrompt {
@@ -157,6 +161,7 @@ async fn read_capped(path: &PathBuf, max_bytes: usize) -> std::io::Result<Option
 fn runtime_section(
     workspace_root: &Path,
     worktree: Option<&WorktreeInfo>,
+    allowed_dirs: &[PathBuf],
     tools: &[ToolSpec],
 ) -> String {
     let tools: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -168,8 +173,20 @@ fn runtime_section(
             )
         })
         .unwrap_or_default();
+    let allowed = if allowed_dirs.is_empty() {
+        String::new()
+    } else {
+        let dirs: Vec<String> = allowed_dirs
+            .iter()
+            .map(|dir| format!("`{}`", dir.display()))
+            .collect();
+        format!(
+            "\n- Allowed directories: {}. The read, edit, and write tools can also read and change files in these directories outside the workspace.",
+            dirs.join(", ")
+        )
+    };
     format!(
-        "# Environment\n\n- Date: {}\n- Workspace: {}{worktree}\n- OS: {}\n- Tools: {}",
+        "# Environment\n\n- Date: {}\n- Workspace: {}{worktree}{allowed}\n- OS: {}\n- Tools: {}",
         today(),
         workspace_root.display(),
         os_description(),
@@ -249,6 +266,7 @@ mod tests {
                     skills: None,
                     environment: None,
                     worktree: None,
+                    allowed_dirs: &[],
                 })
                 .await
                 .text
@@ -311,6 +329,7 @@ mod tests {
                 path: "/w".into(),
                 pull_request: None,
             }),
+            allowed_dirs: &[PathBuf::from("/srv/notes"), PathBuf::from("/tmp/x")],
         })
         .await;
         let text = &prompt.text;
@@ -326,6 +345,7 @@ mod tests {
         assert!(text.contains("\n- pdf: PDF files."));
         assert!(text.contains("- Tools: read"));
         assert!(text.contains("on the branch `loom/abc`, made from `main`"));
+        assert!(text.contains("\n- Allowed directories: `/srv/notes`, `/tmp/x`. "));
         let mut warnings = catalog.warnings.clone();
         warnings.extend(environment.warnings.clone());
         assert_eq!(prompt.warnings, warnings);
@@ -340,10 +360,12 @@ mod tests {
             skills,
             environment: None,
             worktree: None,
+            allowed_dirs: &[],
         };
         let without = build_system_prompt(&inputs(Some(&empty))).await;
         assert!(!without.text.contains("# Skills"));
         assert!(without.warnings.is_empty());
+        assert!(!without.text.contains("Allowed directories"));
     }
 
     #[tokio::test]
@@ -360,6 +382,7 @@ mod tests {
             skills: None,
             environment: None,
             worktree: None,
+            allowed_dirs: &[],
         })
         .await;
         assert!(prompt.text.contains("가나\n") || prompt.text.contains("가나\n\n"));
@@ -383,6 +406,7 @@ mod tests {
             skills: None,
             environment: None,
             worktree: None,
+            allowed_dirs: &[],
         })
         .await;
         let text = &prompt.text;

@@ -75,7 +75,7 @@ impl Tool for ReadTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput> {
         let args: ReadArgs = parse_args(args)?;
         ctx.ensure_not_cancelled()?;
-        let path = ctx.workspace.resolve_readable(&args.path, &ctx.readable)?;
+        let path = ctx.resolve_readable(&args.path)?;
         let display = ctx.workspace.display_path(&path);
         let _guard = ctx.lock_file(&path, FileAccess::Read).await;
 
@@ -396,6 +396,20 @@ mod tests {
             read(ctx, skill.join("../secret.txt")).await,
             Err(ToolError::OutsideWorkspace(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn reads_in_allowed_directories_outside_the_workspace() {
+        let outside = tempfile::tempdir().unwrap();
+        let allowed = outside.path().canonicalize().unwrap();
+        std::fs::write(allowed.join("a.txt"), "a\n").unwrap();
+        let (_dir, ctx) = context();
+        let ctx = ctx.with_allowed(Arc::new(vec![allowed.clone()]));
+        let output = ReadTool::default()
+            .call(&ctx, json!({"path": allowed.join("a.txt")}))
+            .await
+            .unwrap();
+        assert_eq!(output.content, "a\n");
     }
 
     #[tokio::test]

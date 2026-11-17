@@ -81,6 +81,9 @@ pub struct ToolContext {
     /// Directories outside the workspace that the read tool may read, such
     /// as the directories of skills. Canonical paths.
     pub readable: Arc<Vec<PathBuf>>,
+    /// Directories outside the workspace that the file tools may read and
+    /// change. Canonical paths.
+    pub allowed: Arc<Vec<PathBuf>>,
     /// The environment of the commands the call runs, and what to hide from
     /// the model; `None` runs commands with the agent's own environment.
     pub env: Option<Arc<CommandEnv>>,
@@ -99,6 +102,7 @@ impl ToolContext {
             notes: None,
             tasks: None,
             readable: Arc::default(),
+            allowed: Arc::default(),
             env: None,
             writable: Vec::new(),
         }
@@ -119,6 +123,11 @@ impl ToolContext {
         self
     }
 
+    pub fn with_allowed(mut self, allowed: Arc<Vec<PathBuf>>) -> Self {
+        self.allowed = allowed;
+        self
+    }
+
     pub fn with_env(mut self, env: Arc<CommandEnv>) -> Self {
         self.env = Some(env);
         self
@@ -127,6 +136,24 @@ impl ToolContext {
     pub fn with_writable(mut self, writable: Vec<PathBuf>) -> Self {
         self.writable = writable;
         self
+    }
+
+    /// Resolves a path that the file tools may change: one in the workspace
+    /// or in an allowed directory.
+    pub fn resolve(&self, input: &str) -> Result<PathBuf> {
+        self.workspace.resolve_in(input, &self.allowed)
+    }
+
+    /// Resolves a path that the read tool may read: one that
+    /// [`ToolContext::resolve`] accepts, or one in a readable directory.
+    pub fn resolve_readable(&self, input: &str) -> Result<PathBuf> {
+        let extra: Vec<PathBuf> = self
+            .allowed
+            .iter()
+            .chain(self.readable.iter())
+            .cloned()
+            .collect();
+        self.workspace.resolve_in(input, &extra)
     }
 
     /// Whether `path`, an absolute path, holds secrets that the model must

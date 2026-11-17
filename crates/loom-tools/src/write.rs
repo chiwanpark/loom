@@ -76,7 +76,7 @@ impl Tool for WriteTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput> {
         let args: WriteArgs = parse_args(args)?;
         ctx.ensure_not_cancelled()?;
-        let path = ctx.workspace.resolve(&args.path)?;
+        let path = ctx.resolve(&args.path)?;
         let display = ctx.workspace.display_path(&path);
         if ctx.is_protected(&path) {
             return Err(ToolError::protected(&display));
@@ -198,6 +198,25 @@ mod tests {
         let (_dir, ctx) = context();
         let result = WriteTool
             .call(&ctx, json!({"path": "../escape.txt", "content": "x"}))
+            .await;
+        assert!(matches!(result, Err(ToolError::OutsideWorkspace(_))));
+    }
+
+    #[tokio::test]
+    async fn writes_in_allowed_directories_outside_workspace() {
+        let outside = tempfile::tempdir().unwrap();
+        let allowed = outside.path().canonicalize().unwrap().join("allowed");
+        let (_dir, ctx) = context();
+        let ctx = ctx.with_allowed(Arc::new(vec![allowed.clone()]));
+        let path = allowed.join("sub/new.txt");
+        WriteTool
+            .call(&ctx, json!({"path": path, "content": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+        let escape = allowed.join("../escape.txt");
+        let result = WriteTool
+            .call(&ctx, json!({"path": escape, "content": "x"}))
             .await;
         assert!(matches!(result, Err(ToolError::OutsideWorkspace(_))));
     }

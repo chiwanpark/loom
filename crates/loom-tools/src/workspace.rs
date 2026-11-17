@@ -41,13 +41,12 @@ impl Workspace {
     }
 
     pub fn resolve(&self, input: &str) -> Result<PathBuf> {
-        self.resolve_readable(input, &[])
+        self.resolve_in(input, &[])
     }
 
     /// Like [`Workspace::resolve`], but also accepts paths in `extra`, the
-    /// canonical paths of directories that may be read outside the
-    /// workspace.
-    pub fn resolve_readable(&self, input: &str, extra: &[PathBuf]) -> Result<PathBuf> {
+    /// canonical paths of directories outside the workspace.
+    pub fn resolve_in(&self, input: &str, extra: &[PathBuf]) -> Result<PathBuf> {
         if input.trim().is_empty() {
             return Err(ToolError::InvalidArguments("path must not be empty".into()));
         }
@@ -73,6 +72,12 @@ impl Workspace {
             Err(_) => path.display().to_string(),
         }
     }
+}
+
+/// The canonical form of `dir`, an absolute path, for [`Workspace::resolve_in`].
+/// The parts of the path that do not exist yet are kept as they are.
+pub fn canonical_dir(dir: &Path) -> PathBuf {
+    resolve_existing_prefix(&normalize_lexically(dir))
 }
 
 fn expand_home(input: &str) -> PathBuf {
@@ -342,6 +347,33 @@ mod tests {
             workspace.resolve(absolute.to_str().unwrap()).unwrap(),
             absolute
         );
+    }
+
+    #[test]
+    fn accepts_paths_in_extra_directories() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(outside.path().join("allowed")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), outside.path().join("link")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let extra = [canonical_dir(&outside.path().join("link/allowed/./"))];
+        let allowed = outside.path().join("allowed/new/file.txt");
+        assert_eq!(
+            workspace
+                .resolve_in(allowed.to_str().unwrap(), &extra)
+                .unwrap(),
+            outside
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("allowed/new/file.txt")
+        );
+        let escape = outside.path().join("allowed/../secret.txt");
+        assert!(matches!(
+            workspace.resolve_in(escape.to_str().unwrap(), &extra),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(workspace.resolve(allowed.to_str().unwrap()).is_err());
     }
 
     #[tokio::test]

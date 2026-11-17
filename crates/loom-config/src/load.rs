@@ -95,6 +95,10 @@ mod tests {
             Some(Duration::from_secs(600))
         );
         assert_eq!(config.tools.read.max_bytes, ByteSize::kib(50));
+        assert_eq!(
+            config.tools.allowed_dirs,
+            [PathBuf::from("/home/u/notes"), PathBuf::from("/srv/shared")]
+        );
         assert_eq!(config.policy.rules.len(), 3);
         assert_eq!(config.policy.rules[1].command_prefix.len(), 4);
         assert_eq!(config.llm.providers.0.len(), 3);
@@ -268,6 +272,10 @@ mod tests {
                 "tools.tasks.max_items",
             ),
             ("allowed_roots:\n- relative/path\n", "allowed_roots[0]"),
+            (
+                "tools:\n  allowed_dirs:\n  - /tmp\n  - relative\n",
+                "tools.allowed_dirs[1]",
+            ),
             (
                 "telemetry:\n  endpoint: localhost:4318\n",
                 "telemetry.endpoint",

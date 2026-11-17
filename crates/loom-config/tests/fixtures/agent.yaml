@@ -51,6 +51,11 @@ llm:
       models: [qwen3-coder]
 
 tools:
+  # Directories outside the workspace that the read, edit, and write tools
+  # may read and change.
+  allowed_dirs:
+  - ~/notes
+  - /srv/shared
   read:
     max_lines: 2000
     max_bytes: 50KiB

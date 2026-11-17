@@ -921,6 +921,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         skills: Some(&catalog),
         environment: Some(&environment),
         worktree: worktree.as_ref(),
+        allowed_dirs: &runtime.config.tools.allowed_dirs,
     })
     .await;
     (prompt, specs)
@@ -1312,6 +1313,15 @@ async fn run_tool_call(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    let allowed_dirs = Arc::new(
+        runtime
+            .config
+            .tools
+            .allowed_dirs
+            .iter()
+            .map(|dir| loom_tools::canonical_dir(dir))
+            .collect(),
+    );
     let writable = core
         .lock()
         .worktree
@@ -1324,6 +1334,7 @@ async fn run_tool_call(
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_readable(skill_dirs)
+        .with_allowed(allowed_dirs)
         .with_files(core.files.clone())
         .with_env(environment.command.clone())
         .with_cancel(cancel.child_token())

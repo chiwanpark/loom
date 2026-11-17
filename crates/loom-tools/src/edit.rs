@@ -68,17 +68,17 @@ fn invalid(message: String) -> ToolError {
 
 /// Resolves a path from a file header. Git-style `a/` and `b/` prefixes are
 /// dropped, unless only the path with the prefix exists.
-fn resolve_header(workspace: &Workspace, raw: &str) -> Result<PathBuf> {
+fn resolve_header(ctx: &ToolContext, raw: &str) -> Result<PathBuf> {
     let stripped = raw
         .strip_prefix("a/")
         .or_else(|| raw.strip_prefix("b/"))
         .filter(|rest| !rest.is_empty());
     let Some(stripped) = stripped else {
-        return workspace.resolve(raw);
+        return ctx.resolve(raw);
     };
-    let path = workspace.resolve(stripped)?;
+    let path = ctx.resolve(stripped)?;
     if !path.exists()
-        && let Ok(whole) = workspace.resolve(raw)
+        && let Ok(whole) = ctx.resolve(raw)
         && whole.exists()
     {
         return Ok(whole);
@@ -86,16 +86,16 @@ fn resolve_header(workspace: &Workspace, raw: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn plan(workspace: &Workspace, file: FilePatch) -> Result<Planned> {
+fn plan(ctx: &ToolContext, file: FilePatch) -> Result<Planned> {
     let source = file
         .old_path
         .as_deref()
-        .map(|raw| resolve_header(workspace, raw))
+        .map(|raw| resolve_header(ctx, raw))
         .transpose()?;
     let target = file
         .new_path
         .as_deref()
-        .map(|raw| resolve_header(workspace, raw))
+        .map(|raw| resolve_header(ctx, raw))
         .transpose()?;
     let kind = match (&source, &target) {
         (None, Some(_)) => Kind::Create,
@@ -302,7 +302,7 @@ impl Tool for EditTool {
         let workspace = ctx.workspace.clone();
         let planned = files
             .into_iter()
-            .map(|file| plan(&workspace, file))
+            .map(|file| plan(ctx, file))
             .collect::<Result<Vec<_>>>()?;
 
         let mut paths: Vec<&Path> = Vec::new();
@@ -633,5 +633,27 @@ diff --git a/a.txt b/a.txt
         let (_dir, ctx) = context();
         let result = edit(&ctx, "--- /dev/null\n+++ /etc/loom-test\n@@\n+x\n").await;
         assert!(matches!(result, Err(ToolError::OutsideWorkspace(_))));
+    }
+
+    #[tokio::test]
+    async fn edits_files_in_allowed_directories() {
+        let outside = tempfile::tempdir().unwrap();
+        let allowed = outside.path().canonicalize().unwrap();
+        let path = allowed.join("notes.md");
+        std::fs::write(&path, "a\nb\n").unwrap();
+        let (_dir, ctx) = context();
+        let header = path.display();
+        let patch = format!("--- {header}\n+++ {header}\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n");
+        assert!(matches!(
+            edit(&ctx, &patch).await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        let ctx = ctx.with_allowed(Arc::new(vec![allowed]));
+        let output = edit(&ctx, &patch).await.unwrap();
+        assert_eq!(
+            output.content,
+            format!("Applied the patch: modified {header} (+1 -1).")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nc\n");
     }
 }

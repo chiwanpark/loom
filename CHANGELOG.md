@@ -2,6 +2,12 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### New features
+
+- **Allowed directories.** The new `tools.allowed_dirs` setting lists directories outside the workspace. The `read`, `edit`, and `write` tools can read and change the files in these directories. The system prompt tells the model about them. See [Agent configuration](README.md#agent-configuration).
+
 ## 0.4.1
 
 ### Fixes

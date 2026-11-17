@@ -27,5 +27,6 @@ pub use tool::{
 pub use truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, Limits};
 pub use workspace::{
     FileAccess, FileGuard, FileStamp, FileTracker, LockManager, Workspace, WorkspaceGuard,
+    canonical_dir,
 };
 pub use write::WriteTool;

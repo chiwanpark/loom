@@ -200,6 +200,10 @@ impl ProvidersConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsConfig {
+    /// Directories outside the workspace that the read, edit, and write
+    /// tools may read and change. Absolute, or starting with `~`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed_dirs: Vec<PathBuf>,
     pub read: ReadToolConfig,
     pub shell: ShellToolConfig,
     pub web_search: WebSearchToolConfig,
@@ -734,6 +738,7 @@ impl AgentConfig {
         self.sandbox.writable.iter_mut().for_each(expand);
         self.skills.paths.iter_mut().for_each(expand);
         self.worktrees.dir.iter_mut().for_each(expand);
+        self.tools.allowed_dirs.iter_mut().for_each(expand);
         expand(&mut self.tools.shell.program);
     }
 
@@ -754,6 +759,14 @@ impl AgentConfig {
                 return Err(invalid(
                     &format!("allowed_roots[{index}]"),
                     format!("{} must be an absolute path", root.display()),
+                ));
+            }
+        }
+        for (index, dir) in self.tools.allowed_dirs.iter().enumerate() {
+            if !dir.is_absolute() {
+                return Err(invalid(
+                    &format!("tools.allowed_dirs[{index}]"),
+                    format!("{} must be an absolute path", dir.display()),
                 ));
             }
         }
