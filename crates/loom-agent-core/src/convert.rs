@@ -211,6 +211,7 @@ pub fn policy_to_proto(action: loom_config::PolicyAction) -> loom_proto::PolicyA
         loom_config::PolicyAction::Allow => loom_proto::PolicyAction::Allow,
         loom_config::PolicyAction::Ask => loom_proto::PolicyAction::Ask,
         loom_config::PolicyAction::Deny => loom_proto::PolicyAction::Deny,
+        loom_config::PolicyAction::AllowHarmful => loom_proto::PolicyAction::AllowHarmful,
     }
 }
 
@@ -219,6 +220,7 @@ pub fn policy_from_proto(action: loom_proto::PolicyAction) -> loom_config::Polic
         loom_proto::PolicyAction::Allow => loom_config::PolicyAction::Allow,
         loom_proto::PolicyAction::Ask => loom_config::PolicyAction::Ask,
         loom_proto::PolicyAction::Deny => loom_config::PolicyAction::Deny,
+        loom_proto::PolicyAction::AllowHarmful => loom_config::PolicyAction::AllowHarmful,
     }
 }
 

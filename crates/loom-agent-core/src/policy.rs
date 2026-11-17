@@ -89,9 +89,10 @@ fn rule_match(rule: &PolicyRule, tool: &str, command: Option<&str>) -> Option<us
 
 fn strictness(action: PolicyAction) -> u8 {
     match action {
-        PolicyAction::Allow => 0,
-        PolicyAction::Ask => 1,
-        PolicyAction::Deny => 2,
+        PolicyAction::AllowHarmful => 0,
+        PolicyAction::Allow => 1,
+        PolicyAction::Ask => 2,
+        PolicyAction::Deny => 3,
     }
 }
 
@@ -200,6 +201,7 @@ mod tests {
                 ),
                 rule("shell", PolicyAction::Deny, &["rm -rf /", "sudo"]),
             ],
+            ..PolicyConfig::default()
         }
     }
 
@@ -272,6 +274,7 @@ mod tests {
                 rule("shell", PolicyAction::Allow, &["ls"]),
                 rule("*", PolicyAction::Allow, &[]),
             ],
+            ..PolicyConfig::default()
         };
         let eval = |tool: &str, command: &str| {
             evaluate(

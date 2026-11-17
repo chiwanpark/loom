@@ -1163,7 +1163,7 @@ private fun ReasoningDialog(current: Reasoning?, onPick: (Reasoning?) -> Unit, o
 /** What the session does with tool calls that no policy rule in the agent's configuration matches. */
 @Composable
 private fun PolicyDialog(current: Policy?, onPick: (Policy?) -> Unit, onDismiss: () -> Unit) {
-    val choices = listOf<Policy?>(null, Policy.ASK, Policy.ALLOW, Policy.DENY)
+    val choices = listOf<Policy?>(null, Policy.ASK, Policy.ALLOW, Policy.ALLOW_HARMFUL, Policy.DENY)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Tool calls") },
@@ -1190,13 +1190,15 @@ fun policyLabel(policy: Policy?): String = when (policy) {
     null -> "Default"
     Policy.ASK -> "Ask"
     Policy.ALLOW -> "Allow"
+    Policy.ALLOW_HARMFUL -> "Allow harmful"
     Policy.DENY -> "Deny"
 }
 
 private fun policyDetail(policy: Policy?): String = when (policy) {
     null -> "As the agent's configuration says"
     Policy.ASK -> "Wait for your approval"
-    Policy.ALLOW -> "Run them without asking"
+    Policy.ALLOW -> "Run them without asking, but ask for calls that may be harmful"
+    Policy.ALLOW_HARMFUL -> "Run all of them without asking"
     Policy.DENY -> "Refuse them"
 }
 

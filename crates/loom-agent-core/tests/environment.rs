@@ -23,7 +23,7 @@ fn tool_results(history: &[Message]) -> Vec<String> {
 
 #[tokio::test]
 async fn commands_get_the_env_file_and_the_model_never_sees_its_values() {
-    let mut config = test_config(PolicyAction::Allow);
+    let mut config = test_config(PolicyAction::AllowHarmful);
     config.environment.redaction.allow = vec!["REGION".into()];
     let h = Harness::new(
         config,

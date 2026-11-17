@@ -7,6 +7,7 @@ mod error;
 pub mod events;
 pub mod files;
 pub mod git;
+pub mod harmful;
 pub mod host_keys;
 pub mod instructions;
 pub mod metrics;

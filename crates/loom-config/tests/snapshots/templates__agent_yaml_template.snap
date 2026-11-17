@@ -46,6 +46,8 @@ policy:
   rules:
   - tool: read
     action: allow
+  harmful:
+    deny_paths: []
 environment:
   inherit: all
   ignore_default_excludes: false

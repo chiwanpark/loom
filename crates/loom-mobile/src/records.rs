@@ -112,8 +112,11 @@ impl From<Reasoning> for ReasoningEffort {
 pub enum Policy {
     /// Waits for the user's approval.
     Ask,
+    /// Asks for calls that may be harmful.
     Allow,
     Deny,
+    /// Allows also calls that may be harmful.
+    AllowHarmful,
 }
 
 impl From<proto::PolicyAction> for Policy {
@@ -122,6 +125,7 @@ impl From<proto::PolicyAction> for Policy {
             proto::PolicyAction::Ask => Self::Ask,
             proto::PolicyAction::Allow => Self::Allow,
             proto::PolicyAction::Deny => Self::Deny,
+            proto::PolicyAction::AllowHarmful => Self::AllowHarmful,
         }
     }
 }
@@ -132,6 +136,7 @@ impl From<Policy> for proto::PolicyAction {
             Policy::Ask => Self::Ask,
             Policy::Allow => Self::Allow,
             Policy::Deny => Self::Deny,
+            Policy::AllowHarmful => Self::AllowHarmful,
         }
     }
 }

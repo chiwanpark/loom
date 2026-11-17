@@ -145,6 +145,7 @@ impl Host {
         config.policy = PolicyConfig {
             default: PolicyAction::Ask,
             rules: Vec::new(),
+            ..PolicyConfig::default()
         };
         config.relay.enabled = true;
         config.relay.url = Some(format!("ws://{addr}"));

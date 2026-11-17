@@ -8,11 +8,13 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 - The protocol version is now 19. Clients and agents of 0.4.1 (protocol 18) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
 - The comment guard is on by default. To turn it off, set `tools.comment_guard.mode: off` in `agent.yaml`.
+- The `allow` policy action now asks for tool calls that may be harmful. To keep the old behavior, use the new `allow_harmful` action.
 
 ### New features
 
 - **Allowed directories.** The new `tools.allowed_dirs` setting lists directories outside the workspace. The `read`, `edit`, and `write` tools can read and change the files in these directories. The system prompt tells the model about them. See [Agent configuration](README.md#agent-configuration).
 - **Comment guard.** The `edit` and `write` tools now reject changes that add comments to code. The guard allows changes to existing comments and new lines next to an existing comment. It also allows moved comments and tool directives, such as `eslint-disable`. The new `tools.comment_guard` section of `agent.yaml` sets the mode (`block`, `warn`, or `off`), comments to allow, and paths not to check. You can turn the guard on or off for one session in the status bar of the desktop app and in the Android app. See [Comment guard](README.md#comment-guard).
+- **Harmful tool calls.** The agent now checks `shell`, `edit`, and `write` calls that the policy allows. If a call may be harmful, the agent asks for your approval. Harmful calls change paths outside the workspace, the `.env` files, or the `.git` directory. Destructive git commands, such as `git reset --hard`, are harmful too. The new policy action `allow_harmful` allows these calls without approval. Changes in `sandbox.writable` are not harmful, also when the sandbox is off. Changes by the `edit` and `write` tools in `tools.allowed_dirs` are not harmful. The new `policy.harmful.deny_paths` setting adds paths whose changes are always harmful. See [Harmful tool calls](README.md#harmful-tool-calls).
 
 ## 0.4.1
 

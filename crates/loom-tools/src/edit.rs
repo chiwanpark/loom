@@ -96,6 +96,19 @@ fn resolve_header(ctx: &ToolContext, raw: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+pub fn patch_paths(ctx: &ToolContext, patch: &str) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for file in parse_patch(patch)? {
+        for raw in [file.old_path, file.new_path].into_iter().flatten() {
+            let path = resolve_header(ctx, &raw)?;
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
 fn plan(ctx: &ToolContext, file: FilePatch) -> Result<Planned> {
     let source = file
         .old_path

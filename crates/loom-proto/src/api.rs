@@ -53,6 +53,7 @@ pub enum PolicyAction {
     Allow,
     Ask,
     Deny,
+    AllowHarmful,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
