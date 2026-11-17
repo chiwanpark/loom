@@ -31,6 +31,7 @@ use crate::runtime::{Runtime, RuntimeCell};
 use crate::skills::{Catalog, SKILL_TOOL};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
 use crate::tasks::TaskList;
+use crate::worktree::Worktree;
 use loom_config::PolicyAction;
 
 const CHARS_PER_TOKEN: usize = 4;
@@ -58,6 +59,8 @@ struct State {
     pending: Vec<PendingMessage>,
     /// The ID of the next waiting message.
     next_pending: u64,
+    /// The git worktree that the session works in.
+    worktree: Option<Worktree>,
 }
 
 /// What became of a message sent to a session.
@@ -79,7 +82,10 @@ struct Core {
     hub: EventHub,
     state: Mutex<State>,
     runtime: RuntimeCell,
-    workspace: Arc<Workspace>,
+    /// Where the session works: its worktree, or the agent's workspace.
+    workspace: Mutex<Arc<Workspace>>,
+    /// The agent's workspace.
+    main_workspace: Arc<Workspace>,
     files: Arc<FileTracker>,
     system_agents_md: PathBuf,
     /// The directories of the skills that the last system prompt listed,
@@ -126,6 +132,13 @@ impl Core {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn workspace(&self) -> Arc<Workspace> {
+        self.workspace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     fn emit(&self, event: SessionEvent) {
         self.metrics.observe(&event);
         self.hub.emit(event);
@@ -145,6 +158,7 @@ impl Core {
                     title: state.title.clone(),
                     last_used: state.last_used.clone(),
                     pending: state.pending.clone(),
+                    worktree: state.worktree.clone(),
                 },
             );
         }
@@ -347,7 +361,7 @@ impl Session {
         tasks: TaskList,
     ) -> Self {
         let hub = EventHub::restore(params.store.clone().map(|s| (s, id.clone())), events);
-        Self {
+        let session = Self {
             core: Arc::new(Core {
                 id,
                 created_at,
@@ -369,9 +383,11 @@ impl Session {
                     tasks,
                     next_pending: state.pending.iter().map(|m| m.id + 1).max().unwrap_or(1),
                     pending: state.pending,
+                    worktree: None,
                 }),
                 runtime: params.runtime,
-                workspace: params.workspace,
+                workspace: Mutex::new(params.workspace.clone()),
+                main_workspace: params.workspace,
                 files: Arc::new(FileTracker::default()),
                 system_agents_md: params.system_agents_md,
                 skill_dirs: Mutex::default(),
@@ -379,7 +395,9 @@ impl Session {
                 notices: params.notices,
                 environment: params.environment,
             }),
-        }
+        };
+        session.use_worktree(state.worktree);
+        session
     }
 
     pub fn created_at(&self) -> u64 {
@@ -391,7 +409,7 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        let (model, reasoning, policy_default, title, archived) = {
+        let (model, reasoning, policy_default, title, archived, worktree) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
@@ -399,6 +417,7 @@ impl Session {
                 state.policy.default,
                 state.title.clone().or_else(|| title(&state.history)),
                 state.archived,
+                state.worktree.as_ref().map(Worktree::info),
             )
         };
         SessionInfo {
@@ -411,7 +430,42 @@ impl Session {
             archived,
             state: self.core.hub.state(),
             last_seq: self.core.hub.last_seq(),
+            worktree,
         }
+    }
+
+    /// Where the session works: its worktree, or the agent's workspace.
+    pub fn workspace(&self) -> Arc<Workspace> {
+        self.core.workspace()
+    }
+
+    pub fn worktree(&self) -> Option<Worktree> {
+        self.core.lock().worktree.clone()
+    }
+
+    /// Makes the session work in `worktree`, or in the agent's workspace
+    /// with `None`, and saves it. A missing worktree keeps the agent's
+    /// workspace, but the session does not start turns in it.
+    pub fn set_worktree(&self, worktree: Option<Worktree>) {
+        self.use_worktree(worktree);
+        self.core.persist();
+    }
+
+    /// Like [`Session::set_worktree`], without saving.
+    fn use_worktree(&self, worktree: Option<Worktree>) {
+        let workspace = worktree
+            .as_ref()
+            .and_then(|w| Workspace::new(&w.root).ok())
+            .map(Arc::new)
+            .unwrap_or_else(|| self.core.main_workspace.clone());
+        *self
+            .core
+            .workspace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = workspace;
+        // What the session read was in the other root.
+        self.core.files.clear();
+        self.core.lock().worktree = worktree;
     }
 
     pub fn subscribe(&self, since_seq: Option<u64>) -> Subscription {
@@ -526,6 +580,13 @@ impl Session {
         let runtime = self.core.runtime.current();
         let model = self.core.model(&runtime)?;
         runtime.providers.get(&model.provider)?;
+        if let Some(worktree) = &self.core.lock().worktree
+            && !worktree.path.is_dir()
+        {
+            return Err(CoreError::WorktreeMissing(
+                worktree.path.display().to_string(),
+            ));
+        }
         let mut state = self.core.lock();
         if state.turn.is_none() {
             self.core.start_turn(&mut state, content);
@@ -834,9 +895,10 @@ async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
 /// The system prompt and the tools of a model call with `runtime`.
 async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<ToolSpec>) {
     let mut specs = runtime.tools.available_specs().await;
+    let workspace = core.workspace();
     let catalog = if runtime.skills.enabled() {
         let sources = runtime.skills.clone();
-        let workspace = core.workspace.root().to_path_buf();
+        let workspace = workspace.root().to_path_buf();
         tokio::task::spawn_blocking(move || sources.discover(&workspace))
             .await
             .unwrap_or_default()
@@ -849,14 +911,16 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         specs.retain(|spec| spec.name != SKILL_TOOL);
     }
     let environment = core.environment.snapshot(&runtime.config.environment);
+    let worktree = core.lock().worktree.as_ref().map(Worktree::info);
     let prompt = build_system_prompt(&PromptInputs {
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,
-        workspace_root: core.workspace.root(),
+        workspace_root: workspace.root(),
         max_bytes: runtime.config.instructions.max_bytes.as_usize(),
         tools: &specs,
         skills: Some(&catalog),
         environment: Some(&environment),
+        worktree: worktree.as_ref(),
     })
     .await;
     (prompt, specs)
@@ -1248,7 +1312,15 @@ async fn run_tool_call(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let ctx = ToolContext::new(core.workspace.clone())
+    let writable = core
+        .lock()
+        .worktree
+        .as_ref()
+        .and_then(|w| w.git_dir.clone())
+        .into_iter()
+        .collect();
+    let ctx = ToolContext::new(core.workspace())
+        .with_writable(writable)
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_readable(skill_dirs)

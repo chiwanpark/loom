@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loom_config::AGENTS_MD;
+use loom_proto::WorktreeInfo;
 use loom_tools::ToolSpec;
 
 use crate::environment::EnvSnapshot;
@@ -39,6 +40,9 @@ pub struct PromptInputs<'a> {
     /// The environment of commands, whose variable names the prompt lists
     /// and whose problems it reports.
     pub environment: Option<&'a EnvSnapshot>,
+    /// The git worktree that the session works in, which the prompt names
+    /// with its branch.
+    pub worktree: Option<&'a WorktreeInfo>,
 }
 
 pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
@@ -93,7 +97,11 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
             sections.push(section);
         }
     }
-    sections.push(runtime_section(inputs.workspace_root, inputs.tools));
+    sections.push(runtime_section(
+        inputs.workspace_root,
+        inputs.worktree,
+        inputs.tools,
+    ));
     SystemPrompt {
         text: sections.join("\n\n"),
         warnings,
@@ -146,10 +154,22 @@ async fn read_capped(path: &PathBuf, max_bytes: usize) -> std::io::Result<Option
     Ok(Some((text, truncated)))
 }
 
-fn runtime_section(workspace_root: &Path, tools: &[ToolSpec]) -> String {
+fn runtime_section(
+    workspace_root: &Path,
+    worktree: Option<&WorktreeInfo>,
+    tools: &[ToolSpec],
+) -> String {
     let tools: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    let worktree = worktree
+        .map(|w| {
+            format!(
+                "\n- Git worktree: the workspace is a git worktree on the branch `{}`, made from `{}`. Commit your changes on this branch. The user merges it or opens a pull request.",
+                w.branch, w.base
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "# Environment\n\n- Date: {}\n- Workspace: {}\n- OS: {}\n- Tools: {}",
+        "# Environment\n\n- Date: {}\n- Workspace: {}{worktree}\n- OS: {}\n- Tools: {}",
         today(),
         workspace_root.display(),
         os_description(),
@@ -228,6 +248,7 @@ mod tests {
                     tools: &tools,
                     skills: None,
                     environment: None,
+                    worktree: None,
                 })
                 .await
                 .text
@@ -284,6 +305,12 @@ mod tests {
             tools: &tools,
             skills: Some(&catalog),
             environment: Some(&environment),
+            worktree: Some(&WorktreeInfo {
+                branch: "loom/abc".into(),
+                base: "main".into(),
+                path: "/w".into(),
+                pull_request: None,
+            }),
         })
         .await;
         let text = &prompt.text;
@@ -298,6 +325,7 @@ mod tests {
         assert!(text.contains("- Not secret: `AWS_REGION`."));
         assert!(text.contains("\n- pdf: PDF files."));
         assert!(text.contains("- Tools: read"));
+        assert!(text.contains("on the branch `loom/abc`, made from `main`"));
         let mut warnings = catalog.warnings.clone();
         warnings.extend(environment.warnings.clone());
         assert_eq!(prompt.warnings, warnings);
@@ -311,6 +339,7 @@ mod tests {
             tools: &tools,
             skills,
             environment: None,
+            worktree: None,
         };
         let without = build_system_prompt(&inputs(Some(&empty))).await;
         assert!(!without.text.contains("# Skills"));
@@ -330,6 +359,7 @@ mod tests {
             tools: &tools,
             skills: None,
             environment: None,
+            worktree: None,
         })
         .await;
         assert!(prompt.text.contains("가나\n") || prompt.text.contains("가나\n\n"));
@@ -352,6 +382,7 @@ mod tests {
             tools: &tools,
             skills: None,
             environment: None,
+            worktree: None,
         })
         .await;
         let text = &prompt.text;

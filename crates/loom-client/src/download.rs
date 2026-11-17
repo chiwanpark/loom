@@ -25,6 +25,7 @@ impl Client {
             path: path.to_owned(),
             offset,
             len,
+            session: self.scope.clone(),
         };
         match self.request(command).await? {
             Payload::FileChunk(chunk) => Ok(chunk),
@@ -140,6 +141,7 @@ impl<'a> Chunks<'a> {
                 path: self.path.to_owned(),
                 offset: self.next,
                 len: CHUNK,
+                session: self.client.scope.clone(),
             };
             self.in_flight
                 .push_back((self.next, Box::pin(self.client.submit(command).await?)));

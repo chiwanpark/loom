@@ -452,6 +452,59 @@ async fn sessions_are_rewound_through_the_client() {
 }
 
 #[tokio::test]
+async fn worktree_sessions_through_the_client() {
+    let setup = setup(vec![]);
+    let ws = setup.info.workspace.clone();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&ws, &["init", "-q", "-b", "main"]);
+    std::fs::write(ws.join("README"), "hello\n").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-q", "-m", "first"]);
+    let (client, _notes) = connect(&setup).await;
+
+    let session = client
+        .create_worktree_session(None, loom_proto::WorktreeOptions::default())
+        .await
+        .unwrap();
+    let worktree = session.worktree.clone().unwrap();
+    let path = std::path::PathBuf::from(&worktree.path);
+    std::fs::write(path.join("only-here.txt"), "x\n").unwrap();
+    let names = |listing: loom_proto::DirectoryListing| -> Vec<String> {
+        listing.entries.into_iter().map(|e| e.name).collect()
+    };
+    let scoped = client.in_session(Some(session.id.clone()));
+    assert!(names(scoped.list_directory("").await.unwrap()).contains(&"only-here.txt".into()));
+    assert!(!names(client.list_directory("").await.unwrap()).contains(&"only-here.txt".into()));
+    let changes = scoped.workspace_changes().await.unwrap();
+    assert_eq!(changes.branch.as_deref(), Some(worktree.branch.as_str()));
+    assert!(changes.files.iter().any(|f| f.path == "only-here.txt"));
+
+    let status = client.worktree_status(&session.id).await.unwrap();
+    assert!(status.dirty);
+    let err = client.delete_session(&session.id).await.unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
+    client.remove_worktree(&session.id, true).await.unwrap();
+    assert!(!path.exists());
+    client.delete_session(&session.id).await.unwrap();
+
+    let missing = client
+        .in_session(Some(SessionId("nope".into())))
+        .list_directory("")
+        .await
+        .unwrap_err();
+    assert_eq!(missing.api().unwrap().code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
 async fn session_settings_and_errors() {
     let setup = setup(vec![]);
     let (client, _notes) = connect(&setup).await;

@@ -6,7 +6,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ### Upgrade notes
 
-- The protocol version is now 16. Clients and agents of 0.3.0 (protocol 14) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+- The protocol version is now 17. Clients and agents of 0.3.0 (protocol 14) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
 - Shell commands and terminals no longer get the variables of the agent's environment whose names contain `KEY`, `SECRET`, `TOKEN`, or `PASSWORD`, such as `GITHUB_TOKEN`. To give a command such a variable, put it in the `.env` file of the workspace, or set `environment.ignore_default_excludes: true` in `agent.yaml`.
 - If the workspace has a `.env` file, shell commands and terminals now get its variables. Set `environment.env_file: null` to stop this.
 

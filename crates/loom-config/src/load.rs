@@ -114,6 +114,10 @@ mod tests {
             environment.redaction.allow,
             ["AWS_REGION", "RUST_BACKTRACE"]
         );
+        assert_eq!(
+            config.worktrees.dir,
+            Some(PathBuf::from("/home/u/.config/loom/worktrees"))
+        );
     }
 
     #[test]

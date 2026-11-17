@@ -83,6 +83,10 @@ impl ShellTool {
                     .policy
                     .writable
                     .insert(0, ctx.workspace.root().to_path_buf());
+                launcher
+                    .policy
+                    .writable
+                    .extend(ctx.writable.iter().cloned());
                 if let Some(env) = &ctx.env {
                     launcher.policy.hidden.extend(env.protected.iter().cloned());
                 }

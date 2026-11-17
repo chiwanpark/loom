@@ -82,6 +82,9 @@ pub struct SessionState {
     /// Messages sent while a turn ran, waiting to be delivered.
     #[serde(default)]
     pub pending: Vec<loom_proto::PendingMessage>,
+    /// The git worktree that the session works in.
+    #[serde(default)]
+    pub worktree: Option<crate::worktree::Worktree>,
 }
 
 /// The model and reasoning effort a request was sent with.

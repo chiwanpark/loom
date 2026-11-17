@@ -239,18 +239,23 @@ mod tests {
                 session: session.clone(),
                 default: Some(PolicyAction::Deny),
             },
-            Command::GetWorkspaceChanges,
+            Command::GetWorkspaceChanges { session: None },
             Command::GetFileDiff {
                 path: "src/new.rs".into(),
                 old_path: Some("src/old.rs".into()),
+                session: Some(session.clone()),
             },
             Command::RenameSession {
                 session: session.clone(),
                 title: Some("Renamed".into()),
             },
-            Command::ListDirectory { path: "src".into() },
+            Command::ListDirectory {
+                path: "src".into(),
+                session: None,
+            },
             Command::ReadFile {
                 path: "src/main.rs".into(),
+                session: Some(session.clone()),
             },
             Command::AttachTerminal {
                 terminal: 3,
@@ -283,11 +288,13 @@ mod tests {
                 path: "src/main.rs".into(),
                 text: "fn main() {}\n".into(),
                 expected: FileVersion([7; 32]),
+                session: None,
             },
             Command::ReadFileChunk {
                 path: "data.bin".into(),
                 offset: 1 << 40,
                 len: MAX_FILE_CHUNK,
+                session: None,
             },
             Command::ClearSession {
                 session: session.clone(),
@@ -313,11 +320,13 @@ mod tests {
                 path: "assets/logo.png".into(),
                 offset: 1 << 20,
                 data: vec![0x89, b'P', b'N', b'G'],
+                session: Some(session.clone()),
             },
             Command::FinishUpload {
                 upload: 5,
                 size: (1 << 20) + 4,
                 overwrite: true,
+                session: Some(session.clone()),
             },
             Command::CancelUpload { upload: 5 },
             Command::GetSystemPrompt {
@@ -345,6 +354,33 @@ mod tests {
             Command::Rewind {
                 session: session.clone(),
                 seq: 12,
+            },
+            Command::CreateSession {
+                model: None,
+                worktree: Some(WorktreeOptions {
+                    branch: Some("loom/x".into()),
+                    base: None,
+                }),
+            },
+            Command::GetWorktreeStatus {
+                session: session.clone(),
+            },
+            Command::MergeWorktree {
+                session: session.clone(),
+                strategy: MergeStrategy::Squash {
+                    message: "Add x".into(),
+                },
+                remove: true,
+            },
+            Command::OpenPullRequest {
+                session: session.clone(),
+                title: "Add x".into(),
+                body: String::new(),
+                draft: true,
+            },
+            Command::RemoveWorktree {
+                session: session.clone(),
+                force: false,
             },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });

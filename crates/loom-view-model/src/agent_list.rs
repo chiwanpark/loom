@@ -152,6 +152,7 @@ mod tests {
             created_at: 0,
             title: None,
             archived,
+            worktree: None,
         }
     }
 

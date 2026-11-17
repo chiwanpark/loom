@@ -234,13 +234,26 @@ impl Harness {
     }
 
     pub fn new(config: AgentConfig, scripts: Vec<Script>) -> Self {
+        Self::with_workspace(config, scripts, |_| {}, |_| {})
+    }
+
+    /// Like [`Harness::new`]; `prepare` fills the workspace before the agent
+    /// starts, and `adjust` changes its options.
+    pub fn with_workspace(
+        config: AgentConfig,
+        scripts: Vec<Script>,
+        prepare: impl FnOnce(&std::path::Path),
+        adjust: impl FnOnce(&mut AgentOptions),
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
+        prepare(&workspace);
         let dirs = dirs_in(dir.path());
         let provider = ScriptedProvider::new(scripts);
         let mut options = AgentOptions::new(&workspace, config, dirs.clone());
         options.providers.push(provider.clone());
+        adjust(&mut options);
         let agent = Agent::new(options).unwrap();
         Self {
             agent,

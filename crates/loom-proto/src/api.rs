@@ -9,11 +9,11 @@ use crate::auth::{
 };
 use crate::relay::HostId;
 use crate::session::{
-    ContentPart, Decision, Delivery, EventWindow, PendingMessage, SequencedEvent, SessionId,
-    SessionInfo, ToolCallId, UsageSoFar,
+    ContentPart, Decision, Delivery, EventWindow, MergeStrategy, PendingMessage, SequencedEvent,
+    SessionId, SessionInfo, ToolCallId, UsageSoFar, WorktreeOptions, WorktreeStatus,
 };
 
-pub const PROTOCOL_VERSION: u16 = 16;
+pub const PROTOCOL_VERSION: u16 = 17;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -115,6 +115,9 @@ pub enum Command {
     ListSessions,
     CreateSession {
         model: Option<String>,
+        /// Makes the session work in a new git worktree of its own, on a new
+        /// branch, outside the workspace.
+        worktree: Option<WorktreeOptions>,
     },
     /// Follows a session's events. The agent answers with the session's
     /// info, then sends its events in [`ServerMessage::Events`] batches.
@@ -190,6 +193,9 @@ pub enum Command {
         cols: u16,
         rows: u16,
         owner: TerminalOwner,
+        /// Starts the terminal in the root of this session, such as its
+        /// worktree; `None` starts it in the workspace.
+        session: Option<SessionId>,
     },
     TerminalInput {
         terminal: TerminalId,
@@ -220,10 +226,15 @@ pub enum Command {
     DeleteSession {
         session: SessionId,
     },
-    GetWorkspaceChanges,
+    /// The file commands below act in the root of `session`, such as its
+    /// worktree, or in the workspace when it is `None`.
+    GetWorkspaceChanges {
+        session: Option<SessionId>,
+    },
     GetFileDiff {
         path: String,
         old_path: Option<String>,
+        session: Option<SessionId>,
     },
     RenameSession {
         session: SessionId,
@@ -231,9 +242,11 @@ pub enum Command {
     },
     ListDirectory {
         path: String,
+        session: Option<SessionId>,
     },
     ReadFile {
         path: String,
+        session: Option<SessionId>,
     },
     /// Attaches a terminal to this connection: its recent output (up to
     /// [`TERMINAL_REPLAY`] bytes) comes as [`ServerMessage::TerminalOutput`]
@@ -270,6 +283,7 @@ pub enum Command {
         path: String,
         text: String,
         expected: FileVersion,
+        session: Option<SessionId>,
     },
     /// Raw bytes of a workspace file, from `offset` on, at most `len` of them
     /// and never more than [`MAX_FILE_CHUNK`]. A client downloads a file by
@@ -278,6 +292,7 @@ pub enum Command {
         path: String,
         offset: u64,
         len: u32,
+        session: Option<SessionId>,
     },
     /// Starts the session's conversation over: the agent forgets its history
     /// and events, keeps its settings, and sends [`SessionEvent::Cleared`].
@@ -383,6 +398,7 @@ pub enum Command {
         path: String,
         offset: u64,
         data: Vec<u8>,
+        session: Option<SessionId>,
     },
     /// Ends an upload once every chunk was answered: the temporary file,
     /// which must have `size` bytes, replaces the file at the upload's path.
@@ -393,6 +409,7 @@ pub enum Command {
         upload: UploadId,
         size: u64,
         overwrite: bool,
+        session: Option<SessionId>,
     },
     /// Stops an upload and removes its temporary file. Answered with
     /// [`Payload::Ok`], also for an upload the agent does not know.
@@ -424,6 +441,40 @@ pub enum Command {
     Rewind {
         session: SessionId,
         seq: u64,
+    },
+    /// Where the branch of the session's worktree is against its base.
+    /// Answered with [`Payload::WorktreeStatus`].
+    GetWorktreeStatus {
+        session: SessionId,
+    },
+    /// Merges the branch of the session's worktree into its base, in the
+    /// workspace, which must have the base checked out and no uncommitted
+    /// changes. Fails with [`ErrorCode::Conflict`] when the merge has
+    /// conflicts; the workspace then stays as it was. With `remove`, removes
+    /// the worktree and its branch after the merge, and the session goes on
+    /// in the workspace. Answered with [`Payload::Merged`].
+    MergeWorktree {
+        session: SessionId,
+        strategy: MergeStrategy,
+        remove: bool,
+    },
+    /// Pushes the branch of the session's worktree and opens a pull request
+    /// into its base with the GitHub CLI (`gh`) on the agent's host. When the
+    /// session has a pull request already, only pushes. Answered with
+    /// [`Payload::PullRequest`].
+    OpenPullRequest {
+        session: SessionId,
+        title: String,
+        body: String,
+        draft: bool,
+    },
+    /// Removes the session's worktree and its branch; the session goes on in
+    /// the workspace. Without `force`, fails with [`ErrorCode::Conflict`]
+    /// when the worktree has uncommitted changes or commits that were not
+    /// merged. A session with a worktree is deleted only after this.
+    RemoveWorktree {
+        session: SessionId,
+        force: bool,
     },
 }
 
@@ -557,6 +608,11 @@ pub enum Payload {
     /// The user message that [`Command::Rewind`] removed, for the client to
     /// edit and send again.
     Rewound(Vec<ContentPart>),
+    WorktreeStatus(WorktreeStatus),
+    /// The commit that a merge made.
+    Merged(String),
+    /// The URL of a pull request.
+    PullRequest(String),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].
