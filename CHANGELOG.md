@@ -7,6 +7,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### Fixes
 
 - **User attributes in telemetry.** Claude Code adds `user.email`, `user.account_uuid`, `user.account_id`, and `organization.id` to each metric and event. Loom did not add them, so dashboards that group by these attributes did not show Loom's data. Now Loom adds them too. The agent gets the values from the Anthropic sign-in. If the sign-in has no email, the agent uses `git config --global user.email`. To set the values yourself, use the new `telemetry` settings `user_email`, `account_uuid`, and `organization_id`. Set `include_account_uuid: false` to leave out the account. See [Telemetry](README.md#telemetry).
+- **Skill files.** The `skill` tool listed files that tools make, such as `__pycache__` directories and `*.pyc` files, among the files of a skill. Now the list does not include them. It also does not include `node_modules` and Python virtual environments.
 
 ## 0.4.0
 

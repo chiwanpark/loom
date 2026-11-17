@@ -23,6 +23,15 @@ pub(crate) const CONTENT_END: &str = "</skill_content>";
 /// The most files of a skill that its instructions list.
 const MAX_LISTED_FILES: usize = 100;
 const MAX_LIST_DEPTH: usize = 4;
+/// Directories that tools make, which the list of a skill's files leaves
+/// out. Hidden directories, such as `.venv`, are left out too.
+const GENERATED_DIRS: &[&str] = &["__pycache__", "node_modules"];
+/// The file in the root of a Python virtual environment, such as `venv`.
+const VENV_MARKER: &str = "pyvenv.cfg";
+/// Endings of files that tools make, such as compiled Python modules.
+const GENERATED_FILE_ENDINGS: &[&str] = &[".pyc", ".pyo", "~"];
+/// Files that tools make, by name.
+const GENERATED_FILES: &[&str] = &["Thumbs.db"];
 /// The most of a `SKILL.md` file that discovery reads for its frontmatter.
 const MAX_SKILL_FILE: u64 = 256 * 1024;
 
@@ -252,8 +261,25 @@ fn unquote(value: &str) -> &str {
     value
 }
 
-/// The files of a skill besides `SKILL.md`, relative to its directory, and
-/// whether there are more than the list holds.
+/// Whether a skill's file or directory is something that tools made, such
+/// as `__pycache__`, so that the list of its files leaves it out.
+fn generated(path: &Path, is_dir: bool) -> bool {
+    let Some(name) = path.file_name().map(|name| name.to_string_lossy()) else {
+        return false;
+    };
+    if name.starts_with('.') {
+        return true;
+    }
+    if is_dir {
+        GENERATED_DIRS.contains(&name.as_ref()) || path.join(VENV_MARKER).is_file()
+    } else {
+        GENERATED_FILES.contains(&name.as_ref())
+            || GENERATED_FILE_ENDINGS.iter().any(|end| name.ends_with(end))
+    }
+}
+
+/// The files of a skill besides `SKILL.md` and files that tools made,
+/// relative to its directory, and whether there are more than the list holds.
 fn list_files(dir: &Path) -> (Vec<String>, bool) {
     fn walk(base: &Path, dir: &Path, depth: usize, files: &mut Vec<String>) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -262,13 +288,11 @@ fn list_files(dir: &Path) -> (Vec<String>, bool) {
         let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
         paths.sort();
         for path in paths {
-            let hidden = path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with('.'));
-            if hidden {
+            let is_dir = path.is_dir();
+            if generated(&path, is_dir) {
                 continue;
             }
-            if path.is_dir() {
+            if is_dir {
                 if depth < MAX_LIST_DEPTH && walk(base, &path, depth + 1, files) {
                     return true;
                 }
@@ -603,6 +627,21 @@ mod tests {
         std::fs::create_dir_all(dir.join("scripts")).unwrap();
         std::fs::write(dir.join("scripts/extract.py"), "print('hi')\n").unwrap();
         std::fs::write(dir.join("REFERENCE.md"), "# Reference\n").unwrap();
+        // Files that tools made are not listed.
+        for generated in [
+            "scripts/__pycache__/extract.cpython-313.pyc",
+            "scripts/extract.pyc",
+            "node_modules/left-pad/index.js",
+            "venv/pyvenv.cfg",
+            "venv/lib/site.py",
+            ".venv/lib/site.py",
+            ".DS_Store",
+            "Thumbs.db",
+            "REFERENCE.md~",
+        ] {
+            std::fs::create_dir_all(dir.join(generated).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(generated), "").unwrap();
+        }
         let tool = SkillTool::new(Arc::new(sources(&env, SkillsConfig::default())), 1024);
         let workspace = Arc::new(loom_tools::Workspace::new(&env.workspace).unwrap());
         let ctx = ToolContext::new(workspace);
