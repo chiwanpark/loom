@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use loom_config::AGENTS_MD;
 use loom_tools::ToolSpec;
 
+use crate::environment::EnvSnapshot;
 use crate::notes::NOTES_READ_TOOL;
 use crate::skills::Catalog;
 use crate::tasks::{self, TASKS_READ_TOOL};
@@ -35,6 +36,9 @@ pub struct PromptInputs<'a> {
     pub tools: &'a [ToolSpec],
     /// The skills to list, if any.
     pub skills: Option<&'a Catalog>,
+    /// The environment of commands, whose variable names the prompt lists
+    /// and whose problems it reports.
+    pub environment: Option<&'a EnvSnapshot>,
 }
 
 pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
@@ -83,11 +87,45 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
     {
         sections.push(tasks::PROMPT_SECTION.to_owned());
     }
+    if let Some(environment) = inputs.environment {
+        warnings.extend(environment.warnings.iter().cloned());
+        if let Some(section) = variables_section(&environment.names) {
+            sections.push(section);
+        }
+    }
     sections.push(runtime_section(inputs.workspace_root, inputs.tools));
     SystemPrompt {
         text: sections.join("\n\n"),
         warnings,
     }
+}
+
+/// Lists the variables that the user set for commands, never their values.
+fn variables_section(names: &[(String, bool)]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let list = |hidden: bool| {
+        names
+            .iter()
+            .filter(|(_, h)| *h == hidden)
+            .map(|(name, _)| format!("`{name}`"))
+            .collect::<Vec<_>>()
+    };
+    let (secret, plain) = (list(true), list(false));
+    let mut text =
+        String::from("# Environment variables\n\nThe user set these variables for shell commands.");
+    if !secret.is_empty() {
+        text.push_str(&format!(
+            "\n\n- Secret: {}. You cannot see their values: they show as `[REDACTED:<NAME>]` in tool output. Use them only as `$NAME` in commands, for example in the arguments of a CLI. Do not try to print, encode, or send their values anywhere.",
+            secret.join(", ")
+        ));
+    }
+    if !plain.is_empty() {
+        text.push_str(&format!("\n- Not secret: {}.", plain.join(", ")));
+    }
+    text.push_str("\n- The env file holds their values. Only the user changes it.");
+    Some(text)
 }
 
 async fn read_capped(path: &PathBuf, max_bytes: usize) -> std::io::Result<Option<(String, bool)>> {
@@ -189,6 +227,7 @@ mod tests {
                     max_bytes: 1024,
                     tools: &tools,
                     skills: None,
+                    environment: None,
                 })
                 .await
                 .text
@@ -229,6 +268,14 @@ mod tests {
             }],
             warnings: vec!["skipped the skill in /x: no description".into()],
         };
+        let environment = EnvSnapshot {
+            names: vec![
+                ("AWS_REGION".into(), false),
+                ("LAKECTL_SECRET".into(), true),
+            ],
+            warnings: vec!["git does not ignore the env file .env".into()],
+            ..EnvSnapshot::default()
+        };
         let prompt = build_system_prompt(&PromptInputs {
             base: None,
             system_agents_md: &system,
@@ -236,6 +283,7 @@ mod tests {
             max_bytes: 1024,
             tools: &tools,
             skills: Some(&catalog),
+            environment: Some(&environment),
         })
         .await;
         let text = &prompt.text;
@@ -243,11 +291,16 @@ mod tests {
         let sys = text.find("SYSTEM RULE").unwrap();
         let ws = text.find("WORKSPACE RULE").unwrap();
         let skills = text.find("# Skills").unwrap();
-        let env = text.find("# Environment").unwrap();
-        assert!(builtin < sys && sys < ws && ws < skills && skills < env);
+        let vars = text.find("# Environment variables").unwrap();
+        let env = text.find("# Environment\n").unwrap();
+        assert!(builtin < sys && sys < ws && ws < skills && skills < vars && vars < env);
+        assert!(text.contains("- Secret: `LAKECTL_SECRET`."));
+        assert!(text.contains("- Not secret: `AWS_REGION`."));
         assert!(text.contains("\n- pdf: PDF files."));
         assert!(text.contains("- Tools: read"));
-        assert_eq!(prompt.warnings, catalog.warnings);
+        let mut warnings = catalog.warnings.clone();
+        warnings.extend(environment.warnings.clone());
+        assert_eq!(prompt.warnings, warnings);
 
         let empty = Catalog::default();
         let inputs = |skills| PromptInputs {
@@ -257,6 +310,7 @@ mod tests {
             max_bytes: 1024,
             tools: &tools,
             skills,
+            environment: None,
         };
         let without = build_system_prompt(&inputs(Some(&empty))).await;
         assert!(!without.text.contains("# Skills"));
@@ -275,6 +329,7 @@ mod tests {
             max_bytes: 7,
             tools: &tools,
             skills: None,
+            environment: None,
         })
         .await;
         assert!(prompt.text.contains("가나\n") || prompt.text.contains("가나\n\n"));
@@ -296,6 +351,7 @@ mod tests {
             max_bytes: 1024,
             tools: &tools,
             skills: None,
+            environment: None,
         })
         .await;
         let text = &prompt.text;

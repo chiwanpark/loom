@@ -14,6 +14,9 @@ const DEFAULT_WRITABLE: &[&str] = &["/dev", "/tmp", "/var/tmp"];
 pub struct SandboxPolicy {
     pub writable: Vec<PathBuf>,
     pub network: bool,
+    /// Files that commands must not read, such as the env file. Only the
+    /// bubblewrap sandbox hides them.
+    pub hidden: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +61,13 @@ impl SandboxLauncher {
                     args.push(path.as_os_str().to_owned());
                     args.push(path.into_os_string());
                 }
+                for path in &self.policy.hidden {
+                    if path.is_file() {
+                        args.push("--ro-bind".into());
+                        args.push("/dev/null".into());
+                        args.push(path.as_os_str().to_owned());
+                    }
+                }
                 if !self.policy.network {
                     args.push("--unshare-net".into());
                 }
@@ -90,6 +100,7 @@ pub fn parse_args(args: &[OsString]) -> Result<(SandboxPolicy, Vec<OsString>), S
     let mut policy = SandboxPolicy {
         writable: Vec::new(),
         network: true,
+        hidden: Vec::new(),
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -165,6 +176,7 @@ mod tests {
             policy: SandboxPolicy {
                 writable: vec![PathBuf::from("/w s")],
                 network: false,
+                hidden: Vec::new(),
             },
         };
         let (program, args) = launcher.argv(&["/bin/sh".into(), "-c".into(), "echo hi".into()]);
@@ -185,6 +197,7 @@ mod tests {
             policy: SandboxPolicy {
                 writable: vec![dir.path().to_path_buf(), PathBuf::from("/missing/dir")],
                 network: false,
+                hidden: Vec::new(),
             },
         };
         let (program, args) = bwrap.argv(&["/bin/true".into()]);
@@ -214,6 +227,7 @@ mod tests {
             policy: SandboxPolicy {
                 writable: vec![dir.path().to_path_buf()],
                 network: true,
+                hidden: Vec::new(),
             },
         };
         let script = format!(
@@ -230,5 +244,35 @@ mod tests {
         assert!(!status.success());
         assert!(dir.path().join("inside").exists());
         assert!(!outside.path().join("outside").exists());
+    }
+
+    #[tokio::test]
+    async fn bubblewrap_hides_protected_files() {
+        let Some(bwrap) = find_bwrap() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, "TOKEN=hidden-value\n").unwrap();
+        let launcher = SandboxLauncher {
+            kind: LauncherKind::Bubblewrap { bwrap },
+            policy: SandboxPolicy {
+                writable: vec![dir.path().to_path_buf()],
+                network: true,
+                hidden: vec![env.clone(), dir.path().join("missing")],
+            },
+        };
+        let script = format!("cat {}; echo end", env.display());
+        let (program, args) = launcher.argv(&["/bin/sh".into(), "-c".into(), script.into()]);
+        let output = tokio::process::Command::new(program)
+            .args(args)
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Without user namespaces bwrap cannot run here.
+        if output.status.success() {
+            assert_eq!(stdout, "end\n");
+        }
     }
 }

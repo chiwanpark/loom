@@ -2022,6 +2022,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4895,10 +4901,14 @@ dependencies = [
 name = "loom-tools"
 version = "0.3.0"
 dependencies = [
+ "aho-corasick",
  "async-trait",
+ "base64 0.23.1",
+ "dotenvy",
  "landlock",
  "loom-proto",
  "nix 0.31.3",
+ "percent-encoding",
  "portable-pty",
  "serde",
  "serde_json",

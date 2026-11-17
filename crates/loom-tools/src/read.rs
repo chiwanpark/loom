@@ -102,15 +102,26 @@ impl Tool for ReadTool {
             max_bytes: self.limits.max_bytes,
         };
         let read_path = path.clone();
-        let page = tokio::task::spawn_blocking(move || read_page(&read_path, start, limits))
-            .await
-            .map_err(|err| ToolError::failed(format!("read task failed: {err}")))?
-            .map_err(|err| match err {
-                PageError::Binary => {
-                    ToolError::failed(format!("{display} looks like a binary file"))
-                }
-                PageError::Io(err) => ToolError::io(format!("cannot read {display}"), err),
-            })?;
+        // The values of a file with secrets are hidden, but its names show.
+        let masked = ctx
+            .env
+            .as_ref()
+            .filter(|env| env.is_protected(&path))
+            .map(|env| env.shown.clone());
+        let page = tokio::task::spawn_blocking(move || match masked {
+            Some(shown) => {
+                let text = std::fs::read_to_string(&read_path)?;
+                let text = crate::env::mask_dotenv(&text, &shown);
+                read_page_from(std::io::Cursor::new(text.into_bytes()), start, limits)
+            }
+            None => read_page(&read_path, start, limits),
+        })
+        .await
+        .map_err(|err| ToolError::failed(format!("read task failed: {err}")))?
+        .map_err(|err| match err {
+            PageError::Binary => ToolError::failed(format!("{display} looks like a binary file")),
+            PageError::Io(err) => ToolError::io(format!("cannot read {display}"), err),
+        })?;
 
         ctx.files.record(&path, FileStamp::from_metadata(&metadata));
 
@@ -180,7 +191,14 @@ impl From<std::io::Error> for PageError {
 }
 
 fn read_page(path: &Path, start: usize, limits: Limits) -> Result<Page, PageError> {
-    let mut reader = BufReader::new(File::open(path)?);
+    read_page_from(BufReader::new(File::open(path)?), start, limits)
+}
+
+fn read_page_from(
+    mut reader: impl BufRead,
+    start: usize,
+    limits: Limits,
+) -> Result<Page, PageError> {
     {
         let head = reader.fill_buf()?;
         if head[..head.len().min(BINARY_SNIFF_BYTES)].contains(&0) {

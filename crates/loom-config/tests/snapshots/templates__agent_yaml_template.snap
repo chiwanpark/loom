@@ -41,6 +41,12 @@ policy:
   rules:
   - tool: read
     action: allow
+environment:
+  inherit: all
+  ignore_default_excludes: false
+  env_file: .env
+  redaction:
+    enabled: true
 sandbox:
   backend: none
   network: true

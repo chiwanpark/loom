@@ -42,6 +42,14 @@ impl ToolError {
     pub fn failed(message: impl Into<String>) -> Self {
         Self::Failed(message.into())
     }
+
+    /// The error for a change to a file with the environment's secrets.
+    pub fn protected(display: &str) -> Self {
+        Self::Failed(format!(
+            "{display} holds the secret values of the environment, so you cannot change it. \
+             Ask the user to change it."
+        ))
+    }
 }
 
 pub type Result<T, E = ToolError> = std::result::Result<T, E>;

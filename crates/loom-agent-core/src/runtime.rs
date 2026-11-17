@@ -82,6 +82,7 @@ fn sandbox_launcher(
     let policy = SandboxPolicy {
         writable: sandbox.writable.clone(),
         network: sandbox.network,
+        hidden: Vec::new(),
     };
     let unavailable = |message: &str| LlmError::Config {
         field: "sandbox.backend".into(),

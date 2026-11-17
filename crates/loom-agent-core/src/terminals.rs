@@ -12,6 +12,7 @@
 //! terminals opening, closing, and moving through a watch channel.
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -215,23 +216,26 @@ impl Terminals {
         list
     }
 
+    /// Opens a terminal that runs `shell` in `cwd` with only the variables
+    /// of `env`.
     pub fn open(
         &self,
         viewer: Viewer,
         shell: PathBuf,
         cwd: &Path,
+        mut env: Vec<(OsString, OsString)>,
         cols: u16,
         rows: u16,
     ) -> Result<TerminalId, ApiError> {
         check_size(cols, rows)?;
+        env.push(("TERM".into(), "xterm-256color".into()));
+        env.push(("COLORTERM".into(), "truecolor".into()));
         let (process, mut output) = PtyProcess::spawn(PtySpawn {
             program: shell,
             args: Vec::new(),
             cwd: cwd.to_path_buf(),
-            env: vec![
-                ("TERM".into(), "xterm-256color".into()),
-                ("COLORTERM".into(), "truecolor".into()),
-            ],
+            clear_env: true,
+            env,
             cols,
             rows,
         })
@@ -559,7 +563,14 @@ mod tests {
         let (viewer, rx) = viewer(connection, connection);
         let cwd = std::env::temp_dir();
         let id = terminals
-            .open(viewer, "/bin/sh".into(), &cwd, 80, 24)
+            .open(
+                viewer,
+                "/bin/sh".into(),
+                &cwd,
+                std::env::vars_os().collect(),
+                80,
+                24,
+            )
             .unwrap();
         (id, rx)
     }

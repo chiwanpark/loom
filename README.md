@@ -239,6 +239,7 @@ The main sections:
 - `llm`: the default model and provider settings.
 - `tools`: output limits for the `read` and `shell` tools, the shell program, the `search_web` tool (its model, source limits, and timeout), `notes.max_bytes`, the largest [notes](#notes-and-tasks) (64 KiB by default), and `tasks.max_items`, the most tasks in a task list (100 by default). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it.
 - `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes, tasks, and `skill` tools are allowed unless a rule says otherwise.
+- `environment`: the environment variables of shell commands and terminals, and the env file with secrets for them. See [Environment variables and secrets](#environment-variables-and-secrets).
 - `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths.
 - `context`: tool output limits and when to compact a long conversation.
 - `limits`: `max_rounds_per_turn`, the most model calls the agent makes for one message before the turn stops (200 by default; `0` for no limit). It guards against a model stuck in a loop while no one is watching. The conversation is kept, so you can send another message to go on.
@@ -248,6 +249,43 @@ The main sections:
 - `telemetry`: OpenTelemetry (OTLP) export of metrics and events, off by default. `loom-agent config fetch-telemetry` prints this section from the settings your organization publishes for Claude Code.
 
 `crates/loom-config/tests/fixtures/agent.yaml` is an example that uses most of these settings.
+
+### Environment variables and secrets
+
+Shell commands of the agent and terminals get environment variables in this order:
+
+1. The agent's own environment.
+2. `inherit`: `all` (the default) keeps all of it, `core` keeps only `HOME`, `LOGNAME`, `PATH`, `SHELL`, `USER`, `USERNAME`, the temporary directories, the locale, and `TZ`, and `none` keeps nothing.
+3. The default excludes: variables whose names contain `KEY`, `SECRET`, `TOKEN`, or `PASSWORD` are removed. Set `ignore_default_excludes: true` to keep them.
+4. `exclude`: name patterns of more variables to remove.
+5. The env file, `env_file` (`.env` in the workspace by default; `null` for none).
+6. `set`: variables with fixed values.
+7. `include_only`: if it is not empty, only the variables that match it stay.
+
+Patterns use `*` for any text and `?` for one character, and ignore case.
+
+Put the credentials of CLIs, such as `aws` or `lakectl`, in the env file of the workspace:
+
+```sh
+# .env
+LAKECTL_CREDENTIALS_ACCESS_KEY_ID=AKIA...
+LAKECTL_CREDENTIALS_SECRET_ACCESS_KEY=...
+AWS_REGION=eu-west-1
+```
+
+```yaml
+environment:
+  redaction:
+    allow: [AWS_REGION]
+```
+
+The agent reads the env file again when it changes. If the file cannot be parsed, commands keep the values from before, and the agent shows a warning with the line number.
+
+The model does not get the values of the variables from the env file and `set`, except those in `redaction.allow`. The system prompt lists only the names of the variables. In tool output, the values, and their base64 and URL-encoded forms, show as `[REDACTED:<NAME>]`. This also applies to the values of the agent's own variables with secret names, also when commands do not get them. The agent hides the values before it records tool output, saves it to a file, or sends it to clients and the model. The `read` tool shows the env file with its values hidden, and the `write` and `edit` tools cannot change it: only you change it. With the `bubblewrap` sandbox, commands cannot read the env file. Values shorter than 8 characters cannot be hidden; the agent warns about them. The agent also warns when git does not ignore the env file. The warnings show above the system prompt (**System prompt** in a session's menu). Terminals get the same variables, and their output is not hidden, because only you see it. The files that you open in a client also show the raw env file. Set `redaction.enabled: false` to turn off the hiding and the protection of the env file.
+
+Redaction is best effort. A command can still change a value in ways that the agent does not detect, for example when it prints the value backwards, and it can send a value over the network. Thus, give the agent credentials with the least privileges, and set `sandbox.network: false` when the commands do not need the network.
+
+When systemd runs the agent, `~/.config/loom/agent.env` sets variables of the agent's own environment. Commands get these variables too, unless the rules above remove them.
 
 ### Reloading the configuration
 

@@ -59,6 +59,41 @@ pub fn reasoning_summary(message: &AssistantMessage) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
+/// `result` with the secret values that `redactor` knows hidden, in its
+/// content and its details. Details that cannot be redacted are dropped.
+pub fn redact_result(redactor: &loom_tools::env::Redactor, result: ToolResult) -> ToolResult {
+    if redactor.is_empty() {
+        return result;
+    }
+    let details = result.details.and_then(|details| {
+        let mut value = serde_json::to_value(&details).ok()?;
+        redact_strings(redactor, &mut value);
+        serde_json::from_value(value).ok()
+    });
+    ToolResult {
+        content: redactor.redact(&result.content).into_owned(),
+        is_error: result.is_error,
+        details,
+    }
+}
+
+fn redact_strings(redactor: &loom_tools::env::Redactor, value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let std::borrow::Cow::Owned(redacted) = redactor.redact(text) {
+                *text = redacted;
+            }
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| redact_strings(redactor, item)),
+        serde_json::Value::Object(map) => map
+            .values_mut()
+            .for_each(|item| redact_strings(redactor, item)),
+        _ => {}
+    }
+}
+
 pub fn tool_result(output: ToolOutput) -> ToolResult {
     let details = match output.details {
         // The sources are in the content; clients have no view of their own.

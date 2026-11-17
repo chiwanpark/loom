@@ -74,6 +74,26 @@ policy:
     command_prefix: ["rm -rf /", "sudo"]
     action: deny
 
+# The environment of shell tool calls and terminals. Variables are built in
+# this order: the agent's environment, `inherit`, the default excludes
+# (names with KEY, SECRET, TOKEN, or PASSWORD), `exclude`, the env file,
+# `set`, and `include_only`.
+environment:
+  inherit: core                  # all (default), core, or none
+  ignore_default_excludes: false
+  exclude:
+  - AWS_*
+  # include_only: [PATH, HOME, AWS_*]
+  set:
+    RUST_BACKTRACE: "1"
+  env_file: .env                 # relative to the workspace; null for none
+  # The model never sees the values of the env file and `set`, or of the
+  # agent's variables with secret names. Values in tool output show as
+  # [REDACTED:<NAME>].
+  redaction:
+    enabled: true
+    allow: [AWS_REGION, RUST_BACKTRACE]
+
 sandbox:
   backend: landlock
   network: false

@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +18,10 @@ pub struct PtySpawn {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
-    pub env: Vec<(String, String)>,
+    /// Starts the child with only the variables of `env`, not the agent's.
+    pub clear_env: bool,
+    /// Variables to set, over the agent's unless `clear_env`.
+    pub env: Vec<(OsString, OsString)>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -67,6 +71,9 @@ impl PtyProcess {
         let mut command = CommandBuilder::new(&spec.program);
         command.args(&spec.args);
         command.cwd(&spec.cwd);
+        if spec.clear_env {
+            command.env_clear();
+        }
         for (key, value) in &spec.env {
             command.env(key, value);
         }

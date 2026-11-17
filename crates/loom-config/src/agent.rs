@@ -26,6 +26,7 @@ pub struct AgentConfig {
     pub tools: ToolsConfig,
     pub terminal: TerminalConfig,
     pub policy: PolicyConfig,
+    pub environment: EnvironmentConfig,
     pub sandbox: SandboxConfig,
     pub context: ContextConfig,
     pub limits: LimitsConfig,
@@ -48,6 +49,7 @@ impl Default for AgentConfig {
             tools: ToolsConfig::default(),
             terminal: TerminalConfig::default(),
             policy: PolicyConfig::default(),
+            environment: EnvironmentConfig::default(),
             sandbox: SandboxConfig::default(),
             context: ContextConfig::default(),
             limits: LimitsConfig::default(),
@@ -353,6 +355,80 @@ pub enum PolicyAction {
     #[default]
     Ask,
     Deny,
+}
+
+/// The environment variables of the commands that the agent runs: shell
+/// tool calls and terminals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct EnvironmentConfig {
+    /// Which variables of the agent's own environment commands get.
+    pub inherit: InheritEnvironment,
+    /// Keep the variables of the agent's environment whose names contain
+    /// KEY, SECRET, TOKEN, or PASSWORD, which are dropped by default.
+    pub ignore_default_excludes: bool,
+    /// Name patterns (`*` and `?`, case-insensitive) of variables of the
+    /// agent's environment to drop.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// Name patterns of the only variables that commands get, applied last.
+    /// Empty keeps all.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include_only: Vec<String>,
+    /// Variables to set, after the env file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub set: BTreeMap<String, String>,
+    /// A dotenv file of variables for commands, relative to the workspace.
+    /// `null` reads none.
+    pub env_file: Option<PathBuf>,
+    pub redaction: RedactionConfig,
+}
+
+impl Default for EnvironmentConfig {
+    fn default() -> Self {
+        Self {
+            inherit: InheritEnvironment::All,
+            ignore_default_excludes: false,
+            exclude: Vec::new(),
+            include_only: Vec::new(),
+            set: BTreeMap::new(),
+            env_file: Some(PathBuf::from(".env")),
+            redaction: RedactionConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InheritEnvironment {
+    /// Every variable.
+    #[default]
+    All,
+    /// Only HOME, LOGNAME, PATH, SHELL, USER, USERNAME, the temporary
+    /// directories, the locale, and TZ.
+    Core,
+    /// None.
+    None,
+}
+
+/// What the agent hides from the model: the values of the variables from
+/// the env file and `set`, and of the agent's variables with secret names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct RedactionConfig {
+    pub enabled: bool,
+    /// Names of variables whose values are not secret, such as AWS_REGION.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+}
+
+impl Default for RedactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -770,6 +846,8 @@ impl AgentConfig {
             }
         }
 
+        self.environment.validate(origin)?;
+
         if self.sandbox.max_output.as_u64() == 0 {
             return Err(invalid(
                 "sandbox.max_output",
@@ -797,6 +875,59 @@ impl AgentConfig {
         }
         Ok(())
     }
+}
+
+impl EnvironmentConfig {
+    fn validate(&self, origin: &str) -> Result<(), ConfigError> {
+        let invalid = |field: String, message: String| {
+            ConfigError::invalid(origin, format!("environment.{field}"), message)
+        };
+        for (field, patterns) in [
+            ("exclude", &self.exclude),
+            ("include_only", &self.include_only),
+        ] {
+            for (index, pattern) in patterns.iter().enumerate() {
+                if pattern.trim().is_empty() {
+                    return Err(invalid(
+                        format!("{field}[{index}]"),
+                        "must not be empty".into(),
+                    ));
+                }
+            }
+        }
+        for name in self.set.keys() {
+            if !valid_variable_name(name) {
+                return Err(invalid(
+                    format!("set.{name}"),
+                    format!("{name:?} is not a valid variable name"),
+                ));
+            }
+        }
+        for (index, name) in self.redaction.allow.iter().enumerate() {
+            if !valid_variable_name(name) {
+                return Err(invalid(
+                    format!("redaction.allow[{index}]"),
+                    format!("{name:?} is not a valid variable name"),
+                ));
+            }
+        }
+        if self
+            .env_file
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid(
+                "env_file".into(),
+                "must not be empty; set it to null to read no file".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether `name` can be the name of an environment variable.
+pub fn valid_variable_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', '\0']) && !name.chars().any(char::is_whitespace)
 }
 
 impl WebSearchToolConfig {

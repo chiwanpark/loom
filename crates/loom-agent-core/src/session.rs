@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::AgentNotice;
 use crate::compaction;
 use crate::convert;
+use crate::environment::Environment;
 use crate::error::{CoreError, Result};
 use crate::events::{EventHub, Subscription};
 use crate::instructions::{PromptInputs, SystemPrompt, build_system_prompt};
@@ -86,6 +87,8 @@ struct Core {
     skill_dirs: Mutex<Arc<Vec<PathBuf>>>,
     removed: CancellationToken,
     notices: Option<broadcast::Sender<AgentNotice>>,
+    /// The environment of the commands the session runs.
+    environment: Arc<Environment>,
 }
 
 #[derive(Clone)]
@@ -104,6 +107,7 @@ pub(crate) struct SessionParams {
     pub observer: Option<Arc<dyn SessionObserver>>,
     /// Where the session reports changes of its tasks.
     pub notices: Option<broadcast::Sender<AgentNotice>>,
+    pub environment: Arc<Environment>,
 }
 
 enum TurnError {
@@ -373,6 +377,7 @@ impl Session {
                 skill_dirs: Mutex::default(),
                 removed: CancellationToken::new(),
                 notices: params.notices,
+                environment: params.environment,
             }),
         }
     }
@@ -843,6 +848,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
     if catalog.skills.is_empty() {
         specs.retain(|spec| spec.name != SKILL_TOOL);
     }
+    let environment = core.environment.snapshot(&runtime.config.environment);
     let prompt = build_system_prompt(&PromptInputs {
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,
@@ -850,6 +856,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         max_bytes: runtime.config.instructions.max_bytes.as_usize(),
         tools: &specs,
         skills: Some(&catalog),
+        environment: Some(&environment),
     })
     .await;
     (prompt, specs)
@@ -1126,6 +1133,8 @@ async fn run_tool_call(
     call: &LlmToolCall,
     cancel: &CancellationToken,
 ) -> (ToolResult, bool) {
+    let environment = core.environment.snapshot(&runtime.config.environment);
+    let redactor = environment.command.redactor.clone();
     let tool = runtime.tools.get(&call.name).cloned();
     let risk = tool
         .as_ref()
@@ -1143,6 +1152,7 @@ async fn run_tool_call(
         },
     });
     let finish = |result: ToolResult, cancelled: bool| {
+        let result = convert::redact_result(&redactor, result);
         core.emit(SessionEvent::ToolCallFinished {
             call_id: call_id.clone(),
             result: result.clone(),
@@ -1243,6 +1253,7 @@ async fn run_tool_call(
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_readable(skill_dirs)
         .with_files(core.files.clone())
+        .with_env(environment.command.clone())
         .with_cancel(cancel.child_token())
         .with_output(output_tx);
     let args = call.arguments.clone();

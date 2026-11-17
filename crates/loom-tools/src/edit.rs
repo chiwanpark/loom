@@ -307,6 +307,9 @@ impl Tool for EditTool {
 
         let mut paths: Vec<&Path> = Vec::new();
         for path in planned.iter().flat_map(Planned::paths) {
+            if ctx.is_protected(path) {
+                return Err(ToolError::protected(&workspace.display_path(path)));
+            }
             if paths.contains(&path) {
                 return Err(invalid(format!(
                     "{} appears more than once in the patch; put all of its hunks under one file header",

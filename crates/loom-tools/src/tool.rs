@@ -9,6 +9,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::env::CommandEnv;
 use crate::error::{Result, ToolError};
 use crate::workspace::{FileAccess, FileGuard, FileTracker, Workspace, WorkspaceGuard};
 
@@ -80,6 +81,9 @@ pub struct ToolContext {
     /// Directories outside the workspace that the read tool may read, such
     /// as the directories of skills. Canonical paths.
     pub readable: Arc<Vec<PathBuf>>,
+    /// The environment of the commands the call runs, and what to hide from
+    /// the model; `None` runs commands with the agent's own environment.
+    pub env: Option<Arc<CommandEnv>>,
 }
 
 impl ToolContext {
@@ -92,6 +96,7 @@ impl ToolContext {
             notes: None,
             tasks: None,
             readable: Arc::default(),
+            env: None,
         }
     }
 
@@ -108,6 +113,17 @@ impl ToolContext {
     pub fn with_readable(mut self, readable: Arc<Vec<PathBuf>>) -> Self {
         self.readable = readable;
         self
+    }
+
+    pub fn with_env(mut self, env: Arc<CommandEnv>) -> Self {
+        self.env = Some(env);
+        self
+    }
+
+    /// Whether `path`, an absolute path, holds secrets that the model must
+    /// not see or change.
+    pub fn is_protected(&self, path: &std::path::Path) -> bool {
+        self.env.as_ref().is_some_and(|env| env.is_protected(path))
     }
 
     pub async fn lock_file(&self, path: &std::path::Path, access: FileAccess) -> FileGuard {

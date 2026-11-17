@@ -104,6 +104,27 @@ mod tests {
             [PathBuf::from("/home/u/shared-skills")]
         );
         assert_eq!(config.skills.disabled, ["slow-review"]);
+        let environment = &config.environment;
+        assert_eq!(environment.inherit, crate::InheritEnvironment::Core);
+        assert_eq!(environment.exclude, ["AWS_*"]);
+        assert_eq!(environment.set["RUST_BACKTRACE"], "1");
+        assert_eq!(environment.env_file, Some(PathBuf::from(".env")));
+        assert!(environment.redaction.enabled);
+        assert_eq!(
+            environment.redaction.allow,
+            ["AWS_REGION", "RUST_BACKTRACE"]
+        );
+    }
+
+    #[test]
+    fn env_file_can_be_turned_off() {
+        assert_eq!(
+            parse("environment:\n  env_file: null\n")
+                .unwrap()
+                .environment
+                .env_file,
+            None
+        );
     }
 
     #[test]
@@ -252,6 +273,19 @@ mod tests {
                 "telemetry.metrics_interval",
             ),
             ("telemetry:\n  prefix: \"\"\n", "telemetry.prefix"),
+            (
+                "environment:\n  exclude: [\" \"]\n",
+                "environment.exclude[0]",
+            ),
+            (
+                "environment:\n  set:\n    \"A=B\": x\n",
+                "environment.set.A=B",
+            ),
+            (
+                "environment:\n  redaction:\n    allow: [\"\"]\n",
+                "environment.redaction.allow[0]",
+            ),
+            ("environment:\n  env_file: \"\"\n", "environment.env_file"),
         ];
         for (text, field) in cases {
             match parse(text) {

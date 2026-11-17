@@ -9,6 +9,7 @@ use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::environment::{EnvSnapshot, Environment};
 use crate::error::{CoreError, Result};
 use crate::metrics::Metrics;
 use crate::notes::{AgentNotes, merge_session_notes};
@@ -53,6 +54,9 @@ pub struct AgentOptions {
     /// The file `config` came from, which [`Agent::reload_config`] reads
     /// again; without it the agent cannot reload on request.
     pub config_path: Option<PathBuf>,
+    /// The environment that commands start from, in place of the agent's
+    /// own.
+    pub env_vars: Option<Vec<(std::ffi::OsString, std::ffi::OsString)>>,
 }
 
 /// Reports the state of the agent's OpenTelemetry export on request.
@@ -71,6 +75,7 @@ impl AgentOptions {
             observer: None,
             telemetry: None,
             config_path: None,
+            env_vars: None,
         }
     }
 }
@@ -91,6 +96,7 @@ struct Inner {
     observer: Arc<dyn SessionObserver>,
     telemetry: Option<TelemetryReport>,
     terminals: Terminals,
+    environment: Arc<Environment>,
 }
 
 #[derive(Clone)]
@@ -199,6 +205,10 @@ impl Agent {
             runtime.clone(),
         ));
         let external = options.observer;
+        let environment = Arc::new(match options.env_vars {
+            Some(vars) => Environment::with_vars(workspace.root(), vars),
+            None => Environment::new(workspace.root()),
+        });
         let agent = Self {
             inner: Arc::new_cyclic(|inner| Inner {
                 workspace,
@@ -222,6 +232,7 @@ impl Agent {
                 )),
                 telemetry: options.telemetry,
                 terminals: Terminals::default(),
+                environment,
             }),
         };
         for stored in stored.sessions {
@@ -242,6 +253,7 @@ impl Agent {
             metrics: self.inner.metrics.clone(),
             observer: Some(self.inner.observer.clone()),
             notices: Some(self.inner.notices.clone()),
+            environment: self.inner.environment.clone(),
         }
     }
 
@@ -268,6 +280,12 @@ impl Agent {
 
     pub(crate) fn terminals(&self) -> &Terminals {
         &self.inner.terminals
+    }
+
+    /// The environment of commands as the current configuration makes it.
+    pub fn environment(&self) -> Arc<EnvSnapshot> {
+        let config = self.config();
+        self.inner.environment.snapshot(&config.environment)
     }
 
     pub fn config(&self) -> Arc<AgentConfig> {

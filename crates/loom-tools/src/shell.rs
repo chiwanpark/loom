@@ -13,6 +13,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::{Instant, sleep_until};
 
+use crate::env::{Redactor, StreamRedactor};
 use crate::error::{Result, ToolError};
 use crate::pty::{PtyExit, PtyProcess, PtySpawn};
 use crate::sandbox::SandboxLauncher;
@@ -69,7 +70,7 @@ impl ShellTool {
         Self { config }
     }
 
-    fn argv(&self, root: &Path, command: &str) -> (PathBuf, Vec<OsString>) {
+    fn argv(&self, ctx: &ToolContext, command: &str) -> (PathBuf, Vec<OsString>) {
         let shell_argv: Vec<OsString> = vec![
             self.config.shell.clone().into_os_string(),
             "-c".into(),
@@ -78,7 +79,13 @@ impl ShellTool {
         match &self.config.sandbox {
             Some(launcher) => {
                 let mut launcher = launcher.clone();
-                launcher.policy.writable.insert(0, root.to_path_buf());
+                launcher
+                    .policy
+                    .writable
+                    .insert(0, ctx.workspace.root().to_path_buf());
+                if let Some(env) = &ctx.env {
+                    launcher.policy.hidden.extend(env.protected.iter().cloned());
+                }
                 launcher.argv(&shell_argv)
             }
             None => (self.config.shell.clone(), shell_argv[1..].to_vec()),
@@ -154,8 +161,12 @@ impl Tool for ShellTool {
         if self.config.pty {
             return self.call_pty(ctx, &args.command, timeout, started).await;
         }
-        let (program, argv) = self.argv(ctx.workspace.root(), &args.command);
-        let mut child = Command::new(&program)
+        let (program, argv) = self.argv(ctx, &args.command);
+        let mut command = Command::new(&program);
+        if let Some(env) = &ctx.env {
+            command.env_clear().envs(env.vars.iter().cloned());
+        }
+        let mut child = command
             .args(&argv)
             .current_dir(ctx.workspace.root())
             .stdin(Stdio::null())
@@ -170,7 +181,7 @@ impl Tool for ShellTool {
         let mut stderr = child.stderr.take();
         let mut stdout_buffer = vec![0u8; READ_BUFFER_BYTES];
         let mut stderr_buffer = vec![0u8; READ_BUFFER_BYTES];
-        let mut collector = OutputCollector::new(&self.config);
+        let mut collector = OutputCollector::new(&self.config, ctx);
         let deadline = timeout.map(|timeout| started + timeout);
         let mut drain_deadline = None;
         let mut status: Option<ExitStatus> = None;
@@ -193,13 +204,19 @@ impl Tool for ShellTool {
                 _ = sleep_opt(drain_deadline), if drain_deadline.is_some() => break,
                 read = read_opt(&mut stdout, &mut stdout_buffer), if stdout.is_some() => {
                     match read {
-                        Ok(0) | Err(_) => stdout = None,
+                        Ok(0) | Err(_) => {
+                            stdout = None;
+                            collector.end(ctx, OutputStream::Stdout).await?;
+                        }
                         Ok(n) => collector.push(ctx, OutputStream::Stdout, &stdout_buffer[..n]).await?,
                     }
                 }
                 read = read_opt(&mut stderr, &mut stderr_buffer), if stderr.is_some() => {
                     match read {
-                        Ok(0) | Err(_) => stderr = None,
+                        Ok(0) | Err(_) => {
+                            stderr = None;
+                            collector.end(ctx, OutputStream::Stderr).await?;
+                        }
                         Ok(n) => collector.push(ctx, OutputStream::Stderr, &stderr_buffer[..n]).await?,
                     }
                 }
@@ -212,6 +229,8 @@ impl Tool for ShellTool {
             }
         }
 
+        collector.end(ctx, OutputStream::Stdout).await?;
+        collector.end(ctx, OutputStream::Stderr).await?;
         let collected = collector.finish().await?;
         Ok(build_output(Run {
             collected,
@@ -233,7 +252,13 @@ impl ShellTool {
         timeout: Option<Duration>,
         started: Instant,
     ) -> Result<ToolOutput> {
-        let (program, argv) = self.argv(ctx.workspace.root(), command);
+        let (program, argv) = self.argv(ctx, command);
+        let mut env: Vec<(OsString, OsString)> = ctx
+            .env
+            .as_ref()
+            .map(|env| env.vars.clone())
+            .unwrap_or_default();
+        env.push(("TERM".into(), "xterm-256color".into()));
         let (process, mut output) = PtyProcess::spawn(PtySpawn {
             program,
             args: argv
@@ -241,7 +266,8 @@ impl ShellTool {
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect(),
             cwd: ctx.workspace.root().to_path_buf(),
-            env: vec![("TERM".into(), "xterm-256color".into())],
+            clear_env: ctx.env.is_some(),
+            env,
             cols: PTY_COLS,
             rows: PTY_ROWS,
         })
@@ -250,7 +276,8 @@ impl ShellTool {
         })?;
         let _ = process.write(&[EOF_CHAR]);
         let mut text = PlainText::new();
-        let mut collector = OutputCollector::new(&self.config);
+        let mut collector = OutputCollector::new(&self.config, ctx);
+        let mut redact = collector.redactor.stream();
         let deadline = timeout.map(|timeout| started + timeout);
         let mut drain_deadline = None;
         let mut exit: Option<PtyExit> = None;
@@ -273,6 +300,7 @@ impl ShellTool {
                 _ = sleep_opt(drain_deadline), if drain_deadline.is_some() => break,
                 chunk = output.data.recv(), if data_open => match chunk {
                     Some(data) => {
+                        let data = redact.push(&data);
                         collector.emit(ctx, OutputStream::Stdout, &data).await;
                         collector.record(text.feed(&data).as_bytes()).await?;
                     }
@@ -283,6 +311,11 @@ impl ShellTool {
                     drain_deadline = Some(Instant::now() + DRAIN_GRACE);
                 }
             }
+        }
+        let rest = redact.finish();
+        if !rest.is_empty() {
+            collector.emit(ctx, OutputStream::Stdout, &rest).await;
+            collector.record(text.feed(&rest).as_bytes()).await?;
         }
         collector.record(text.finish().as_bytes()).await?;
         let collected = collector.finish().await?;
@@ -435,6 +468,10 @@ struct Collected {
 
 struct OutputCollector {
     limits: Limits,
+    /// Hides secret values before the output is shown or saved.
+    redactor: Redactor,
+    /// The redaction of stdout and stderr in pipe mode.
+    streams: [StreamRedactor; 2],
     spill_dir: PathBuf,
     max_saved: Option<u64>,
     saved: u64,
@@ -448,9 +485,16 @@ struct OutputCollector {
 }
 
 impl OutputCollector {
-    fn new(config: &ShellConfig) -> Self {
+    fn new(config: &ShellConfig, ctx: &ToolContext) -> Self {
+        let redactor = ctx
+            .env
+            .as_ref()
+            .map(|env| env.redactor.clone())
+            .unwrap_or_default();
         Self {
             limits: config.limits,
+            streams: [redactor.stream(), redactor.stream()],
+            redactor,
             spill_dir: config.spill_dir.clone(),
             max_saved: config.max_saved_output,
             saved: 0,
@@ -465,8 +509,22 @@ impl OutputCollector {
     }
 
     async fn push(&mut self, ctx: &ToolContext, stream: OutputStream, data: &[u8]) -> Result<()> {
-        self.emit(ctx, stream, data).await;
-        self.record(data).await
+        let data = self.streams[stream_index(stream)].push(data);
+        if data.is_empty() {
+            return Ok(());
+        }
+        self.emit(ctx, stream, &data).await;
+        self.record(&data).await
+    }
+
+    /// Puts out what the redaction of `stream` still holds, at its end.
+    async fn end(&mut self, ctx: &ToolContext, stream: OutputStream) -> Result<()> {
+        let rest = self.streams[stream_index(stream)].finish();
+        if rest.is_empty() {
+            return Ok(());
+        }
+        self.emit(ctx, stream, &rest).await;
+        self.record(&rest).await
     }
 
     async fn emit(&self, ctx: &ToolContext, stream: OutputStream, data: &[u8]) {
@@ -576,6 +634,13 @@ impl OutputCollector {
     }
 }
 
+fn stream_index(stream: OutputStream) -> usize {
+    match stream {
+        OutputStream::Stdout => 0,
+        OutputStream::Stderr => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -613,6 +678,85 @@ mod tests {
             dir.path().canonicalize().unwrap().to_str().unwrap()
         );
         assert!(!output.is_error);
+    }
+
+    fn with_env(ctx: ToolContext) -> ToolContext {
+        ctx.with_env(Arc::new(crate::env::CommandEnv {
+            vars: vec![
+                ("PATH".into(), std::env::var_os("PATH").unwrap()),
+                ("API_TOKEN".into(), "tok-1234567890".into()),
+            ],
+            redactor: crate::env::Redactor::new([("API_TOKEN", "tok-1234567890")]),
+            ..Default::default()
+        }))
+    }
+
+    #[tokio::test]
+    async fn commands_get_only_the_given_environment() {
+        let (_dir, ctx) = context();
+        let output = ShellTool::default()
+            .call(
+                &with_env(ctx),
+                json!({"command": "echo \"home=${HOME-unset}\"; echo \"$API_TOKEN\" | wc -c"}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.content.starts_with("home=unset\n15\n"),
+            "{}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_values_are_redacted_in_the_output_the_stream_and_the_saved_file() {
+        let spill = tempfile::tempdir().unwrap();
+        for pty in [false, true] {
+            let (_dir, ctx) = context();
+            let (tx, mut rx) = mpsc::channel(1024);
+            let ctx = with_env(ctx).with_output(tx);
+            let tool = ShellTool::new(ShellConfig {
+                spill_dir: spill.path().to_path_buf(),
+                limits: Limits {
+                    max_lines: 2,
+                    max_bytes: 4096,
+                },
+                pty,
+                ..ShellConfig::default()
+            });
+            let command = "printf 'a %s\\n' \"$API_TOKEN\"; printf 'tok-12345'; sleep 0.1; printf '67890\\n'; echo \"$API_TOKEN\" >&2; echo end";
+            let output = tool.call(&ctx, json!({"command": command})).await.unwrap();
+            drop(ctx);
+            let mut streamed = Vec::new();
+            while let Some(chunk) = rx.recv().await {
+                streamed.extend(chunk.data);
+            }
+            let streamed = String::from_utf8_lossy(&streamed);
+            assert!(!streamed.contains("tok-"), "pty {pty}: {streamed}");
+            assert!(
+                streamed.contains("[REDACTED:API_TOKEN]"),
+                "pty {pty}: {streamed}"
+            );
+            assert!(
+                !output.content.contains("tok-"),
+                "pty {pty}: {}",
+                output.content
+            );
+            let ToolDetails::Shell {
+                full_output_path: Some(path),
+                ..
+            } = &output.details
+            else {
+                panic!("pty {pty}: no saved output: {:?}", output.details);
+            };
+            let saved = std::fs::read_to_string(path).unwrap();
+            assert!(!saved.contains("tok-"), "pty {pty}: {saved}");
+            assert_eq!(
+                saved.matches("[REDACTED:API_TOKEN]").count(),
+                3,
+                "pty {pty}: {saved}"
+            );
+        }
     }
 
     #[tokio::test]

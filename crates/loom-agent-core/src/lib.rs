@@ -2,6 +2,7 @@ mod agent;
 mod compaction;
 pub mod connection;
 pub mod convert;
+pub mod environment;
 mod error;
 pub mod events;
 pub mod files;

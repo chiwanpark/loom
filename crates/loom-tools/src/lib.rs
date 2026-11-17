@@ -1,4 +1,5 @@
 mod edit;
+pub mod env;
 mod error;
 mod fsutil;
 pub mod patch;

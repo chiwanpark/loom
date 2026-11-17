@@ -442,6 +442,7 @@ impl Connection {
                     .shell
                     .clone()
                     .unwrap_or_else(|| interactive_shell(&config.tools.shell.program));
+                let env = self.agent.environment().command.vars.clone();
                 let result = self
                     .agent
                     .terminals()
@@ -449,6 +450,7 @@ impl Connection {
                         self.viewer(owner),
                         shell,
                         self.agent.workspace_root(),
+                        env,
                         cols,
                         rows,
                     )

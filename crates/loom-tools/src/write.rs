@@ -78,6 +78,9 @@ impl Tool for WriteTool {
         ctx.ensure_not_cancelled()?;
         let path = ctx.workspace.resolve(&args.path)?;
         let display = ctx.workspace.display_path(&path);
+        if ctx.is_protected(&path) {
+            return Err(ToolError::protected(&display));
+        }
         let _guard = ctx.lock_file(&path, FileAccess::Write).await;
 
         let stamp = current_stamp(&path)
