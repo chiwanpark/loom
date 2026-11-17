@@ -33,6 +33,10 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 - **Sessions panel.** The Agents panel of the desktop app is now the Sessions panel. It lists only sessions in its groups. An agent without sessions no longer shows as a "No sessions" row, and the **Offline** group is gone. The panel now shows the agents of each host under **Remotes**, with their state and menu. The commands are now **workspace: toggle sessions** and **panel: sessions**. Key bindings in `client.yaml` that use `loom::ToggleAgents` or `loom::ShowAgents` continue to work.
 - **New session dialog.** The **+** button of a host now starts a session. The dialog lists the workspaces of the agents on the host. Click a workspace to start a session there, or **In a worktree…** to start one in a new worktree. If you type a new directory, the host starts an agent for it, and then the session starts.
 
+### Fixes
+
+- A terminal sometimes stayed open in a client after another client took the terminal and closed it at once. This occurred in the desktop app and in the Android app. Now the desktop app closes the terminal's tab, and the Android app shows that the terminal was closed on another client.
+
 ## 0.3.0
 
 ### Upgrade notes

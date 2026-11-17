@@ -155,6 +155,10 @@ struct TermState {
     /// Set while the app attaches it, so lists the agent sent before do
     /// not count.
     attaching: bool,
+    /// Whether a list of the agent has shown the terminal. One that is
+    /// missing from a list before that is new, not closed: the agent may
+    /// have made the list before the terminal opened.
+    seen: bool,
 }
 
 /// A terminal as the connection knows it, to feed it the agent's output.
@@ -176,6 +180,7 @@ impl TermShared {
                 closed: false,
                 held: true,
                 attaching: false,
+                seen: false,
             }),
             wake: Notify::new(),
         }
@@ -311,6 +316,9 @@ impl Terminals {
 
     /// Takes in the agent's list: notes which terminals are held here, and
     /// ends those that closed on another client after it took them.
+    /// The agent sends only its latest list, so the list that shows another
+    /// client with the terminal may never come: a terminal held here that
+    /// a list showed before and that is now gone closed elsewhere too.
     pub(crate) fn listed(&mut self, terminals: Vec<TerminalInfo>) {
         let mut closed = Vec::new();
         for (id, terminal) in &self.open {
@@ -318,13 +326,18 @@ impl Terminals {
             if state.attaching {
                 continue;
             }
-            match terminals.iter().find(|t| t.id == *id) {
+            let info = terminals.iter().find(|t| t.id == *id);
+            if info.is_some() {
+                state.seen = true;
+            }
+            match info {
                 // Held by no one: this app's earlier link, until the new
                 // one attaches it again.
                 Some(info) if info.holder == TerminalHolder::Nobody => {}
                 Some(info) => state.held = info.holder == TerminalHolder::You,
-                // One held here is new, or it exited, which the agent says itself.
-                None if state.held => {}
+                // One held here and not listed yet is new. One that exited
+                // is gone already: the agent says so before it lists the rest.
+                None if state.held && !state.seen => {}
                 None => closed.push(*id),
             }
         }
@@ -874,6 +887,7 @@ mod tests {
             closed: false,
             held: true,
             attaching: false,
+            seen: true,
         })
     }
 
@@ -916,5 +930,26 @@ mod tests {
         let frame = feed("\x1b[38;5;196mr\x1b[48;2;1;2;3mg");
         assert_eq!(frame.lines[0][0].fg, TerminalColor::Rgb { rgb: 0xff0000 });
         assert_eq!(frame.lines[0][1].bg, TerminalColor::Rgb { rgb: 0x010203 });
+    }
+
+    #[test]
+    fn a_held_terminal_that_leaves_the_list_ends_once_a_list_showed_it() {
+        let mut terminals = Terminals::default();
+        let term = Arc::new(TermShared::new(7, 20, 3));
+        terminals.add(term.clone());
+        // A list from before the terminal opened.
+        terminals.listed(Vec::new());
+        assert!(term.is_live());
+        terminals.listed(vec![TerminalInfo {
+            id: 7,
+            holder: TerminalHolder::You,
+        }]);
+        assert!(term.is_live());
+        // Another client took it and closed it, and the agent sent only
+        // its latest list.
+        terminals.listed(Vec::new());
+        assert!(!term.is_live());
+        assert_eq!(term.lock().ended.as_deref(), Some(CLOSED_ELSEWHERE));
+        assert!(terminals.open.is_empty());
     }
 }

@@ -181,6 +181,10 @@ struct TerminalEntry {
     /// Set while this client attaches the terminal, so lists the agent sent
     /// before do not count.
     attaching: bool,
+    /// Whether a list of the agent has shown the terminal. One that is
+    /// missing from a list before that is new, not closed: the agent may
+    /// have made the list before the terminal opened.
+    seen: bool,
 }
 
 /// How attaching a terminal went.
@@ -1052,6 +1056,7 @@ impl AgentConnection {
                 view: view.downgrade(),
                 io,
                 attaching,
+                seen: false,
             },
         );
     }
@@ -1079,11 +1084,14 @@ impl AgentConnection {
 
     /// Takes in the agent's list of terminals: tells each view where its
     /// terminal is attached, and forgets the views of terminals that closed
-    /// on another client.
+    /// on another client. The agent sends only its latest list, so the list
+    /// that shows another client with the terminal may never come: a
+    /// terminal held here that a list showed before and that is now gone
+    /// closed elsewhere too.
     fn apply_terminals(&mut self, terminals: Vec<TerminalInfo>, cx: &mut Context<Self>) {
         self.prune_terminals();
         let mut closed = Vec::new();
-        for (id, entry) in &self.terminals {
+        for (id, entry) in &mut self.terminals {
             let Some(view) = entry.view.upgrade() else {
                 continue;
             };
@@ -1091,13 +1099,18 @@ impl AgentConnection {
                 continue;
             }
             let held = *view.read(cx).holder() == TerminalHolder::You;
-            match terminals.iter().find(|t| t.id == *id) {
+            let info = terminals.iter().find(|t| t.id == *id);
+            if info.is_some() {
+                entry.seen = true;
+            }
+            match info {
                 // Held by no one: this client's earlier connection, until
                 // the new one attaches it again.
                 Some(info) if held && info.holder == TerminalHolder::Nobody => {}
                 Some(info) => view.update(cx, |view, cx| view.set_holder(info.holder.clone(), cx)),
-                // One held here is new, or it exited, which the agent says itself.
-                None if held => {}
+                // One held here and not listed yet is new. One that exited
+                // is gone already: the agent says so before it lists the rest.
+                None if held && !entry.seen => {}
                 None => closed.push(*id),
             }
         }
