@@ -711,15 +711,19 @@ impl Client {
         }
     }
 
+    /// The diff of a file: its uncommitted changes, or with `committed`,
+    /// its changes in the commits of [`loom_proto::CommittedChanges`].
     pub async fn file_diff(
         &self,
         path: &str,
         old_path: Option<&str>,
+        committed: bool,
     ) -> Result<loom_proto::FileDiff> {
         let command = Command::GetFileDiff {
             path: path.to_string(),
             old_path: old_path.map(str::to_string),
             session: self.scope.clone(),
+            committed,
         };
         match self.request(command).await? {
             Payload::FileDiff(diff) => Ok(diff),

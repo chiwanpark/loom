@@ -13,7 +13,7 @@ use crate::session::{
     SessionId, SessionInfo, ToolCallId, UsageSoFar, WorktreeOptions, WorktreeStatus,
 };
 
-pub const PROTOCOL_VERSION: u16 = 17;
+pub const PROTOCOL_VERSION: u16 = 18;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;
@@ -231,10 +231,14 @@ pub enum Command {
     GetWorkspaceChanges {
         session: Option<SessionId>,
     },
+    /// With `committed`, the diff of the file in the commits of
+    /// [`WorkspaceChanges::committed`], from its merge base to `HEAD`;
+    /// otherwise the uncommitted changes against `HEAD`.
     GetFileDiff {
         path: String,
         old_path: Option<String>,
         session: Option<SessionId>,
+        committed: bool,
     },
     RenameSession {
         session: SessionId,
@@ -874,6 +878,36 @@ pub struct WorkspaceChanges {
     pub branch: Option<String>,
     pub files: Vec<FileChange>,
     pub truncated: bool,
+    /// The commits of the branch that its base does not have yet, when it
+    /// has a base: the base branch of a session's worktree, or else the
+    /// upstream branch.
+    pub committed: Option<CommittedChanges>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedChanges {
+    /// The branch that the commits are compared with, such as `main` or
+    /// `origin/main`.
+    pub base: String,
+    /// The commit after which the listed commits come: the merge base with
+    /// `base`, or the last merged commit after a squash merge.
+    pub since: String,
+    /// The commits, newest first.
+    pub commits: Vec<CommitInfo>,
+    /// The files that the commits change together, against `since`.
+    pub files: Vec<FileChange>,
+    /// Whether the agent left out commits or files because there were too
+    /// many.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitInfo {
+    pub id: String,
+    pub summary: String,
+    pub author: String,
+    /// Seconds since the Unix epoch.
+    pub time: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

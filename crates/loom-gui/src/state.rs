@@ -791,10 +791,14 @@ impl AgentConnection {
         &self,
         path: String,
         old_path: Option<String>,
+        committed: bool,
     ) -> impl Future<Output = Option<loom_client::Result<FileDiff>>> + use<> {
         let client = self.files_client();
-        self.backend
-            .run(async move { client.file_diff(&path, old_path.as_deref()).await })
+        self.backend.run(async move {
+            client
+                .file_diff(&path, old_path.as_deref(), committed)
+                .await
+        })
     }
 
     pub fn list_directory(

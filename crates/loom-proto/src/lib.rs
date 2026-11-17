@@ -244,6 +244,7 @@ mod tests {
                 path: "src/new.rs".into(),
                 old_path: Some("src/old.rs".into()),
                 session: Some(session.clone()),
+                committed: true,
             },
             Command::RenameSession {
                 session: session.clone(),
@@ -440,6 +441,25 @@ mod tests {
                     binary: false,
                 }],
                 truncated: false,
+                committed: Some(CommittedChanges {
+                    base: "origin/main".into(),
+                    since: "0123abcd".into(),
+                    commits: vec![CommitInfo {
+                        id: "4567cdef".into(),
+                        summary: "Add new.rs".into(),
+                        author: "Ada".into(),
+                        time: 1_700_000_000,
+                    }],
+                    files: vec![FileChange {
+                        path: "src/new.rs".into(),
+                        old_path: None,
+                        status: ChangeStatus::Added,
+                        added: 3,
+                        removed: 0,
+                        binary: false,
+                    }],
+                    truncated: false,
+                }),
             })),
         });
         message_roundtrip(ServerMessage::Response {

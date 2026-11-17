@@ -3,7 +3,10 @@ use std::path::{Component, Path};
 use std::process::Stdio;
 use std::time::Duration;
 
-use loom_proto::{ApiError, ChangeStatus, ErrorCode, FileChange, FileDiff, WorkspaceChanges};
+use loom_proto::{
+    ApiError, ChangeStatus, CommitInfo, CommittedChanges, ErrorCode, FileChange, FileDiff,
+    WorkspaceChanges,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
@@ -11,6 +14,7 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const GIT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_LISTING: usize = 8 * 1024 * 1024;
 const MAX_FILES: usize = 2000;
+const MAX_COMMITS: usize = 200;
 const MAX_DIFF: usize = 1024 * 1024;
 const MAX_COUNTED_BYTES: u64 = 4 * 1024 * 1024;
 const BINARY_SNIFF: usize = 8000;
@@ -248,15 +252,27 @@ fn count_untracked(path: &Path) -> (u32, bool) {
     (u32::try_from(lines).unwrap_or(u32::MAX), false)
 }
 
-pub async fn changes(root: &Path) -> Result<WorkspaceChanges, ApiError> {
-    if !is_repository(root).await {
-        return Ok(WorkspaceChanges::default());
-    }
-    let base = base(root).await;
-    let branch = branch(root).await;
-    let diff_args = [
+/// What the commits of the checked-out branch are compared with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommitBase<'a> {
+    /// The base branch, or `None` for the upstream of the checked-out
+    /// branch.
+    pub branch: Option<&'a str>,
+    /// The commit of the branch at its last merge into the base, which a
+    /// squash merge leaves out of the history of the base.
+    pub merged_head: Option<&'a str>,
+}
+
+/// The files that differ between `from` and `to`, or the working tree when
+/// `to` is `None`, with their line counts; and whether there were too many.
+async fn diff_files(
+    root: &Path,
+    from: &str,
+    to: Option<&str>,
+) -> Result<(Vec<FileChange>, bool), ApiError> {
+    let mut diff_args = vec![
         "diff",
-        base,
+        from,
         "--relative",
         "--no-color",
         "--no-ext-diff",
@@ -264,20 +280,16 @@ pub async fn changes(root: &Path) -> Result<WorkspaceChanges, ApiError> {
         "-M",
         "-z",
     ];
-    let mut args = diff_args.to_vec();
+    if let Some(to) = to {
+        diff_args.insert(2, to);
+    }
+    let mut args = diff_args.clone();
     args.push("--name-status");
     let names = git_ok(root, &args, MAX_LISTING).await?;
-    let mut args = diff_args.to_vec();
+    let mut args = diff_args;
     args.push("--numstat");
     let stats = git_ok(root, &args, MAX_LISTING).await?;
-    let untracked = git_ok(
-        root,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-        MAX_LISTING,
-    )
-    .await?;
-    let mut truncated = names.truncated || stats.truncated || untracked.truncated;
-
+    let truncated = names.truncated || stats.truncated;
     let stats = parse_numstat(&stats.stdout);
     let mut files = parse_name_status(&names.stdout);
     for file in &mut files {
@@ -287,6 +299,129 @@ pub async fn changes(root: &Path) -> Result<WorkspaceChanges, ApiError> {
             file.binary = *binary;
         }
     }
+    Ok((files, truncated))
+}
+
+async fn is_ancestor(root: &Path, ancestor: &str, of: &str) -> bool {
+    matches!(
+        git(root, &["merge-base", "--is-ancestor", ancestor, of], 64).await,
+        Ok(output) if output.status == 0
+    )
+}
+
+/// The name of the base and the commit after which the branch's own
+/// commits come, or `None` when the branch has no base.
+async fn commit_base(root: &Path, base: CommitBase<'_>) -> Option<(String, String)> {
+    let line = |output: Output| {
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status == 0 && !text.is_empty()).then_some(text)
+    };
+    let name = match base.branch {
+        Some(branch) if branch.starts_with('-') => return None,
+        Some(branch) => branch.to_owned(),
+        None => git(
+            root,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ],
+            1024,
+        )
+        .await
+        .ok()
+        .and_then(line)?,
+    };
+    let mut since = git(root, &["merge-base", &name, "HEAD"], 256)
+        .await
+        .ok()
+        .and_then(line)?;
+    if let Some(merged) = base.merged_head
+        && merged != since
+        && !merged.starts_with('-')
+        && is_ancestor(root, &since, merged).await
+        && is_ancestor(root, merged, "HEAD").await
+    {
+        since = merged.to_owned();
+    }
+    Some((name, since))
+}
+
+fn parse_log(data: &[u8]) -> Vec<CommitInfo> {
+    data.split(|b| *b == 0x1e)
+        .filter_map(|record| {
+            let record = String::from_utf8_lossy(record);
+            let record = record.trim_start_matches('\n');
+            let mut fields = record.splitn(4, '\x1f');
+            let id = fields.next().filter(|id| !id.is_empty())?;
+            let author = fields.next()?;
+            let time = fields.next()?.parse().unwrap_or(0);
+            let summary = fields.next()?;
+            Some(CommitInfo {
+                id: id.to_owned(),
+                summary: summary.to_owned(),
+                author: author.to_owned(),
+                time,
+            })
+        })
+        .collect()
+}
+
+/// The commits of the checked-out branch that `base` does not have, and
+/// the files they change.
+async fn committed(
+    root: &Path,
+    base: CommitBase<'_>,
+) -> Result<Option<CommittedChanges>, ApiError> {
+    let Some((name, since)) = commit_base(root, base).await else {
+        return Ok(None);
+    };
+    let range = format!("{since}..HEAD");
+    let count = format!("--max-count={}", MAX_COMMITS + 1);
+    let log = git_ok(
+        root,
+        &[
+            "log",
+            "--no-color",
+            &count,
+            "--format=%H%x1f%an%x1f%ct%x1f%s%x1e",
+            &range,
+            "--",
+            ".",
+        ],
+        MAX_LISTING,
+    )
+    .await?;
+    let mut commits = parse_log(&log.stdout);
+    let mut truncated = log.truncated || commits.len() > MAX_COMMITS;
+    commits.truncate(MAX_COMMITS);
+    let (mut files, cut) = diff_files(root, &since, Some("HEAD")).await?;
+    truncated |= cut || files.len() > MAX_FILES;
+    files.truncate(MAX_FILES);
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Some(CommittedChanges {
+        base: name,
+        since,
+        commits,
+        files,
+        truncated,
+    }))
+}
+
+pub async fn changes(root: &Path, base: CommitBase<'_>) -> Result<WorkspaceChanges, ApiError> {
+    if !is_repository(root).await {
+        return Ok(WorkspaceChanges::default());
+    }
+    let branch = branch(root).await;
+    let (mut files, mut truncated) = diff_files(root, self::base(root).await, None).await?;
+    let untracked = git_ok(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        MAX_LISTING,
+    )
+    .await?;
+    truncated |= untracked.truncated;
     let untracked: Vec<String> = fields(&untracked.stdout).collect();
     let budget = MAX_FILES.saturating_sub(files.len());
     if untracked.len() > budget {
@@ -323,6 +458,7 @@ pub async fn changes(root: &Path) -> Result<WorkspaceChanges, ApiError> {
         branch,
         files,
         truncated,
+        committed: committed(root, base).await.ok().flatten(),
     })
 }
 
@@ -384,10 +520,13 @@ fn is_binary_diff(diff: &str) -> bool {
         .any(|line| line.starts_with("Binary files ") && line.ends_with(" differ"))
 }
 
+/// The diff of a file: its uncommitted changes against `HEAD`, or with
+/// `committed`, its changes in the commits since that base.
 pub async fn file_diff(
     root: &Path,
     path: &str,
     old_path: Option<&str>,
+    committed: Option<CommitBase<'_>>,
 ) -> Result<FileDiff, ApiError> {
     check_path(path)?;
     if let Some(old) = old_path {
@@ -400,20 +539,51 @@ pub async fn file_diff(
         ));
     }
     let spec = literal(path);
-    let untracked = git_ok(
-        root,
-        &[
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
+    let old_spec = old_path.map(literal);
+    let since = match committed {
+        Some(base) => Some(commit_base(root, base).await.ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::NotFound,
+                "the branch has no base to compare with",
+            )
+        })?),
+        None => None,
+    };
+    let untracked = match since {
+        Some(_) => false,
+        None => !git_ok(
+            root,
+            &[
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                &spec,
+            ],
+            4096,
+        )
+        .await?
+        .stdout
+        .is_empty(),
+    };
+    let output = if !untracked {
+        let mut args = match &since {
+            Some((_, since)) => vec!["diff", since.as_str(), "HEAD"],
+            None => vec!["diff", base(root).await],
+        };
+        args.extend([
+            "--relative",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "-M",
             "--",
-            &spec,
-        ],
-        4096,
-    )
-    .await?;
-    let output = if !untracked.stdout.is_empty() {
+        ]);
+        args.extend(old_spec.as_deref());
+        args.push(&spec);
+        git_ok(root, &args, MAX_DIFF).await?
+    } else {
         let relative = format!("./{path}");
         let output = git(
             root,
@@ -437,24 +607,6 @@ pub async fn file_diff(
             )));
         }
         output
-    } else {
-        let base = base(root).await;
-        let old_spec = old_path.map(literal);
-        let mut args = vec![
-            "diff",
-            base,
-            "--relative",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "-M",
-            "--",
-        ];
-        if let Some(old) = &old_spec {
-            args.push(old);
-        }
-        args.push(&spec);
-        git_ok(root, &args, MAX_DIFF).await?
     };
     let (diff, truncated) = cut(output.stdout, output.truncated);
     Ok(FileDiff {
@@ -489,6 +641,18 @@ mod tests {
         assert_eq!(stats["src/a.rs"], (3, 1, false));
         assert_eq!(stats["new.txt"], (2, 0, false));
         assert_eq!(stats["image.png"], (0, 0, true));
+    }
+
+    #[test]
+    fn parses_the_log() {
+        let data = b"aaa\x1fAda\x1f1700000000\x1fFix a\x1fb\x1e\nbbb\x1fBo\x1fx\x1f\x1e\n";
+        let commits = parse_log(data);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].id, "aaa");
+        assert_eq!(commits[0].author, "Ada");
+        assert_eq!(commits[0].time, 1_700_000_000);
+        assert_eq!(commits[0].summary, "Fix a\x1fb");
+        assert_eq!((commits[1].time, commits[1].summary.as_str()), (0, ""));
     }
 
     #[test]

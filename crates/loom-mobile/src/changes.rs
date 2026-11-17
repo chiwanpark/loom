@@ -252,7 +252,7 @@ impl AgentConnection {
         with_client(&self.shared, move |client| async move {
             let diff = client
                 .in_session(session.map(SessionId))
-                .file_diff(&path, old_path.as_deref())
+                .file_diff(&path, old_path.as_deref(), false)
                 .await?;
             tokio::task::spawn_blocking(move || {
                 let mut view = DiffView::new(&diff.path, diff_lines(&diff.diff));

@@ -384,13 +384,30 @@ impl Connection {
                     Err(err) => return self.respond(id, Err(err)).await,
                 };
                 let root = workspace.root().to_path_buf();
+                // The commits of a session's worktree are compared with its
+                // base branch, others with the upstream branch.
+                let worktree = file_session(&command)
+                    .and_then(|id| self.agent.session(id).ok())
+                    .and_then(|session| session.worktree());
                 self.spawn_reply(id, async move {
+                    let base = crate::git::CommitBase {
+                        branch: worktree.as_ref().map(|w| w.base.as_str()),
+                        merged_head: worktree.as_ref().and_then(|w| w.merged_head.as_deref()),
+                    };
                     match command {
-                        Command::GetFileDiff { path, old_path, .. } => {
-                            crate::git::file_diff(&root, &path, old_path.as_deref())
-                                .await
-                                .map(Payload::FileDiff)
-                        }
+                        Command::GetFileDiff {
+                            path,
+                            old_path,
+                            committed,
+                            ..
+                        } => crate::git::file_diff(
+                            &root,
+                            &path,
+                            old_path.as_deref(),
+                            committed.then_some(base),
+                        )
+                        .await
+                        .map(Payload::FileDiff),
                         Command::ListDirectory { path, .. } => {
                             crate::files::list_directory(&root, &path)
                                 .await
@@ -412,7 +429,7 @@ impl Connection {
                         } => crate::files::write_file(&workspace, &path, text, expected)
                             .await
                             .map(Payload::FileWritten),
-                        _ => crate::git::changes(&root)
+                        _ => crate::git::changes(&root, base)
                             .await
                             .map(Payload::WorkspaceChanges),
                     }

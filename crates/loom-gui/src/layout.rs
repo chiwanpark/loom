@@ -103,10 +103,14 @@ pub enum SavedTab {
         instance: String,
         id: u64,
     },
-    /// A diff against `HEAD`, by path relative to the workspace.
+    /// A diff against `HEAD`, by path relative to the workspace; with
+    /// `committed`, the diff of the file in the branch's commits since its
+    /// base.
     GitDiff {
         path: String,
         old_path: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        committed: bool,
     },
     /// The changes the session made to a file, by absolute path.
     SessionDiff {
@@ -279,6 +283,7 @@ mod tests {
                 vec![SavedTab::GitDiff {
                     path: "b".into(),
                     old_path: Some("a".into()),
+                    committed: true,
                 }],
                 0,
             )),

@@ -330,7 +330,7 @@ Useful default key bindings:
 | `ctrl-b` | Show or hide the agents panel |
 | `ctrl-shift-b` / `ctrl-shift-n` / `ctrl-shift-t` | Agents panel / the agent's notes / the session's tasks |
 | `enter` / `ctrl-enter` while a turn runs | Queue the message for the next turn / steer the running turn with it |
-| `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / uncommitted changes |
+| `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / git changes |
 | `ctrl-tab` / `ctrl-shift-tab` (or `ctrl-pagedown` / `ctrl-pageup`) | Next / previous tab in the pane |
 | `alt-1` … `alt-8` / `alt-9` | Tab 1 to 8 / the last tab in the pane |
 | `ctrl-shift-pagedown` / `ctrl-shift-pageup` | Move the tab right / left |
@@ -369,6 +369,8 @@ To copy files of your machine to the workspace, drag them onto a folder in the f
 
 When you open a session, the client loads its latest 50 messages and tool calls, and loads earlier ones as you scroll to the top. The **Changes** panel loads the whole session, to list every file it changed.
 
+The **Changes** panel of the desktop app lists the uncommitted changes in git. It also lists the commits that the base branch does not have yet, and the files that these commits change. For a session in a worktree, the base is the base branch of the worktree. For other sessions, the base is the upstream branch of the checked-out branch, for example `origin/main`; without an upstream branch, the panel shows no commits. Click a file under **Committed since** to open its diff from the base to `HEAD`, in a tab of its own. The Android app shows only the uncommitted changes.
+
 Each code block in an answer has a copy button, which copies the code without the fences. Each table has a copy button below it, which copies the table as Markdown. The Android app has the same buttons.
 
 To start a session's conversation over, press **Clear** under the prompt box. The agent forgets the conversation and its history for good; the session keeps its name, model, reasoning effort, its tasks, and the tool approvals you gave it, and the agent's notes stay.
@@ -385,7 +387,7 @@ A rewind changes only the conversation. Files in the workspace stay as they are,
 
 A session can work in a git worktree of its own, so that its changes stay away from the workspace and from other sessions until you merge them. On the desktop, choose **New session in a worktree…** in an agent's menu in the agents panel. In the Android app, press the branch button next to the agent when you start a session. Type a branch name and a base, or keep the defaults: the branch `loom/<session>`, made from the branch that the workspace has checked out. The workspace must be in a git repository.
 
-The agent adds the worktree in `<worktrees.dir>/<workspace-hash>/<session>`, in directories with mode 0700. The agent's tools, shell commands, `AGENTS.md`, and skills of the session then use the worktree, and the system prompt tells the model the branch. The Files and Changes panels and new terminals follow the active session's worktree. The agents panel and the Android app show the branch next to the session. The agent's notes are the same for all sessions, also in worktrees. Shell commands in a worktree get the env file of the workspace (see [Environment variables and secrets](#environment-variables-and-secrets)), with the same redaction. With the sandbox on, commands can also write the repository's git directory, so that they can commit.
+The agent adds the worktree in `<worktrees.dir>/<workspace-hash>/<session>`, in directories with mode 0700. The agent's tools, shell commands, `AGENTS.md`, and skills of the session then use the worktree, and the system prompt tells the model the branch. The Files and Changes panels and new terminals follow the active session's worktree. The Changes panel also shows the commits of the branch that are not in its base yet. The agents panel and the Android app show the branch next to the session. The agent's notes are the same for all sessions, also in worktrees. Shell commands in a worktree get the env file of the workspace (see [Environment variables and secrets](#environment-variables-and-secrets)), with the same redaction. With the sandbox on, commands can also write the repository's git directory, so that they can commit.
 
 When the work is done, use the session's menu (in the agents panel, or the conversation's menu on Android):
 

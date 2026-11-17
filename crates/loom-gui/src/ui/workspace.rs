@@ -34,7 +34,7 @@ use crate::state::{AgentConnection, Attached, ConnectionEvent, LinkStatus, Remot
 use crate::telemetry::Health;
 use crate::term::{TakeOver, TerminalIo, TerminalView, mono_font};
 use crate::ui::dialogs::{self, FormField, open_form};
-use crate::ui::diff::DiffView;
+use crate::ui::diff::{DiffKind, DiffView};
 use crate::ui::file_view::FileView;
 use crate::ui::files::{FileTreeEvent, FileTreeView};
 use crate::ui::notes_view::NotesView;
@@ -488,12 +488,12 @@ impl SessionGroup {
             })
     }
 
-    fn find_diff(&self, path: &PathBuf, git: bool, cx: &App) -> Option<(PaneId, usize)> {
+    fn find_diff(&self, path: &PathBuf, kind: DiffKind, cx: &App) -> Option<(PaneId, usize)> {
         self.panes.iter().find_map(|pane| {
             pane.tabs
                 .find(|panel| {
                     matches!(panel, Panel::Diff(view)
-                        if view.read(cx).path() == path && view.read(cx).is_git() == git)
+                        if view.read(cx).path() == path && view.read(cx).kind() == kind)
                 })
                 .map(|ix| (pane.id, ix))
         })
@@ -1534,9 +1534,20 @@ impl Workspace {
                     self.restore_terminal(conn, instance, *id, window, cx),
                 ));
             }
-            SavedTab::GitDiff { path, old_path } => {
+            SavedTab::GitDiff {
+                path,
+                old_path,
+                committed,
+            } => {
                 let view = cx.new(|cx| {
-                    DiffView::git(conn.clone(), path.clone(), old_path.clone(), wrap, cx)
+                    DiffView::git(
+                        conn.clone(),
+                        path.clone(),
+                        old_path.clone(),
+                        *committed,
+                        wrap,
+                        cx,
+                    )
                 });
                 self.subscriptions
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
@@ -2932,7 +2943,7 @@ impl Workspace {
         let Some(group) = self.active_group() else {
             return;
         };
-        if let Some((pane, ix)) = group.find_diff(&path, false, cx) {
+        if let Some((pane, ix)) = group.find_diff(&path, DiffKind::Session, cx) {
             self.activate_tab(pane, ix, window, cx);
             return;
         }
@@ -2951,6 +2962,7 @@ impl Workspace {
         &mut self,
         conn: Entity<AgentConnection>,
         change: GitChange,
+        committed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2959,8 +2971,13 @@ impl Workspace {
             notify::info(window, cx, "Open a session to view diffs.");
             return;
         }
+        let kind = if committed {
+            DiffKind::Committed
+        } else {
+            DiffKind::Uncommitted
+        };
         if let Some(group) = self.active_group()
-            && let Some((pane, ix)) = group.find_diff(&path, true, cx)
+            && let Some((pane, ix)) = group.find_diff(&path, kind, cx)
         {
             self.activate_tab(pane, ix, window, cx);
             if let Some(Panel::Diff(view)) = self.active_group().and_then(|g| g.active_panel()) {
@@ -2969,7 +2986,8 @@ impl Workspace {
             return;
         }
         let wrap = self.config.appearance.wrap_lines;
-        let view = cx.new(|cx| DiffView::git(conn, change.path, change.old_path, wrap, cx));
+        let view =
+            cx.new(|cx| DiffView::git(conn, change.path, change.old_path, committed, wrap, cx));
         self.add_diff_tab(view, window, cx);
     }
 
@@ -3013,7 +3031,16 @@ impl Workspace {
         let (count, branch, body) = match (&conn, &listing) {
             (Some(conn), Some(listing)) if listing.repository => {
                 let body = self.render_git_changes(conn.clone(), listing.clone(), session, cx);
-                (listing.files.len(), listing.branch.clone(), body)
+                let committed = listing
+                    .committed
+                    .as_ref()
+                    .map(|committed| committed.files.len())
+                    .unwrap_or(0);
+                (
+                    listing.files.len() + committed,
+                    listing.branch.clone(),
+                    body,
+                )
             }
             (_, None) if error.is_none() => (
                 0,
@@ -3306,7 +3333,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
-        if listing.files.is_empty() {
+        let committed = listing
+            .committed
+            .as_ref()
+            .filter(|committed| !committed.commits.is_empty() || !committed.files.is_empty());
+        if listing.files.is_empty() && committed.is_none() {
             return div()
                 .p_3()
                 .text_sm()
@@ -3314,17 +3345,120 @@ impl Workspace {
                 .child("No uncommitted changes.")
                 .into_any_element();
         }
-        let workspace = conn.read(cx).info.workspace.clone();
-        let open = self.open_diff_path(true, cx);
         let touched: HashSet<PathBuf> = session
             .map(|changes| changes.iter().map(|c| c.path.clone()).collect())
             .unwrap_or_default();
-        v_flex()
+        let heading = |text: String| {
+            div()
+                .px_3()
+                .pt_2()
+                .pb_1()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
+        let note = |text: String| {
+            div()
+                .px_3()
+                .py_2()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
+        let mut list = v_flex()
             .id("changes-list")
             .flex_1()
             .overflow_y_scroll()
-            .py_1()
-            .children(listing.files.iter().enumerate().map(|(ix, change)| {
+            .py_1();
+        if committed.is_some() {
+            list = list.child(heading("Uncommitted".into()));
+            if listing.files.is_empty() {
+                list = list.child(note("No uncommitted changes.".into()));
+            }
+        }
+        list = list
+            .children(self.git_change_rows(&conn, &listing.files, false, 0, &touched, cx))
+            .when(listing.truncated, |el| {
+                el.child(note(format!(
+                    "Showing the first {} files.",
+                    listing.files.len()
+                )))
+            });
+        if let Some(committed) = committed {
+            let commits = match committed.commits.len() {
+                1 => "1 commit".to_string(),
+                n => format!("{n} commits"),
+            };
+            list = list
+                .child(heading(format!(
+                    "Committed since {} ({commits})",
+                    committed.base
+                )))
+                .children(committed.commits.iter().map(|commit| {
+                    h_flex()
+                        .px_3()
+                        .py_0p5()
+                        .gap_2()
+                        .text_xs()
+                        .whitespace_nowrap()
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(theme.muted_foreground)
+                                .child(short_id(&commit.id).to_owned()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(commit.summary.clone()),
+                        )
+                }))
+                .child(div().h_1())
+                .children(self.git_change_rows(
+                    &conn,
+                    &committed.files,
+                    true,
+                    listing.files.len() + 1,
+                    &touched,
+                    cx,
+                ))
+                .when(committed.truncated, |el| {
+                    el.child(note(
+                        "There are too many commits or files to show them all.".into(),
+                    ))
+                });
+        }
+        list.into_any_element()
+    }
+
+    /// The rows of files that git lists as changed; a click opens the
+    /// file's uncommitted diff, or with `committed`, its committed diff.
+    fn git_change_rows(
+        &self,
+        conn: &Entity<AgentConnection>,
+        files: &[GitChange],
+        committed: bool,
+        first_ix: usize,
+        touched: &HashSet<PathBuf>,
+        cx: &Context<Self>,
+    ) -> Vec<gpui::Stateful<gpui::Div>> {
+        let theme = cx.theme();
+        let workspace = conn.read(cx).info.workspace.clone();
+        let kind = if committed {
+            DiffKind::Committed
+        } else {
+            DiffKind::Uncommitted
+        };
+        let open = self.open_diff_path(kind, cx);
+        files
+            .iter()
+            .enumerate()
+            .map(|(ix, change)| {
                 let absolute = workspace.join(&change.path);
                 let (icon, color) = match change.status {
                     ChangeStatus::Added | ChangeStatus::Untracked => {
@@ -3343,7 +3477,7 @@ impl Workspace {
                 };
                 let detail = change.old_path.as_ref().map(|old| format!("← {old}"));
                 let row = ChangeRow {
-                    ix,
+                    ix: first_ix + ix,
                     path: &change.path,
                     detail,
                     icon,
@@ -3356,29 +3490,19 @@ impl Workspace {
                 };
                 let conn = conn.clone();
                 let change = change.clone();
-                row.render(&theme)
+                row.render(theme)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_git_diff(conn.clone(), change.clone(), window, cx)
+                        this.open_git_diff(conn.clone(), change.clone(), committed, window, cx)
                     }))
-            }))
-            .when(listing.truncated, |el| {
-                el.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("Showing the first {} files.", listing.files.len())),
-                )
             })
-            .into_any_element()
+            .collect()
     }
 
-    fn open_diff_path(&self, git: bool, cx: &App) -> Option<PathBuf> {
+    fn open_diff_path(&self, kind: DiffKind, cx: &App) -> Option<PathBuf> {
         self.active_group()
             .and_then(|g| g.active_panel())
             .and_then(|panel| match panel {
-                Panel::Diff(view) if view.read(cx).is_git() == git => {
+                Panel::Diff(view) if view.read(cx).kind() == kind => {
                     Some(view.read(cx).path().clone())
                 }
                 _ => None,
@@ -3396,7 +3520,7 @@ impl Workspace {
             .changes_connection()
             .map(|c| c.read(cx).info.workspace.clone())
             .unwrap_or_default();
-        let open = self.open_diff_path(false, cx);
+        let open = self.open_diff_path(DiffKind::Session, cx);
         let message = |text: &str| {
             div()
                 .p_3()
@@ -6005,5 +6129,104 @@ mod tests {
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();
         assert!(right(cx) == (true, RightTab::Agents));
+    }
+
+    /// The Changes panel lists the commits that the upstream branch does
+    /// not have, and a committed diff opens in a tab of its own.
+    #[gpui::test]
+    fn committed_changes_open_in_their_own_diff_tabs(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&agent.workspace)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        agent.write("a.txt", "one\n");
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        git(&["branch", "upstream"]);
+        git(&["branch", "--set-upstream-to=upstream"]);
+        agent.write("a.txt", "one\ntwo\n");
+        git(&["commit", "-q", "-am", "Add two"]);
+        agent.write("a.txt", "one\ntwo\nthree\n");
+
+        let (ws, conn, cx) = connected(&agent, cx);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_session(conn.clone(), window, cx)
+        });
+        wait_until(cx, |cx| ws.read(cx).active_group.is_some());
+        conn.update(cx, |conn, cx| conn.refresh_changes(cx));
+        wait_until(cx, |cx| conn.read(cx).git.changes.is_some());
+        let changes = conn.read_with(cx, |conn, _| conn.git.changes.clone().unwrap());
+        assert_eq!(changes.files.len(), 1);
+        let committed = changes.committed.clone().unwrap();
+        assert_eq!(committed.base, "upstream");
+        assert_eq!(committed.commits[0].summary, "Add two");
+        let change = committed.files[0].clone();
+        assert_eq!(change.path, "a.txt");
+
+        let diffs = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, cx| {
+                ws.active_group()
+                    .unwrap()
+                    .panes
+                    .iter()
+                    .flat_map(|pane| pane.tabs.iter())
+                    .filter_map(|(_, panel)| match panel {
+                        Panel::Diff(view) => Some(view.clone()),
+                        _ => None,
+                    })
+                    .map(|view| (view.read(cx).kind(), view.read(cx).title()))
+                    .collect::<Vec<_>>()
+            })
+        };
+        for committed in [true, false, true] {
+            let (conn, change) = (conn.clone(), change.clone());
+            ws.update_in(cx, |ws, window, cx| {
+                ws.open_git_diff(conn, change, committed, window, cx)
+            });
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            diffs(cx),
+            [
+                (DiffKind::Committed, "a.txt (committed)".to_string()),
+                (DiffKind::Uncommitted, "a.txt".to_string()),
+            ]
+        );
+        let view = ws.read_with(cx, |ws, _| {
+            match ws.active_group().unwrap().active_panel() {
+                Some(Panel::Diff(view)) => view.clone(),
+                _ => panic!("the committed diff is not active"),
+            }
+        });
+        assert_eq!(
+            view.read_with(cx, |view, _| view.kind()),
+            DiffKind::Committed
+        );
+        wait_until(cx, |cx| view.read(cx).counts() == (1, 0));
+        let saved = view.read_with(cx, |view, _| view.saved_tab());
+        assert!(matches!(
+            saved,
+            SavedTab::GitDiff {
+                committed: true,
+                ..
+            }
+        ));
+
+        // The panel draws both lists.
+        ws.update(cx, |ws, cx| {
+            ws.show_right = true;
+            ws.right_tab = RightTab::Changes;
+            cx.notify();
+        });
+        cx.run_until_parked();
     }
 }

@@ -27,6 +27,17 @@ const OVERDRAW: f32 = 400.;
 /// Spaces a tab is shown as.
 const TAB_WIDTH: usize = 4;
 
+/// What a diff view shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffKind {
+    /// The changes that a session made to a file.
+    Session,
+    /// The uncommitted changes of a file, against `HEAD`.
+    Uncommitted,
+    /// The changes of a file in the branch's commits since its base.
+    Committed,
+}
+
 enum Source {
     Session {
         conversation: Entity<Conversation>,
@@ -37,6 +48,7 @@ enum Source {
         connection: Entity<AgentConnection>,
         relative: String,
         old_path: Option<String>,
+        committed: bool,
         diff: Option<String>,
         error: Option<String>,
         truncated: bool,
@@ -101,19 +113,24 @@ impl DiffView {
         connection: Entity<AgentConnection>,
         relative: String,
         old_path: Option<String>,
+        committed: bool,
         wrap: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let path = connection.read(cx).info.workspace.join(&relative);
-        let title = match &old_path {
+        let mut title = match &old_path {
             Some(old) => format!("{old} → {relative}"),
             None => relative.clone(),
         };
+        if committed {
+            title.push_str(" (committed)");
+        }
         let mut this = Self {
             source: Source::Git {
                 connection,
                 relative,
                 old_path,
+                committed,
                 diff: None,
                 error: None,
                 truncated: false,
@@ -149,10 +166,14 @@ impl DiffView {
                 path: self.path.clone(),
             },
             Source::Git {
-                relative, old_path, ..
+                relative,
+                old_path,
+                committed,
+                ..
             } => SavedTab::GitDiff {
                 path: relative.clone(),
                 old_path: old_path.clone(),
+                committed: *committed,
             },
         }
     }
@@ -161,11 +182,28 @@ impl DiffView {
         matches!(self.source, Source::Git { .. })
     }
 
+    /// The added and removed lines.
+    #[cfg(test)]
+    pub fn counts(&self) -> (usize, usize) {
+        (self.added, self.removed)
+    }
+
+    pub fn kind(&self) -> DiffKind {
+        match self.source {
+            Source::Session { .. } => DiffKind::Session,
+            Source::Git {
+                committed: true, ..
+            } => DiffKind::Committed,
+            Source::Git { .. } => DiffKind::Uncommitted,
+        }
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let Source::Git {
             connection,
             relative,
             old_path,
+            committed,
             loading,
             ..
         } = &mut self.source
@@ -178,7 +216,7 @@ impl DiffView {
         *loading = true;
         let task = connection
             .read(cx)
-            .file_diff(relative.clone(), old_path.clone());
+            .file_diff(relative.clone(), old_path.clone(), *committed);
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -317,8 +355,33 @@ impl DiffView {
                 error: Some(error), ..
             } => format!("Could not load the diff: {error}"),
             Source::Git { diff: None, .. } => "Loading…".into(),
+            Source::Git {
+                committed: true, ..
+            } => "The commits since the base do not change this file.".into(),
             Source::Git { .. } => "This file has no uncommitted changes.".into(),
         })
+    }
+
+    /// What the diff compares with, for its header.
+    fn against(&self, cx: &App) -> Option<String> {
+        match &self.source {
+            Source::Session { .. } => None,
+            Source::Git {
+                committed: false, ..
+            } => Some("against HEAD".into()),
+            Source::Git { connection, .. } => Some(
+                match connection
+                    .read(cx)
+                    .git
+                    .changes
+                    .as_ref()
+                    .and_then(|changes| changes.committed.as_ref())
+                {
+                    Some(committed) => format!("committed since {}", committed.base),
+                    None => "committed".into(),
+                },
+            ),
+        }
     }
 }
 
@@ -341,6 +404,7 @@ impl Render for DiffView {
         let count = lines.len();
         let row_theme = theme.clone();
         let empty = self.empty_message();
+        let against = self.against(cx);
         let body = div()
             .relative()
             .flex_1()
@@ -393,12 +457,12 @@ impl Render for DiffView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(self.title.clone()),
                     )
-                    .when(self.is_git(), |el| {
+                    .when_some(against, |el, against| {
                         el.child(
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("against HEAD"),
+                                .child(against),
                         )
                     })
                     .child(

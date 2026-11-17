@@ -487,9 +487,30 @@ async fn worktree_sessions_through_the_client() {
     let changes = scoped.workspace_changes().await.unwrap();
     assert_eq!(changes.branch.as_deref(), Some(worktree.branch.as_str()));
     assert!(changes.files.iter().any(|f| f.path == "only-here.txt"));
+    let committed = changes.committed.unwrap();
+    assert_eq!(committed.base, "main");
+    assert!(committed.commits.is_empty() && committed.files.is_empty());
 
     let status = client.worktree_status(&session.id).await.unwrap();
     assert!(status.dirty);
+    git(&path, &["add", "-A"]);
+    git(&path, &["commit", "-q", "-m", "work"]);
+    let changes = scoped.workspace_changes().await.unwrap();
+    assert!(changes.files.is_empty());
+    let committed = changes.committed.unwrap();
+    assert_eq!(committed.commits.len(), 1);
+    assert_eq!(committed.files[0].path, "only-here.txt");
+    let diff = scoped.file_diff("only-here.txt", None, true).await.unwrap();
+    assert!(diff.diff.contains("+x\n"), "{}", diff.diff);
+    assert!(
+        client
+            .workspace_changes()
+            .await
+            .unwrap()
+            .committed
+            .is_none()
+    );
+
     let err = client.delete_session(&session.id).await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::Conflict);
     client.remove_worktree(&session.id, true).await.unwrap();
@@ -951,10 +972,40 @@ async fn workspace_changes_come_from_git() {
     assert_eq!(changes.files.len(), 1);
     assert_eq!(changes.files[0].path, "tracked.txt");
     assert_eq!((changes.files[0].added, changes.files[0].removed), (1, 1));
-    let diff = client.file_diff("tracked.txt", None).await.unwrap();
+    assert_eq!(changes.committed, None);
+    let diff = client.file_diff("tracked.txt", None, false).await.unwrap();
     assert!(diff.diff.contains("-a\n+b\n"), "{}", diff.diff);
-    let err = client.file_diff("/etc/passwd", None).await.unwrap_err();
+    let err = client
+        .file_diff("/etc/passwd", None, false)
+        .await
+        .unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
+    let err = client
+        .file_diff("tracked.txt", None, true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
+
+    git(&["branch", "upstream"]);
+    git(&["branch", "--set-upstream-to=upstream"]);
+    std::fs::write(workspace.join("added.txt"), "new\n").unwrap();
+    git(&["add", "added.txt"]);
+    git(&["commit", "-q", "-m", "Add a file"]);
+    let changes = client.workspace_changes().await.unwrap();
+    assert_eq!(changes.files.len(), 1);
+    let committed = changes.committed.unwrap();
+    assert_eq!(committed.base, "upstream");
+    assert_eq!(committed.commits.len(), 1);
+    assert_eq!(committed.commits[0].summary, "Add a file");
+    assert_eq!(committed.commits[0].author, "T");
+    assert_eq!(committed.files.len(), 1);
+    assert_eq!(committed.files[0].path, "added.txt");
+    assert_eq!(
+        committed.files[0].status,
+        loom_client::proto::ChangeStatus::Added
+    );
+    let diff = client.file_diff("added.txt", None, true).await.unwrap();
+    assert!(diff.diff.contains("+new\n"), "{}", diff.diff);
 }
 
 #[tokio::test]

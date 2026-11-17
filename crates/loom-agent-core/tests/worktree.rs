@@ -175,11 +175,35 @@ async fn worktrees_end_with_a_merge_or_a_squash_merge() {
         message: "Add b and c".into(),
     };
     agent
-        .merge_worktree(squashed.id(), squash, true)
+        .merge_worktree(squashed.id(), squash, false)
         .await
         .unwrap();
     assert_eq!(git(main, &["log", "-1", "--format=%s"]), "Add b and c");
     assert_eq!(git(main, &["rev-list", "--count", "HEAD^@"]), "3");
+    let committed = || async {
+        let worktree = squashed.worktree().unwrap();
+        let base = loom_agent_core::git::CommitBase {
+            branch: Some(&worktree.base),
+            merged_head: worktree.merged_head.as_deref(),
+        };
+        let changes = loom_agent_core::git::changes(&path, base).await.unwrap();
+        changes.committed.unwrap()
+    };
+    let after_squash = committed().await;
+    assert_eq!(after_squash.base, "main");
+    assert!(after_squash.commits.is_empty() && after_squash.files.is_empty());
+    commit_file(&path, "d.txt", "d\n");
+    let more = committed().await;
+    assert_eq!(more.commits.len(), 1);
+    assert_eq!(more.files.len(), 1);
+    assert_eq!(more.files[0].path, "d.txt");
+    let squash = MergeStrategy::Squash {
+        message: "Add d".into(),
+    };
+    agent
+        .merge_worktree(squashed.id(), squash, true)
+        .await
+        .unwrap();
     assert!(main.join("c.txt").exists() && !path.exists());
     assert!(agent.session(squashed.id()).is_err());
 
