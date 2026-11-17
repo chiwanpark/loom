@@ -110,12 +110,12 @@ internal fun pathSubtitle(link: AgentLink, path: String): String? {
     return if (path.isEmpty()) workspace else "${workspace.trimEnd('/')}/$path"
 }
 
-/** A directory of the agent's workspace: its directories, then its files. */
+/** A directory of the agent's workspace, or of the worktree of the session [root]: its directories, then its files. */
 @Composable
-fun FilesScreen(app: LoomApplication, link: AgentLink, path: String) {
+fun FilesScreen(app: LoomApplication, link: AgentLink, path: String, root: String?) {
     val snackbar = remember { SnackbarHostState() }
     var reload by remember { mutableIntStateOf(0) }
-    val listing = rememberLoaded(link, reload, path) { link.connection().listDirectory(path) }
+    val listing = rememberLoaded(link, reload, path, root) { link.connection().listDirectory(path, root) }
 
     Scaffold(
         topBar = {
@@ -142,9 +142,9 @@ fun FilesScreen(app: LoomApplication, link: AgentLink, path: String) {
                         EntryRow(entry) {
                             when (entry.kind) {
                                 EntryKind.DIRECTORY ->
-                                    app.navigator.push(Screen.Files(link.host, link.instance, entry.path))
+                                    app.navigator.push(Screen.Files(link.host, link.instance, entry.path, root))
                                 EntryKind.FILE ->
-                                    app.navigator.push(Screen.File(link.host, link.instance, entry.path))
+                                    app.navigator.push(Screen.File(link.host, link.instance, entry.path, root))
                                 EntryKind.OTHER -> {}
                             }
                         }
@@ -219,14 +219,14 @@ fun WrapButton(app: LoomApplication) {
  * images and PDF files show in the media viewer instead.
  */
 @Composable
-fun FileScreen(app: LoomApplication, link: AgentLink, path: String) {
+fun FileScreen(app: LoomApplication, link: AgentLink, path: String, root: String?) {
     mediaKindOf(path)?.let { kind ->
-        MediaScreen(app, link, path, kind)
+        MediaScreen(app, link, path, kind, root)
         return
     }
     val snackbar = remember { SnackbarHostState() }
     var reload by remember { mutableIntStateOf(0) }
-    val file = rememberLoaded(link, reload, path) { link.connection().readFile(path) }
+    val file = rememberLoaded(link, reload, path, root) { link.connection().readFile(path, root) }
     val colors = SyntaxColors.current
 
     Scaffold(

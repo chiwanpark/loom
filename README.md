@@ -240,6 +240,7 @@ The main sections:
 - `tools`: output limits for the `read` and `shell` tools, the shell program, the `search_web` tool (its model, source limits, and timeout), `notes.max_bytes`, the largest [notes](#notes-and-tasks) (64 KiB by default), and `tasks.max_items`, the most tasks in a task list (100 by default). `search_web` has an OpenAI model search the web. It uses the `openai-codex` sign-in and is not offered to the model without it.
 - `policy`: whether each tool call is allowed, denied, or needs your approval (`ask`, the default). Rules can match a tool and a command prefix, for example to allow `git status` but deny `sudo`. The notes, tasks, and `skill` tools are allowed unless a rule says otherwise.
 - `environment`: the environment variables of shell commands and terminals, and the env file with secrets for them. See [Environment variables and secrets](#environment-variables-and-secrets).
+- `worktrees`: `dir`, the directory of the git worktrees of sessions (`~/.config/loom/worktrees` by default). See [Sessions in a worktree](#sessions-in-a-worktree).
 - `sandbox`: confines shell commands with `landlock` or `bubblewrap` (off by default), with optional network blocking and extra writable paths.
 - `context`: tool output limits and when to compact a long conversation.
 - `limits`: `max_rounds_per_turn`, the most model calls the agent makes for one message before the turn stops (200 by default; `0` for no limit). It guards against a model stuck in a loop while no one is watching. The conversation is kept, so you can send another message to go on.
@@ -379,6 +380,22 @@ To see what the model gets besides the conversation, choose **System prompt** in
 To take a conversation back to before one of your messages, click the rewind button on that message, or long-press the message in the Android app and choose **Rewind to here**. The agent forgets that message and everything after it, and the message goes back into the prompt box, so you can edit it and send it again. Every client of the agent shows the shorter conversation.
 
 A rewind changes only the conversation. Files in the workspace stay as they are, so the agent does not undo the changes of the forgotten turns. Tasks, the agent's notes, the session's settings, and waiting messages also stay. You cannot rewind while a turn runs. After a compaction summarized the earlier turns, you can rewind only to the last message before the summary and to later ones. A rewind cannot be undone.
+
+### Sessions in a worktree
+
+A session can work in a git worktree of its own, so that its changes stay away from the workspace and from other sessions until you merge them. On the desktop, choose **New session in a worktree…** in an agent's menu in the agents panel. In the Android app, press the branch button next to the agent when you start a session. Type a branch name and a base, or keep the defaults: the branch `loom/<session>`, made from the branch that the workspace has checked out. The workspace must be in a git repository.
+
+The agent adds the worktree in `<worktrees.dir>/<workspace-hash>/<session>`, in directories with mode 0700. The agent's tools, shell commands, `AGENTS.md`, and skills of the session then use the worktree, and the system prompt tells the model the branch. The Files and Changes panels and new terminals follow the active session's worktree. The agents panel and the Android app show the branch next to the session. The agent's notes are the same for all sessions, also in worktrees. Shell commands in a worktree get the env file of the workspace (see [Environment variables and secrets](#environment-variables-and-secrets)), with the same redaction. With the sandbox on, commands can also write the repository's git directory, so that they can commit.
+
+When the work is done, use the session's menu (in the agents panel, or the conversation's menu on Android):
+
+- **Merge worktree** merges the branch into its base in the workspace. The workspace must have the base checked out and no uncommitted changes to tracked files. With a commit message, the agent squashes the branch into one commit; without one, it makes a merge commit that keeps the commits of the branch. If the merge has conflicts, the workspace stays as it was and the error lists the files: resolve them in the worktree, for example by merging the base into the branch there, then merge again.
+- **Open pull request** pushes the branch to the remote of the base (`origin` if the base has none) and runs `gh pr create` with your title, description, and draft choice. The [GitHub CLI](https://cli.github.com/) (`gh`) must be installed and signed in on the agent's host. The session keeps the URL of the pull request; after that, the menu pushes new commits to it and opens it in the browser.
+- **Remove worktree** removes the worktree and its branch, and the session goes on in the workspace. If the worktree has uncommitted changes or commits that were not merged, the dialog tells you that you lose them.
+
+Deleting a session also removes its worktree and branch. Archiving a session keeps them. A merge and a pull request keep the worktree, so you can go on working in it. If the worktree directory is gone, the session does not start turns until you remove the worktree.
+
+Worktrees are full checkouts of your repository. If a dotfile manager or a backup tool syncs `~/.config`, exclude `~/.config/loom/worktrees`, or set `worktrees.dir` to another directory.
 
 ### Messages while a turn runs
 

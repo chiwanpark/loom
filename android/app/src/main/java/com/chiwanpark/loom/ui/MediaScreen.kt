@@ -164,13 +164,13 @@ private sealed interface Media {
  * a zoomed image pans with a finger and a double tap zooms it in or out.
  */
 @Composable
-fun MediaScreen(app: LoomApplication, link: AgentLink, path: String, kind: MediaKind) {
+fun MediaScreen(app: LoomApplication, link: AgentLink, path: String, kind: MediaKind, root: String?) {
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     var reload by remember { mutableIntStateOf(0) }
     val file = remember(link, path) { cacheFile(context, link, path) }
-    val loaded = rememberLoaded(link, reload, path) {
-        link.connection().saveFile(path, file.absolutePath, MAX_MEDIA_BYTES)
+    val loaded = rememberLoaded(link, reload, path, root) {
+        link.connection().saveFile(path, file.absolutePath, MAX_MEDIA_BYTES, root)
         withContext(Dispatchers.IO) {
             when (kind) {
                 MediaKind.Image -> Media.Picture(decodeImage(file))

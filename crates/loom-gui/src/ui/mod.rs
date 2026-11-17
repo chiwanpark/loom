@@ -20,5 +20,6 @@ pub mod tasks_view;
 pub mod update;
 pub mod upload;
 pub mod workspace;
+pub mod worktrees;
 
 pub use workspace::{Workspace, bind_keys};

@@ -2,6 +2,8 @@ package com.chiwanpark.loom.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -136,6 +138,11 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var pickPolicy by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
     var rewinding by remember { mutableStateOf<Long?>(null) }
+    var merging by remember { mutableStateOf(false) }
+    var openingPullRequest by remember { mutableStateOf(false) }
+    var removingWorktree by remember { mutableStateOf<String?>(null) }
+    val worktree = link.sessions.firstOrNull { it.id == session }?.worktree
+    val context = LocalContext.current
     var draft by rememberSaveable { mutableStateOf("") }
 
     // Follows the conversation while it is on the back stack, also after reconnecting
@@ -182,7 +189,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
             // The model, reasoning effort, and context sit above the prompt box, where they have room.
             LoomTopBar(
                 conversation.title.ifEmpty { "Session" },
-                subtitle = workspaceSubtitle(link, manyHosts = app.directory.hosts.size > 1),
+                subtitle = worktree?.let { "On ${it.branch}: ${it.path}" } ?: workspaceSubtitle(link, manyHosts = app.directory.hosts.size > 1),
                 subtitleIsPath = true,
                 onBack = { app.navigator.pop() },
             ) {
@@ -199,7 +206,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                         app.navigator.push(Screen.Changes(link.host, link.instance, session))
                     }
                     MenuEntry("Files", LoomIcons.Folder, close) {
-                        app.navigator.push(Screen.Files(link.host, link.instance))
+                        app.navigator.push(Screen.Files(link.host, link.instance, root = session))
                     }
                     MenuEntry("Terminal", LoomIcons.Terminal, close) {
                         // Another client's terminal shows first when the app has none.
@@ -210,6 +217,35 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                     }
                     MenuEntry("System prompt", LoomIcons.ScrollText, close) {
                         app.navigator.push(Screen.SystemPrompt(link.host, link.instance, session))
+                    }
+                    if (worktree != null) {
+                        HorizontalDivider()
+                        MenuEntry("Merge the worktree", LoomIcons.GitMerge, close) { merging = true }
+                        val pullRequest = worktree.pullRequest
+                        if (pullRequest == null) {
+                            MenuEntry("Open a pull request", LoomIcons.GitPullRequest, close) { openingPullRequest = true }
+                        } else {
+                            MenuEntry("Push to the pull request", LoomIcons.GitPullRequest, close) {
+                                scope.attempt(snackbar) {
+                                    link.connection().openPullRequest(session, "", "", false)
+                                    snackbar.showSnackbar("Pushed ${worktree.branch}")
+                                }
+                            }
+                            MenuEntry("View the pull request", LoomIcons.ExternalLink, close) {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pullRequest)))
+                            }
+                        }
+                        MenuEntry("Remove the worktree", LoomIcons.Trash, close) {
+                            scope.attempt(snackbar) {
+                                val status = link.connection().worktreeStatus(session)
+                                removingWorktree = if (status.dirty || !status.merged) {
+                                    " The worktree has uncommitted changes or commits that were not merged. You lose them."
+                                } else {
+                                    ""
+                                }
+                            }
+                        }
+                        HorizontalDivider()
                     }
                     MenuEntry("Font", LoomIcons.ALargeSmall, close) { app.navigator.push(Screen.Font) }
                     MenuEntry("Compact the context", LoomIcons.FoldVertical, close) {
@@ -307,6 +343,44 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
             },
             onDismiss = { rewinding = null },
         )
+    }
+    if (worktree != null && merging) {
+        MergeWorktreeDialog(
+            worktree,
+            title = conversation.title,
+            onMerge = { message ->
+                scope.attempt(snackbar) {
+                    val commit = link.connection().mergeWorktree(session, message)
+                    snackbar.showSnackbar("Merged as ${commit.take(8)}")
+                }
+            },
+            onDismiss = { merging = false },
+        )
+    }
+    if (worktree != null && openingPullRequest) {
+        PullRequestDialog(
+            worktree,
+            title = conversation.title,
+            onOpen = { title, body, draft ->
+                scope.attempt(snackbar) {
+                    val url = link.connection().openPullRequest(session, title, body, draft)
+                    snackbar.showSnackbar("Pull request: $url")
+                }
+            },
+            onDismiss = { openingPullRequest = false },
+        )
+    }
+    if (worktree != null) {
+        removingWorktree?.let { warning ->
+            ConfirmDialog(
+                title = "Remove the worktree?",
+                text = "The agent removes the worktree and the branch ${worktree.branch}. " +
+                    "The session goes on in the workspace.$warning",
+                confirm = "Remove",
+                onConfirm = { scope.attempt(snackbar) { link.connection().removeWorktree(session, true) } },
+                onDismiss = { removingWorktree = null },
+            )
+        }
     }
 }
 

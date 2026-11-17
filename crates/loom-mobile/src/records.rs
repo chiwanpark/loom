@@ -199,6 +199,8 @@ pub struct SessionSummary {
     pub archived: bool,
     /// Seconds since the Unix epoch.
     pub created_at: u64,
+    /// The git worktree the session works in.
+    pub worktree: Option<Worktree>,
 }
 
 impl From<&SessionInfo> for SessionSummary {
@@ -214,6 +216,50 @@ impl From<&SessionInfo> for SessionSummary {
             status: info.state.into(),
             archived: info.archived,
             created_at: info.created_at,
+            worktree: info.worktree.clone().map(Worktree::from),
+        }
+    }
+}
+
+/// The git worktree of a session.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Worktree {
+    pub branch: String,
+    /// The branch that merges go into.
+    pub base: String,
+    pub path: String,
+    pub pull_request: Option<String>,
+}
+
+impl From<proto::WorktreeInfo> for Worktree {
+    fn from(info: proto::WorktreeInfo) -> Self {
+        Self {
+            branch: info.branch,
+            base: info.base,
+            path: info.path,
+            pull_request: info.pull_request,
+        }
+    }
+}
+
+/// Where the branch of a worktree is against its base.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WorktreeStatus {
+    pub ahead: u32,
+    pub behind: u32,
+    pub dirty: bool,
+    pub missing: bool,
+    pub merged: bool,
+}
+
+impl From<proto::WorktreeStatus> for WorktreeStatus {
+    fn from(status: proto::WorktreeStatus) -> Self {
+        Self {
+            ahead: status.ahead,
+            behind: status.behind,
+            dirty: status.dirty,
+            missing: status.missing,
+            merged: status.merged,
         }
     }
 }

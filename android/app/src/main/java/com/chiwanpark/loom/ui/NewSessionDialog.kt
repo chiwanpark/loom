@@ -15,6 +15,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -57,6 +58,8 @@ fun NewSessionChooser(
     connected: List<AgentLink>,
     agentName: (AgentLink) -> String,
     onPick: (AgentLink) -> Unit,
+    /** Starts the session in a new git worktree of the agent's workspace. */
+    onWorktree: (AgentLink) -> Unit,
     onDirectory: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -72,6 +75,11 @@ fun NewSessionChooser(
                         headlineContent = { Text(agentName(link)) },
                         supportingContent = {
                             link.workspace?.let { Text(it, maxLines = 1, overflow = TextOverflow.StartEllipsis) }
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { onWorktree(link) }) {
+                                LoomIcon(LoomIcons.GitBranch, "In a new worktree", size = 20.dp)
+                            }
                         },
                     )
                 }

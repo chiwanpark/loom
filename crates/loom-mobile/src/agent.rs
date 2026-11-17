@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use loom_client::proto::{ContentPart, InstanceId, SessionId, SessionInfo, TerminalOwner};
+use loom_client::proto::{
+    ContentPart, InstanceId, MergeStrategy, SessionId, SessionInfo, TerminalOwner, WorktreeOptions,
+};
 use loom_client::{
     Client, ClientError, ClientIdentity, Notification, Notifications, RelayHost, terminal_owner,
 };
@@ -18,7 +20,7 @@ use crate::hosts::CLIENT_NAME;
 use crate::records::{
     Agent, AgentUpdate, AgentUpdateInfo, ApprovalDecision, ConversationUpdate, Delivery, ImageData,
     Model, Notes, Policy, Reasoning, SessionSummary, SystemPromptInfo, TakenBack, TaskEdit,
-    TaskItem, notice_message, parse_version, task_items, version_text,
+    TaskItem, WorktreeStatus, notice_message, parse_version, task_items, version_text,
 };
 use crate::runtime::{run, spawn};
 use crate::terminal::{TermShared, Terminals};
@@ -618,6 +620,87 @@ impl AgentConnection {
         shared.lock().session_updated(info);
         shared.wake.notify_one();
         Ok(summary)
+    }
+
+    /// Creates a session that works in a new git worktree on a branch of its
+    /// own. An empty `branch` or `base` takes the default: `loom/<session>`,
+    /// and the branch that the workspace has checked out.
+    pub async fn create_worktree_session(
+        self: Arc<Self>,
+        branch: Option<String>,
+        base: Option<String>,
+    ) -> Result<SessionSummary> {
+        let shared = self.shared.clone();
+        let filled =
+            |value: Option<String>| value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let options = WorktreeOptions {
+            branch: filled(branch),
+            base: filled(base),
+        };
+        let info = with_client(&self.shared, move |client| async move {
+            Ok(client.create_worktree_session(None, options).await?)
+        })
+        .await?;
+        let summary = SessionSummary::from(&info);
+        shared.lock().session_updated(info);
+        shared.wake.notify_one();
+        Ok(summary)
+    }
+
+    /// Where the branch of the session's worktree is against its base.
+    pub async fn worktree_status(self: Arc<Self>, session: String) -> Result<WorktreeStatus> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client.worktree_status(&session_id(session)).await?.into())
+        })
+        .await
+    }
+
+    /// Merges the branch of the session's worktree into its base, and
+    /// returns the new commit. A message squashes the branch into one
+    /// commit; none makes a merge commit.
+    pub async fn merge_worktree(
+        self: Arc<Self>,
+        session: String,
+        squash_message: Option<String>,
+    ) -> Result<String> {
+        let strategy = match squash_message.filter(|m| !m.trim().is_empty()) {
+            Some(message) => MergeStrategy::Squash { message },
+            None => MergeStrategy::Merge,
+        };
+        with_client(&self.shared, move |client| async move {
+            Ok(client
+                .merge_worktree(&session_id(session), strategy, false)
+                .await?)
+        })
+        .await
+    }
+
+    /// Pushes the branch of the session's worktree and opens a pull request,
+    /// and returns its URL. When the session has a pull request already,
+    /// only pushes.
+    pub async fn open_pull_request(
+        self: Arc<Self>,
+        session: String,
+        title: String,
+        body: String,
+        draft: bool,
+    ) -> Result<String> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client
+                .open_pull_request(&session_id(session), &title, &body, draft)
+                .await?)
+        })
+        .await
+    }
+
+    /// Removes the session's worktree and its branch; the session goes on in
+    /// the workspace. Without `force`, fails when the worktree has changes
+    /// that were not merged.
+    pub async fn remove_worktree(self: Arc<Self>, session: String, force: bool) -> Result<()> {
+        with_client(&self.shared, move |client| async move {
+            Ok(client.remove_worktree(&session_id(session), force).await?)
+        })
+        .await
     }
 
     /// Renames a session; no title brings back the one from its first

@@ -39,15 +39,16 @@ import com.chiwanpark.loom.core.DiffKind
 import com.chiwanpark.loom.core.DiffView
 
 /**
- * What changed in the agent's workspace: its uncommitted changes in git, with
- * the files this session changed marked, and the files this session changed
- * with its tool calls, as the desktop's Changes panel shows them.
+ * What changed in the agent's workspace, or in the worktree of the session:
+ * its uncommitted changes in git, with the files this session changed marked,
+ * and the files this session changed with its tool calls, as the desktop's
+ * Changes panel shows them.
  */
 @Composable
 fun ChangesScreen(app: LoomApplication, link: AgentLink, session: String) {
     val snackbar = remember { SnackbarHostState() }
     var reload by remember { mutableIntStateOf(0) }
-    val git = rememberLoaded(link, reload) { link.connection().gitChanges() }
+    val git = rememberLoaded(link, reload, session) { link.connection().gitChanges(session) }
     val touched = rememberLoaded(link, reload, session) { link.connection().sessionChanges(session) }
     // Until the user picks a tab, a workspace without git opens on the session's changes.
     var picked by rememberSaveable { mutableIntStateOf(-1) }
@@ -104,7 +105,7 @@ fun ChangesScreen(app: LoomApplication, link: AgentLink, session: String) {
                                     bySession = change.path in mine,
                                 ) {
                                     app.navigator.push(
-                                        Screen.Diff(link.host, link.instance, change.path, change.oldPath),
+                                        Screen.Diff(link.host, link.instance, change.path, change.oldPath, root = session),
                                     )
                                 }
                                 HorizontalDivider()
@@ -240,14 +241,21 @@ private fun ChangeRow(
 
 /** A file's diff, as the session changed it or as it differs from git's last commit. */
 @Composable
-fun DiffScreen(app: LoomApplication, link: AgentLink, path: String, oldPath: String?, session: String?) {
+fun DiffScreen(
+    app: LoomApplication,
+    link: AgentLink,
+    path: String,
+    oldPath: String?,
+    session: String?,
+    root: String?,
+) {
     val snackbar = remember { SnackbarHostState() }
     var reload by remember { mutableIntStateOf(0) }
-    val diff = rememberLoaded(link, reload, path, oldPath, session) {
+    val diff = rememberLoaded(link, reload, path, oldPath, session, root) {
         if (session != null) {
             link.connection().sessionDiff(session, path)
         } else {
-            link.connection().gitDiff(path, oldPath)
+            link.connection().gitDiff(path, oldPath, root)
         }
     }
     val shown = (diff as? Loaded.Ready)?.value?.path ?: path

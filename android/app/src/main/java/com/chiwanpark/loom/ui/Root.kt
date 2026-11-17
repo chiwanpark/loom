@@ -59,8 +59,12 @@ fun LoomRoot(app: LoomApplication) {
             is Screen.SystemPrompt -> SystemPromptScreen(
                 app, app.links.get(loom, screen.host, screen.instance), screen.session,
             )
-            is Screen.Files -> FilesScreen(app, app.links.get(loom, screen.host, screen.instance), screen.path)
-            is Screen.File -> FileScreen(app, app.links.get(loom, screen.host, screen.instance), screen.path)
+            is Screen.Files -> FilesScreen(
+                app, app.links.get(loom, screen.host, screen.instance), screen.path, screen.root,
+            )
+            is Screen.File -> FileScreen(
+                app, app.links.get(loom, screen.host, screen.instance), screen.path, screen.root,
+            )
             is Screen.Changes -> ChangesScreen(app, app.links.get(loom, screen.host, screen.instance), screen.session)
             is Screen.Diff -> DiffScreen(
                 app,
@@ -68,6 +72,7 @@ fun LoomRoot(app: LoomApplication) {
                 screen.path,
                 screen.oldPath,
                 screen.session,
+                screen.root,
             )
             is Screen.Terminal -> TerminalScreen(app, app.links.get(loom, screen.host, screen.instance), screen.number)
             is Screen.Ports -> PortsScreen(app, app.links.get(loom, screen.host, screen.instance))

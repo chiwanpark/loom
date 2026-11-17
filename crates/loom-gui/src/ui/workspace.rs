@@ -1262,6 +1262,7 @@ impl Workspace {
             .push(cx.observe_in(conn, window, |this, conn, window, cx| {
                 if this.active_group().is_some_and(|g| g.connection == conn) {
                     this.see_active_session(window, cx);
+                    this.sync_file_scope(cx);
                 }
                 cx.notify()
             }));
@@ -1305,6 +1306,12 @@ impl Workspace {
                 }
                 ConnectionEvent::TerminalsChanged { closed } => {
                     this.sync_terminal_tabs(conn, closed, window, cx)
+                }
+                ConnectionEvent::FileScopeChanged => {
+                    if let Some(tree) = this.find_file_tree(conn, cx) {
+                        tree.update(cx, |tree, cx| tree.reset(cx));
+                    }
+                    cx.notify();
                 }
                 ConnectionEvent::LoginFinished(_)
                 | ConnectionEvent::NotesChanged { .. }
@@ -1711,7 +1718,7 @@ impl Workspace {
         Panel::Chat(view)
     }
 
-    fn open_session(
+    pub(crate) fn open_session(
         &mut self,
         conn: Entity<AgentConnection>,
         info: SessionInfo,
@@ -1751,7 +1758,26 @@ impl Workspace {
         self.active_connection = Some(group.connection.clone());
         self.focus_active_panel(window, cx);
         self.see_active_session(window, cx);
+        self.sync_file_scope(cx);
         cx.notify();
+    }
+
+    /// Makes the Files and Changes panels of the active session's agent
+    /// show the session's worktree, or the workspace when it has none.
+    fn sync_file_scope(&mut self, cx: &mut Context<Self>) {
+        let Some(group) = self.active_group() else {
+            return;
+        };
+        let (conn, session) = (group.connection.clone(), group.session.clone());
+        let read = conn.read(cx);
+        let worktree = read
+            .sessions
+            .iter()
+            .any(|s| s.id == session && s.worktree.is_some());
+        let scope = worktree.then_some(session);
+        if read.file_scope() != scope.as_ref() {
+            conn.update(cx, |conn, cx| conn.set_file_scope(scope, cx));
+        }
     }
 
     /// Tells the agent that the user sees the active session, while the
@@ -2234,10 +2260,16 @@ impl Workspace {
             .title
             .clone()
             .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
+        let worktree = info.worktree.as_ref().map_or(String::new(), |w| {
+            format!(
+                " Its worktree and the branch {} are removed too, also changes that were not merged.",
+                w.branch
+            )
+        });
         dialogs::confirm(
             "Delete this session?",
             format!(
-                "\"{title}\" and its whole history will be removed from the agent. This cannot be undone."
+                "\"{title}\" and its whole history will be removed from the agent.{worktree} This cannot be undone."
             ),
             "Delete",
             move |window, cx| {
@@ -2317,7 +2349,7 @@ impl Workspace {
         let session = group.session.clone();
         let origin = group.active_pane;
         let read = conn.read(cx);
-        let client = read.client.clone();
+        let client = read.client_for(&session);
         let backend = read.backend.clone();
         let owner = read.terminal_owner;
         let task = read
@@ -4025,9 +4057,21 @@ impl Workspace {
         });
         let place = format!("{} · {}", agent.entry.remote, agent.entry.workspace);
         let tooltip = SharedString::from(match &session {
-            Some(info) => format!("{place}\n{}", state_label(info.state)),
+            Some(info) => match &info.worktree {
+                Some(worktree) => format!(
+                    "{place}\nWorktree on {} (from {})\n{}",
+                    worktree.branch,
+                    worktree.base,
+                    state_label(info.state)
+                ),
+                None => format!("{place}\n{}", state_label(info.state)),
+            },
             None => place.clone(),
         });
+        let title = match session.as_ref().and_then(|s| s.worktree.as_ref()) {
+            Some(worktree) => format!("{title} · {}", worktree.branch),
+            None => title,
+        };
         let click_conn = conn.clone();
         let click_session = session.clone();
         let host_ix = agent.host_ix;
@@ -4231,6 +4275,13 @@ impl Workspace {
                             "New session in this workspace",
                             Rc::new(move |ws, window, cx| ws.new_session(c.clone(), window, cx)),
                         ));
+                        let c = conn.clone();
+                        menu = menu.item(item(
+                            "New session in a worktree…",
+                            Rc::new(move |ws, window, cx| {
+                                ws.new_worktree_session(c.clone(), window, cx)
+                            }),
+                        ));
                         if let Some(info) = &session {
                             let (c, i) = (conn.clone(), info.clone());
                             menu = menu.item(item(
@@ -4253,6 +4304,41 @@ impl Workspace {
                                     ws.show_system_prompt(window, cx);
                                 }),
                             ));
+                            if let Some(worktree) = &info.worktree {
+                                menu = menu.separator();
+                                let (c, i) = (conn.clone(), info.clone());
+                                menu = menu.item(item(
+                                    "Merge worktree…",
+                                    Rc::new(move |ws, window, cx| {
+                                        ws.merge_worktree(c.clone(), i.clone(), window, cx)
+                                    }),
+                                ));
+                                let (c, i) = (conn.clone(), info.clone());
+                                menu = menu.item(item(
+                                    if worktree.pull_request.is_some() {
+                                        "Push to pull request"
+                                    } else {
+                                        "Open pull request…"
+                                    },
+                                    Rc::new(move |ws, window, cx| {
+                                        ws.open_pull_request(c.clone(), i.clone(), window, cx)
+                                    }),
+                                ));
+                                if let Some(url) = worktree.pull_request.clone() {
+                                    menu = menu.item(
+                                        PopupMenuItem::new("View pull request")
+                                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    );
+                                }
+                                let (c, i) = (conn.clone(), info.clone());
+                                menu = menu.item(item(
+                                    "Remove worktree…",
+                                    Rc::new(move |ws, window, cx| {
+                                        ws.remove_worktree(c.clone(), i.clone(), window, cx)
+                                    }),
+                                ));
+                                menu = menu.separator();
+                            }
                             let (c, id, archived) = (conn.clone(), info.id.clone(), info.archived);
                             menu = menu.item(item(
                                 if archived { "Restore" } else { "Archive" },

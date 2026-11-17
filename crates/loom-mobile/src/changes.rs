@@ -228,10 +228,15 @@ fn session_change(change: &changes::FileChange, workspace: Option<&str>) -> Sess
 
 #[uniffi::export]
 impl AgentConnection {
-    /// The workspace's uncommitted changes in git.
-    pub async fn git_changes(self: Arc<Self>) -> Result<GitChanges> {
+    /// The uncommitted changes in git of the workspace, or of the worktree
+    /// of `session`.
+    pub async fn git_changes(self: Arc<Self>, session: Option<String>) -> Result<GitChanges> {
         with_client(&self.shared, move |client| async move {
-            Ok(client.workspace_changes().await?.into())
+            Ok(client
+                .in_session(session.map(SessionId))
+                .workspace_changes()
+                .await?
+                .into())
         })
         .await
     }
@@ -242,9 +247,13 @@ impl AgentConnection {
         self: Arc<Self>,
         path: String,
         old_path: Option<String>,
+        session: Option<String>,
     ) -> Result<DiffView> {
         with_client(&self.shared, move |client| async move {
-            let diff = client.file_diff(&path, old_path.as_deref()).await?;
+            let diff = client
+                .in_session(session.map(SessionId))
+                .file_diff(&path, old_path.as_deref())
+                .await?;
             tokio::task::spawn_blocking(move || {
                 let mut view = DiffView::new(&diff.path, diff_lines(&diff.diff));
                 view.binary = diff.binary;
