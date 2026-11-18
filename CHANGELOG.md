@@ -20,6 +20,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### Changes
 
 - **Tools in the system prompt.** The system prompt no longer lists the names of the tools. The model gets the tools from the `tools` field of the API request.
+- **Branch names in the Android app.** The start screen of the Android app shows the branch of a worktree session after the session's title, as the desktop app does. Before, it showed the branch after the workspace.
 
 ### Fixes
 
