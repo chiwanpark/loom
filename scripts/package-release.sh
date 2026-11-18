@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Packs release binaries built with `cargo build --release --target <target>`
-# into dist/<name>-<version>-<target>.tar.gz, together with the README,
-# license, and notice (and the systemd unit of loom-agent and loom-relay
+# into dist/<name>-<version>-<target>.tar.gz, together with the README, the
+# doc directory, license, and notice (and the systemd unit of loom-agent and loom-relay
 # when they are included, and the desktop entry and icons of loom under
 # share/ when it is).
 #
@@ -41,6 +41,7 @@ for binary in "$@"; do
     fi
 done
 install -m 644 README.md LICENSE NOTICE CHANGELOG.md "$stage/$stem/"
+cp -R doc "$stage/$stem/doc"
 
 mkdir -p dist
 tar -C "$stage" --owner=0 --group=0 --numeric-owner -czf "dist/$stem.tar.gz" "$stem"
