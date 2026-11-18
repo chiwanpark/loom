@@ -109,8 +109,11 @@ If a step fails, the old binaries stay.
 - `loom-agent update` installs the latest release of `loom-agent`.
 - `loom-agent update --check` only tells if a newer release is available. If a newer release is available, the exit status is 1.
 - `loom-agent update --version <version>` installs this release. It can also install an older release.
+- `loom-agent update --restart` restarts the running agents of the replaced binary in place after the update. The agents keep their sessions. If the release is already installed, it restarts the agents of this binary that use a different version.
 
-Running agents keep their old version until you restart them with `loom-agent stop --all`.
+Without `--restart`, running agents keep their old version until you restart them.
+
+Agents of 0.3.0 and older cannot restart in place. Stop them with `loom-agent stop` and start them again.
 
 ### Desktop client
 

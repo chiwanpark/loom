@@ -699,3 +699,91 @@ async fn an_update_restarts_the_agents_of_the_binary_in_place() {
     assert!(server.wait().unwrap().success());
     assert!(other.wait().unwrap().success());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_restart_restarts_the_agents_of_the_binary_in_place() {
+    let env = Env::new();
+    std::fs::create_dir_all(env.config_path().parent().unwrap()).unwrap();
+    std::fs::write(env.config_path(), "allowed_roots:\n- ~/work\n").unwrap();
+    let releases = wiremock::MockServer::start().await;
+    let version = env!("CARGO_PKG_VERSION");
+    serve_release(&releases, version).await;
+    let bin = env.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let copy = bin.join("loom-agent");
+    std::fs::copy(BIN, &copy).unwrap();
+    let mut server = Command::new(&copy);
+    env.apply(&mut server);
+    let mut server = server
+        .args(["serve", "--workspace", "~/work/ws1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut other = env
+        .command(&["serve", "--workspace", "~/work/ws3"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let before = env.wait_for_agents(2).await;
+
+    let target = AgentTarget::Workspace {
+        path: env.ws("ws1"),
+        spawn: false,
+    };
+    let stream = connect_local(&env.registry(), &target, Path::new(BIN))
+        .await
+        .unwrap();
+    let err = loom_client::update_agent_of_protocol(
+        stream,
+        "test",
+        loom_client::proto::PROTOCOL_VERSION,
+        Some("not a version".into()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.api().unwrap().code,
+        loom_client::proto::ErrorCode::BadRequest
+    );
+
+    let mut update = Command::new(&copy);
+    env.apply(&mut update);
+    let output = update
+        .env("LOOM_RELEASES_URL", releases.uri())
+        .args(["update", "--version", version, "--force", "--restart"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Restarting the agent of"), "{stdout}");
+    assert!(std::fs::read_to_string(&copy).unwrap().contains(BIN));
+
+    let find = |agents: &[AgentEntry], ws: &str| {
+        let entry = agents.iter().find(|a| a.workspace == env.ws(ws)).unwrap();
+        (entry.pid, entry.instance.clone())
+    };
+    let mut after = env.ps();
+    for _ in 0..400 {
+        after = env.ps();
+        if after.len() == 2
+            && after.iter().any(|a| a.workspace == env.ws("ws1"))
+            && find(&after, "ws1").1 != find(&before, "ws1").1
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (old, new) = (find(&before, "ws1"), find(&after, "ws1"));
+    assert_eq!(old.0, new.0, "ws1 kept its process");
+    assert_ne!(old.1, new.1, "ws1 started again");
+    assert_eq!(find(&before, "ws3"), find(&after, "ws3"));
+
+    let stopped = env.run(&["stop", "--all"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    assert!(server.wait().unwrap().success());
+    assert!(other.wait().unwrap().success());
+}

@@ -61,12 +61,20 @@ fn update_error(err: UpdateError) -> ApiError {
 }
 
 /// The binary that the process `pid` runs, also after it was replaced.
-fn exe_of(pid: u32) -> Option<PathBuf> {
+pub fn exe_of(pid: u32) -> Option<PathBuf> {
     let link = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
     let text = link.to_str()?;
     Some(PathBuf::from(
         text.strip_suffix(" (deleted)").unwrap_or(text),
     ))
+}
+
+pub fn restarts_on_signal(version: &str) -> bool {
+    version
+        .split_whitespace()
+        .next()
+        .and_then(|v| Version::parse(v).ok())
+        .is_some_and(|v| v >= Version::new(0, 4, 0))
 }
 
 impl LocalSupervisor {
