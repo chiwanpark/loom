@@ -8,6 +8,10 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 - **Allowed directories.** The new `tools.allowed_dirs` setting lists directories outside the workspace. The `read`, `edit`, and `write` tools can read and change the files in these directories. The system prompt tells the model about them. See [Agent configuration](README.md#agent-configuration).
 
+### Fixes
+
+- **Table cells in the Android app.** The Android app showed only one line of text in each table cell and cut the rest. Now long text wraps to more lines, and the app shows all of the text.
+
 ## 0.4.1
 
 ### Fixes
