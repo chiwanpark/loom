@@ -69,6 +69,12 @@ struct UpdateArgs {
     /// Install the release also when it is the version that runs.
     #[arg(long)]
     force: bool,
+    #[arg(
+        long,
+        conflicts_with = "check",
+        help = "Restart the running agents of the replaced binary in place; they keep their sessions"
+    )]
+    restart: bool,
 }
 
 #[derive(Args)]
@@ -385,6 +391,10 @@ async fn update(ctx: &Ctx, args: UpdateArgs) -> anyhow::Result<i32> {
     }
     if release.version == current && !args.force {
         println!("loom-agent {current} is up to date");
+        if args.restart {
+            let path = std::env::current_exe()?;
+            restart_agents(ctx, &path, loom_version::VERSION, false);
+        }
         return Ok(0);
     }
     let dir = install_dir()?;
@@ -400,19 +410,67 @@ async fn update(ctx: &Ctx, args: UpdateArgs) -> anyhow::Result<i32> {
             item.new
         );
     }
-    // Agents report the version they run; name the ones on another.
-    let config = ctx.load().ok();
-    let running = match &config {
-        Some(config) => ctx.registry(config).list().unwrap_or_default(),
-        None => Vec::new(),
-    };
     let version = release.version.to_string();
-    let old = running.iter().filter(|e| e.version != version).count();
-    if old > 0 {
-        println!("{old} running agent(s) have another version. Restart them to use this one:");
-        println!("  loom-agent stop --all");
+    match installed.iter().find(|item| item.binary == "loom-agent") {
+        Some(item) if args.restart => restart_agents(ctx, &item.path, &version, true),
+        _ => {
+            let old = running_agents(ctx)
+                .iter()
+                .filter(|e| e.version != version)
+                .count();
+            if old > 0 {
+                println!(
+                    "{old} running agent(s) have another version. Restart them to use this one:"
+                );
+                println!("  loom-agent update --restart");
+            }
+        }
     }
     Ok(0)
+}
+
+fn running_agents(ctx: &Ctx) -> Vec<AgentEntry> {
+    match ctx.load() {
+        Ok(config) => ctx.registry(&config).list().unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn restart_agents(ctx: &Ctx, path: &std::path::Path, version: &str, replaced: bool) {
+    use loom_agent::supervisor::{RESTART_SIGNAL, exe_of, restarts_on_signal};
+    let mut others = Vec::new();
+    for entry in running_agents(ctx) {
+        if !replaced && entry.version == version {
+            continue;
+        }
+        let signalled = exe_of(entry.pid).as_deref() == Some(path)
+            && restarts_on_signal(&entry.version)
+            && i32::try_from(entry.pid)
+                .is_ok_and(|pid| kill(Pid::from_raw(pid), RESTART_SIGNAL).is_ok());
+        if signalled {
+            println!(
+                "Restarting the agent of {} ({})",
+                entry.workspace.display(),
+                entry.version
+            );
+        } else if entry.version != version {
+            others.push(entry);
+        }
+    }
+    if !others.is_empty() {
+        println!(
+            "{} running agent(s) have another version and cannot restart in place; stop them and start them again:",
+            others.len()
+        );
+        for entry in &others {
+            println!(
+                "  {} ({}), instance {}",
+                entry.workspace.display(),
+                entry.version,
+                entry.instance
+            );
+        }
+    }
 }
 
 async fn pair(ctx: &Ctx, config: &AgentConfig, args: PairArgs) -> anyhow::Result<i32> {

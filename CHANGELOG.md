@@ -4,6 +4,10 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ## Unreleased
 
+### New features
+
+- **Restart after an update.** The new `loom-agent update --restart` option restarts the running agents of the replaced binary in place. The agents keep their sessions. See [Updates](doc/install.md#agent).
+
 ### Fixes
 
 - **Updates of older agents.** The desktop app and the Android app could not update an agent that spoke an older protocol. Now they update the agents of 0.4.0 and later also when the protocol is different. The update no longer needs a connected agent. When a connection fails because the agent is older, the apps tell you how to update it.

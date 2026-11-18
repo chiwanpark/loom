@@ -107,4 +107,4 @@ Changes to `relay`, `socket`, `storage`, `lifecycle`, and `telemetry` apply only
 | `loom-agent clients list \| revoke <label>` | Manages the clients that are paired through a relay. |
 | `loom-agent host [--json]` | Shows the ID and the public key of this host. |
 | `loom-agent config init \| check \| schema \| path \| fetch-telemetry` | Manages the configuration. |
-| `loom-agent update [--check] [--version <version>]` | Updates `loom-agent`. See [Updates](install.md#updates). |
+| `loom-agent update [--check] [--version <version>] [--restart]` | Updates `loom-agent`. See [Updates](install.md#updates). |
