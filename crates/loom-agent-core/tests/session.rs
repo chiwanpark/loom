@@ -90,6 +90,31 @@ async fn a_change_of_model_or_effort_is_reported_before_the_next_response() {
 }
 
 #[tokio::test]
+async fn the_configured_reasoning_effort_applies_until_the_session_picks_one() {
+    let mut config = test_config(PolicyAction::Allow);
+    config.llm.default_reasoning_effort = Some(loom_config::ReasoningEffort::High);
+    let h = Harness::new(config, vec![text("one"), text("two"), text("three")]);
+    let session = h.agent.create_session(None).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "one").await;
+    session.set_reasoning(Some(loom_llm::ReasoningEffort::Low));
+    run_turn(&session, &mut sub, "two").await;
+    session.set_reasoning(None);
+    run_turn(&session, &mut sub, "three").await;
+
+    let efforts: Vec<_> = h.provider.requests().iter().map(|r| r.reasoning).collect();
+    assert_eq!(
+        efforts,
+        [
+            Some(loom_llm::ReasoningEffort::High),
+            Some(loom_llm::ReasoningEffort::Low),
+            Some(loom_llm::ReasoningEffort::High),
+        ]
+    );
+    assert_eq!(session.info().reasoning, None);
+}
+
+#[tokio::test]
 async fn text_turn_streams_and_builds_request() {
     let h = Harness::new(test_config(PolicyAction::Ask), vec![text("Hello there")]);
     std::fs::write(h.workspace.join("AGENTS.md"), "Always answer in haiku.").unwrap();

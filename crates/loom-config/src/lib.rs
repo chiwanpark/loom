@@ -12,10 +12,10 @@ pub use agent::{
     ContextConfig, DEFAULT_WINDOW_TOKENS, EnvironmentConfig, HarmfulConfig, InheritEnvironment,
     InstructionsConfig, LifecycleConfig, LimitsConfig, LlmConfig, LogLevel, LoggingConfig,
     NotesToolConfig, OtlpProtocol, PolicyAction, PolicyConfig, PolicyRule, ProviderSetting,
-    ProvidersConfig, ReadToolConfig, RedactionConfig, RelayConfig, SandboxBackend, SandboxConfig,
-    SearchReasoningEffort, ShellToolConfig, SkillsConfig, SocketConfig, StorageConfig,
-    TasksToolConfig, TelemetryConfig, Temporality, TerminalConfig, ToolsConfig,
-    WebSearchToolConfig, WorktreesConfig, valid_variable_name,
+    ProvidersConfig, ReadToolConfig, ReasoningEffort, RedactionConfig, RelayConfig, SandboxBackend,
+    SandboxConfig, ShellToolConfig, SkillsConfig, SocketConfig, StorageConfig, TasksToolConfig,
+    TelemetryConfig, Temporality, TerminalConfig, ToolsConfig, WebSearchToolConfig,
+    WorktreesConfig, valid_variable_name,
 };
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};

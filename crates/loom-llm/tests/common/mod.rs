@@ -42,6 +42,7 @@ impl Harness {
     pub fn provider(&self, id: &str, settings: Value) -> Arc<dyn LlmProvider> {
         let config = LlmConfig {
             default_model: None,
+            default_reasoning_effort: None,
             providers: ProvidersConfig([(id.to_owned(), Some(settings))].into_iter().collect()),
         };
         ProviderSet::from_config(&config, &self.auth)
