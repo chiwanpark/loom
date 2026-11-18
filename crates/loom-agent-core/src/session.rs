@@ -287,6 +287,15 @@ impl Core {
             None => Err(CoreError::NoModel),
         }
     }
+
+    /// The session's reasoning effort, or else the configured default.
+    fn reasoning(&self, state: &State, runtime: &Runtime) -> Option<ReasoningEffort> {
+        state.reasoning.or(runtime
+            .config
+            .llm
+            .default_reasoning_effort
+            .map(convert::reasoning_from_config))
+    }
 }
 
 impl Session {
@@ -990,7 +999,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         .await?;
         let (messages, reasoning) = {
             let state = core.lock();
-            (state.history.clone(), state.reasoning)
+            (state.history.clone(), core.reasoning(&state, &runtime))
         };
         core.note_model(&model, reasoning);
         let request = CompletionRequest {

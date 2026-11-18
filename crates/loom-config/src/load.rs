@@ -104,6 +104,10 @@ mod tests {
         assert_eq!(config.llm.providers.0.len(), 3);
         assert!(config.llm.default_model.is_some());
         assert_eq!(
+            config.llm.default_reasoning_effort,
+            Some(crate::ReasoningEffort::High)
+        );
+        assert_eq!(
             config.skills.paths,
             [PathBuf::from("/home/u/shared-skills")]
         );

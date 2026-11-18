@@ -4,13 +4,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use loom_config::{SearchReasoningEffort, WebSearchToolConfig};
-use loom_llm::{
-    Auth, Freshness, ReasoningEffort, WebSearch, WebSearchQuery, WebSearchResult, WebSearchSettings,
-};
+use loom_config::WebSearchToolConfig;
+use loom_llm::{Auth, Freshness, WebSearch, WebSearchQuery, WebSearchResult, WebSearchSettings};
 use loom_tools::{Risk, Tool, ToolContext, ToolDetails, ToolError, ToolOutput, ToolSpec};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::convert;
 
 pub const SEARCH_WEB_TOOL: &str = "search_web";
 const SIGN_IN: &str = "sign in to OpenAI Codex (openai-codex) to search the web";
@@ -36,17 +36,6 @@ struct Args {
     freshness: Option<Freshness>,
 }
 
-fn reasoning(effort: SearchReasoningEffort) -> ReasoningEffort {
-    match effort {
-        SearchReasoningEffort::None => ReasoningEffort::None,
-        SearchReasoningEffort::Minimal => ReasoningEffort::Minimal,
-        SearchReasoningEffort::Low => ReasoningEffort::Low,
-        SearchReasoningEffort::Medium => ReasoningEffort::Medium,
-        SearchReasoningEffort::High => ReasoningEffort::High,
-        SearchReasoningEffort::Xhigh => ReasoningEffort::Xhigh,
-    }
-}
-
 impl SearchWebTool {
     pub fn new(config: &WebSearchToolConfig, auth: &Auth) -> Self {
         let search = WebSearch::new(
@@ -54,7 +43,7 @@ impl SearchWebTool {
             WebSearchSettings {
                 model: config.model.trim().to_owned(),
                 endpoint: config.endpoint.clone(),
-                reasoning: config.reasoning_effort.map(reasoning),
+                reasoning: config.reasoning_effort.map(convert::reasoning_from_config),
             },
         );
         Self {

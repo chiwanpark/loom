@@ -110,6 +110,7 @@ impl ProviderSet {
     pub fn from_config(config: &LlmConfig, auth: &Auth) -> Result<Self> {
         validate_config(&LlmConfig {
             default_model: None,
+            default_reasoning_effort: None,
             providers: config.providers.clone(),
         })?;
         let mut set = Self::default();
@@ -173,6 +174,7 @@ mod tests {
     fn llm(providers: &[(&str, Option<Value>)], default_model: Option<&str>) -> LlmConfig {
         LlmConfig {
             default_model: default_model.map(str::to_owned),
+            default_reasoning_effort: None,
             providers: ProvidersConfig(
                 providers
                     .iter()

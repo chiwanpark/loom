@@ -10,6 +10,7 @@ use wiremock::{Mock, ResponseTemplate};
 fn config(entries: Vec<(&str, Option<Value>)>) -> LlmConfig {
     LlmConfig {
         default_model: None,
+        default_reasoning_effort: None,
         providers: ProvidersConfig(
             entries
                 .into_iter()

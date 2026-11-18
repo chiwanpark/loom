@@ -206,6 +206,19 @@ pub fn reasoning_from_proto(effort: loom_proto::ReasoningEffort) -> loom_llm::Re
     }
 }
 
+pub fn reasoning_from_config(effort: loom_config::ReasoningEffort) -> loom_llm::ReasoningEffort {
+    use loom_config::ReasoningEffort as C;
+    use loom_llm::ReasoningEffort as L;
+    match effort {
+        C::None => L::None,
+        C::Minimal => L::Minimal,
+        C::Low => L::Low,
+        C::Medium => L::Medium,
+        C::High => L::High,
+        C::Xhigh => L::Xhigh,
+    }
+}
+
 pub fn policy_to_proto(action: loom_config::PolicyAction) -> loom_proto::PolicyAction {
     match action {
         loom_config::PolicyAction::Allow => loom_proto::PolicyAction::Allow,
