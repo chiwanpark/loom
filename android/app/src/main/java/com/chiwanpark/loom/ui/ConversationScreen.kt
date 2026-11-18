@@ -119,6 +119,8 @@ import com.mikepenz.markdown.compose.elements.MarkdownCodeBackground
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.compose.elements.MarkdownTable
+import com.mikepenz.markdown.compose.elements.MarkdownTableHeader
+import com.mikepenz.markdown.compose.elements.MarkdownTableRow
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.MarkdownTypography
@@ -725,7 +727,33 @@ private val answerComponents: MarkdownComponents = markdownComponents(
     },
     table = { model ->
         Column(Modifier.fillMaxWidth()) {
-            MarkdownTable(model.content, model.node, style = model.typography.table)
+            MarkdownTable(
+                model.content,
+                model.node,
+                style = model.typography.table,
+                headerBlock = { content, header, tableWidth, style ->
+                    MarkdownTableHeader(
+                        content = content,
+                        header = header,
+                        tableWidth = tableWidth,
+                        style = style,
+                        verticalAlignment = Alignment.Top,
+                        maxLines = Int.MAX_VALUE,
+                        overflow = TextOverflow.Clip,
+                    )
+                },
+                rowBlock = { content, row, tableWidth, style ->
+                    MarkdownTableRow(
+                        content = content,
+                        header = row,
+                        tableWidth = tableWidth,
+                        style = style,
+                        verticalAlignment = Alignment.Top,
+                        maxLines = Int.MAX_VALUE,
+                        overflow = TextOverflow.Clip,
+                    )
+                },
+            )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 CopyButton(model.node.getTextInNode(model.content).toString(), "Copy table")
             }

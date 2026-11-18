@@ -21,6 +21,10 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 - **Tools in the system prompt.** The system prompt no longer lists the names of the tools. The model gets the tools from the `tools` field of the API request.
 
+### Fixes
+
+- **Table cells in the Android app.** The Android app showed only one line of text in each table cell and cut the rest. Now long text wraps to more lines, and the app shows all of the text.
+
 ## 0.4.1
 
 ### Fixes
