@@ -71,6 +71,7 @@ object LoomIcons {
     val MessageSquareCode = Lucide.drawable.lucide_ic_message_square_code
     val More = Lucide.drawable.lucide_ic_ellipsis_vertical
     val Notes = Lucide.drawable.lucide_ic_notebook_pen
+    val Palette = Lucide.drawable.lucide_ic_palette
     val Pencil = Lucide.drawable.lucide_ic_pencil
     val Plug = Lucide.drawable.lucide_ic_plug
     val Plus = Lucide.drawable.lucide_ic_plus

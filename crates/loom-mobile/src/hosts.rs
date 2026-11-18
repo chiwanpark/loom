@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 use loom_client::proto::InstanceId;
 use loom_client::{Client, ClientIdentity, RelayHost, pair_with_uri};
 use loom_crypto::{CLIENT_IDENTITY_FILE, decode_key, encode_key};
+use loom_view_model::host_colors;
 
 use crate::agent::AgentConnection;
 use crate::error::{LoomError, Result};
-use crate::records::{Agent, Host, PushNotice};
+use crate::records::{Agent, Host, HostColor, PushNotice};
 use crate::runtime::run;
 
 /// The name the core gives itself when it connects to an agent.
@@ -71,10 +72,12 @@ impl Loom {
             host_id: relay.host.to_string(),
             host_key: relay.host_key_text(),
             instance: Some(instance.to_string()),
+            color: None,
         };
         let mut hosts = self.lock();
         if let Some(known) = hosts.iter_mut().find(|h| h.host_id == host.host_id) {
             host.name = known.name.clone();
+            host.color = known.color.clone();
             *known = host.clone();
         } else {
             host.name = unique_name(&hosts, &host.name, &host.host_id);
@@ -96,6 +99,33 @@ impl Loom {
             )));
         }
         host_mut(&mut hosts, &name)?.name = new_name;
+        save_hosts(&self.dir, &hosts)
+    }
+
+    /// The colors to offer for hosts.
+    pub fn host_palette(&self) -> Vec<HostColor> {
+        host_colors::PALETTE
+            .iter()
+            .map(|(name, color)| HostColor {
+                name: (*name).to_owned(),
+                color: (*color).to_owned(),
+            })
+            .collect()
+    }
+
+    /// Sets the color that marks a host's sessions, as `#rrggbb`; `None`
+    /// takes it away.
+    pub fn set_host_color(&self, name: String, color: Option<String>) -> Result<()> {
+        let color = color.map(|c| c.trim().to_ascii_lowercase());
+        if let Some(color) = &color
+            && host_colors::parse(color).is_none()
+        {
+            return Err(LoomError::invalid(format!(
+                "{color} is not a #rrggbb color"
+            )));
+        }
+        let mut hosts = self.lock();
+        host_mut(&mut hosts, &name)?.color = color;
         save_hosts(&self.dir, &hosts)
     }
 
@@ -275,6 +305,7 @@ mod tests {
             host_id: id.into(),
             host_key: "k".into(),
             instance: None,
+            color: None,
         }
     }
 
@@ -311,5 +342,36 @@ mod tests {
         again.remove_host("lab".into()).unwrap();
         assert!(again.hosts().is_empty());
         assert!(again.remove_host("lab".into()).is_err());
+    }
+
+    #[test]
+    fn host_colors_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        // Hosts saved before hosts had colors.
+        std::fs::write(
+            dir.path().join(HOSTS_FILE),
+            r#"[{"name":"box","relay_url":"wss://relay","host_id":"a","host_key":"k","instance":null}]"#,
+        )
+        .unwrap();
+        let loom = Loom::new(path.clone()).unwrap();
+        assert_eq!(loom.hosts(), [host("box", "a")]);
+        assert!(
+            loom.set_host_color("box".into(), Some("blue".into()))
+                .is_err()
+        );
+        assert!(
+            loom.set_host_color("nope".into(), Some("#3b82f6".into()))
+                .is_err()
+        );
+        loom.set_host_color("box".into(), Some("#3B82F6".into()))
+            .unwrap();
+        let again = Loom::new(path).unwrap();
+        assert_eq!(again.hosts()[0].color.as_deref(), Some("#3b82f6"));
+        again.rename_host("box".into(), "lab".into()).unwrap();
+        assert_eq!(again.hosts()[0].color.as_deref(), Some("#3b82f6"));
+        again.set_host_color("lab".into(), None).unwrap();
+        assert_eq!(again.hosts(), [host("lab", "a")]);
+        assert_eq!(again.host_palette().len(), host_colors::PALETTE.len());
     }
 }

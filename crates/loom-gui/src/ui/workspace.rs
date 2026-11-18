@@ -7,7 +7,7 @@ use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AsyncWindowContext, ClickEvent, Context,
     DefiniteLength, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, actions, div, img,
+    StatefulInteractiveElement, Styled, StyledText, Subscription, Window, actions, div, img,
     prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
@@ -23,6 +23,7 @@ use loom_client::proto::{
     SessionId, SessionInfo, TerminalHolder, WorkspaceChanges,
 };
 use loom_config::{ClientConfig, HostEntry};
+use loom_view_model::host_colors;
 
 use crate::agent_list::{self, AgentEntry, Group, Link};
 use crate::backend::Backend;
@@ -3000,10 +3001,37 @@ impl Workspace {
 
     fn remove_host(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix < self.hosts.len() {
-            self.hosts.remove(ix);
+            let host = self.hosts.remove(ix);
+            self.config.appearance.host_colors.remove(host.entry.name());
             self.save_config(window, cx);
             cx.notify();
         }
+    }
+
+    /// The color that marks the sessions of the host named `host`.
+    fn host_color(&self, host: &str) -> Option<gpui::Hsla> {
+        let color = self.config.appearance.host_colors.get(host)?;
+        host_colors::parse(color).map(|rgb| gpui::rgb(rgb).into())
+    }
+
+    fn set_host_color(
+        &mut self,
+        ix: usize,
+        color: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.hosts.get(ix) else {
+            return;
+        };
+        let name = host.entry.name().to_owned();
+        let colors = &mut self.config.appearance.host_colors;
+        match color {
+            Some(color) => colors.insert(name, color),
+            None => colors.remove(&name),
+        };
+        self.save_config(window, cx);
+        cx.notify();
     }
 
     fn on_toggle_sessions(&mut self, _: &ToggleSessions, _: &mut Window, cx: &mut Context<Self>) {
@@ -4283,6 +4311,13 @@ impl Workspace {
             Some(worktree) => format!("{title} · {}", worktree.branch),
             None => title,
         };
+        let place = match self.host_color(&agent.entry.remote) {
+            Some(color) => StyledText::new(place).with_highlights([(
+                0..agent.entry.remote.len(),
+                gpui::HighlightStyle::color(color),
+            )]),
+            None => StyledText::new(place),
+        };
         let click_conn = conn.clone();
         let click_session = info.clone();
         h_flex()
@@ -4662,6 +4697,50 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The button that picks the color that marks a host's sessions.
+    fn render_host_color_menu(&self, hix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let workspace = cx.entity().downgrade();
+        let current = self
+            .hosts
+            .get(hix)
+            .and_then(|h| self.config.appearance.host_colors.get(h.entry.name()))
+            .and_then(|c| host_colors::parse(c));
+        Button::new(("host-color", hix))
+            .ghost()
+            .xsmall()
+            .icon(gpui_kit_assets::IconName::Palette)
+            .tooltip("Color of this host's sessions")
+            .dropdown_menu(move |mut menu, _, _| {
+                let pick = |color: Option<&str>| {
+                    let workspace = workspace.clone();
+                    let color = color.map(str::to_owned);
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        let _ = workspace.update(cx, |ws, cx| {
+                            ws.set_host_color(hix, color.clone(), window, cx)
+                        });
+                    }
+                };
+                for (label, hex) in host_colors::PALETTE {
+                    let rgb = host_colors::parse(hex).unwrap_or_default();
+                    let swatch: gpui::Hsla = gpui::rgb(rgb).into();
+                    let item = PopupMenuItem::element(move |_, _| {
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().size(px(10.)).rounded_full().bg(swatch))
+                            .child(label)
+                    });
+                    menu = menu.item(item.checked(current == Some(rgb)).on_click(pick(Some(hex))));
+                }
+                menu.separator().item(
+                    PopupMenuItem::new("None")
+                        .checked(current.is_none())
+                        .on_click(pick(None)),
+                )
+            })
+            .into_any_element()
+    }
+
     /// The configured hosts, with their agents, discovery errors, and
     /// actions.
     fn render_remotes(&self, agents: &[PanelAgent], cx: &mut Context<Self>) -> AnyElement {
@@ -4682,6 +4761,7 @@ impl Workspace {
                 HostEntry::Relay { .. } => "relay".to_owned(),
             };
             let count = host.agents.len();
+            let color = self.host_color(host.entry.name());
             section = section.child(
                 v_flex()
                     .w_full()
@@ -4699,7 +4779,11 @@ impl Workspace {
                                     .text_ellipsis()
                                     .whitespace_nowrap()
                                     .text_sm()
-                                    .child(host.entry.name().to_owned())
+                                    .child(
+                                        div()
+                                            .when_some(color, |el, color| el.text_color(color))
+                                            .child(host.entry.name().to_owned()),
+                                    )
                                     .child(
                                         div()
                                             .ml_1()
@@ -4734,6 +4818,7 @@ impl Workspace {
                                         this.new_session_dialog(hix, window, cx);
                                     })),
                             )
+                            .child(self.render_host_color_menu(hix, cx))
                             .child(
                                 Button::new(("update-agents", hix))
                                     .ghost()
@@ -6307,6 +6392,29 @@ mod tests {
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();
         assert!(right(cx) == (true, RightTab::Sessions));
+    }
+
+    #[gpui::test]
+    fn host_colors_are_saved_and_go_with_their_host(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, _conn, cx) = connected(&agent, cx);
+        let saved = |cx: &mut VisualTestContext| {
+            let path = ws.read_with(cx, |ws, _| ws.config_path.clone());
+            ClientConfig::load(&path).unwrap().appearance.host_colors
+        };
+        ws.update_in(cx, |ws, window, cx| {
+            ws.set_host_color(0, Some("#3b82f6".into()), window, cx);
+            assert_eq!(ws.host_color("local"), Some(gpui::rgb(0x3b82f6).into()));
+            assert_eq!(ws.host_color("other"), None);
+        });
+        assert_eq!(saved(cx).get("local").map(String::as_str), Some("#3b82f6"));
+        ws.update_in(cx, |ws, window, cx| {
+            ws.set_host_color(0, None, window, cx);
+            ws.set_host_color(0, Some("#22c55e".into()), window, cx);
+            ws.remove_host(0, window, cx);
+            assert_eq!(ws.host_color("local"), None);
+        });
+        assert!(saved(cx).is_empty());
     }
 
     /// The Changes panel lists the commits that the upstream branch does
