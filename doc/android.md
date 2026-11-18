@@ -81,8 +81,10 @@ The row above the prompt box shows the context used. It also lets you select the
 
 - The model.
 - The reasoning effort.
-- The action for tool calls that no policy rule matches: ask, allow, allow harmful, deny, or the default of the agent. See [Policy and harmful tool calls](policy.md).
+- The action for tool calls that no policy rule matches: ask, allow, allow harmful, or deny. See [Policy and harmful tool calls](policy.md).
 - The [comment guard](comment-guard.md).
+
+A new session uses the defaults of the agent, and the row shows their values. For example, if the agent has `llm.default_reasoning_effort: high`, the row shows **High**. If no reasoning effort is set, the row shows **Model default**.
 
 ### Start a session
 

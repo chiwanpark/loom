@@ -505,10 +505,10 @@ pub struct ConversationUpdate {
     pub activity: Option<Activity>,
     pub model: Option<String>,
     pub reasoning: Option<Reasoning>,
-    /// The session's own default for tool calls no rule matches; none
-    /// follows the agent's configuration.
-    pub policy: Option<Policy>,
-    pub comment_guard: Option<bool>,
+    /// What happens to tool calls no rule matches: the session's own
+    /// choice, or else the agent's default.
+    pub policy: Policy,
+    pub comment_guard: bool,
     /// Tokens in the context after the last response.
     pub context_tokens: Option<u64>,
     pub pending_approvals: u32,
@@ -549,7 +549,7 @@ impl ConversationUpdate {
             activity: conversation.activity().map(Activity::from),
             model: conversation.info.model.clone(),
             reasoning: conversation.info.reasoning.map(Reasoning::from),
-            policy: conversation.info.policy_default.map(Policy::from),
+            policy: conversation.info.policy_default.into(),
             comment_guard: conversation.info.comment_guard,
             context_tokens: conversation.last_usage.map(|u| u.context_tokens()),
             pending_approvals: conversation.pending_approvals().count() as u32,

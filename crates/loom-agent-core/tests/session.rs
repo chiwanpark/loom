@@ -111,7 +111,10 @@ async fn the_configured_reasoning_effort_applies_until_the_session_picks_one() {
             Some(loom_llm::ReasoningEffort::High),
         ]
     );
-    assert_eq!(session.info().reasoning, None);
+    assert_eq!(
+        session.info().reasoning,
+        Some(loom_proto::ReasoningEffort::High)
+    );
 }
 
 #[tokio::test]
@@ -404,9 +407,10 @@ async fn the_comment_guard_follows_the_session_setting() {
     assert!(results[0].0.contains("a.rs:1: // Why."), "{}", results[0].0);
     assert!(!h.workspace.join("a.rs").exists());
     assert!(prompt().contains("# Comments"));
+    assert!(session.info().comment_guard);
 
     session.set_comment_guard(Some(false));
-    assert_eq!(session.info().comment_guard, Some(false));
+    assert!(!session.info().comment_guard);
     let events = run_turn(&session, &mut sub, "write").await;
     assert!(!finished_results(&events)[0].1);
     assert!(h.workspace.join("a.rs").exists());

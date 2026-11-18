@@ -1169,15 +1169,14 @@ private fun ModelDialog(link: AgentLink, current: String?, onPick: (String?) -> 
 }
 
 @Composable
-private fun ReasoningDialog(current: Reasoning?, onPick: (Reasoning?) -> Unit, onDismiss: () -> Unit) {
-    val choices = listOf<Reasoning?>(null) + Reasoning.entries
+private fun ReasoningDialog(current: Reasoning?, onPick: (Reasoning) -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Reasoning effort") },
         text = {
             Column {
-                choices.forEach { choice ->
-                    ChoiceRow(choice?.let(::reasoningLabel) ?: "Default", null, selected = current == choice) {
+                Reasoning.entries.forEach { choice ->
+                    ChoiceRow(reasoningLabel(choice), null, selected = current == choice) {
                         onDismiss()
                         onPick(choice)
                     }
@@ -1190,8 +1189,8 @@ private fun ReasoningDialog(current: Reasoning?, onPick: (Reasoning?) -> Unit, o
 
 /** What the session does with tool calls that no policy rule in the agent's configuration matches. */
 @Composable
-private fun PolicyDialog(current: Policy?, onPick: (Policy?) -> Unit, onDismiss: () -> Unit) {
-    val choices = listOf<Policy?>(null, Policy.ASK, Policy.ALLOW, Policy.ALLOW_HARMFUL, Policy.DENY)
+private fun PolicyDialog(current: Policy?, onPick: (Policy) -> Unit, onDismiss: () -> Unit) {
+    val choices = listOf(Policy.ASK, Policy.ALLOW, Policy.ALLOW_HARMFUL, Policy.DENY)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Tool calls") },
@@ -1214,16 +1213,14 @@ private fun PolicyDialog(current: Policy?, onPick: (Policy?) -> Unit, onDismiss:
     )
 }
 
-fun policyLabel(policy: Policy?): String = when (policy) {
-    null -> "Default"
+fun policyLabel(policy: Policy): String = when (policy) {
     Policy.ASK -> "Ask"
     Policy.ALLOW -> "Allow"
     Policy.ALLOW_HARMFUL -> "Allow harmful"
     Policy.DENY -> "Deny"
 }
 
-private fun policyDetail(policy: Policy?): String = when (policy) {
-    null -> "As the agent's configuration says"
+private fun policyDetail(policy: Policy): String = when (policy) {
     Policy.ASK -> "Wait for your approval"
     Policy.ALLOW -> "Run them without asking, but ask for calls that may be harmful"
     Policy.ALLOW_HARMFUL -> "Run all of them without asking"
@@ -1231,8 +1228,8 @@ private fun policyDetail(policy: Policy?): String = when (policy) {
 }
 
 @Composable
-private fun CommentGuardDialog(current: Boolean?, onPick: (Boolean?) -> Unit, onDismiss: () -> Unit) {
-    val choices = listOf<Boolean?>(null, true, false)
+private fun CommentGuardDialog(current: Boolean?, onPick: (Boolean) -> Unit, onDismiss: () -> Unit) {
+    val choices = listOf(true, false)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Comment guard") },
@@ -1255,14 +1252,12 @@ private fun CommentGuardDialog(current: Boolean?, onPick: (Boolean?) -> Unit, on
     )
 }
 
-fun commentGuardLabel(enabled: Boolean?): String = when (enabled) {
-    null -> "Default"
+fun commentGuardLabel(enabled: Boolean): String = when (enabled) {
     true -> "On"
     false -> "Off"
 }
 
-private fun commentGuardDetail(enabled: Boolean?): String = when (enabled) {
-    null -> "As the agent's configuration says"
+private fun commentGuardDetail(enabled: Boolean): String = when (enabled) {
     true -> "Stop new comments, but allow changes to existing comments"
     false -> "Allow all comments"
 }
@@ -1317,22 +1312,26 @@ private fun SessionInfo(
             )
             InfoItem(
                 LoomIcons.Brain,
-                reasoning?.let(::reasoningLabel) ?: "Default",
+                reasoning?.let(::reasoningLabel) ?: "Model default",
                 description = "Reasoning effort",
                 onClick = onReasoning.takeIf { enabled },
             )
-            InfoItem(
-                LoomIcons.ShieldCheck,
-                policyLabel(policy),
-                description = "Tool calls without a rule",
-                onClick = onPolicy.takeIf { enabled },
-            )
-            InfoItem(
-                LoomIcons.MessageSquareCode,
-                commentGuardLabel(commentGuard),
-                description = "Comment guard",
-                onClick = onCommentGuard.takeIf { enabled },
-            )
+            policy?.let {
+                InfoItem(
+                    LoomIcons.ShieldCheck,
+                    policyLabel(it),
+                    description = "Tool calls without a rule",
+                    onClick = onPolicy.takeIf { enabled },
+                )
+            }
+            commentGuard?.let {
+                InfoItem(
+                    LoomIcons.MessageSquareCode,
+                    commentGuardLabel(it),
+                    description = "Comment guard",
+                    onClick = onCommentGuard.takeIf { enabled },
+                )
+            }
         }
         contextTokens?.let { InfoItem(LoomIcons.Gauge, formatTokens(it), description = "Context used", onClick = null) }
     }

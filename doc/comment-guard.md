@@ -39,4 +39,4 @@ You can turn the guard on or off for one session:
 - In the desktop app, use **Comment guard** in the status bar.
 - In the Android app, use the comment guard item in the row above the prompt box.
 
-**Default** uses the `mode` of `agent.yaml`. If `mode` is `off`, **On** uses `block`.
+A session uses the `mode` of `agent.yaml` until you select **On** or **Off**. The status bar and the row show the value that the session uses. If `mode` is `off`, **On** uses `block`.

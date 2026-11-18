@@ -739,7 +739,7 @@ impl SessionView {
                         let view = menu_view.clone();
                         menu = menu.item(
                             PopupMenuItem::new(label)
-                                .checked(value == current)
+                                .checked(Some(value) == current)
                                 .on_click(move |_, _, cx| {
                                     let _ = view.update(cx, |this, cx| {
                                         let session = this.session_id(cx);

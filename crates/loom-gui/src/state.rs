@@ -632,39 +632,29 @@ impl AgentConnection {
     pub fn set_reasoning(
         &mut self,
         id: SessionId,
-        effort: Option<ReasoningEffort>,
+        effort: ReasoningEffort,
         cx: &mut Context<Self>,
     ) {
         let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.set_reasoning(&id, effort).await });
+            .run(async move { client.set_reasoning(&id, Some(effort)).await });
         self.apply_info(task, cx);
     }
 
-    pub fn set_policy(
-        &mut self,
-        id: SessionId,
-        default: Option<PolicyAction>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_policy(&mut self, id: SessionId, default: PolicyAction, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.set_policy(&id, default).await });
+            .run(async move { client.set_policy(&id, Some(default)).await });
         self.apply_info(task, cx);
     }
 
-    pub fn set_comment_guard(
-        &mut self,
-        id: SessionId,
-        enabled: Option<bool>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_comment_guard(&mut self, id: SessionId, enabled: bool, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.set_comment_guard(&id, enabled).await });
+            .run(async move { client.set_comment_guard(&id, Some(enabled)).await });
         self.apply_info(task, cx);
     }
 

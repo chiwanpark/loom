@@ -13,7 +13,7 @@ use crate::session::{
     SessionId, SessionInfo, ToolCallId, UsageSoFar, WorktreeOptions, WorktreeStatus,
 };
 
-pub const PROTOCOL_VERSION: u16 = 19;
+pub const PROTOCOL_VERSION: u16 = 20;
 pub const UPDATE_PROTOCOL_MIN: u16 = 15;
 
 pub type RequestId = u64;

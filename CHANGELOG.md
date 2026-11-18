@@ -4,9 +4,18 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ## Unreleased
 
+### Upgrade notes
+
+- The protocol version is now 20. Clients and agents of 0.5.0 (protocol 19) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+
 ### New features
 
 - **Restart after an update.** The new `loom-agent update --restart` option restarts the running agents of the replaced binary in place. The agents keep their sessions. See [Updates](doc/install.md#agent).
+
+### Changes
+
+- **Session settings show their values.** The desktop app and the Android app showed **Default** for the reasoning effort, the tool call action, and the comment guard of a new session. Now they show the values that the session uses. These values come from the configuration of the agent. For example, if `llm.default_reasoning_effort` is `high`, the apps show **High**. If no effort is set, the apps show **Model default**. The menus no longer have the **Default** item.
+- **Configuration reload.** When the defaults of the agent change, the apps show the new values for the sessions that use them.
 
 ### Fixes
 

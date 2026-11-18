@@ -102,6 +102,48 @@ async fn reloads_config_from_disk() {
     assert_eq!(h.agent.config().policy.default, PolicyAction::Deny);
 }
 
+#[tokio::test]
+async fn session_info_follows_the_configured_defaults() {
+    let probe = tempfile::tempdir().unwrap();
+    let dirs = common::dirs_in(probe.path());
+    let config = AgentConfig::parse(BASE, "agent.yaml", &dirs).unwrap();
+    let h = Harness::new(config.clone(), vec![]);
+    let session = h.agent.create_session(None).unwrap();
+    let own = h.agent.create_session(None).unwrap();
+    own.set_policy_default(Some(PolicyAction::Deny));
+    own.set_comment_guard(Some(true));
+    own.set_reasoning(Some(loom_llm::ReasoningEffort::Low));
+
+    let info = session.info();
+    assert_eq!(info.reasoning, None);
+    assert_eq!(info.policy_default, loom_proto::PolicyAction::Ask);
+    assert!(info.comment_guard);
+
+    let mut notices = h.agent.notices();
+    let mut next = config;
+    next.llm.default_reasoning_effort = Some(loom_config::ReasoningEffort::High);
+    next.policy.default = PolicyAction::Allow;
+    next.tools.comment_guard.mode = loom_config::CommentGuardMode::Off;
+    h.agent.apply_config(next).unwrap();
+
+    let info = session.info();
+    assert_eq!(info.reasoning, Some(loom_proto::ReasoningEffort::High));
+    assert_eq!(info.policy_default, loom_proto::PolicyAction::Allow);
+    assert!(!info.comment_guard);
+    let own_info = own.info();
+    assert_eq!(own_info.reasoning, Some(loom_proto::ReasoningEffort::Low));
+    assert_eq!(own_info.policy_default, loom_proto::PolicyAction::Deny);
+    assert!(own_info.comment_guard);
+
+    let mut updated = Vec::new();
+    while let Ok(notice) = notices.try_recv() {
+        if let AgentNotice::SessionUpdated(update) = notice {
+            updated.push(*update);
+        }
+    }
+    assert_eq!(updated, vec![info]);
+}
+
 /// An agent that knows the file its configuration came from.
 fn agent_with_file(h: &Harness, path: &Path) -> loom_agent_core::Agent {
     let config = AgentConfig::load(path, &h.dirs).unwrap();

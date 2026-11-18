@@ -559,22 +559,14 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
         "{prompt:?}"
     );
 
-    // The session's own default for tool calls reaches the conversation.
-    assert_eq!(app.last.as_ref().unwrap().policy, None);
+    // The agent's default for tool calls reaches the conversation, and then the session's own.
+    assert_eq!(app.last.as_ref().unwrap().policy, Policy::Ask);
     conn.clone()
-        .set_policy(session.id.clone(), Some(Policy::Allow))
+        .set_policy(session.id.clone(), Policy::Allow)
         .await
         .unwrap();
     app.until(&conn, "the session's policy", |app| {
-        app.last.as_ref().unwrap().policy == Some(Policy::Allow)
-    })
-    .await;
-    conn.clone()
-        .set_policy(session.id.clone(), None)
-        .await
-        .unwrap();
-    app.until(&conn, "the agent's policy", |app| {
-        app.last.as_ref().unwrap().policy.is_none()
+        app.last.as_ref().unwrap().policy == Policy::Allow
     })
     .await;
 
