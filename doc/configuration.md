@@ -58,7 +58,7 @@ llm:
       models: [qwen3-coder]
 ```
 
-`llm.default_reasoning_effort` sets the reasoning effort of sessions that do not have an effort. The values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If you do not set it, the model uses its own default. When you select **Default** as the effort of a session, the session uses this setting.
+`llm.default_reasoning_effort` sets the reasoning effort of sessions that do not have an effort. The values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If you do not set it, the model uses its own default, and the apps show **Model default**. The apps show the effort that each session uses. An effort that you select for a session replaces this setting.
 
 ### Tools
 

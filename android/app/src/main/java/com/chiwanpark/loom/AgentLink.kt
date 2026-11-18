@@ -71,7 +71,7 @@ class ConversationState(val session: String) {
     var model by mutableStateOf<String?>(null)
     var reasoning by mutableStateOf<Reasoning?>(null)
 
-    /** The session's own default for tool calls no rule matches; null follows the agent's configuration. */
+    /** What happens to tool calls no rule matches: the session's own choice, or else the agent's default; null until the first update. */
     var policy by mutableStateOf<Policy?>(null)
     var commentGuard by mutableStateOf<Boolean?>(null)
     var contextTokens by mutableStateOf<ULong?>(null)

@@ -947,11 +947,11 @@ impl AgentConnection {
     pub async fn set_reasoning(
         self: Arc<Self>,
         session: String,
-        reasoning: Option<Reasoning>,
+        reasoning: Reasoning,
     ) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
-                .set_reasoning(&session_id(session), reasoning.map(Into::into))
+                .set_reasoning(&session_id(session), Some(reasoning.into()))
                 .await?)
         })
         .await?;
@@ -961,15 +961,11 @@ impl AgentConnection {
     }
 
     /// Sets what happens to the session's tool calls that no policy rule
-    /// matches; none follows the agent's configuration again.
-    pub async fn set_policy(
-        self: Arc<Self>,
-        session: String,
-        policy: Option<Policy>,
-    ) -> Result<()> {
+    /// matches.
+    pub async fn set_policy(self: Arc<Self>, session: String, policy: Policy) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
-                .set_policy(&session_id(session), policy.map(Into::into))
+                .set_policy(&session_id(session), Some(policy.into()))
                 .await?)
         })
         .await?;
@@ -978,14 +974,10 @@ impl AgentConnection {
         Ok(())
     }
 
-    pub async fn set_comment_guard(
-        self: Arc<Self>,
-        session: String,
-        enabled: Option<bool>,
-    ) -> Result<()> {
+    pub async fn set_comment_guard(self: Arc<Self>, session: String, enabled: bool) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
-                .set_comment_guard(&session_id(session), enabled)
+                .set_comment_guard(&session_id(session), Some(enabled))
                 .await?)
         })
         .await?;

@@ -275,7 +275,7 @@ async fn approvals_round_trip_through_the_client() {
         .set_policy(&session.id, Some(PolicyAction::Ask))
         .await
         .unwrap();
-    assert_eq!(info.policy_default, Some(PolicyAction::Ask));
+    assert_eq!(info.policy_default, PolicyAction::Ask);
     client.send_text(&session.id, "write it").await.unwrap();
     let call_id = loop {
         if let (_, _, SessionEvent::ApprovalRequired { call_id, .. }) = next_event(&mut notes).await

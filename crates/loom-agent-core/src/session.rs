@@ -296,6 +296,19 @@ impl Core {
             .default_reasoning_effort
             .map(convert::reasoning_from_config))
     }
+
+    fn comment_guard(&self, state: &State, runtime: &Runtime) -> bool {
+        state
+            .comment_guard
+            .unwrap_or(runtime.config.tools.comment_guard.mode != CommentGuardMode::Off)
+    }
+
+    fn policy_default(&self, state: &State, runtime: &Runtime) -> PolicyAction {
+        state
+            .policy
+            .default
+            .unwrap_or(runtime.config.policy.default)
+    }
 }
 
 impl Session {
@@ -422,13 +435,14 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
+        let runtime = self.core.runtime.current();
         let (model, reasoning, policy_default, comment_guard, title, archived, worktree) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
-                state.reasoning,
-                state.policy.default,
-                state.comment_guard,
+                self.core.reasoning(&state, &runtime),
+                self.core.policy_default(&state, &runtime),
+                self.core.comment_guard(&state, &runtime),
                 state.title.clone().or_else(|| title(&state.history)),
                 state.archived,
                 state.worktree.as_ref().map(Worktree::info),
@@ -438,7 +452,7 @@ impl Session {
             id: self.core.id.clone(),
             model,
             reasoning: reasoning.map(convert::reasoning_to_proto),
-            policy_default: policy_default.map(convert::policy_to_proto),
+            policy_default: convert::policy_to_proto(policy_default),
             comment_guard,
             created_at: self.core.created_at,
             title,
@@ -935,11 +949,9 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         let state = core.lock();
         (
             state.worktree.as_ref().map(Worktree::info),
-            state.comment_guard,
+            core.comment_guard(&state, runtime),
         )
     };
-    let comment_guard =
-        comment_guard.unwrap_or(runtime.config.tools.comment_guard.mode != CommentGuardMode::Off);
     let prompt = build_system_prompt(&PromptInputs {
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,

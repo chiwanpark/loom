@@ -332,10 +332,18 @@ impl Agent {
             &self.inner.overrides,
             self.inner.sandbox_exe.as_deref(),
         )?;
+        let sessions = self.sessions();
+        let before: Vec<SessionInfo> = sessions.iter().map(Session::info).collect();
         self.inner.runtime.replace(runtime);
         self.notify(AgentNotice::ConfigReloaded {
             restart_required: restart.clone(),
         });
+        for (session, before) in sessions.iter().zip(before) {
+            let info = session.info();
+            if info != before {
+                self.notify(AgentNotice::SessionUpdated(Box::new(info)));
+            }
+        }
         Ok(restart)
     }
 

@@ -873,8 +873,8 @@ mod tests {
             id: SessionId("0123456789abcdef".into()),
             model: None,
             reasoning: None,
-            policy_default: None,
-            comment_guard: None,
+            policy_default: loom_proto::PolicyAction::Ask,
+            comment_guard: true,
             state: SessionState::Idle,
             last_seq: 0,
             created_at: 0,
@@ -1628,7 +1628,7 @@ mod tests {
             notices,
             [
                 "Switched to p/big with extra high reasoning effort.",
-                "Switched to p/big with default reasoning effort.",
+                "Switched to p/big with model default reasoning effort.",
                 "Switched to p/small with reasoning off.",
             ]
         );
