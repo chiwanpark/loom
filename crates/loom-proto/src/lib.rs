@@ -724,6 +724,72 @@ mod tests {
     }
 
     #[test]
+    fn the_update_messages_keep_their_bytes_across_protocols() {
+        let hello = ClientMessage::Hello(ClientHello {
+            version: UPDATE_PROTOCOL_MIN,
+            client: "c".into(),
+        });
+        assert_eq!(
+            encode(&hello).unwrap(),
+            postcard::to_allocvec(&(0u32, UPDATE_PROTOCOL_MIN, "c")).unwrap()
+        );
+        let request = ClientMessage::Request {
+            id: 1,
+            command: Command::UpdateAgent {
+                version: Some("0.4.1".into()),
+            },
+        };
+        assert_eq!(
+            encode(&request).unwrap(),
+            postcard::to_allocvec(&(1u32, 1u64, 65u32, Some("0.4.1"))).unwrap()
+        );
+        let agent = AgentInfo {
+            instance: InstanceId("i".into()),
+            workspace: "/w".into(),
+            pid: 7,
+            started_at: 9,
+            version: "v".into(),
+            default_model: Some("m".into()),
+        };
+        let agent_bytes = ("i", "/w", 7u32, 9u64, "v", Some("m"));
+        let hello = ServerMessage::Hello(ServerHello {
+            version: UPDATE_PROTOCOL_MIN,
+            agent: agent.clone(),
+        });
+        assert_eq!(
+            encode(&hello).unwrap(),
+            postcard::to_allocvec(&(0u32, UPDATE_PROTOCOL_MIN, agent_bytes)).unwrap()
+        );
+        let updated = ServerMessage::Response {
+            id: 1,
+            result: Ok(Payload::AgentUpdated(AgentUpdate {
+                previous: "a".into(),
+                version: "b".into(),
+                path: "/p".into(),
+                restarting: vec![agent.clone()],
+                not_restarted: vec![agent],
+            })),
+        };
+        let updated_bytes = (2u32, 1u64, 0u32, 31u32, "a", "b", "/p");
+        let mut expected = postcard::to_allocvec(&updated_bytes).unwrap();
+        expected.extend(postcard::to_allocvec(&(vec![agent_bytes], vec![agent_bytes])).unwrap());
+        assert_eq!(encode(&updated).unwrap(), expected);
+        let failed = ServerMessage::Response {
+            id: 1,
+            result: Err(ApiError::new(ErrorCode::Unsupported, "no")),
+        };
+        assert_eq!(
+            encode(&failed).unwrap(),
+            postcard::to_allocvec(&(2u32, 1u64, 1u32, 4u32, "no")).unwrap()
+        );
+        let rejected = ServerMessage::Rejected(ApiError::new(ErrorCode::VersionMismatch, "x"));
+        assert_eq!(
+            encode(&rejected).unwrap(),
+            postcard::to_allocvec(&(1u32, 8u32, "x")).unwrap()
+        );
+    }
+
+    #[test]
     fn rejects_garbage_and_oversized_frames() {
         assert!(decode::<ClientMessage>(&[0xff, 0xff, 0xff]).is_err());
         let big = vec![0u8; MAX_FRAME_LEN + 1];

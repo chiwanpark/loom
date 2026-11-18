@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
-use loom_client::proto::{AgentInfo, InstanceId};
+use loom_client::proto::{AgentInfo, AgentUpdate, InstanceId, PROTOCOL_VERSION};
 use loom_client::{
-    AccessToken, AgentTarget, Client, ClientError, ClientIdentity, Notifications, RelayHost,
-    SshTarget, connect_local, connect_ssh, list_local_agents, list_remote_agents,
-    load_client_identity, local_registry, pair_with_uri,
+    AccessToken, AgentTarget, Client, ClientError, ClientIdentity, FrameStream, Notifications,
+    RelayHost, SshTarget, can_update_agent, connect_local, connect_ssh, list_local_agents,
+    list_remote_agents, load_client_identity, local_registry, pair_with_uri,
+    update_agent_of_protocol,
 };
 use loom_config::{AgentConfig, CloudflareAccessConfig, Dirs, HostEntry};
 
@@ -144,12 +145,8 @@ pub async fn list_agents(env: &Env, entry: &HostEntry) -> Result<Vec<AgentSummar
     }
 }
 
-pub async fn connect(
-    env: &Env,
-    entry: &HostEntry,
-    target: &Target,
-) -> Result<(Client, Notifications), String> {
-    let stream = match entry {
+async fn open(env: &Env, entry: &HostEntry, target: &Target) -> Result<FrameStream, String> {
+    Ok(match entry {
         HostEntry::Local { .. } => {
             let config = env.agent_config()?;
             let registry = local_registry(&env.dirs, &config);
@@ -193,8 +190,48 @@ pub async fn connect(
                 }
             }
         }
-    };
-    Client::connect(stream, CLIENT_NAME).await.map_err(err)
+    })
+}
+
+pub async fn connect(
+    env: &Env,
+    entry: &HostEntry,
+    target: &Target,
+) -> Result<(Client, Notifications), String> {
+    let stream = open(env, entry, target).await?;
+    Client::connect(stream, CLIENT_NAME)
+        .await
+        .map_err(|e| match e.agent_protocol() {
+            Some(protocol) if protocol < PROTOCOL_VERSION && can_update_agent(protocol) => {
+                format!(
+                    "{e}. Update the agents of {} with its download button under Remotes.",
+                    entry.name()
+                )
+            }
+            _ => err(e),
+        })
+}
+
+pub async fn update_agents(
+    env: &Env,
+    entry: &HostEntry,
+    instance: &str,
+    version: Option<String>,
+) -> Result<AgentUpdate, String> {
+    let target = Target::Instance(instance.to_owned());
+    let stream = open(env, entry, &target).await?;
+    match Client::connect(stream, CLIENT_NAME).await {
+        Ok((client, _notifications)) => client.update_agent(version).await.map_err(err),
+        Err(e) => match e.agent_protocol() {
+            Some(protocol) => {
+                let stream = open(env, entry, &target).await?;
+                update_agent_of_protocol(stream, CLIENT_NAME, protocol, version)
+                    .await
+                    .map_err(err)
+            }
+            None => Err(err(e)),
+        },
+    }
 }
 
 fn agent_target(target: &Target) -> AgentTarget {

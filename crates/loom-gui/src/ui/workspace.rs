@@ -2790,23 +2790,39 @@ impl Workspace {
             .filter(|c| c.host.name() == name && c.status == LinkStatus::Connected)
             .map(|c| c.info.clone())
             .collect();
-        if agents.is_empty() {
+        let listed: Vec<String> = host
+            .agents
+            .iter()
+            .map(|a| match &a.workspace {
+                Some(workspace) => workspace.display().to_string(),
+                None => a.instance.clone(),
+            })
+            .collect();
+        if agents.is_empty() && listed.is_empty() {
             notify::error(
                 window,
                 cx,
-                format!("Connect to an agent on {name} to update its agents."),
+                format!("No agent runs on {name}. Start an agent on {name} to update its agents."),
             );
             return;
         }
         let mut description = format!(
-            "Install a release of loom-agent on {name}. All agents on {name} that run the replaced binary restart at once. Their running turns stop.\n\nConnected agents:"
+            "Install a release of loom-agent on {name}. All agents on {name} that run the replaced binary restart at once. Their running turns stop."
         );
-        for agent in &agents {
-            description.push_str(&format!(
-                "\n• {}: {}",
-                agent.workspace.display(),
-                agent.version
-            ));
+        if agents.is_empty() {
+            description.push_str("\n\nAgents:");
+            for agent in &listed {
+                description.push_str(&format!("\n• {agent}"));
+            }
+        } else {
+            description.push_str("\n\nConnected agents:");
+            for agent in &agents {
+                description.push_str(&format!(
+                    "\n• {}: {}",
+                    agent.workspace.display(),
+                    agent.version
+                ));
+            }
         }
         description.push_str("\n\nClear the version to install the latest release.");
         let this = cx.entity();
@@ -2835,23 +2851,37 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(conn) = self
+        let conn = self
             .connections
             .iter()
             .find(|c| {
                 let c = c.read(cx);
                 c.host.name() == host && c.status == LinkStatus::Connected
             })
-            .cloned()
-        else {
-            notify::error(window, cx, format!("No agent on {host} is connected."));
-            return;
+            .cloned();
+        let via = if let Some(conn) = conn {
+            Ok(conn.read(cx).client.clone())
+        } else {
+            let Some(node) = self.hosts.iter().find(|h| h.entry.name() == host) else {
+                return;
+            };
+            let Some(agent) = node.agents.first() else {
+                notify::error(window, cx, format!("No agent runs on {host}."));
+                return;
+            };
+            Err((self.env.clone(), node.entry.clone(), agent.instance.clone()))
         };
-        let read = conn.read(cx);
-        let client = read.client.clone();
-        let task = read
-            .backend
-            .run(async move { client.update_agent(version).await });
+        let task = self.backend.run(async move {
+            match via {
+                Ok(client) => client
+                    .update_agent(version)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err((env, entry, instance)) => {
+                    connection::update_agents(&env, &entry, &instance, version).await
+                }
+            }
+        });
         notify::info(window, cx, format!("Updating the agents on {host}…"));
         let host = host.to_owned();
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {

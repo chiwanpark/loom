@@ -177,9 +177,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
             links = links,
             onConfirm = { version ->
                 scope.attempt(snackbar) {
-                    val link = links.firstOrNull { it.state == LinkState.Connected }
-                        ?: throw IllegalStateException("No agent on ${host.name} is connected.")
-                    val update = link.connection().updateAgent(version)
+                    val update = loom.updateAgents(host.name, version)
                     val count = update.restarting.size
                     var message = "Installed ${update.version}; " +
                         if (count == 1) "1 agent restarts." else "$count agents restart."
@@ -305,32 +303,27 @@ private fun UpdateAgentsDialog(
         title = { Text("Update agents on $host") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (links.isEmpty()) {
-                    Text("Open an agent on $host first. The update goes through a connected agent.")
-                } else {
+                Text(
+                    "All agents on $host that run the replaced binary restart at once. " +
+                        "Their running turns stop.",
+                )
+                links.forEach { link ->
                     Text(
-                        "All agents on $host that run the replaced binary restart at once. " +
-                            "Their running turns stop.",
-                    )
-                    links.forEach { link ->
-                        Text(
-                            "${link.workspace ?: link.instance}: ${link.agent?.version ?: "unknown"}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    OutlinedTextField(
-                        value = version,
-                        onValueChange = { version = it },
-                        label = { Text("Version") },
-                        supportingText = { Text("Leave empty for the latest release") },
-                        singleLine = true,
+                        "${link.workspace ?: link.instance}: ${link.agent?.version ?: "unknown"}",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                OutlinedTextField(
+                    value = version,
+                    onValueChange = { version = it },
+                    label = { Text("Version") },
+                    supportingText = { Text("Leave empty for the latest release") },
+                    singleLine = true,
+                )
             }
         },
         confirmButton = {
             TextButton(
-                enabled = links.isNotEmpty(),
                 onClick = {
                     onDismiss()
                     onConfirm(version.trim().ifEmpty { null })

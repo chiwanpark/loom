@@ -1566,6 +1566,21 @@ async fn a_phone_starts_an_agent_for_another_directory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_phone_updates_the_agents_of_a_host_without_a_link() {
+    let host = Host::start(Vec::new()).await;
+    let (_dir, loom, _conn) = phone(&host).await;
+    let err = loom
+        .clone()
+        .update_agents("lab".into(), Some("0.5.0".into()))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, LoomError::Api { code, message } if code == "Unsupported" && message.contains("cannot update itself")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_phone_forwards_a_port_of_the_agents_host_through_the_relay() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

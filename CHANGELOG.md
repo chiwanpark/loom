@@ -2,6 +2,12 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### Fixes
+
+- **Updates of older agents.** The desktop app and the Android app could not update an agent that spoke an older protocol. Now they update the agents of 0.4.0 and later also when the protocol is different. The update no longer needs a connected agent. When a connection fails because the agent is older, the apps tell you how to update it.
+
 ## 0.5.0
 
 ### Upgrade notes
