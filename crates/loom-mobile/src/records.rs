@@ -25,6 +25,17 @@ pub struct Host {
     pub host_key: String,
     /// The agent the pairing link was for.
     pub instance: Option<String>,
+    /// The color that marks the host's sessions, as `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// A color that the app offers for hosts.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HostColor {
+    pub name: String,
+    /// As `#rrggbb`.
+    pub color: String,
 }
 
 /// An agent on a host. Only `instance` is known for an agent that has not

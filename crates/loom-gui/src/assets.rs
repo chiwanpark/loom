@@ -40,6 +40,7 @@ gpui_kit_assets::icon_assets!(
         Hourglass,
         ImagePlus,
         MessageSquareCode,
+        Palette,
         Pencil,
         Plug,
         Rows2,

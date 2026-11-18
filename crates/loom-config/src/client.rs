@@ -101,6 +101,10 @@ pub struct AppearanceConfig {
     /// can still toggle wrapping on its own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub wrap_lines: bool,
+    /// The color that marks each host's sessions, as `#rrggbb`, by the
+    /// host's name. Hosts without one have no mark.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub host_colors: BTreeMap<String, String>,
 }
 
 impl Default for AppearanceConfig {
@@ -114,6 +118,7 @@ impl Default for AppearanceConfig {
             mono_font_size: 14.0,
             mono_font_fallbacks: Vec::new(),
             wrap_lines: false,
+            host_colors: BTreeMap::new(),
         }
     }
 }
@@ -200,6 +205,14 @@ impl ClientConfig {
                 ));
             }
         }
+        for (host, color) in &self.appearance.host_colors {
+            if !is_hex_color(color) {
+                return Err(invalid(
+                    format!("appearance.host_colors.{host}"),
+                    "expected a color such as #3b82f6",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -215,6 +228,13 @@ impl ClientConfig {
         std::fs::write(&tmp, self.to_yaml())?;
         std::fs::rename(tmp, path)
     }
+}
+
+/// Whether `color` is a `#rrggbb` color.
+pub fn is_hex_color(color: &str) -> bool {
+    color
+        .strip_prefix('#')
+        .is_some_and(|hex| hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 #[cfg(test)]
@@ -275,6 +295,32 @@ mod tests {
         // Off is the default and is not written out.
         assert!(!ClientConfig::default().appearance.wrap_lines);
         assert!(!ClientConfig::default().to_yaml().contains("wrap_lines"));
+    }
+
+    #[test]
+    fn parses_host_colors() {
+        let config = ClientConfig::parse(
+            "appearance:\n  host_colors:\n    local: '#3b82f6'\n",
+            "client.yaml",
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .appearance
+                .host_colors
+                .get("local")
+                .map(String::as_str),
+            Some("#3b82f6")
+        );
+        let again = ClientConfig::parse(&config.to_yaml(), "client.yaml").unwrap();
+        assert_eq!(again, config);
+        assert!(!ClientConfig::default().to_yaml().contains("host_colors"));
+        for bad in ["blue", "'#3b82f'", "'3b82f6'"] {
+            let text = format!("appearance:\n  host_colors:\n    local: {bad}\n");
+            assert!(ClientConfig::parse(&text, "client.yaml").is_err(), "{bad}");
+        }
+        assert!(is_hex_color("#ABCdef"));
+        assert!(!is_hex_color("#abcdeg"));
     }
 
     #[test]

@@ -33,6 +33,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.chiwanpark.loom.AgentLink
@@ -99,6 +103,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
     val manyHosts = directory.hosts.size > 1
     val connected = links.filter { it.state == LinkState.Connected }
     val groups = groupRows(links, showArchived)
+    val hostColors = directory.hosts.associate { it.name to hostColor(it.color) }
 
     fun newSession(link: AgentLink) = scope.attempt(snackbar) {
         val session = link.connection().createSession(null)
@@ -171,7 +176,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                             when (row) {
                                 is Row.Session -> SessionRow(
                                     row,
-                                    agentName = agentName(row.link, manyHosts),
+                                    agentName = agentLabel(row.link, manyHosts, hostColors[row.link.host]),
                                     onOpen = {
                                         app.navigator.push(
                                             Screen.Conversation(row.link.host, row.link.instance, row.session.id),
@@ -187,7 +192,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                                 )
                                 is Row.Agent -> AgentRow(
                                     row.link,
-                                    agentName(row.link, manyHosts),
+                                    agentLabel(row.link, manyHosts, hostColors[row.link.host]),
                                     onNewSession = { newSession(row.link) },
                                 )
                             }
@@ -315,6 +320,17 @@ private fun agentName(link: AgentLink, withHost: Boolean): String {
     return if (withHost) "$name on ${link.host}" else name
 }
 
+/** [agentName], with the host's name in the host's color. */
+private fun agentLabel(link: AgentLink, withHost: Boolean, hostColor: Color?): AnnotatedString {
+    val name = agentName(link, withHost)
+    if (!withHost || hostColor == null) return AnnotatedString(name)
+    val start = name.length - link.host.length
+    return buildAnnotatedString {
+        append(name)
+        addStyle(SpanStyle(color = hostColor), start, name.length)
+    }
+}
+
 /** Why some hosts' agents could not be listed, if any could not. */
 private fun hostProblems(hosts: List<String>, agents: Map<String, HostAgents>): String? =
     hosts.mapNotNull { host -> (agents[host] as? HostAgents.Failed)?.let { "$host: ${it.message}" } }
@@ -324,7 +340,7 @@ private fun hostProblems(hosts: List<String>, agents: Map<String, HostAgents>): 
 @Composable
 private fun SessionRow(
     row: Row.Session,
-    agentName: String,
+    agentName: AnnotatedString,
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onArchive: () -> Unit,
@@ -371,7 +387,7 @@ private fun SessionRow(
 
 /** An agent with no sessions, or one that cannot be reached. */
 @Composable
-private fun AgentRow(link: AgentLink, name: String, onNewSession: () -> Unit) {
+private fun AgentRow(link: AgentLink, name: AnnotatedString, onNewSession: () -> Unit) {
     val state = link.state
     CompactListItem(
         headlineContent = { Text(name) },

@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,9 +16,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -41,6 +45,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.chiwanpark.loom.AgentLink
@@ -48,6 +54,7 @@ import com.chiwanpark.loom.LoomApplication
 import com.chiwanpark.loom.LinkState
 import com.chiwanpark.loom.Screen
 import com.chiwanpark.loom.core.Host
+import com.chiwanpark.loom.core.HostColor
 import com.chiwanpark.loom.core.Loom
 import com.chiwanpark.loom.userMessage
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -64,6 +71,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
     var renaming by remember { mutableStateOf<Host?>(null) }
     var removing by remember { mutableStateOf<Host?>(null) }
     var updating by remember { mutableStateOf<Host?>(null) }
+    var coloring by remember { mutableStateOf<Host?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -99,6 +107,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
                     HostRow(
                         host,
                         onRename = { renaming = host },
+                        onColor = { coloring = host },
                         onRemove = { removing = host },
                         onUpdate = { updating = host },
                     )
@@ -125,6 +134,22 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
                 }
             },
             onDismiss = { renaming = null },
+        )
+    }
+    coloring?.let { host ->
+        HostColorDialog(
+            host = host.name,
+            current = host.color,
+            palette = loom.hostPalette(),
+            onPick = { color ->
+                coloring = null
+                scope.attempt(snackbar) {
+                    loom.setHostColor(host.name, color)
+                    hosts = loom.hosts()
+                    app.directory.refresh(loom)
+                }
+            },
+            onDismiss = { coloring = null },
         )
     }
     removing?.let { host ->
@@ -170,11 +195,18 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
 }
 
 @Composable
-private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit, onUpdate: () -> Unit) {
+private fun HostRow(
+    host: Host,
+    onRename: () -> Unit,
+    onColor: () -> Unit,
+    onRemove: () -> Unit,
+    onUpdate: () -> Unit,
+) {
     var menu by remember { mutableStateOf(false) }
     CompactListItem(
         modifier = Modifier.clickable { menu = true },
-        headlineContent = { Text(host.name) },
+        leadingContent = { ColorDot(hostColor(host.color)) },
+        headlineContent = { Text(host.name, color = hostColor(host.color) ?: Color.Unspecified) },
         supportingContent = { Text(host.relayUrl.substringAfter("://")) },
         trailingContent = {
             Box {
@@ -182,12 +214,74 @@ private fun HostRow(host: Host, onRename: () -> Unit, onRemove: () -> Unit, onUp
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
                     MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
+                    MenuEntry("Color…", LoomIcons.Palette, close, onColor)
                     MenuEntry("Update agents…", LoomIcons.Download, close, onUpdate)
                     MenuEntry("Remove", LoomIcons.Trash, close, onRemove)
                 }
             }
         },
     )
+}
+
+/** A host's color as a dot; a host without one has an outline. */
+@Composable
+private fun ColorDot(color: Color?) {
+    val shape = CircleShape
+    val modifier = Modifier.size(16.dp).clip(shape)
+    if (color != null) {
+        Box(modifier.background(color))
+    } else {
+        Box(modifier.border(1.5.dp, MaterialTheme.colorScheme.outline, shape))
+    }
+}
+
+/** Asks for the color that marks the host's sessions on the start screen. */
+@Composable
+private fun HostColorDialog(
+    host: String,
+    current: String?,
+    palette: List<HostColor>,
+    onPick: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val selected = hostColor(current)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Color of $host") },
+        text = {
+            Column {
+                Text(
+                    "With several hosts, the start screen shows the host's name in this color.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                palette.forEach { choice ->
+                    val color = hostColor(choice.color)
+                    ColorChoice(choice.name, color, selected = color != null && color == selected) {
+                        onPick(choice.color)
+                    }
+                }
+                ColorChoice("None", null, selected = selected == null) { onPick(null) }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ColorChoice(name: String, color: Color?, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        ColorDot(color)
+        Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        if (selected) {
+            LoomIcon(LoomIcons.Check, "Selected", size = 20.dp, tint = MaterialTheme.colorScheme.primary)
+        }
+    }
 }
 
 /**

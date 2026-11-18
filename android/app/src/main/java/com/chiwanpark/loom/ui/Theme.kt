@@ -93,3 +93,7 @@ object LoomColors {
     val hunk: Color
         @Composable get() = if (isSystemInDarkTheme()) Color(0xFF78D9EC) else Color(0xFF007B83)
 }
+
+/** A host's `#rrggbb` color, or null when it has none. */
+fun hostColor(hex: String?): Color? =
+    hex?.let { runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull() }
