@@ -335,10 +335,16 @@ private fun SessionRow(
     CompactListItem(
         modifier = Modifier.clickable(onClick = onOpen),
         leadingContent = { SessionStatusIcon(session.status) },
-        headlineContent = { Text(session.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        headlineContent = {
+            Text(
+                session.worktree?.let { "${session.title} · ${it.branch}" } ?: session.title,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
         supportingContent = {
             Text(
-                session.worktree?.let { "$agentName · ${it.branch}" } ?: agentName,
+                agentName,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
