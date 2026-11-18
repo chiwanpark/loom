@@ -98,6 +98,9 @@ fn route(tunnels: &TunnelRoutes, tunnel: TunnelId, event: TunnelEvent) {
 }
 
 fn with_diagnostics(err: ClientError, diagnostics: &Option<Diagnostics>) -> ClientError {
+    if matches!(err, ClientError::Rejected(_)) {
+        return err;
+    }
     match diagnostics.as_ref().map(|d| d.text()) {
         Some(text) if !text.trim().is_empty() => ClientError::Connect {
             message: err.to_string(),

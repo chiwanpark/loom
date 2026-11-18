@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use loom_client::proto::InstanceId;
-use loom_client::{Client, ClientIdentity, RelayHost, pair_with_uri};
+use loom_client::{Client, ClientIdentity, RelayHost, pair_with_uri, update_agent_with};
 use loom_crypto::{CLIENT_IDENTITY_FILE, decode_key, encode_key};
 use loom_view_model::host_colors;
 
 use crate::agent::AgentConnection;
 use crate::error::{LoomError, Result};
-use crate::records::{Agent, Host, HostColor, PushNotice};
+use crate::records::{Agent, AgentUpdateInfo, Host, HostColor, PushNotice};
 use crate::runtime::run;
 
 /// The name the core gives itself when it connects to an agent.
@@ -232,6 +232,27 @@ impl Loom {
     ) -> Result<Arc<AgentConnection>> {
         let relay = self.relay(&host)?;
         AgentConnection::open(relay, InstanceId(instance), self.identity.clone()).await
+    }
+
+    pub async fn update_agents(
+        self: Arc<Self>,
+        host: String,
+        version: Option<String>,
+    ) -> Result<AgentUpdateInfo> {
+        let relay = self.relay(&host)?;
+        let identity = self.identity.clone();
+        run(async move {
+            let instances = relay.list_agents().await?;
+            let first = instances
+                .into_iter()
+                .next()
+                .ok_or_else(|| LoomError::invalid(format!("no agent runs on {host}")))?;
+            let connect = || relay.connect(Some(&first), &identity);
+            Ok(update_agent_with(connect, CLIENT_NAME, version)
+                .await?
+                .into())
+        })
+        .await
     }
 }
 

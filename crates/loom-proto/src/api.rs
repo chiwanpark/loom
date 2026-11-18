@@ -14,6 +14,7 @@ use crate::session::{
 };
 
 pub const PROTOCOL_VERSION: u16 = 19;
+pub const UPDATE_PROTOCOL_MIN: u16 = 15;
 
 pub type RequestId = u64;
 pub type TerminalId = u64;

@@ -131,9 +131,9 @@ The desktop client and the Android app can update the agents of a host:
 
 The default version is the version of the client. To install the latest release, clear the version.
 
-A connected agent of the host replaces its binary with the release. Then all agents of the host that use this binary restart at the same time, with their PIDs and arguments. Their running turns stop, and the clients connect to them again. Agents of a different build at the same path keep their version until you restart them. An agent also restarts this way when it receives `SIGUSR1`.
+An agent of the host replaces its binary with the release. The agent does not have to be connected. Then all agents of the host that use this binary restart at the same time, with their PIDs and arguments. Their running turns stop, and the clients connect to them again. Agents of a different build at the same path keep their version until you restart them. An agent also restarts this way when it receives `SIGUSR1`.
 
-The client and the agent must use the same protocol. If an update changes the protocol, use `loom-agent update` on the host.
+The clients can also update agents that use an older protocol, back to the agents of 0.4.0 (protocol 15). For older agents, use `loom-agent update` on the host.
 
 ### Limits
 
