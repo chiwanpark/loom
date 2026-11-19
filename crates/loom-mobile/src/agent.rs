@@ -461,7 +461,6 @@ impl AgentConnection {
                     instance: instance.to_string(),
                     workspace: None,
                     version: None,
-                    default_model: None,
                 },
                 client: None,
                 epoch: 0,
@@ -931,12 +930,10 @@ impl AgentConnection {
         .await
     }
 
-    /// Switches the session's model; none goes back to the agent's default.
-    pub async fn set_model(self: Arc<Self>, session: String, model: Option<String>) -> Result<()> {
+    /// Switches the session's model.
+    pub async fn set_model(self: Arc<Self>, session: String, model: String) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
-            Ok(client
-                .set_model(&session_id(session), model.as_deref())
-                .await?)
+            Ok(client.set_model(&session_id(session), &model).await?)
         })
         .await?;
         self.shared.lock().session_updated(info);
@@ -951,7 +948,7 @@ impl AgentConnection {
     ) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
-                .set_reasoning(&session_id(session), Some(reasoning.into()))
+                .set_reasoning(&session_id(session), reasoning.into())
                 .await?)
         })
         .await?;
@@ -965,7 +962,7 @@ impl AgentConnection {
     pub async fn set_policy(self: Arc<Self>, session: String, policy: Policy) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
-                .set_policy(&session_id(session), Some(policy.into()))
+                .set_policy(&session_id(session), policy.into())
                 .await?)
         })
         .await?;
@@ -977,7 +974,7 @@ impl AgentConnection {
     pub async fn set_comment_guard(self: Arc<Self>, session: String, enabled: bool) -> Result<()> {
         let info = with_client(&self.shared, move |client| async move {
             Ok(client
-                .set_comment_guard(&session_id(session), Some(enabled))
+                .set_comment_guard(&session_id(session), enabled)
                 .await?)
         })
         .await?;

@@ -681,11 +681,7 @@ impl SessionView {
     /// that changes when a turn settles (`None` while one runs).
     pub fn usage_source(&self, cx: &App) -> Option<(String, Option<u64>)> {
         let conv = self.conversation.read(cx);
-        let model = conv
-            .info
-            .model
-            .clone()
-            .or_else(|| self.connection.read(cx).info.default_model.clone())?;
+        let model = conv.info.model.clone()?;
         let (provider, _) = model.split_once('/')?;
         let total = conv.total_usage;
         let marker = (!conv.is_busy()).then(|| total.prompt_tokens() + total.output);
@@ -700,12 +696,7 @@ impl SessionView {
         let weak = view.downgrade();
         let mut items = Vec::new();
 
-        let model = conv
-            .info
-            .model
-            .clone()
-            .or_else(|| this.connection.read(cx).info.default_model.clone())
-            .unwrap_or_else(|| "no model".into());
+        let model = conv.info.model.clone().unwrap_or_else(|| "no model".into());
         let picker = weak.clone();
         items.push(
             Button::new("status-model")

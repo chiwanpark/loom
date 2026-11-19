@@ -45,7 +45,6 @@ pub struct Agent {
     pub instance: String,
     pub workspace: Option<String>,
     pub version: Option<String>,
-    pub default_model: Option<String>,
 }
 
 impl From<&AgentInfo> for Agent {
@@ -54,7 +53,6 @@ impl From<&AgentInfo> for Agent {
             instance: info.instance.to_string(),
             workspace: Some(info.workspace.display().to_string()),
             version: Some(info.version.clone()),
-            default_model: info.default_model.clone(),
         }
     }
 }
@@ -505,8 +503,7 @@ pub struct ConversationUpdate {
     pub activity: Option<Activity>,
     pub model: Option<String>,
     pub reasoning: Option<Reasoning>,
-    /// What happens to tool calls no rule matches: the session's own
-    /// choice, or else the agent's default.
+    /// What happens to tool calls no rule matches.
     pub policy: Policy,
     pub comment_guard: bool,
     /// Tokens in the context after the last response.

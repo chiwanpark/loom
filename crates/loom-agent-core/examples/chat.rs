@@ -52,7 +52,7 @@ async fn main() -> AnyResult<()> {
     let agent = Agent::new(AgentOptions::new(&workspace, config, dirs.clone()))?;
     let _watcher = watch_config(agent.clone(), config_path.clone(), dirs).ok();
     let session = agent.create_session(model.as_deref())?;
-    session.set_reasoning(reasoning.or(Some(ReasoningEffort::Low)));
+    session.set_reasoning(reasoning.unwrap_or(ReasoningEffort::Low));
 
     eprintln!("workspace: {}", agent.workspace_root().display());
     eprintln!("config: {}", config_path.display());

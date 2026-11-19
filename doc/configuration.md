@@ -58,7 +58,7 @@ llm:
       models: [qwen3-coder]
 ```
 
-`llm.default_reasoning_effort` sets the reasoning effort of sessions that do not have an effort. The values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If you do not set it, the model uses its own default, and the apps show **Model default**. The apps show the effort that each session uses. An effort that you select for a session replaces this setting.
+`llm.default_reasoning_effort` sets the reasoning effort of new sessions. The values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If you do not set it, new sessions use the default effort of the model, and the apps show **Model default**. You can select a different effort for each session.
 
 ### Tools
 
@@ -91,6 +91,8 @@ A running agent reads `agent.yaml` again when the file changes. You can also mak
 Each agent tells if it reloaded the file, if the file did not change, or if it rejected the file. `loom-agent reload` exits with status 1 if an agent rejected the file or if it could not connect to an agent.
 
 If an agent rejects the file, it keeps its current configuration. Each connected client shows the reason.
+
+A new session gets its model, reasoning effort, policy action, and comment guard from `llm.default_model`, `llm.default_reasoning_effort`, `policy.default`, and `tools.comment_guard.mode`. A reload does not change these settings in the sessions that exist.
 
 Changes to `relay`, `socket`, `storage`, `lifecycle`, and `telemetry` apply only after the agent restarts. The agent shows the sections that wait for a restart.
 

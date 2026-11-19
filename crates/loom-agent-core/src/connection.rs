@@ -801,7 +801,7 @@ impl Connection {
             Command::SetModel { session: id, model } => {
                 let handle = session(&id)?;
                 handle
-                    .set_model(model.as_deref())
+                    .set_model(&model)
                     .map_err(|e| convert::api_error(&e))?;
                 Ok(Payload::Session(handle.info()))
             }
@@ -810,7 +810,7 @@ impl Connection {
                 effort,
             } => {
                 let handle = session(&id)?;
-                handle.set_reasoning(effort.map(convert::reasoning_from_proto));
+                handle.set_reasoning(convert::reasoning_from_proto(effort));
                 Ok(Payload::Session(handle.info()))
             }
             Command::SetPolicy {
@@ -818,7 +818,7 @@ impl Connection {
                 default,
             } => {
                 let handle = session(&id)?;
-                handle.set_policy_default(default.map(convert::policy_from_proto));
+                handle.set_policy_default(convert::policy_from_proto(default));
                 Ok(Payload::Session(handle.info()))
             }
             Command::SetCommentGuard {

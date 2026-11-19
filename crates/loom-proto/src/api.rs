@@ -167,15 +167,15 @@ pub enum Command {
     },
     SetModel {
         session: SessionId,
-        model: Option<String>,
+        model: String,
     },
     SetReasoning {
         session: SessionId,
-        effort: Option<ReasoningEffort>,
+        effort: ReasoningEffort,
     },
     SetPolicy {
         session: SessionId,
-        default: Option<PolicyAction>,
+        default: PolicyAction,
     },
     ListAgents,
     SpawnAgent {
@@ -484,7 +484,7 @@ pub enum Command {
     },
     SetCommentGuard {
         session: SessionId,
-        enabled: Option<bool>,
+        enabled: bool,
     },
 }
 

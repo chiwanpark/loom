@@ -63,7 +63,7 @@ async fn a_change_of_model_or_effort_is_reported_before_the_next_response() {
     assert_eq!(model_changes(&events), []);
 
     // Reported once for a turn of two responses, before the first.
-    session.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    session.set_reasoning(loom_llm::ReasoningEffort::High);
     let events = run_turn(&session, &mut sub, "two").await;
     assert_eq!(
         model_changes(&events),
@@ -80,27 +80,29 @@ async fn a_change_of_model_or_effort_is_reported_before_the_next_response() {
     let events = run_turn(&session, &mut sub, "three").await;
     assert_eq!(model_changes(&events), []);
 
-    session.set_model(Some("scripted/other")).unwrap();
-    session.set_reasoning(None);
+    session.set_model("scripted/other").unwrap();
+    session.set_reasoning(loom_llm::ReasoningEffort::Low);
     let events = run_turn(&session, &mut sub, "four").await;
     assert_eq!(
         model_changes(&events),
-        [("scripted/other".to_owned(), None)]
+        [("scripted/other".to_owned(), Some(ReasoningEffort::Low))]
     );
 }
 
 #[tokio::test]
-async fn the_configured_reasoning_effort_applies_until_the_session_picks_one() {
+async fn a_new_session_takes_the_configured_reasoning_effort() {
     let mut config = test_config(PolicyAction::Allow);
     config.llm.default_reasoning_effort = Some(loom_config::ReasoningEffort::High);
-    let h = Harness::new(config, vec![text("one"), text("two"), text("three")]);
+    let h = Harness::new(config, vec![text("one"), text("two")]);
     let session = h.agent.create_session(None).unwrap();
     let mut sub = session.subscribe(None);
+    assert_eq!(
+        session.info().reasoning,
+        Some(loom_proto::ReasoningEffort::High)
+    );
     run_turn(&session, &mut sub, "one").await;
-    session.set_reasoning(Some(loom_llm::ReasoningEffort::Low));
+    session.set_reasoning(loom_llm::ReasoningEffort::Low);
     run_turn(&session, &mut sub, "two").await;
-    session.set_reasoning(None);
-    run_turn(&session, &mut sub, "three").await;
 
     let efforts: Vec<_> = h.provider.requests().iter().map(|r| r.reasoning).collect();
     assert_eq!(
@@ -108,12 +110,11 @@ async fn the_configured_reasoning_effort_applies_until_the_session_picks_one() {
         [
             Some(loom_llm::ReasoningEffort::High),
             Some(loom_llm::ReasoningEffort::Low),
-            Some(loom_llm::ReasoningEffort::High),
         ]
     );
     assert_eq!(
         session.info().reasoning,
-        Some(loom_proto::ReasoningEffort::High)
+        Some(loom_proto::ReasoningEffort::Low)
     );
 }
 
@@ -366,7 +367,7 @@ async fn allow_asks_for_harmful_calls_and_allow_harmful_does_not() {
     let events = collect_until(&mut sub, |e| matches!(e, SessionEvent::TurnFinished { .. })).await;
     assert!(finished_results(&events)[0].0.contains("denied"));
 
-    session.set_policy_default(Some(PolicyAction::AllowHarmful));
+    session.set_policy_default(PolicyAction::AllowHarmful);
     let events = run_turn(&session, &mut sub, "clear").await;
     assert!(
         !events
@@ -409,7 +410,7 @@ async fn the_comment_guard_follows_the_session_setting() {
     assert!(prompt().contains("# Comments"));
     assert!(session.info().comment_guard);
 
-    session.set_comment_guard(Some(false));
+    session.set_comment_guard(false);
     assert!(!session.info().comment_guard);
     let events = run_turn(&session, &mut sub, "write").await;
     assert!(!finished_results(&events)[0].1);
@@ -579,7 +580,7 @@ async fn interrupt_while_waiting_for_approval_keeps_history_valid() {
         .collect();
     assert_eq!(results, ["c1", "c2"]);
 
-    session.set_policy_default(Some(PolicyAction::Allow));
+    session.set_policy_default(PolicyAction::Allow);
     let events = run_turn(&session, &mut sub, "continue").await;
     assert_eq!(outcome(&events), Some(TurnOutcome::Completed));
 }
@@ -800,6 +801,7 @@ async fn prompt_validation() {
     config.llm.default_model = None;
     let h = Harness::new(config, vec![]);
     let session = h.agent.create_session(None).unwrap();
+    assert_eq!(session.info().model, None);
     assert!(matches!(
         session.send_prompt(vec![ContentPart::text("hi")]),
         Err(CoreError::NoModel)
@@ -808,8 +810,8 @@ async fn prompt_validation() {
         session.send_prompt(vec![ContentPart::text("  ")]),
         Err(CoreError::EmptyPrompt)
     ));
-    session.set_model(Some(MODEL_REF)).unwrap();
-    assert!(session.set_model(Some("bogus")).is_err());
+    session.set_model(MODEL_REF).unwrap();
+    assert!(session.set_model("bogus").is_err());
     let mut sub = session.subscribe(None);
     let events = run_turn(&session, &mut sub, "hi").await;
     assert_eq!(outcome(&events), Some(TurnOutcome::Completed));

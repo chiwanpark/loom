@@ -62,7 +62,7 @@ struct State {
     next_pending: u64,
     /// The git worktree that the session works in.
     worktree: Option<Worktree>,
-    comment_guard: Option<bool>,
+    comment_guard: bool,
 }
 
 /// What became of a message sent to a session.
@@ -278,36 +278,8 @@ impl Core {
         true
     }
 
-    fn model(&self, runtime: &Runtime) -> Result<ModelRef> {
-        if let Some(model) = &self.lock().model {
-            return Ok(model.clone());
-        }
-        match &runtime.config.llm.default_model {
-            Some(model) => Ok(ModelRef::parse(model)?),
-            None => Err(CoreError::NoModel),
-        }
-    }
-
-    /// The session's reasoning effort, or else the configured default.
-    fn reasoning(&self, state: &State, runtime: &Runtime) -> Option<ReasoningEffort> {
-        state.reasoning.or(runtime
-            .config
-            .llm
-            .default_reasoning_effort
-            .map(convert::reasoning_from_config))
-    }
-
-    fn comment_guard(&self, state: &State, runtime: &Runtime) -> bool {
-        state
-            .comment_guard
-            .unwrap_or(runtime.config.tools.comment_guard.mode != CommentGuardMode::Off)
-    }
-
-    fn policy_default(&self, state: &State, runtime: &Runtime) -> PolicyAction {
-        state
-            .policy
-            .default
-            .unwrap_or(runtime.config.policy.default)
+    fn model(&self) -> Result<ModelRef> {
+        self.lock().model.clone().ok_or(CoreError::NoModel)
     }
 }
 
@@ -315,11 +287,25 @@ impl Session {
     pub(crate) fn new(params: SessionParams) -> Self {
         let id = SessionId(uuid::Uuid::new_v4().to_string());
         let observer = params.observer.clone();
+        let runtime = params.runtime.current();
+        let config = &runtime.config;
+        let state = StoredState {
+            reasoning: config
+                .llm
+                .default_reasoning_effort
+                .map(convert::reasoning_from_config),
+            policy: SessionPolicy {
+                default: config.policy.default,
+                rules: Vec::new(),
+            },
+            comment_guard: config.tools.comment_guard.mode != CommentGuardMode::Off,
+            ..StoredState::default()
+        };
         let session = Self::build(
             params,
             id,
             now_unix(),
-            StoredState::default(),
+            state,
             Vec::new(),
             TaskList::default(),
         );
@@ -435,14 +421,13 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        let runtime = self.core.runtime.current();
         let (model, reasoning, policy_default, comment_guard, title, archived, worktree) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
-                self.core.reasoning(&state, &runtime),
-                self.core.policy_default(&state, &runtime),
-                self.core.comment_guard(&state, &runtime),
+                state.reasoning,
+                state.policy.default,
+                state.comment_guard,
                 state.title.clone().or_else(|| title(&state.history)),
                 state.archived,
                 state.worktree.as_ref().map(Worktree::info),
@@ -539,25 +524,25 @@ impl Session {
         self.core.lock().history.clone()
     }
 
-    pub fn set_model(&self, model: Option<&str>) -> Result<()> {
+    pub fn set_model(&self, model: &str) -> Result<()> {
         let runtime = self.core.runtime.current();
-        let model = model.map(|m| runtime.parse_model(m)).transpose()?;
-        self.core.lock().model = model;
+        let model = runtime.parse_model(model)?;
+        self.core.lock().model = Some(model);
         self.core.persist();
         Ok(())
     }
 
-    pub fn set_reasoning(&self, effort: Option<ReasoningEffort>) {
-        self.core.lock().reasoning = effort;
+    pub fn set_reasoning(&self, effort: ReasoningEffort) {
+        self.core.lock().reasoning = Some(effort);
         self.core.persist();
     }
 
-    pub fn set_policy_default(&self, default: Option<PolicyAction>) {
+    pub fn set_policy_default(&self, default: PolicyAction) {
         self.core.lock().policy.default = default;
         self.core.persist();
     }
 
-    pub fn set_comment_guard(&self, comment_guard: Option<bool>) {
+    pub fn set_comment_guard(&self, comment_guard: bool) {
         self.core.lock().comment_guard = comment_guard;
         self.core.persist();
     }
@@ -612,7 +597,7 @@ impl Session {
             return Err(CoreError::EmptyPrompt);
         }
         let runtime = self.core.runtime.current();
-        let model = self.core.model(&runtime)?;
+        let model = self.core.model()?;
         runtime.providers.get(&model.provider)?;
         if let Some(worktree) = &self.core.lock().worktree
             && !worktree.path.is_dir()
@@ -665,7 +650,7 @@ impl Session {
     /// background, makes the session busy, and stops on `interrupt`.
     pub fn compact(&self) -> Result<()> {
         let runtime = self.core.runtime.current();
-        let model = self.core.model(&runtime)?;
+        let model = self.core.model()?;
         runtime.providers.get(&model.provider)?;
         let mut state = self.core.lock();
         if state.turn.is_some() {
@@ -892,7 +877,7 @@ async fn run_turn(core: Arc<Core>, cancel: CancellationToken) {
 async fn run_compaction(core: Arc<Core>, cancel: CancellationToken) {
     let result = async {
         let runtime = core.runtime.current();
-        let model = core.model(&runtime)?;
+        let model = core.model()?;
         let provider = runtime
             .providers
             .get(&model.provider)
@@ -949,7 +934,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         let state = core.lock();
         (
             state.worktree.as_ref().map(Worktree::info),
-            core.comment_guard(&state, runtime),
+            state.comment_guard,
         )
     };
     let prompt = build_system_prompt(&PromptInputs {
@@ -985,7 +970,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         }
         let first = rounds == 0;
         rounds += 1;
-        let model = core.model(&runtime)?;
+        let model = core.model()?;
         let provider = runtime
             .providers
             .get(&model.provider)
@@ -1011,7 +996,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
         .await?;
         let (messages, reasoning) = {
             let state = core.lock();
-            (state.history.clone(), core.reasoning(&state, &runtime))
+            (state.history.clone(), state.reasoning)
         };
         core.note_model(&model, reasoning);
         let request = CompletionRequest {
@@ -1397,7 +1382,7 @@ async fn run_tool_call(
     };
     let ctx = ToolContext::new(core.workspace())
         .with_writable(writable)
-        .with_comment_guard(comment_guard)
+        .with_comment_guard(Some(comment_guard))
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))
         .with_readable(skill_dirs)
