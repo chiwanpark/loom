@@ -121,7 +121,7 @@ async fn main() -> AnyResult<()> {
     println!(
         "session {} (model {})\n{HELP}",
         info.id,
-        info.model.as_deref().unwrap_or("default")
+        info.model.as_deref().unwrap_or("none")
     );
 
     let (lines_tx, mut lines) = tokio::sync::mpsc::unbounded_channel();
@@ -225,9 +225,12 @@ async fn handle_line(client: &Client, session: &SessionId, line: &str) -> bool {
                 .for_each(|m| println!("{} ({})", m.model_ref(), m.display_name)),
             Err(err) => println!("[error] {err}"),
         },
-        Some("/model") => match client.set_model(session, words.next()).await {
-            Ok(info) => println!("model: {}", info.model.as_deref().unwrap_or("default")),
-            Err(err) => println!("[error] {err}"),
+        Some("/model") => match words.next() {
+            Some(model) => match client.set_model(session, model).await {
+                Ok(info) => println!("model: {}", info.model.as_deref().unwrap_or("none")),
+                Err(err) => println!("[error] {err}"),
+            },
+            None => println!("usage: /model REF"),
         },
         Some("/key") => {
             let provider = words.next().unwrap_or_default();
@@ -380,7 +383,7 @@ fn render_event(
             let _ = writeln!(out, "[context {how}: {removed_messages} messages]");
         }
         SessionEvent::ModelChanged { model, reasoning } => {
-            let effort = reasoning.map_or("default".into(), |e| format!("{e:?}"));
+            let effort = reasoning.map_or("model default".into(), |e| format!("{e:?}"));
             let _ = writeln!(out, "[model: {model}, reasoning effort: {effort}]");
         }
         SessionEvent::Cleared => {

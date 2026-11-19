@@ -71,7 +71,7 @@ class ConversationState(val session: String) {
     var model by mutableStateOf<String?>(null)
     var reasoning by mutableStateOf<Reasoning?>(null)
 
-    /** What happens to tool calls no rule matches: the session's own choice, or else the agent's default; null until the first update. */
+    /** What happens to tool calls no rule matches; null until the first update. */
     var policy by mutableStateOf<Policy?>(null)
     var commentGuard by mutableStateOf<Boolean?>(null)
     var contextTokens by mutableStateOf<ULong?>(null)
@@ -531,7 +531,7 @@ class AgentLinks(private val app: LoomApplication) {
     fun expect(loom: Loom, host: String, instance: String, workspace: String?) {
         val link = get(loom, host, instance)
         if (link.workspace == null && workspace != null) {
-            link.listed = Agent(instance, workspace, null, null)
+            link.listed = Agent(instance, workspace, null)
         }
     }
 

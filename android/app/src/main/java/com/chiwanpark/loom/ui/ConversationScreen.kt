@@ -289,7 +289,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                 enabled = connected,
                 info = {
                     SessionInfo(
-                        model = conversation.model ?: link.agent?.defaultModel,
+                        model = conversation.model,
                         reasoning = conversation.reasoning,
                         policy = conversation.policy,
                         commentGuard = conversation.commentGuard,
@@ -1126,7 +1126,7 @@ private fun Waiting(messages: List<WaitingMessage>, enabled: Boolean, onTakeBack
 }
 
 @Composable
-private fun ModelDialog(link: AgentLink, current: String?, onPick: (String?) -> Unit, onDismiss: () -> Unit) {
+private fun ModelDialog(link: AgentLink, current: String?, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     var models by remember { mutableStateOf<List<Model>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
@@ -1145,16 +1145,6 @@ private fun ModelDialog(link: AgentLink, current: String?, onPick: (String?) -> 
                 error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
                 models == null -> CircularProgressIndicator()
                 else -> LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    item {
-                        ChoiceRow(
-                            "Agent's default",
-                            link.agent?.defaultModel,
-                            selected = current == null,
-                        ) {
-                            onDismiss()
-                            onPick(null)
-                        }
-                    }
                     items(models!!, key = { it.modelRef }) { model ->
                         ChoiceRow(model.displayName, model.modelRef, selected = current == model.modelRef) {
                             onDismiss()
@@ -1305,7 +1295,7 @@ private fun SessionInfo(
             InfoItem(
                 LoomIcons.Bot,
                 // The provider takes room the model's own name needs; the picker shows it.
-                model?.substringAfter('/') ?: "Default model",
+                model?.substringAfter('/') ?: "No model",
                 description = "Model",
                 onClick = onModel.takeIf { enabled },
                 modifier = Modifier.weight(1f, fill = false),

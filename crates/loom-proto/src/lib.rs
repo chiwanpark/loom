@@ -233,11 +233,11 @@ mod tests {
             },
             Command::SetReasoning {
                 session: session.clone(),
-                effort: Some(ReasoningEffort::High),
+                effort: ReasoningEffort::High,
             },
             Command::SetPolicy {
                 session: session.clone(),
-                default: Some(PolicyAction::Deny),
+                default: PolicyAction::Deny,
             },
             Command::GetWorkspaceChanges { session: None },
             Command::GetFileDiff {
@@ -385,7 +385,7 @@ mod tests {
             },
             Command::SetCommentGuard {
                 session: session.clone(),
-                enabled: Some(false),
+                enabled: false,
             },
         ] {
             message_roundtrip(ClientMessage::Request { id: 9, command });

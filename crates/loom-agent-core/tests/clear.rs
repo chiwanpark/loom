@@ -41,7 +41,7 @@ async fn clearing_starts_the_conversation_over_and_survives_a_restart() {
     .await;
     // Would be announced as a change before the next response if the session
     // still measured against the one before the clear.
-    session.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    session.set_reasoning(loom_llm::ReasoningEffort::High);
     // The file changed since the session wrote it: a write would be refused
     // as stale if the session still remembered the old one.
     std::fs::write(h.workspace.join("a.txt"), "changed by someone else").unwrap();

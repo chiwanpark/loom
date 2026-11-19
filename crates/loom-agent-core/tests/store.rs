@@ -46,7 +46,7 @@ async fn sessions_survive_a_restart() {
         ],
     );
     let session = h.agent.create_session(Some(MODEL_REF)).unwrap();
-    session.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    session.set_reasoning(loom_llm::ReasoningEffort::High);
     let mut sub = session.subscribe(None);
     let events = run_turn(&session, &mut sub, "Write a file\nplease").await;
     assert_eq!(common::outcome(&events), Some(TurnOutcome::Completed));
@@ -249,7 +249,7 @@ async fn deleted_sessions_are_removed_from_the_store() {
         notices.try_recv().unwrap(),
         loom_agent_core::AgentNotice::SessionRemoved(doomed.id().clone())
     );
-    doomed.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    doomed.set_reasoning(loom_llm::ReasoningEffort::High);
     let ids: Vec<_> = h.agent.list_sessions().into_iter().map(|s| s.id).collect();
     assert_eq!(ids, vec![kept.id().clone()]);
     h.agent.shutdown().await;
@@ -278,7 +278,7 @@ async fn a_restart_keeps_what_a_model_change_is_measured_against() {
     run_turn(&session, &mut sub, "one").await;
     // Changed after the last response: only the saved state knows the
     // effort that response used.
-    session.set_reasoning(Some(loom_llm::ReasoningEffort::High));
+    session.set_reasoning(loom_llm::ReasoningEffort::High);
     let id = session.id().clone();
     h.agent.shutdown().await;
     drop(session);
@@ -306,7 +306,7 @@ async fn an_older_session_measures_a_change_against_its_last_response() {
     let session = h.agent.create_session(None).unwrap();
     let mut sub = session.subscribe(None);
     run_turn(&session, &mut sub, "one").await;
-    session.set_model(Some("scripted/other")).unwrap();
+    session.set_model("scripted/other").unwrap();
     let id = session.id().clone();
     h.agent.shutdown().await;
     drop(session);

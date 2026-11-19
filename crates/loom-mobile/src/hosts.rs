@@ -213,7 +213,6 @@ impl Loom {
                         instance: instance.to_string(),
                         workspace: None,
                         version: None,
-                        default_model: None,
                     });
                 }
             }

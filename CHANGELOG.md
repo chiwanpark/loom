@@ -7,6 +7,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### Upgrade notes
 
 - The protocol version is now 20. Clients and agents of 0.5.0 (protocol 19) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+- The agent does not load the sessions of earlier versions. It skips them and logs a warning. To remove them, delete the session stores in `~/.local/share/loom/sessions/`.
 
 ### New features
 
@@ -14,8 +15,9 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ### Changes
 
-- **Session settings show their values.** The desktop app and the Android app showed **Default** for the reasoning effort, the tool call action, and the comment guard of a new session. Now they show the values that the session uses. These values come from the configuration of the agent. For example, if `llm.default_reasoning_effort` is `high`, the apps show **High**. If no effort is set, the apps show **Model default**. The menus no longer have the **Default** item.
-- **Configuration reload.** When the defaults of the agent change, the apps show the new values for the sessions that use them.
+- **Session settings show their values.** The desktop app and the Android app showed **Default** for the reasoning effort, the tool call action, and the comment guard of a new session. Now they show the values that the session uses. For example, if `llm.default_reasoning_effort` is `high`, the apps show **High**. If the agent has no reasoning effort, the apps show **Model default**.
+- **No Default items.** The menus of the session settings no longer have a **Default** item. The model picker of the Android app no longer has the **Agent's default** item.
+- **Settings of new sessions.** A new session gets its model, reasoning effort, policy action, and comment guard from the configuration of the agent. Changes to the configuration apply to new sessions. Sessions that exist keep their settings. See [Reload the configuration](doc/configuration.md#reload-the-configuration).
 
 ### Fixes
 

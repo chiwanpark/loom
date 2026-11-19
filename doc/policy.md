@@ -33,7 +33,7 @@ The agent allows the notes, tasks, and `skill` tools, unless a rule tells otherw
 
 Rules can also use `allow_harmful`, for example to allow `git push --force` in a workspace.
 
-You can also select an action for one session in the desktop app and in the Android app. This includes **Allow harmful**.
+`policy.default` sets the action of new sessions for calls that no rule matches. You can select a different action for one session in the desktop app and in the Android app. This includes **Allow harmful**.
 
 **Allow for session** on the approval of a call that can be harmful adds an `allow` rule. Thus, the agent asks again for the next call that can be harmful.
 

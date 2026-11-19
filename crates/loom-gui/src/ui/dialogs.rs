@@ -292,7 +292,7 @@ impl ModelPicker {
         let client = conn.client.clone();
         let task = conn
             .backend
-            .run(async move { client.set_model(&session, Some(&model)).await });
+            .run(async move { client.set_model(&session, &model).await });
         cx.spawn_in(
             window,
             async move |_, cx: &mut AsyncWindowContext| match task.await {

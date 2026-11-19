@@ -557,10 +557,10 @@ impl Client {
         .await
     }
 
-    pub async fn set_model(&self, session: &SessionId, model: Option<&str>) -> Result<SessionInfo> {
+    pub async fn set_model(&self, session: &SessionId, model: &str) -> Result<SessionInfo> {
         self.session(Command::SetModel {
             session: session.clone(),
-            model: model.map(str::to_owned),
+            model: model.to_owned(),
         })
         .await
     }
@@ -587,7 +587,7 @@ impl Client {
     pub async fn set_reasoning(
         &self,
         session: &SessionId,
-        effort: Option<ReasoningEffort>,
+        effort: ReasoningEffort,
     ) -> Result<SessionInfo> {
         self.session(Command::SetReasoning {
             session: session.clone(),
@@ -599,7 +599,7 @@ impl Client {
     pub async fn set_policy(
         &self,
         session: &SessionId,
-        default: Option<PolicyAction>,
+        default: PolicyAction,
     ) -> Result<SessionInfo> {
         self.session(Command::SetPolicy {
             session: session.clone(),
@@ -611,7 +611,7 @@ impl Client {
     pub async fn set_comment_guard(
         &self,
         session: &SessionId,
-        enabled: Option<bool>,
+        enabled: bool,
     ) -> Result<SessionInfo> {
         self.session(Command::SetCommentGuard {
             session: session.clone(),

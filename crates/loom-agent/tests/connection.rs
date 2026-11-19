@@ -218,7 +218,7 @@ async fn prompt_turn_streams_events_to_subscribers() {
     assert_eq!(client.agent().default_model.as_deref(), Some("scripted/m"));
 
     let session = client.create_session(None).await.unwrap();
-    assert_eq!(session.model, None);
+    assert_eq!(session.model.as_deref(), Some("scripted/m"));
     let info = client.subscribe(&session.id, None, None).await.unwrap();
     assert_eq!(info.id, session.id);
     client.send_text(&session.id, "hi").await.unwrap();
@@ -272,7 +272,7 @@ async fn approvals_round_trip_through_the_client() {
     let session = client.create_session(None).await.unwrap();
     client.subscribe(&session.id, None, None).await.unwrap();
     let info = client
-        .set_policy(&session.id, Some(PolicyAction::Ask))
+        .set_policy(&session.id, PolicyAction::Ask)
         .await
         .unwrap();
     assert_eq!(info.policy_default, PolicyAction::Ask);
@@ -316,7 +316,7 @@ async fn messages_wait_for_the_running_turn() {
     let session = client.create_session(None).await.unwrap().id;
     client.subscribe(&session, None, None).await.unwrap();
     client
-        .set_policy(&session, Some(PolicyAction::Ask))
+        .set_policy(&session, PolicyAction::Ask)
         .await
         .unwrap();
     client.send_text(&session, "write it").await.unwrap();
@@ -378,7 +378,7 @@ async fn sessions_are_cleared_through_the_client() {
     let session = client.create_session(None).await.unwrap();
     client.subscribe(&session.id, None, None).await.unwrap();
     client
-        .set_policy(&session.id, Some(PolicyAction::Ask))
+        .set_policy(&session.id, PolicyAction::Ask)
         .await
         .unwrap();
     client.send_text(&session.id, "write it").await.unwrap();
@@ -541,12 +541,12 @@ async fn session_settings_and_errors() {
     let session = client.create_session(Some("scripted/other")).await.unwrap();
     assert_eq!(session.model.as_deref(), Some("scripted/other"));
     let info = client
-        .set_reasoning(&session.id, Some(ReasoningEffort::High))
+        .set_reasoning(&session.id, ReasoningEffort::High)
         .await
         .unwrap();
     assert_eq!(info.reasoning, Some(ReasoningEffort::High));
-    let info = client.set_model(&session.id, None).await.unwrap();
-    assert_eq!(info.model, None);
+    let info = client.set_model(&session.id, "scripted/m").await.unwrap();
+    assert_eq!(info.model.as_deref(), Some("scripted/m"));
 
     let missing = SessionId("nope".into());
     let err = client.send_text(&missing, "hi").await.unwrap_err();

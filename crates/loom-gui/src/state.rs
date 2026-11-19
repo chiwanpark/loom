@@ -638,7 +638,7 @@ impl AgentConnection {
         let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.set_reasoning(&id, Some(effort)).await });
+            .run(async move { client.set_reasoning(&id, effort).await });
         self.apply_info(task, cx);
     }
 
@@ -646,7 +646,7 @@ impl AgentConnection {
         let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.set_policy(&id, Some(default)).await });
+            .run(async move { client.set_policy(&id, default).await });
         self.apply_info(task, cx);
     }
 
@@ -654,7 +654,7 @@ impl AgentConnection {
         let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.set_comment_guard(&id, Some(enabled)).await });
+            .run(async move { client.set_comment_guard(&id, enabled).await });
         self.apply_info(task, cx);
     }
 

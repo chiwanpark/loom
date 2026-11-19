@@ -103,45 +103,39 @@ async fn reloads_config_from_disk() {
 }
 
 #[tokio::test]
-async fn session_info_follows_the_configured_defaults() {
+async fn sessions_keep_the_defaults_they_started_with() {
     let probe = tempfile::tempdir().unwrap();
     let dirs = common::dirs_in(probe.path());
     let config = AgentConfig::parse(BASE, "agent.yaml", &dirs).unwrap();
     let h = Harness::new(config.clone(), vec![]);
-    let session = h.agent.create_session(None).unwrap();
-    let own = h.agent.create_session(None).unwrap();
-    own.set_policy_default(Some(PolicyAction::Deny));
-    own.set_comment_guard(Some(true));
-    own.set_reasoning(Some(loom_llm::ReasoningEffort::Low));
-
-    let info = session.info();
-    assert_eq!(info.reasoning, None);
-    assert_eq!(info.policy_default, loom_proto::PolicyAction::Ask);
-    assert!(info.comment_guard);
+    let old = h.agent.create_session(None).unwrap();
+    let before = old.info();
+    assert_eq!(before.model.as_deref(), Some("scripted/test-model"));
+    assert_eq!(before.reasoning, None);
+    assert_eq!(before.policy_default, loom_proto::PolicyAction::Ask);
+    assert!(before.comment_guard);
 
     let mut notices = h.agent.notices();
     let mut next = config;
+    next.llm.default_model = Some("scripted/other".into());
     next.llm.default_reasoning_effort = Some(loom_config::ReasoningEffort::High);
     next.policy.default = PolicyAction::Allow;
     next.tools.comment_guard.mode = loom_config::CommentGuardMode::Off;
     h.agent.apply_config(next).unwrap();
+    assert_eq!(old.info(), before);
+    assert!(
+        std::iter::from_fn(|| notices.try_recv().ok())
+            .all(|notice| !matches!(notice, AgentNotice::SessionUpdated(_)))
+    );
 
-    let info = session.info();
+    let info = h.agent.create_session(None).unwrap().info();
+    assert_eq!(info.model.as_deref(), Some("scripted/other"));
     assert_eq!(info.reasoning, Some(loom_proto::ReasoningEffort::High));
     assert_eq!(info.policy_default, loom_proto::PolicyAction::Allow);
     assert!(!info.comment_guard);
-    let own_info = own.info();
-    assert_eq!(own_info.reasoning, Some(loom_proto::ReasoningEffort::Low));
-    assert_eq!(own_info.policy_default, loom_proto::PolicyAction::Deny);
-    assert!(own_info.comment_guard);
 
-    let mut updated = Vec::new();
-    while let Ok(notice) = notices.try_recv() {
-        if let AgentNotice::SessionUpdated(update) = notice {
-            updated.push(*update);
-        }
-    }
-    assert_eq!(updated, vec![info]);
+    let picked = h.agent.create_session(Some("scripted/picked")).unwrap();
+    assert_eq!(picked.info().model.as_deref(), Some("scripted/picked"));
 }
 
 /// An agent that knows the file its configuration came from.

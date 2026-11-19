@@ -123,6 +123,16 @@ pub fn data_dir(config: &AgentConfig, dirs: &Dirs) -> PathBuf {
         .unwrap_or_else(|| dirs.default_data_dir())
 }
 
+fn new_session_model(
+    runtime: &Runtime,
+    model: Option<&str>,
+) -> std::result::Result<Option<ModelRef>, loom_llm::LlmError> {
+    model
+        .or(runtime.config.llm.default_model.as_deref())
+        .map(|m| runtime.parse_model(m))
+        .transpose()
+}
+
 fn restart_required(current: &AgentConfig, next: &AgentConfig) -> Vec<String> {
     let mut changed = Vec::new();
     if current.relay != next.relay {
@@ -332,18 +342,10 @@ impl Agent {
             &self.inner.overrides,
             self.inner.sandbox_exe.as_deref(),
         )?;
-        let sessions = self.sessions();
-        let before: Vec<SessionInfo> = sessions.iter().map(Session::info).collect();
         self.inner.runtime.replace(runtime);
         self.notify(AgentNotice::ConfigReloaded {
             restart_required: restart.clone(),
         });
-        for (session, before) in sessions.iter().zip(before) {
-            let info = session.info();
-            if info != before {
-                self.notify(AgentNotice::SessionUpdated(Box::new(info)));
-            }
-        }
         Ok(restart)
     }
 
@@ -393,7 +395,7 @@ impl Agent {
 
     pub fn create_session(&self, model: Option<&str>) -> Result<Session> {
         let runtime = self.inner.runtime.current();
-        let model = model.map(|m| runtime.parse_model(m)).transpose()?;
+        let model = new_session_model(&runtime, model)?;
         let session = Session::new(self.session_params(model));
         self.insert(session.clone());
         self.inner.observer.session_created(session.id());
@@ -408,9 +410,7 @@ impl Agent {
         options: crate::worktree::CreateOptions,
     ) -> std::result::Result<Session, ApiError> {
         let runtime = self.inner.runtime.current();
-        let model = model
-            .map(|m| runtime.parse_model(m))
-            .transpose()
+        let model = new_session_model(&runtime, model)
             .map_err(|e| convert::api_error(&CoreError::from(e)))?;
         let session = Session::new(self.session_params(model));
         let dir = self.config().worktrees_dir(&self.inner.dirs);

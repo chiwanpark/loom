@@ -9,7 +9,7 @@ const SHELL_METACHARACTERS: &[char] = &[';', '&', '|', '`', '$', '<', '>', '(', 
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionPolicy {
-    pub default: Option<PolicyAction>,
+    pub default: PolicyAction,
     pub rules: Vec<PolicyRule>,
 }
 
@@ -163,15 +163,9 @@ pub fn evaluate(
             reason: "notes, tasks, and skill tools are allowed unless a rule says otherwise".into(),
         };
     }
-    match session.default {
-        Some(action) => Verdict {
-            action,
-            reason: "session default".into(),
-        },
-        None => Verdict {
-            action: config.default,
-            reason: "default policy".into(),
-        },
+    Verdict {
+        action: session.default,
+        reason: "default policy".into(),
     }
 }
 
@@ -291,9 +285,9 @@ mod tests {
     }
 
     #[test]
-    fn session_default_replaces_config_default() {
+    fn session_default_applies_without_a_rule() {
         let session = SessionPolicy {
-            default: Some(PolicyAction::Allow),
+            default: PolicyAction::Allow,
             rules: Vec::new(),
         };
         assert_eq!(
@@ -308,7 +302,7 @@ mod tests {
 
     #[test]
     fn notes_tasks_and_skill_tools_are_allowed_unless_a_rule_says_otherwise() {
-        let defaults = [None, Some(PolicyAction::Ask), Some(PolicyAction::Deny)];
+        let defaults = [PolicyAction::Ask, PolicyAction::Deny];
         for tool in [
             "notes_read",
             "notes_edit",
@@ -341,7 +335,7 @@ mod tests {
             .push(rule("tasks_update", PolicyAction::Ask, &[]));
         config.rules.push(rule("skill", PolicyAction::Deny, &[]));
         let session = SessionPolicy {
-            default: None,
+            default: PolicyAction::Ask,
             rules: vec![rule("notes_read", PolicyAction::Ask, &[])],
         };
         let eval = |tool: &str| evaluate(&config, &session, tool, &json!({})).action;
