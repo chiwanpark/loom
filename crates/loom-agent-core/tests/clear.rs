@@ -57,7 +57,7 @@ async fn clearing_starts_the_conversation_over_and_survives_a_restart() {
     let info = session.info();
     assert_eq!(info.title.as_deref(), Some("Write a file"));
     assert_eq!(info.model.as_deref(), Some(MODEL_REF));
-    assert_eq!(info.reasoning, Some(loom_proto::ReasoningEffort::High));
+    assert_eq!(info.reasoning, loom_proto::ReasoningEffort::High);
 
     let requests_before = h.provider.requests().len();
     let events = run_turn(&session, &mut sub, "Again").await;

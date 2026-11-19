@@ -208,7 +208,7 @@ pub struct SessionSummary {
     /// The title, or the start of the session ID while it has none.
     pub title: String,
     pub model: Option<String>,
-    pub reasoning: Option<Reasoning>,
+    pub reasoning: Reasoning,
     pub status: SessionStatus,
     pub archived: bool,
     /// Seconds since the Unix epoch.
@@ -226,7 +226,7 @@ impl From<&SessionInfo> for SessionSummary {
                 .clone()
                 .unwrap_or_else(|| loom_view_model::conversation::short_id(&info.id.0)),
             model: info.model.clone(),
-            reasoning: info.reasoning.map(Reasoning::from),
+            reasoning: info.reasoning.into(),
             status: info.state.into(),
             archived: info.archived,
             created_at: info.created_at,
@@ -502,7 +502,7 @@ pub struct ConversationUpdate {
     /// What a busy session is doing.
     pub activity: Option<Activity>,
     pub model: Option<String>,
-    pub reasoning: Option<Reasoning>,
+    pub reasoning: Reasoning,
     /// What happens to tool calls no rule matches.
     pub policy: Policy,
     pub comment_guard: bool,
@@ -545,7 +545,7 @@ impl ConversationUpdate {
             status: conversation.state.into(),
             activity: conversation.activity().map(Activity::from),
             model: conversation.info.model.clone(),
-            reasoning: conversation.info.reasoning.map(Reasoning::from),
+            reasoning: conversation.info.reasoning.into(),
             policy: conversation.info.policy_default.into(),
             comment_guard: conversation.info.comment_guard,
             context_tokens: conversation.last_usage.map(|u| u.context_tokens()),

@@ -34,7 +34,7 @@ fn finished_results(events: &[SessionEvent]) -> Vec<(String, bool)> {
         .collect()
 }
 
-fn model_changes(events: &[SessionEvent]) -> Vec<(String, Option<ReasoningEffort>)> {
+fn model_changes(events: &[SessionEvent]) -> Vec<(String, ReasoningEffort)> {
     events
         .iter()
         .filter_map(|e| match e {
@@ -67,7 +67,7 @@ async fn a_change_of_model_or_effort_is_reported_before_the_next_response() {
     let events = run_turn(&session, &mut sub, "two").await;
     assert_eq!(
         model_changes(&events),
-        [(MODEL_REF.to_owned(), Some(ReasoningEffort::High))]
+        [(MODEL_REF.to_owned(), ReasoningEffort::High)]
     );
     let changed = events
         .iter()
@@ -85,21 +85,18 @@ async fn a_change_of_model_or_effort_is_reported_before_the_next_response() {
     let events = run_turn(&session, &mut sub, "four").await;
     assert_eq!(
         model_changes(&events),
-        [("scripted/other".to_owned(), Some(ReasoningEffort::Low))]
+        [("scripted/other".to_owned(), ReasoningEffort::Low)]
     );
 }
 
 #[tokio::test]
 async fn a_new_session_takes_the_configured_reasoning_effort() {
     let mut config = test_config(PolicyAction::Allow);
-    config.llm.default_reasoning_effort = Some(loom_config::ReasoningEffort::High);
+    config.llm.default_reasoning_effort = loom_config::ReasoningEffort::High;
     let h = Harness::new(config, vec![text("one"), text("two")]);
     let session = h.agent.create_session(None).unwrap();
     let mut sub = session.subscribe(None);
-    assert_eq!(
-        session.info().reasoning,
-        Some(loom_proto::ReasoningEffort::High)
-    );
+    assert_eq!(session.info().reasoning, ReasoningEffort::High);
     run_turn(&session, &mut sub, "one").await;
     session.set_reasoning(loom_llm::ReasoningEffort::Low);
     run_turn(&session, &mut sub, "two").await;
@@ -112,10 +109,7 @@ async fn a_new_session_takes_the_configured_reasoning_effort() {
             Some(loom_llm::ReasoningEffort::Low),
         ]
     );
-    assert_eq!(
-        session.info().reasoning,
-        Some(loom_proto::ReasoningEffort::Low)
-    );
+    assert_eq!(session.info().reasoning, ReasoningEffort::Low);
 }
 
 #[tokio::test]

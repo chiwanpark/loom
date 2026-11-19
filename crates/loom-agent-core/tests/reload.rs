@@ -111,14 +111,14 @@ async fn sessions_keep_the_defaults_they_started_with() {
     let old = h.agent.create_session(None).unwrap();
     let before = old.info();
     assert_eq!(before.model.as_deref(), Some("scripted/test-model"));
-    assert_eq!(before.reasoning, None);
+    assert_eq!(before.reasoning, loom_proto::ReasoningEffort::Medium);
     assert_eq!(before.policy_default, loom_proto::PolicyAction::Ask);
     assert!(before.comment_guard);
 
     let mut notices = h.agent.notices();
     let mut next = config;
     next.llm.default_model = Some("scripted/other".into());
-    next.llm.default_reasoning_effort = Some(loom_config::ReasoningEffort::High);
+    next.llm.default_reasoning_effort = loom_config::ReasoningEffort::High;
     next.policy.default = PolicyAction::Allow;
     next.tools.comment_guard.mode = loom_config::CommentGuardMode::Off;
     h.agent.apply_config(next).unwrap();
@@ -130,7 +130,7 @@ async fn sessions_keep_the_defaults_they_started_with() {
 
     let info = h.agent.create_session(None).unwrap().info();
     assert_eq!(info.model.as_deref(), Some("scripted/other"));
-    assert_eq!(info.reasoning, Some(loom_proto::ReasoningEffort::High));
+    assert_eq!(info.reasoning, loom_proto::ReasoningEffort::High);
     assert_eq!(info.policy_default, loom_proto::PolicyAction::Allow);
     assert!(!info.comment_guard);
 

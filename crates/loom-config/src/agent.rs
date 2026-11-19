@@ -169,10 +169,8 @@ impl Default for SkillsConfig {
 pub struct LlmConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
-    /// The reasoning effort of sessions that have no effort of their own.
-    /// Unset leaves it to the model.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_reasoning_effort: Option<ReasoningEffort>,
+    /// The reasoning effort of new sessions.
+    pub default_reasoning_effort: ReasoningEffort,
     pub providers: ProvidersConfig,
 }
 
@@ -349,12 +347,13 @@ impl Default for WebSearchToolConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
     Minimal,
     Low,
+    #[default]
     Medium,
     High,
     Xhigh,

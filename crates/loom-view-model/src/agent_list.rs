@@ -125,7 +125,7 @@ mod tests {
         SessionInfo {
             id: SessionId(id.into()),
             model: None,
-            reasoning: None,
+            reasoning: loom_proto::ReasoningEffort::Medium,
             policy_default: loom_proto::PolicyAction::Ask,
             comment_guard: true,
             state,

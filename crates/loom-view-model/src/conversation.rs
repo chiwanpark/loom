@@ -703,8 +703,8 @@ impl<I> Conversation<I> {
 }
 
 /// The notice for a change of model or reasoning effort.
-fn model_changed(model: &str, reasoning: Option<ReasoningEffort>) -> String {
-    if reasoning == Some(ReasoningEffort::None) {
+fn model_changed(model: &str, reasoning: ReasoningEffort) -> String {
+    if reasoning == ReasoningEffort::None {
         return format!("Switched to {model} with reasoning off.");
     }
     let effort = crate::labels::reasoning_label(reasoning).to_lowercase();
@@ -872,7 +872,7 @@ mod tests {
         SessionInfo {
             id: SessionId("0123456789abcdef".into()),
             model: None,
-            reasoning: None,
+            reasoning: ReasoningEffort::Medium,
             policy_default: loom_proto::PolicyAction::Ask,
             comment_guard: true,
             state: SessionState::Idle,
@@ -1595,15 +1595,15 @@ mod tests {
                 SessionEvent::AssistantDelta { text: "Hi".into() },
                 SessionEvent::ModelChanged {
                     model: "p/big".into(),
-                    reasoning: Some(ReasoningEffort::Xhigh),
+                    reasoning: ReasoningEffort::Xhigh,
                 },
                 SessionEvent::ModelChanged {
                     model: "p/big".into(),
-                    reasoning: None,
+                    reasoning: ReasoningEffort::Medium,
                 },
                 SessionEvent::ModelChanged {
                     model: "p/small".into(),
-                    reasoning: Some(ReasoningEffort::None),
+                    reasoning: ReasoningEffort::None,
                 },
             ],
         );
@@ -1628,7 +1628,7 @@ mod tests {
             notices,
             [
                 "Switched to p/big with extra high reasoning effort.",
-                "Switched to p/big with model default reasoning effort.",
+                "Switched to p/big with medium reasoning effort.",
                 "Switched to p/small with reasoning off.",
             ]
         );
