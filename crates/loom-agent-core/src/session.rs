@@ -45,7 +45,7 @@ struct Turn {
 
 struct State {
     model: Option<ModelRef>,
-    reasoning: Option<ReasoningEffort>,
+    reasoning: ReasoningEffort,
     history: Vec<Message>,
     policy: SessionPolicy,
     turn: Option<Turn>,
@@ -174,7 +174,7 @@ impl Core {
 
     /// Tells clients when this request uses another model or effort than the
     /// session's last one did.
-    fn note_model(&self, model: &ModelRef, reasoning: Option<ReasoningEffort>) {
+    fn note_model(&self, model: &ModelRef, reasoning: ReasoningEffort) {
         let used = UsedModel {
             model: model.to_string(),
             reasoning,
@@ -183,7 +183,7 @@ impl Core {
         if previous.is_some_and(|previous| previous != used) {
             self.emit(SessionEvent::ModelChanged {
                 model: used.model,
-                reasoning: used.reasoning.map(convert::reasoning_to_proto),
+                reasoning: convert::reasoning_to_proto(used.reasoning),
             });
         }
     }
@@ -290,10 +290,7 @@ impl Session {
         let runtime = params.runtime.current();
         let config = &runtime.config;
         let state = StoredState {
-            reasoning: config
-                .llm
-                .default_reasoning_effort
-                .map(convert::reasoning_from_config),
+            reasoning: convert::reasoning_from_config(config.llm.default_reasoning_effort),
             policy: SessionPolicy {
                 default: config.policy.default,
                 rules: Vec::new(),
@@ -436,7 +433,7 @@ impl Session {
         SessionInfo {
             id: self.core.id.clone(),
             model,
-            reasoning: reasoning.map(convert::reasoning_to_proto),
+            reasoning: convert::reasoning_to_proto(reasoning),
             policy_default: convert::policy_to_proto(policy_default),
             comment_guard,
             created_at: self.core.created_at,
@@ -533,7 +530,7 @@ impl Session {
     }
 
     pub fn set_reasoning(&self, effort: ReasoningEffort) {
-        self.core.lock().reasoning = Some(effort);
+        self.core.lock().reasoning = effort;
         self.core.persist();
     }
 
@@ -1011,7 +1008,7 @@ async fn turn_loop(core: &Arc<Core>, cancel: &CancellationToken) -> Result<(), T
                     parameters: spec.parameters,
                 })
                 .collect(),
-            reasoning,
+            reasoning: Some(reasoning),
             max_output_tokens: None,
             session_id: Some(core.id.0.clone()),
             capabilities,

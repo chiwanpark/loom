@@ -626,7 +626,7 @@ mod view_tests {
         SessionInfo {
             id: SessionId("0123456789abcdef".into()),
             model: None,
-            reasoning: None,
+            reasoning: loom_client::proto::ReasoningEffort::Medium,
             policy_default: loom_client::proto::PolicyAction::Ask,
             comment_guard: true,
             state: SessionState::Idle,

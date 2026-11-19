@@ -20,12 +20,15 @@ pub const POLICY_CHOICES: [(PolicyAction, &str); 4] = [
 
 pub const COMMENT_GUARD_CHOICES: [(bool, &str); 2] = [(true, "On"), (false, "Off")];
 
-pub fn reasoning_label(effort: Option<ReasoningEffort>) -> &'static str {
-    REASONING_CHOICES
-        .iter()
-        .find(|(value, _)| Some(*value) == effort)
-        .map(|(_, label)| *label)
-        .unwrap_or("Model default")
+pub fn reasoning_label(effort: ReasoningEffort) -> &'static str {
+    match effort {
+        ReasoningEffort::None => "None",
+        ReasoningEffort::Minimal => "Minimal",
+        ReasoningEffort::Low => "Low",
+        ReasoningEffort::Medium => "Medium",
+        ReasoningEffort::High => "High",
+        ReasoningEffort::Xhigh => "Extra high",
+    }
 }
 
 pub fn policy_label(policy: PolicyAction) -> &'static str {

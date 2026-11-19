@@ -256,13 +256,13 @@ pub enum SessionEvent {
     },
     /// The next response comes from another model or with another reasoning
     /// effort than the session's last one. Not sent before a session's first
-    /// response. `reasoning` is `None` for the provider's default effort.
+    /// response.
     ///
     /// New variants go last: postcard stores the variant's position, and
     /// stored events must keep decoding.
     ModelChanged {
         model: String,
-        reasoning: Option<ReasoningEffort>,
+        reasoning: ReasoningEffort,
     },
     /// The conversation was cleared: clients drop everything shown before it.
     /// It is the first event of a session's log afterwards. Messages still
@@ -395,7 +395,7 @@ pub struct EventWindow {
 pub struct SessionInfo {
     pub id: SessionId,
     pub model: Option<String>,
-    pub reasoning: Option<ReasoningEffort>,
+    pub reasoning: ReasoningEffort,
     pub policy_default: PolicyAction,
     pub comment_guard: bool,
     pub state: SessionState,

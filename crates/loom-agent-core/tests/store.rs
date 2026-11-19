@@ -61,7 +61,7 @@ async fn sessions_survive_a_restart() {
     let info = &sessions[0];
     assert_eq!(info.title.as_deref(), Some("Write a file"));
     assert_eq!(info.model.as_deref(), Some(MODEL_REF));
-    assert_eq!(info.reasoning, Some(loom_proto::ReasoningEffort::High));
+    assert_eq!(info.reasoning, loom_proto::ReasoningEffort::High);
     // Nobody saw the completed turn before the restart.
     assert_eq!(info.state, SessionState::Completed);
     assert!(info.created_at > 0);
@@ -259,7 +259,7 @@ async fn deleted_sessions_are_removed_from_the_store() {
     assert_eq!(ids, vec![kept.id().clone()]);
 }
 
-fn model_changes(events: &[SessionEvent]) -> Vec<(String, Option<ReasoningEffort>)> {
+fn model_changes(events: &[SessionEvent]) -> Vec<(String, ReasoningEffort)> {
     events
         .iter()
         .filter_map(|e| match e {
@@ -290,7 +290,7 @@ async fn a_restart_keeps_what_a_model_change_is_measured_against() {
     let events = run_turn(&restored, &mut sub, "two").await;
     assert_eq!(
         model_changes(&events),
-        [(MODEL_REF.to_owned(), Some(ReasoningEffort::High))]
+        [(MODEL_REF.to_owned(), ReasoningEffort::High)]
     );
     let events = run_turn(&restored, &mut sub, "three").await;
     assert_eq!(model_changes(&events), []);
@@ -339,7 +339,7 @@ async fn an_older_session_measures_a_change_against_its_last_response() {
     let events = run_turn(&restored, &mut sub, "two").await;
     assert_eq!(
         model_changes(&events),
-        [("scripted/other".to_owned(), None)]
+        [("scripted/other".to_owned(), ReasoningEffort::Medium)]
     );
     agent.shutdown().await;
 }

@@ -1300,12 +1300,14 @@ private fun SessionInfo(
                 onClick = onModel.takeIf { enabled },
                 modifier = Modifier.weight(1f, fill = false),
             )
-            InfoItem(
-                LoomIcons.Brain,
-                reasoning?.let(::reasoningLabel) ?: "Model default",
-                description = "Reasoning effort",
-                onClick = onReasoning.takeIf { enabled },
-            )
+            reasoning?.let {
+                InfoItem(
+                    LoomIcons.Brain,
+                    reasoningLabel(it),
+                    description = "Reasoning effort",
+                    onClick = onReasoning.takeIf { enabled },
+                )
+            }
             policy?.let {
                 InfoItem(
                     LoomIcons.ShieldCheck,

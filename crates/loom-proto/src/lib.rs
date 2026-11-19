@@ -104,11 +104,7 @@ mod tests {
         });
         roundtrip(SessionEvent::ModelChanged {
             model: "provider/model".into(),
-            reasoning: Some(ReasoningEffort::High),
-        });
-        roundtrip(SessionEvent::ModelChanged {
-            model: "provider/model".into(),
-            reasoning: None,
+            reasoning: ReasoningEffort::High,
         });
         roundtrip(SessionEvent::Cleared);
         roundtrip(SessionEvent::Rewound { seq: 12 });

@@ -68,7 +68,7 @@ pub enum StoreError {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
     pub model: Option<String>,
-    pub reasoning: Option<loom_llm::ReasoningEffort>,
+    pub reasoning: loom_llm::ReasoningEffort,
     pub policy: SessionPolicy,
     pub history: Vec<Message>,
     #[serde(default)]
@@ -93,7 +93,7 @@ pub struct SessionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsedModel {
     pub model: String,
-    pub reasoning: Option<loom_llm::ReasoningEffort>,
+    pub reasoning: loom_llm::ReasoningEffort,
 }
 
 #[derive(Debug, Clone)]

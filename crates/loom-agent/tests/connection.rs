@@ -544,7 +544,7 @@ async fn session_settings_and_errors() {
         .set_reasoning(&session.id, ReasoningEffort::High)
         .await
         .unwrap();
-    assert_eq!(info.reasoning, Some(ReasoningEffort::High));
+    assert_eq!(info.reasoning, ReasoningEffort::High);
     let info = client.set_model(&session.id, "scripted/m").await.unwrap();
     assert_eq!(info.model.as_deref(), Some("scripted/m"));
 

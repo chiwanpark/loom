@@ -145,12 +145,13 @@ impl Message {
 }
 
 /// Ordered from no reasoning to the most.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
     Minimal,
     Low,
+    #[default]
     Medium,
     High,
     Xhigh,

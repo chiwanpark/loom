@@ -1268,7 +1268,7 @@ mod view_tests {
         SessionInfo {
             id: SessionId("0123456789abcdef".into()),
             model: None,
-            reasoning: None,
+            reasoning: ReasoningEffort::Medium,
             policy_default: loom_client::proto::PolicyAction::Ask,
             comment_guard: true,
             state: SessionState::Idle,
@@ -1381,7 +1381,7 @@ mod view_tests {
                 },
                 SessionEvent::ModelChanged {
                     model: "test/other".into(),
-                    reasoning: Some(ReasoningEffort::High),
+                    reasoning: ReasoningEffort::High,
                 },
             ] {
                 apply(conversation, event);

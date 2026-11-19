@@ -15,6 +15,7 @@ instructions:
 skills:
   enabled: true
 llm:
+  default_reasoning_effort: medium
   providers: {}
 tools:
   read:

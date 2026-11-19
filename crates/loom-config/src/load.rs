@@ -105,7 +105,7 @@ mod tests {
         assert!(config.llm.default_model.is_some());
         assert_eq!(
             config.llm.default_reasoning_effort,
-            Some(crate::ReasoningEffort::High)
+            crate::ReasoningEffort::High
         );
         assert_eq!(
             config.skills.paths,
@@ -144,6 +144,10 @@ mod tests {
         let config = parse("").unwrap();
         assert_eq!(config.allowed_roots, [PathBuf::from("/home/u")]);
         assert!(config.llm.providers.0.is_empty());
+        assert_eq!(
+            config.llm.default_reasoning_effort,
+            crate::ReasoningEffort::Medium
+        );
         assert_eq!(
             config.llm.providers.setting("any"),
             ProviderSetting::Default

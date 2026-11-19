@@ -383,8 +383,7 @@ fn render_event(
             let _ = writeln!(out, "[context {how}: {removed_messages} messages]");
         }
         SessionEvent::ModelChanged { model, reasoning } => {
-            let effort = reasoning.map_or("model default".into(), |e| format!("{e:?}"));
-            let _ = writeln!(out, "[model: {model}, reasoning effort: {effort}]");
+            let _ = writeln!(out, "[model: {model}, reasoning effort: {reasoning:?}]");
         }
         SessionEvent::Cleared => {
             let _ = writeln!(out, "[conversation cleared]");
