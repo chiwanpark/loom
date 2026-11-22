@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,11 +6,11 @@ use bytes::Bytes;
 use loom_config::RelayServerConfig;
 use loom_crypto::{ClientIdentity, FileResponder, HostIdentity, PairingUri, Pairings, Zeroizing};
 use loom_proto::InstanceId;
-use loom_proto::relay::AgentId;
-use loom_relay::{Relay, serve};
+use loom_proto::relay::{AgentId, HostId};
+use loom_relay::{HostCheck, Relay, serve};
 use loom_transport::{
-    AgentLinkOptions, IncomingChannel, LinkState, RelayClient, RelayEndpoint, RelayError,
-    connect_relay, pair_relay, spawn_agent_link,
+    AgentLinkOptions, IncomingChannel, LinkState, LocalLink, RelayClient, RelayEndpoint,
+    RelayError, connect_relay, pair_relay, serve_local_link, spawn_agent_link,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -21,9 +22,16 @@ struct TestRelay {
 }
 
 async fn start_relay(config: RelayServerConfig) -> TestRelay {
+    start_relay_with(Relay::new(config)).await
+}
+
+async fn start_relay_with_check(config: RelayServerConfig, hosts: Arc<dyn HostCheck>) -> TestRelay {
+    start_relay_with(Relay::with_host_check(config, hosts)).await
+}
+
+async fn start_relay_with(relay: Arc<Relay>) -> TestRelay {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let relay = Relay::new(config);
     let shutdown = CancellationToken::new();
     tokio::spawn(serve(relay.clone(), listener, shutdown.clone()));
     TestRelay {
@@ -335,6 +343,161 @@ async fn verifies_access_jwts() {
     ] {
         assert!(verifier.verify(&bad).await.is_err(), "{bad}");
     }
+}
+
+#[derive(Default)]
+struct TestHosts(std::sync::Mutex<HashSet<HostId>>);
+
+impl HostCheck for TestHosts {
+    fn check(&self, host: &HostId) -> Result<(), String> {
+        if self.0.lock().unwrap().contains(host) {
+            Ok(())
+        } else {
+            Err(format!("host {host} is not registered"))
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_check_decides_which_agents_register() {
+    let hosts = Arc::new(TestHosts::default());
+    let relay = start_relay_with_check(RelayServerConfig::default(), hosts.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_in(dir.path());
+    let mut rejected = start_agent(&relay.url, dir, host.clone(), "a");
+    let state = wait_state(&mut rejected.state, |s| {
+        matches!(s, LinkState::Disconnected(_))
+    })
+    .await;
+    assert!(
+        matches!(&state, LinkState::Disconnected(m) if m.contains("is not registered")),
+        "{state:?}"
+    );
+    rejected.shutdown.cancel();
+
+    hosts.0.lock().unwrap().insert(host.host_id());
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = start_agent(&relay.url, dir, host.clone(), "b");
+    wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
+    assert_eq!(relay.relay.online_agents(), 1);
+
+    hosts.0.lock().unwrap().clear();
+    assert_eq!(relay.relay.disconnect_host(&host.host_id()), 1);
+    let state = wait_state(
+        &mut agent.state,
+        |s| matches!(s, LinkState::Disconnected(m) if m.contains("is not registered")),
+    )
+    .await;
+    assert!(matches!(state, LinkState::Disconnected(_)));
+    assert_eq!(relay.relay.online_agents(), 0);
+    agent.shutdown.cancel();
+    relay.shutdown.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_agents_leave_the_limits_of_their_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_in(dir.path());
+    let mut config = RelayServerConfig {
+        allowed_hosts: vec![host.host_id().to_string()],
+        ..Default::default()
+    };
+    config.limits.max_connections_per_ip = 2;
+    let relay = start_relay(config).await;
+    let mut agents = Vec::new();
+    for name in ["a", "b", "c"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = start_agent(&relay.url, dir, host.clone(), name);
+        wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
+        agents.push(agent);
+    }
+    assert_eq!(relay.relay.online_agents(), 3);
+
+    let endpoint = RelayEndpoint::new(&relay.url);
+    let _one = RelayClient::connect(&endpoint).await.unwrap();
+    let _two = RelayClient::connect(&endpoint).await.unwrap();
+    let err = RelayClient::connect(&endpoint).await.err().unwrap();
+    assert!(err.to_string().contains("429"), "{err}");
+    for agent in agents {
+        agent.shutdown.cancel();
+    }
+    relay.shutdown.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_agents_take_channels_and_vouch_for_their_clients() {
+    let mut config = RelayServerConfig::default();
+    config.limits.max_connections_per_ip = 1;
+    let relay = start_relay(config).await;
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_in(dir.path());
+    let agent_id = AgentId {
+        host: host.host_id(),
+        instance: InstanceId("oracle".into()),
+    };
+    let local = relay.relay.attach_local(agent_id.clone()).unwrap();
+    assert_eq!(relay.relay.online_agents(), 1);
+    let responder = Arc::new(FileResponder::in_dir(dir.path()));
+    let identity = ClientIdentity::generate().unwrap();
+    responder
+        .clients
+        .authorize(identity.public_key(), "laptop")
+        .unwrap();
+    let (tx, mut incoming) = mpsc::channel(8);
+    let shutdown = CancellationToken::new();
+    tokio::spawn(serve_local_link(
+        LocalLink {
+            tx: local.tx,
+            rx: local.rx,
+        },
+        host.clone(),
+        responder,
+        tx,
+        shutdown.clone(),
+    ));
+
+    let endpoint = RelayEndpoint::new(&relay.url);
+    let mut stream = connect_relay(
+        &endpoint,
+        agent_id.clone(),
+        &identity,
+        &host.static_public(),
+    )
+    .await
+    .unwrap();
+    let mut channel = tokio::time::timeout(Duration::from_secs(10), incoming.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(channel.peer.label, "laptop");
+    stream.send(Bytes::from_static(b"ping")).await.unwrap();
+    assert_eq!(
+        channel.stream.recv().await.unwrap().unwrap(),
+        Bytes::from_static(b"ping")
+    );
+    channel
+        .stream
+        .send(Bytes::from_static(b"pong"))
+        .await
+        .unwrap();
+    assert_eq!(
+        stream.recv().await.unwrap().unwrap(),
+        Bytes::from_static(b"pong")
+    );
+
+    let err = RelayClient::connect(&endpoint).await.err().unwrap();
+    assert!(err.to_string().contains("429"), "{err}");
+    assert!(
+        !relay
+            .relay
+            .vouch(channel.channel + 1000, &channel.peer.pubkey)
+    );
+    assert!(relay.relay.vouch(channel.channel, &channel.peer.pubkey));
+    assert!(!relay.relay.vouch(channel.channel, &[9; 32]));
+    let _second = RelayClient::connect(&endpoint).await.unwrap();
+
+    shutdown.cancel();
+    relay.shutdown.cancel();
 }
 
 /// A relay of version 0.2, which speaks only version 1 of the protocol:

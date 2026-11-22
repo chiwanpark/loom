@@ -4855,6 +4855,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.23.1",
+ "blake3",
  "bytes",
  "clap",
  "futures",

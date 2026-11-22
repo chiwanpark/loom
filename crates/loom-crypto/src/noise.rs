@@ -63,6 +63,10 @@ pub trait Responder: Send + Sync {
     fn authorize(&self, client: &[u8; 32]) -> Result<String, String>;
     fn take_pairing(&self, id: &str) -> Option<Zeroizing<[u8; 32]>>;
     fn paired(&self, client: [u8; 32], label: &str) -> Result<(), String>;
+
+    fn paired_with(&self, client: [u8; 32], label: &str, _pairing_id: &str) -> Result<(), String> {
+        self.paired(client, label)
+    }
 }
 
 fn prologue(mode: u8, pairing_id: &str) -> Vec<u8> {
@@ -261,7 +265,7 @@ async fn respond_inner(
                 .map_err(|_| CryptoError::Invalid("the client label is not UTF-8".into()))?;
             let client = remote_static(&state)?;
             let secure = SecureChannel::new(state.into_transport_mode()?, channel, client);
-            if let Err(reason) = responder.paired(client, &label) {
+            if let Err(reason) = responder.paired_with(client, &label, &pairing_id) {
                 let _ = secure
                     .sender
                     .send(&with_status(STATUS_REJECTED, reason.as_bytes()))
