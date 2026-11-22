@@ -1,6 +1,6 @@
 # Loom-Next plan
 
-Status: draft for discussion (2026-11-22, revision 18). Nothing in this document is final.
+Status: draft for discussion (2026-11-22, revision 21). Nothing in this document is final.
 
 ## 1. Goal
 
@@ -22,6 +22,7 @@ Loom-Next is a self-hosted system like GitHub Codespaces.
 | Incus access | A `loom-host` daemon operates Incus for the oracle. The oracle holds no Incus certificate. |
 | IncusOS | Some hosts run IncusOS, which has no shell. Thus, `loom-host` must also work without an installation on the host. |
 | Storage | The IncusOS hosts use ZFS. The other hosts use the `dir` driver on ext4 or XFS. They cannot get a Btrfs or ZFS pool. |
+| Linux host | Your Linux host has an Enterprise Linux 9 distribution, kernel 5.14, an XFS root file system, and Incus 7.0.2. SELinux is disabled on it, and firewalld is not active. You confirmed this with `getenforce` and `systemctl is-active firewalld`. |
 | Users | One person uses an oracle. Paired devices have full access. |
 | Close | The first version has only "delete with a guard". Stop and resume come later. |
 | Environment | A base image and a setup script define the environment. Each host has its own environment configuration. |
@@ -40,7 +41,7 @@ Loom-Next is a self-hosted system like GitHub Codespaces.
 | Model accounts | You have more than one account for a model provider, for example a personal and a company Claude plan. The oracle keeps all accounts. A codespace uses one account for each model provider. |
 | Presets | The oracle keeps presets of agent configuration. Each preset has a name, one YAML file, `AGENTS.md`, and skills. The YAML file names its credentials in the oracle: model accounts, Git credentials, and secrets. It also sets the name of the environment variable for each secret. Each codespace uses one preset and keeps it until it closes. |
 | Classic modes | Local hosts, SSH hosts, relay hosts for directories, worktree sessions, and the pairing with agents go away after Loom-Next is stable. |
-| Branch | Each phase has its own branch `loom-next-phase-<n>`. After the phase, the branch merges into `main`. |
+| Branch | The development branch of Loom-Next is `loom-next`. No Loom-Next branch merges into `main` until the transition is finished. |
 
 ## 3. Research: GitHub Codespaces
 
@@ -224,6 +225,8 @@ In managed mode, the default policy is `allow`, and the landlock or bubblewrap s
 ### 6.10 The agent version follows the client
 
 The agent protocol needs the same version on both sides. `loom-host` keeps a cache of `loom-agent` releases and installs the version of the client that creates the codespace. The current update command covers later client updates.
+
+During the transition, the releases come from `main`, and their agent has no managed mode. Thus, `loom-host` can also take the agent binary from a local directory. This directory has a build of the branch `loom-next`. See section 8.
 
 ## 7. Design details
 
@@ -579,17 +582,22 @@ Phase 0 tested the two limits, and a root disk without a size, on the IncusOS ho
 
 ## 8. Compatibility with the current Loom (requirement 7)
 
-- Each phase has its own branch with the name `loom-next-phase-<n>`, for example `loom-next-phase-1`. The branch starts from `main`.
-- When a phase is complete, a pull request brings its branch into `main`. Then the branch of the next phase starts from `main`.
-- Thus, `main` has the classic modes and the complete phases of Loom-Next. You can make a release from `main` after each merge.
-- During a long phase, we rebase the phase branch onto `main`, so the branch has all fixes.
-- The new code is in new crates and behind new entry points. Thus, a phase does not change the classic modes.
+- The development branch of Loom-Next is `loom-next`. It starts from `main`.
+- No Loom-Next branch merges into `main` until the transition is finished. The transition is finished when phase 8 is complete.
+- Each phase has its own branch with the name `loom-next-phase-<n>`, for example `loom-next-phase-1`. The branch starts from `loom-next`.
+- When a phase is complete, a pull request brings its branch into `loom-next`. Then the branch of the next phase starts from `loom-next`.
+- At the end of the transition, one pull request brings `loom-next` into `main`.
+- Thus, `main` has only the current Loom during the transition. The work on the current Loom continues on `main`, with its releases.
+- We rebase `loom-next` onto `main` at regular intervals, so `loom-next` has all changes of `main`. An open phase branch then rebases onto `loom-next`.
+- The new code is in new crates and behind new entry points. Thus, the rebases stay small, and a phase does not change the classic modes.
 - The agent protocol does not change for Loom-Next, if possible. New commands go at the end of `Command`, which needs no version bump.
-- `loom-relay`, `relay.yaml`, local hosts, SSH hosts, relay hosts, and worktree sessions continue to work until phase 8.
-- The classic modes get fixes during this time, but no new functions.
+- On `loom-next`, `loom-relay`, `relay.yaml`, local hosts, SSH hosts, relay hosts, and worktree sessions continue to work until phase 8.
 - `client.yaml` gets a new host kind. Old kinds do not change until phase 8.
 - The normal checks (fmt, clippy, tests) run for the old and the new code in each commit.
-- Releases contain `loom-oracle` and `loom-host` as experimental binaries after phase 3.
+- CI runs for each pull request, also for a pull request into `loom-next`. It builds the archives of the binaries and the Android app.
+- The releases contain no Loom-Next code during the transition. The first release with Loom-Next comes after the merge of `loom-next` into `main`.
+- Until then, all binaries of Loom-Next come from builds of `loom-next`: `loom-oracle`, `loom-host`, the agent with the managed mode, and the clients.
+- From phase 3, the build workflow also makes archives of `loom-oracle` and `loom-host`.
 
 ## 9. Phases
 
@@ -685,7 +693,7 @@ Results:
 
 Your Linux host has an Enterprise Linux 9 distribution, kernel 5.14, an XFS root file system, and an NFS mount. This test host is a stand-in for it: a virtual machine in the test project of the first host. The test date is 2026-11-22.
 
-The virtual machine has Rocky Linux 9 with the kernel version of your host, 5.14.0-687.64.1.el9_8. The Incus pool is on XFS with the driver `dir`. Incus 7.0.0 comes from the COPR repository `neelc/incus`. Your host has Incus 7.0.2. SELinux and firewalld were off.
+The virtual machine has Rocky Linux 9 with the kernel version of your host, 5.14.0-687.64.1.el9_8. The Incus pool is on XFS with the driver `dir`. Incus 7.0.0 comes from the COPR repository `neelc/incus`. Your host has Incus 7.0.2. SELinux and firewalld were off. They are also off on your host.
 
 | Step | Time |
 | --- | --- |
@@ -734,7 +742,7 @@ Consequences for the design:
 Not tested yet:
 
 - One of your Linux hosts. The tests used virtual machines.
-- SELinux in enforcing mode, and firewalld. The state of the two on your host is not known.
+- SELinux in enforcing mode, and firewalld in operation. They are off on your host, so your host does not need this test. A host that has them in operation needs it.
 - Your NFS server: its export options, and group permissions.
 - Volumes for containers with isolated ID maps.
 - The connection to a GitHub Enterprise Server. Phase 3 tests it.
@@ -755,7 +763,7 @@ Not tested yet:
 | The oracle is one point of failure and a valuable target. It can start code in the company network. | Encrypted secrets, local rules of each `loom-host`, restricted Incus project, Cloudflare Access, audit log. Codespaces continue when the oracle is down. |
 | Long-lived tokens for the Git providers are in the oracle. A program in a container can read all Git credentials and secrets of its preset. | A preset names only the credentials that its work needs. Fine-grained tokens with selected repositories and an expiry date. The Git proxy of phase 7. |
 | All containers of the company network have one public IP address. The relay limits connections and messages for each IP address. | Limits for each registered peer in phase 1. |
-| Docker does not work in a container on one of your Linux hosts, for example with SELinux in enforcing mode. | Phase 0 showed that it works on IncusOS with ZFS, and on test hosts with `dir` on ext4 and on XFS. One test host had the kernel version of your host. `loom-host check` tests Docker on each host. The fallback is VM instances. |
+| Docker does not work in a container on one of your Linux hosts, because the host is different from the test hosts. An example is SELinux in enforcing mode. | Phase 0 showed that it works on IncusOS with ZFS, and on test hosts with `dir` on ext4 and on XFS. One test host had the kernel version of your host. `loom-host check` tests Docker on each host. The fallback is VM instances. |
 | Hosts with the `dir` driver start codespaces slowly. | Phase 0 measured 2 to 3 s more for an image of 1 GB. A small image with zstd compression. Prepared instances in phase 7. |
 | Version skew: old containers, a new client, and two clients of different versions. | The agent version follows the client. The current update command. JSON in the control service. |
 | Lost work when a container is deleted. | Close guard, push of the branch. Stop and retention warnings in phase 6. |
@@ -767,7 +775,8 @@ Not tested yet:
 | After phase 8, all work needs an oracle and an Incus host. | `ProcessDriver` stays for the development of Loom. |
 | A codespace uses the wrong preset, for example the personal Claude plan for the code of your company. | **New codespace** starts with the preset of the last codespace of the workspace. It shows the model accounts of the preset, and a warning when a repository has no Git credential. The lists show the preset of each codespace. |
 | A workspace has one host. When this host is down or full, the workspace gets no new codespace. | You can change the host of the workspace, or make a second workspace on a different host. The volumes do not move. |
-| A phase branch and `main` move apart during a long phase. | New crates and new entry points. Rebases of the phase branch onto `main`. A merge into `main` after each phase. |
+| `loom-next` and `main` move apart, because the transition is long and `main` continues to change. | New crates and new entry points. Small changes to the shared crates. Rebases of `loom-next` onto `main` at regular intervals. |
+| Loom-Next is in no release before the one merge at the end. Thus, problems can show late, and the merge is large. | Each phase ends with a state that you can use. You use builds of `loom-next` for daily work from phase 5a. The checks run for each commit. |
 | The agent, the **Changes** panel, and the Git actions work with one repository today. | In managed mode, the agent gets the list of repositories from the oracle. Phases 1 and 2 use one repository. Phase 3 adds the list. |
 | A volume carries files from one codespace to the next. A bad program can change files that a later codespace uses, possibly with different credentials. | The read-only mark. Separate volumes for personal and company workspaces. The clients show the volumes of each workspace. |
 | A volume is on one host and has no copy. Two codespaces can write to it at the same time. | Use volumes for caches and for data that you can get again. No automatic delete. The backup of a host is not a task of Loom. |
@@ -791,7 +800,8 @@ Not tested yet:
 
 ## 13. Open questions
 
-There are no open questions at this time.
+1. End of the transition: this plan merges `loom-next` into `main` after phase 8, when the classic modes are gone. Is this correct?
+2. Builds: during the transition, the binaries of Loom-Next come from builds of `loom-next` and from CI archives. Is this sufficient, or do you want pre-releases from `loom-next`?
 
 ## 14. Clients
 
