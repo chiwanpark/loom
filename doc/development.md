@@ -7,6 +7,9 @@
 | `crates/loom-agent` | The agent daemon `loom-agent` and its commands. |
 | `crates/loom-gui` | The desktop client `loom`, built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui). |
 | `crates/loom-relay` | The relay `loom-relay`. |
+| `crates/loom-oracle` | The oracle `loom-oracle` of Loom-Next: the relay, the control service, and the store. See [Oracle](oracle.md). |
+| `crates/loom-oracle-cli` | The test client `loom-oracle-cli` for the control service of the oracle. |
+| `loom-oracle-proto` | The JSON messages of the control service. |
 | `loom-agent-core` | The agent core. |
 | `loom-llm` | The model providers. |
 | `loom-tools` | The tools and the sandbox. |

@@ -4873,6 +4873,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-oracle-cli"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "loom-client",
+ "loom-config",
+ "loom-crypto",
+ "loom-oracle",
+ "loom-oracle-proto",
+ "loom-version",
+ "qrcode",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "loom-oracle-proto"
 version = "0.5.0"
 dependencies = [
