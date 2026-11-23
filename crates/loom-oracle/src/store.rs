@@ -11,8 +11,10 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::seal::{MasterKey, SealError, Sealer};
 
 mod codespaces;
+mod git;
 
 pub use codespaces::{CodespaceRow, HostRow, WorkspaceRow};
+pub use git::{CredentialCheck, CredentialRow, PresetRow, ProviderRow};
 
 const MIGRATIONS: &[&str] = &[
     "
@@ -95,6 +97,49 @@ CREATE TABLE codespaces (
 );
 CREATE INDEX codespaces_host ON codespaces (host);
 CREATE INDEX codespaces_peer ON codespaces (peer);
+",
+    "
+CREATE TABLE providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    web_url TEXT NOT NULL UNIQUE,
+    api_url TEXT NOT NULL,
+    git_name TEXT,
+    git_email TEXT,
+    route TEXT NOT NULL DEFAULT 'direct',
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE git_credentials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    provider INTEGER NOT NULL REFERENCES providers (id),
+    owner TEXT,
+    repository TEXT,
+    token BLOB NOT NULL,
+    login TEXT,
+    user_id INTEGER,
+    expires_at INTEGER,
+    checked_at INTEGER,
+    check_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    yaml TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE preset_git_credentials (
+    preset INTEGER NOT NULL REFERENCES presets (id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    credential INTEGER NOT NULL REFERENCES git_credentials (id),
+    PRIMARY KEY (preset, position)
+);
+ALTER TABLE workspace_repositories ADD COLUMN provider INTEGER REFERENCES providers (id);
+ALTER TABLE codespaces ADD COLUMN preset INTEGER REFERENCES presets (id) ON DELETE SET NULL;
+ALTER TABLE codespaces ADD COLUMN repositories TEXT NOT NULL DEFAULT '[]';
 ",
 ];
 

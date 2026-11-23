@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -6,12 +6,14 @@ use std::time::Duration;
 use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
-    AgentAddress, Bundle, ClientHello, ClientMessage, Codespace, CodespaceResult, Codespaces,
-    Command, Device, DeviceResult, Devices, Empty, Environment, Event, Host, HostCall, HostReport,
-    HostResult, Hosts, InstanceReport, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION,
-    Pairing, PairingLink, Pairings, RelayHost, RelayHostResult, RelayHosts, Reply, Repository,
-    Request, ServerHello, ServerMessage, Workspace, WorkspaceResult, Workspaces, encode,
-    parse_server_message,
+    AgentAddress, Branches, Bundle, ClientHello, ClientMessage, Codespace, CodespaceResult,
+    Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment, Event, GitCredential,
+    GitCredentialInput, GitCredentialResult, GitCredentials, GitProvider, GitProviderInput,
+    GitProviderResult, GitProviders, GitTokenResult, Host, HostCall, HostReport, HostResult, Hosts,
+    InstanceReport, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing,
+    PairingLink, Pairings, Preset, PresetResult, Presets, RelayHost, RelayHostResult, RelayHosts,
+    Reply, Repository, RepositorySearch, Request, ServerHello, ServerMessage, Workspace,
+    WorkspaceResult, Workspaces, encode, parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -138,9 +140,11 @@ impl OracleCalls {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewCodespace {
     pub workspace: String,
+    pub preset: Option<String>,
     pub cpus: Option<u32>,
     pub memory_mib: Option<u64>,
     pub base_branch: Option<String>,
+    pub base_branches: BTreeMap<String, String>,
     pub client_version: Option<String>,
 }
 
@@ -469,6 +473,22 @@ impl OracleClient {
             .workspace)
     }
 
+    pub async fn update_workspace(
+        &self,
+        name: &str,
+        host: Option<&str>,
+        repositories: Option<Vec<Repository>>,
+    ) -> Result<Workspace> {
+        Ok(self
+            .call::<WorkspaceResult>(Command::UpdateWorkspace {
+                name: name.to_owned(),
+                host: host.map(str::to_owned),
+                repositories,
+            })
+            .await?
+            .workspace)
+    }
+
     pub async fn delete_workspace(&self, name: &str) -> Result<()> {
         let name = name.to_owned();
         done(self.call(Command::DeleteWorkspace { name }).await)
@@ -482,16 +502,23 @@ impl OracleClient {
     }
 
     pub async fn create_codespace(&self, new: NewCodespace) -> Result<Codespace> {
-        Ok(self
-            .call::<CodespaceResult>(Command::CreateCodespace {
-                workspace: new.workspace,
-                cpus: new.cpus,
-                memory_mib: new.memory_mib,
-                base_branch: new.base_branch,
-                client_version: new.client_version,
-            })
-            .await?
-            .codespace)
+        Ok(self.create_codespace_with_warnings(new).await?.codespace)
+    }
+
+    pub async fn create_codespace_with_warnings(
+        &self,
+        new: NewCodespace,
+    ) -> Result<CodespaceResult> {
+        self.call(Command::CreateCodespace {
+            workspace: new.workspace,
+            preset: new.preset,
+            cpus: new.cpus,
+            memory_mib: new.memory_mib,
+            base_branch: new.base_branch,
+            base_branches: new.base_branches,
+            client_version: new.client_version,
+        })
+        .await
     }
 
     pub async fn close_codespace(&self, id: &str) -> Result<Codespace> {
@@ -500,6 +527,98 @@ impl OracleClient {
             .call::<CodespaceResult>(Command::CloseCodespace { id })
             .await?
             .codespace)
+    }
+
+    pub async fn git_providers(&self) -> Result<Vec<GitProvider>> {
+        Ok(self
+            .call::<GitProviders>(Command::ListGitProviders)
+            .await?
+            .providers)
+    }
+
+    pub async fn set_git_provider(&self, input: GitProviderInput) -> Result<GitProvider> {
+        Ok(self
+            .call::<GitProviderResult>(Command::SetGitProvider(input))
+            .await?
+            .provider)
+    }
+
+    pub async fn delete_git_provider(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeleteGitProvider { name }).await)
+    }
+
+    pub async fn git_credentials(&self) -> Result<Vec<GitCredential>> {
+        Ok(self
+            .call::<GitCredentials>(Command::ListGitCredentials)
+            .await?
+            .credentials)
+    }
+
+    pub async fn set_git_credential(&self, input: GitCredentialInput) -> Result<GitCredential> {
+        Ok(self
+            .call::<GitCredentialResult>(Command::SetGitCredential(input))
+            .await?
+            .credential)
+    }
+
+    pub async fn check_git_credential(&self, name: &str) -> Result<GitCredential> {
+        let name = name.to_owned();
+        Ok(self
+            .call::<GitCredentialResult>(Command::CheckGitCredential { name })
+            .await?
+            .credential)
+    }
+
+    pub async fn delete_git_credential(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeleteGitCredential { name }).await)
+    }
+
+    pub async fn presets(&self) -> Result<Vec<Preset>> {
+        Ok(self.call::<Presets>(Command::ListPresets).await?.presets)
+    }
+
+    pub async fn set_preset(&self, name: &str, yaml: &str) -> Result<Preset> {
+        let (name, yaml) = (name.to_owned(), yaml.to_owned());
+        Ok(self
+            .call::<PresetResult>(Command::SetPreset { name, yaml })
+            .await?
+            .preset)
+    }
+
+    pub async fn delete_preset(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeletePreset { name }).await)
+    }
+
+    pub async fn search_repositories(
+        &self,
+        provider: &str,
+        query: &str,
+    ) -> Result<RepositorySearch> {
+        let (provider, query) = (provider.to_owned(), query.to_owned());
+        self.call(Command::SearchRepositories { provider, query })
+            .await
+    }
+
+    pub async fn branches(
+        &self,
+        provider: &str,
+        owner: &str,
+        repository: &str,
+    ) -> Result<Branches> {
+        self.call(Command::ListBranches {
+            provider: provider.to_owned(),
+            owner: owner.to_owned(),
+            repository: repository.to_owned(),
+        })
+        .await
+    }
+
+    pub async fn git_credential(&self, url: &str) -> Result<GitTokenResult> {
+        let url = url.to_owned();
+        self.call(Command::GitCredential { url }).await
     }
 
     pub async fn host_report(&self, report: HostReport) -> Result<()> {

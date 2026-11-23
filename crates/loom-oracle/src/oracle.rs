@@ -24,8 +24,10 @@ use crate::session::Session;
 use crate::store::{PairingRow, PeerRow, RelayHostRow, Store, StoreError};
 
 mod codespaces;
+mod git;
 
-pub use codespaces::{valid_branch, validate_environment};
+pub use codespaces::{NewCodespaceArgs, valid_branch, validate_environment};
+pub use git::{normalize_url, parse_preset, provider_path, resolve_repository, select_credential};
 
 pub const STORE_FILE: &str = "oracle.db";
 pub const CREDENTIALS_ENV: &str = "CREDENTIALS_DIRECTORY";
@@ -189,6 +191,8 @@ pub struct Oracle {
     calls: Mutex<HashMap<u64, codespaces::PendingCall>>,
     next_call: AtomicU64,
     codespace_lock: Mutex<()>,
+    http: loom_github::Http,
+    reach: Mutex<git::ReachCache>,
 }
 
 impl Oracle {
@@ -229,6 +233,8 @@ impl Oracle {
             calls: Mutex::new(HashMap::new()),
             next_call: AtomicU64::new(1),
             codespace_lock: Mutex::new(()),
+            http: loom_github::Http::new()?,
+            reach: Mutex::new(HashMap::new()),
         }))
     }
 

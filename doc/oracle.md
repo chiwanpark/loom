@@ -105,11 +105,24 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `hosts` | Lists the hosts with their status and their report. |
 | `remove-host <name>` | Removes a host. The oracle refuses this while a workspace uses the host. |
 | `set-environment <host> [--base-image <image>] [--setup-script <path>] [--env <name>=<value>]… [--ca-certificate <path>]… [--registry-mirror <url>]…` | Replaces the environment configuration of a host. The host builds a new image for the next codespace. |
+| `providers` | Lists the Git providers. |
+| `set-provider <name> --url <url> [--api-url <url>] [--git-name <name>] [--git-email <email>] [--route direct\|hosts]` | Adds or changes a Git provider. The default API URL is `https://api.github.com` for `https://github.com`, and `<url>/api/v3` for other servers. |
+| `delete-provider <name>` | Deletes a Git provider. The oracle refuses this while a credential or a workspace uses it. |
+| `credentials` | Lists the Git credentials. The list does not show the tokens. |
+| `set-credential <name> --provider <provider> [--owner <owner> [--repository <repository>]] [--token-file <path>]` | Adds or changes a Git credential. `--token-file -` reads the token from standard input. A new credential needs a token. The oracle checks the token. |
+| `check-credential <name>` | Checks the token again. |
+| `delete-credential <name>` | Deletes a Git credential. The oracle refuses this while a preset uses it. |
+| `presets` | Lists the presets. |
+| `set-preset <name> <path>` | Adds or changes a preset from an `agent.yaml` file. |
+| `delete-preset <name>` | Deletes a preset. The oracle refuses this while an open codespace uses it. |
+| `search <provider> [<query>]` | Searches the repositories of a provider. |
+| `branches <provider> <owner>/<repository>` | Lists the branches of a repository. |
 | `workspaces` | Lists the workspaces. |
-| `create-workspace <name> --host <host> --repository <url> [--directory <name>] [--branch <branch>]` | Makes a workspace with one public repository. |
+| `create-workspace <name> --host <host> --repository <repository>…` | Makes a workspace. Give each repository as `<url>[,directory=<name>][,branch=<branch>]`. `<url>` can also be `<provider>:<owner>/<repository>`. |
+| `update-workspace <name> [--host <host>] [--repository <repository>…]` | Changes the host or replaces the repositories of a workspace. Open codespaces do not change. |
 | `delete-workspace <name>` | Deletes a workspace. The oracle refuses this while a codespace of the workspace is open. |
 | `codespaces [--all]` | Lists the codespaces. `--all` also shows the closed codespaces. |
-| `create-codespace <workspace> [--cpus <n>] [--memory <size>] [--branch <branch>] [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. |
+| `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. |
 | `close-codespace <id> [--no-wait]` | Closes a codespace. The host deletes its instance. |
 | `client-entry <id> [--name <name>]` | Shows the host entry for `client.yaml` of the desktop client. |
 | `watch [--count <n>]` | Shows the events of the oracle until you stop it. |
@@ -135,6 +148,53 @@ The oracle and `loom-relay` use the same limits from `limits` in their files. A 
 - A device uses its own limits after it opens a channel to the control service.
 
 Thus, many agents and devices behind one public IP address do not share one limit. Before this change, all limits applied to each IP address.
+
+## Git providers
+
+A Git provider is github.com or a GitHub Enterprise Server. It has a name, a web URL, an API URL, an optional Git identity, and a route.
+
+- With the route `direct`, the oracle sends API calls to the provider.
+- With the route `hosts`, the oracle sends each API call through a connected host that reaches the provider. Use this route when the oracle cannot reach the provider.
+
+Each host tests which providers it reaches when it connects and when a provider changes. `loom-oracle-cli hosts` shows the result. The oracle keeps a result for 10 minutes.
+
+A workspace can have up to 20 repositories. The oracle finds the provider of a repository from the start of its URL. A repository whose URL matches no provider is public: the codespace clones it without a credential.
+
+The host of a workspace must reach the providers of all its repositories:
+
+- When you save a workspace, the oracle refuses it if the host is connected and cannot reach a provider.
+- When you make a codespace, the oracle refuses it if the host is not connected or cannot reach a provider.
+
+### Git credentials
+
+A Git credential is a token of a provider, for example a fine-grained personal access token. The oracle keeps the token encrypted with the master key. A client cannot read a token back.
+
+A credential has a scope:
+
+- all repositories of the provider;
+- the repositories of one owner (`--owner`);
+- one repository (`--owner` and `--repository`).
+
+When the oracle saves a credential, it reads the user and the expiry date of the token from the provider.
+
+### Presets
+
+A preset is an `agent.yaml` file. The oracle validates it when you save it. Phase 3 uses only its `git.credentials` section, a list of credential names:
+
+```yaml
+git:
+  credentials: [ghe-work, github-personal]
+```
+
+A codespace with a preset can use these credentials. For each repository, the codespace uses the credential with the smallest scope that matches. If two credentials have the same scope, the first in the list wins.
+
+The codespace configures Git for each provider:
+
+- The Git credential helper asks the oracle for the token of each repository when Git needs it. Git does not keep the token.
+- `gh` uses the credential of the first repository of the provider. The codespace writes this token to the configuration file of `gh`.
+- The Git name and email come from the provider. If the provider has no name, the codespace uses the login of the credential. If the provider is github.com and has no email, the codespace uses the noreply address of the login. For other providers, set the email on the provider. When the codespace has no email for a provider, the oracle shows a warning.
+
+When a provider, a credential, or a preset changes, the oracle sends `git_changed` to the codespaces. They read the new setup.
 
 ## Control service
 
@@ -175,11 +235,24 @@ Commands of devices:
 | `list_hosts` | | `hosts` |
 | `remove_host` | `name` | |
 | `set_host_environment` | `name`, `environment` | `host` |
+| `list_git_providers` | | `providers` |
+| `set_git_provider` | `name`, `web_url`, optional `api_url`, `git_name`, `git_email`, `route` | `provider` |
+| `delete_git_provider` | `name` | |
+| `list_git_credentials` | | `credentials` |
+| `set_git_credential` | `name`, `provider`, optional `owner`, `repository`, `token` | `credential` |
+| `check_git_credential` | `name` | `credential` |
+| `delete_git_credential` | `name` | |
+| `list_presets` | | `presets` |
+| `set_preset` | `name`, `yaml` | `preset` |
+| `delete_preset` | `name` | |
+| `search_repositories` | `provider`, `query` | `repositories`, `more`, `errors` |
+| `list_branches` | `provider`, `owner`, `repository` | `branches`, `default_branch`, `more` |
 | `list_workspaces` | | `workspaces` |
-| `create_workspace` | `name`, `host`, `repositories` (one `url`, optional `directory` and `base_branch`) | `workspace` |
+| `create_workspace` | `name`, `host`, `repositories` (each with `url`, optional `provider`, `directory`, and `base_branch`) | `workspace` |
+| `update_workspace` | `name`, optional `host` and `repositories` | `workspace` |
 | `delete_workspace` | `name` | |
 | `list_codespaces` | | `codespaces` |
-| `create_codespace` | `workspace`, optional `cpus`, `memory_mib`, `base_branch`, `client_version` | `codespace` |
+| `create_codespace` | `workspace`, optional `preset`, `cpus`, `memory_mib`, `base_branch`, `base_branches` (directory to branch), `client_version` | `codespace`, `warnings` |
 | `close_codespace` | `id` | `codespace` |
 
 The environment of a host has `base_image`, `setup_script`, `variables`, `ca_certificates`, and `docker.registry_mirrors`. All are optional.
@@ -192,22 +265,23 @@ Commands of hosts:
 | `host_instances` | `instances`: codespace, instance, oracle, running | The oracle deletes the instances that have no open codespace. It marks a codespace `lost` when its instance is missing. |
 | `instance_progress` | `codespace`, `step` | A step of `create_instance`, for example the image build. |
 
-Calls to hosts are `create_instance` (codespace, instance name, limits, environment, bootstrap file, and agent version), `delete_instance`, and `list_instances`.
+Calls to hosts are `create_instance` (codespace, instance name, limits, environment, bootstrap file, and agent version), `delete_instance`, `list_instances`, `check_workspace` (the API URLs of providers to test), and `provider_request` (one API call to a provider).
 
 Commands of codespace agents:
 
 | Command | Fields | Result |
 | --- | --- | --- |
-| `subscribe` | | The agent gets `device_keys_changed`. |
-| `codespace_bundle` | | The repositories, the branch, the keys of the devices, and the relay URL. |
+| `subscribe` | | The agent gets `device_keys_changed` and `git_changed`. |
+| `codespace_bundle` | | The repositories, the branch, the keys of the devices, the relay URL, the preset, and the Git setup of each provider. |
 | `codespace_agent` | `address`: `host_id`, `host_key`, `instance` | The relay of the oracle accepts this agent. |
 | `codespace_progress` | `step` | |
 | `codespace_ready` | | |
 | `codespace_failed` | `error` | |
+| `git_credential` | `url` | `token` with `username`, `password`, and `expires_at`, or no token |
 
 A codespace has one of these states: `provisioning`, `starting`, `ready`, `closing`, `closed`, `failed`, and `lost`.
 
-The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_removed`, `relay_host_changed`, `relay_host_removed`, `host_changed`, `host_removed`, `workspace_changed`, `workspace_removed`, `codespace_changed`, `codespace_progress`, and `codespace_removed`. A closed codespace is removed with its workspace or its host. If a client reads the events too slowly, the oracle sends `events_lost`. Then the client reads the lists again.
+The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_removed`, `relay_host_changed`, `relay_host_removed`, `host_changed`, `host_removed`, `workspace_changed`, `workspace_removed`, `codespace_changed`, `codespace_progress`, `codespace_removed`, `git_provider_changed`, `git_provider_removed`, `git_credential_changed`, `git_credential_removed`, `preset_changed`, and `preset_removed`. A closed codespace is removed with its workspace or its host. If a client reads the events too slowly, the oracle sends `events_lost`. Then the client reads the lists again.
 
 The error codes are `bad_request`, `unknown_command`, `not_found`, `forbidden`, `conflict`, `unavailable`, and `internal`.
 

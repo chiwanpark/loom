@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::{CheckResult, GitSetup, ProviderRequest, WorkspaceCheck};
+
 pub const DEFAULT_CPUS: u32 = 2;
 pub const DEFAULT_MEMORY_MIB: u64 = 4096;
 pub const CONNECTION_RELAY: &str = "relay";
@@ -61,11 +63,15 @@ pub struct Host {
     pub environment: Environment,
     #[serde(default)]
     pub codespaces: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reach: Vec<CheckResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repository {
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +155,8 @@ pub struct Codespace {
     pub id: String,
     pub workspace: String,
     pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
     pub state: CodespaceState,
     pub cpus: u32,
     pub memory_mib: u64,
@@ -156,6 +164,8 @@ pub struct Codespace {
     pub branch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repositories: Vec<Repository>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentAddress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +190,10 @@ pub struct Bundle {
     pub repositories: Vec<Repository>,
     pub devices: Vec<DeviceKey>,
     pub relay_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub git: GitSetup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +235,8 @@ pub enum HostCall {
         instance: String,
     },
     ListInstances,
+    CheckWorkspace(WorkspaceCheck),
+    ProviderRequest(Box<ProviderRequest>),
     #[serde(other)]
     Unknown,
 }
@@ -253,6 +269,8 @@ pub struct Codespaces {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodespaceResult {
     pub codespace: Codespace,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

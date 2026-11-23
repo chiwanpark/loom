@@ -3,6 +3,7 @@ mod driver;
 mod incus;
 mod link;
 mod process;
+mod providers;
 
 use std::sync::Arc;
 
@@ -83,5 +84,6 @@ pub fn host(config: HostConfig, dirs: &Dirs) -> anyhow::Result<Host> {
         config,
         oracle,
         identity,
+        http: loom_github::Http::new()?,
     })
 }

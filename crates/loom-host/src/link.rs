@@ -131,6 +131,7 @@ pub struct Host {
     pub identity: Arc<ClientIdentity>,
     pub driver: Arc<dyn Driver>,
     pub agents: Arc<dyn AgentSource>,
+    pub http: loom_github::Http,
 }
 
 fn internal(err: anyhow::Error) -> OracleError {
@@ -245,6 +246,14 @@ impl Host {
                     .map_err(internal)?;
                 serde_json::to_value(Instances { instances })
                     .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
+            }
+            HostCall::CheckWorkspace(check) => {
+                let result = crate::providers::check(&self.http, &check).await;
+                serde_json::to_value(result)
+                    .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
+            }
+            HostCall::ProviderRequest(request) => {
+                crate::providers::request(&self.http, &request).await
             }
             HostCall::Unknown => Err(OracleError::new(
                 ErrorCode::UnknownCommand,

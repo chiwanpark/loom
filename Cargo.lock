@@ -4706,6 +4706,7 @@ dependencies = [
  "loom-client",
  "loom-config",
  "loom-crypto",
+ "loom-github",
  "loom-host",
  "loom-llm",
  "loom-oracle",
@@ -4872,6 +4873,7 @@ dependencies = [
  "loom-client",
  "loom-config",
  "loom-crypto",
+ "loom-github",
  "loom-incus",
  "loom-transport",
  "loom-update",
@@ -4972,6 +4974,7 @@ name = "loom-oracle"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "blake3",
  "bytes",
@@ -4980,6 +4983,7 @@ dependencies = [
  "loom-client",
  "loom-config",
  "loom-crypto",
+ "loom-github",
  "loom-oracle-proto",
  "loom-proto",
  "loom-relay",
@@ -4996,6 +5000,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]

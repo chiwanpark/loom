@@ -1,10 +1,13 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use loom_oracle_proto::{
     ClientMessage, CodespaceResult, Codespaces, Command, DeviceResult, Devices, Empty, ErrorCode,
-    Event, HostResult, Hosts, InvalidMessage, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo,
+    Event, GitCredentialResult, GitCredentials, GitProviderResult, GitProviders, HostResult, Hosts,
+    InvalidMessage, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets,
     RelayHostResult, RelayHosts, Request, Response, Role, ServerHello, ServerMessage,
     WorkspaceResult, Workspaces, encode, parse_client_message,
 };
@@ -14,12 +17,14 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::oracle::{Oracle, pairing_ttl};
+use crate::oracle::{NewCodespaceArgs, Oracle, pairing_ttl};
 use crate::store::PeerRow;
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 const OUT_QUEUE: usize = 256;
 const WRITER_DRAIN: Duration = Duration::from_secs(2);
+
+type Later = Pin<Box<dyn Future<Output = Result<Value, OracleError>> + Send>>;
 
 fn ok(value: impl Serialize) -> Result<Value, OracleError> {
     serde_json::to_value(value).map_err(|e| OracleError::new(ErrorCode::Internal, e.to_string()))
@@ -50,10 +55,24 @@ fn forbidden(role: Role, who: &str) -> OracleError {
 
 fn shown_to(role: Role, event: &Event) -> bool {
     match role {
-        Role::Device => !matches!(event, Event::DeviceKeysChanged),
-        Role::Codespace => matches!(event, Event::DeviceKeysChanged | Event::EventsLost),
+        Role::Device => !matches!(event, Event::DeviceKeysChanged | Event::GitChanged),
+        Role::Codespace => matches!(
+            event,
+            Event::DeviceKeysChanged | Event::GitChanged | Event::EventsLost
+        ),
         _ => false,
     }
+}
+
+fn response(id: u64, result: Result<Value, OracleError>) -> ServerMessage {
+    ServerMessage::Response(match result {
+        Ok(result) => Response {
+            id,
+            result: Some(result),
+            error: None,
+        },
+        Err(error) => Response::error(id, error),
+    })
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -183,14 +202,23 @@ impl Session {
                 }
                 Step::Frame(bytes) => match parse_client_message(&bytes) {
                     Ok(ClientMessage::Request(Request { id, command })) => {
-                        ServerMessage::Response(match self.handle(command) {
-                            Ok(result) => Response {
-                                id,
-                                result: Some(result),
-                                error: None,
-                            },
-                            Err(error) => Response::error(id, error),
-                        })
+                        match self.later(command) {
+                            Ok(later) => {
+                                let out = out.clone();
+                                let kill = self.kill.clone();
+                                tokio::spawn(async move {
+                                    let result = tokio::select! {
+                                        result = later => result,
+                                        _ = kill.cancelled() => return,
+                                    };
+                                    if let Ok(bytes) = encode(&response(id, result)) {
+                                        let _ = out.send(bytes).await;
+                                    }
+                                });
+                                continue;
+                            }
+                            Err(command) => response(id, self.handle(*command)),
+                        }
                     }
                     Ok(ClientMessage::Hello(_)) => continue,
                     Ok(ClientMessage::Reply(reply)) => {
@@ -225,6 +253,85 @@ impl Session {
             Role::Codespace => self.handle_codespace(command),
             Role::Unknown => Err(forbidden(self.peer.role, "known peers")),
         }
+    }
+
+    fn later(&self, command: Command) -> Result<Later, Box<Command>> {
+        if self.peer.role != Role::Device {
+            return Err(Box::new(command));
+        }
+        let oracle = self.oracle.clone();
+        let me = Some(self.peer.id);
+        Ok(match command {
+            Command::CreateWorkspace {
+                name,
+                host,
+                repositories,
+            } => Box::pin(async move {
+                ok(WorkspaceResult {
+                    workspace: oracle
+                        .create_workspace(&name, &host, &repositories, me)
+                        .await?,
+                })
+            }),
+            Command::UpdateWorkspace {
+                name,
+                host,
+                repositories,
+            } => Box::pin(async move {
+                ok(WorkspaceResult {
+                    workspace: oracle
+                        .update_workspace(&name, host.as_deref(), repositories.as_deref(), me)
+                        .await?,
+                })
+            }),
+            Command::CreateCodespace {
+                workspace,
+                preset,
+                cpus,
+                memory_mib,
+                base_branch,
+                base_branches,
+                client_version,
+            } => Box::pin(async move {
+                let args = NewCodespaceArgs {
+                    workspace,
+                    preset,
+                    cpus,
+                    memory_mib,
+                    base_branch,
+                    base_branches,
+                    client_version,
+                };
+                let (codespace, warnings) = oracle.create_codespace(args, me).await?;
+                ok(CodespaceResult {
+                    codespace,
+                    warnings,
+                })
+            }),
+            Command::SetGitCredential(input) => Box::pin(async move {
+                ok(GitCredentialResult {
+                    credential: oracle.set_git_credential(input, me).await?,
+                })
+            }),
+            Command::CheckGitCredential { name } => Box::pin(async move {
+                ok(GitCredentialResult {
+                    credential: oracle.check_git_credential(&name).await?,
+                })
+            }),
+            Command::SearchRepositories { provider, query } => {
+                Box::pin(async move { ok(oracle.search_repositories(&provider, &query).await?) })
+            }
+            Command::ListBranches {
+                provider,
+                owner,
+                repository,
+            } => {
+                Box::pin(
+                    async move { ok(oracle.list_branches(&provider, &owner, &repository).await?) },
+                )
+            }
+            other => return Err(Box::new(other)),
+        })
     }
 
     fn subscribe(&mut self, subscribe: bool) -> Result<Value, OracleError> {
@@ -278,6 +385,7 @@ impl Session {
                 self.oracle.codespace_failed(me, &error)?;
                 ok(Empty {})
             }
+            Command::GitCredential { url } => ok(self.oracle.git_token(me, &url)?),
             _ => Err(forbidden(self.peer.role, "devices")),
         }
     }
@@ -339,13 +447,6 @@ impl Session {
             Command::ListWorkspaces => ok(Workspaces {
                 workspaces: oracle.workspaces()?,
             }),
-            Command::CreateWorkspace {
-                name,
-                host,
-                repositories,
-            } => ok(WorkspaceResult {
-                workspace: oracle.create_workspace(&name, &host, &repositories, me)?,
-            }),
             Command::DeleteWorkspace { name } => {
                 oracle.delete_workspace(&name, me)?;
                 ok(Empty {})
@@ -353,25 +454,37 @@ impl Session {
             Command::ListCodespaces => ok(Codespaces {
                 codespaces: oracle.codespaces()?,
             }),
-            Command::CreateCodespace {
-                workspace,
-                cpus,
-                memory_mib,
-                base_branch,
-                client_version,
-            } => ok(CodespaceResult {
-                codespace: oracle.create_codespace(
-                    &workspace,
-                    cpus,
-                    memory_mib,
-                    base_branch,
-                    client_version,
-                    me,
-                )?,
-            }),
             Command::CloseCodespace { id } => ok(CodespaceResult {
                 codespace: oracle.close_codespace(&id, me)?,
+                warnings: Vec::new(),
             }),
+            Command::ListGitProviders => ok(GitProviders {
+                providers: oracle.git_providers()?,
+            }),
+            Command::SetGitProvider(input) => ok(GitProviderResult {
+                provider: oracle.set_git_provider(&input, me)?,
+            }),
+            Command::DeleteGitProvider { name } => {
+                oracle.delete_git_provider(&name, me)?;
+                ok(Empty {})
+            }
+            Command::ListGitCredentials => ok(GitCredentials {
+                credentials: oracle.git_credentials()?,
+            }),
+            Command::DeleteGitCredential { name } => {
+                oracle.delete_git_credential(&name, me)?;
+                ok(Empty {})
+            }
+            Command::ListPresets => ok(Presets {
+                presets: oracle.presets()?,
+            }),
+            Command::SetPreset { name, yaml } => ok(PresetResult {
+                preset: oracle.set_preset(&name, &yaml, me)?,
+            }),
+            Command::DeletePreset { name } => {
+                oracle.delete_preset(&name, me)?;
+                ok(Empty {})
+            }
             Command::HostReport { .. }
             | Command::HostInstances { .. }
             | Command::InstanceProgress { .. } => Err(forbidden(self.peer.role, "hosts")),

@@ -47,6 +47,7 @@ futures = "0.3.34"
 loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
+loom-github = { path = "../loom-github" }
 loom-host = { path = "../loom-host" }
 loom-llm = { path = "../loom-llm" }
 loom-oracle = { path = "../loom-oracle" }

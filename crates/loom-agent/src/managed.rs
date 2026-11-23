@@ -447,11 +447,14 @@ mod tests {
             branch: "loom/c1".into(),
             repositories: vec![Repository {
                 url: origin.to_string_lossy().into_owned(),
+                provider: None,
                 directory: Some("server".into()),
                 base_branch: Some("main".into()),
             }],
             devices: Vec::new(),
             relay_url: "ws://127.0.0.1:1".into(),
+            preset: None,
+            git: Default::default(),
         };
         let path = prepare_workspace(&root, &bundle).await.unwrap();
         assert_eq!(path, root.join("server"));

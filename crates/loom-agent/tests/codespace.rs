@@ -227,6 +227,7 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
             Some(PathBuf::from(BIN)),
             root.join("agents"),
         )),
+        http: loom_github::Http::new().unwrap(),
     };
     tokio::spawn(host.run(shutdown.clone()));
     for _ in 0..200 {
@@ -243,6 +244,7 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
             "box",
             vec![Repository {
                 url: format!("{files}/app.git"),
+                provider: None,
                 directory: None,
                 base_branch: None,
             }],

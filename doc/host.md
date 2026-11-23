@@ -142,6 +142,14 @@ The device keys of the oracle are the keys that the agent of a codespace accepts
 
 `loom-oracle-cli close-codespace <id>` deletes the container of the codespace and revokes the keys of its agent.
 
+## Git providers
+
+The oracle asks each connected host which Git providers it reaches. The host sends a request to the API URL of each provider. Any HTTP answer counts as a reach. `loom-oracle-cli hosts` shows the result.
+
+For a provider with the route `hosts`, the oracle sends API calls through a host that reaches the provider, for example the search of repositories. The host sends each call to the API URL that the oracle gives. It sends only `GET`, `POST`, and `PATCH` requests to paths in the API.
+
+See [the oracle document](oracle.md#git-providers) for providers, credentials, and presets.
+
 ## Codespace agents
 
 In a codespace, `loom-agent serve --managed` runs the agent:
