@@ -462,6 +462,110 @@ pub async fn changes(root: &Path, base: CommitBase<'_>) -> Result<WorkspaceChang
     })
 }
 
+pub async fn nested_repositories(root: &Path) -> Vec<String> {
+    if is_repository(root).await {
+        return Vec::new();
+    }
+    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let dir = entry.path();
+        if !name.starts_with('.')
+            && tokio::fs::metadata(&dir).await.is_ok_and(|m| m.is_dir())
+            && tokio::fs::symlink_metadata(dir.join(".git")).await.is_ok()
+        {
+            found.push(name);
+        }
+    }
+    found.sort();
+    found
+}
+
+fn prefixed(directory: &str, mut file: FileChange) -> FileChange {
+    file.path = format!("{directory}/{}", file.path);
+    file.old_path = file.old_path.map(|old| format!("{directory}/{old}"));
+    file
+}
+
+pub async fn nested_changes(
+    root: &Path,
+    directories: &[String],
+) -> Result<WorkspaceChanges, ApiError> {
+    let mut all = WorkspaceChanges {
+        repository: !directories.is_empty(),
+        ..WorkspaceChanges::default()
+    };
+    let mut branches = Vec::new();
+    let mut committed: Option<CommittedChanges> = None;
+    for directory in directories {
+        let changes = changes(&root.join(directory), CommitBase::default()).await?;
+        if !changes.repository {
+            continue;
+        }
+        branches.push(changes.branch.clone());
+        all.truncated |= changes.truncated;
+        all.files.extend(
+            changes
+                .files
+                .into_iter()
+                .map(|file| prefixed(directory, file)),
+        );
+        if let Some(commits) = changes.committed {
+            let merged = committed.get_or_insert_with(|| CommittedChanges {
+                base: commits.base.clone(),
+                since: commits.since.clone(),
+                commits: Vec::new(),
+                files: Vec::new(),
+                truncated: false,
+            });
+            if merged.base != commits.base {
+                merged.base = "the upstream branches".to_owned();
+            }
+            merged.truncated |= commits.truncated;
+            merged.commits.extend(commits.commits);
+            merged.files.extend(
+                commits
+                    .files
+                    .into_iter()
+                    .map(|file| prefixed(directory, file)),
+            );
+        }
+    }
+    branches.dedup();
+    if let [branch] = branches.as_slice() {
+        all.branch = branch.clone();
+    }
+    if let Some(committed) = &mut committed {
+        committed.commits.sort_by_key(|c| std::cmp::Reverse(c.time));
+    }
+    all.committed = committed;
+    Ok(all)
+}
+
+pub fn split_nested<'a>(
+    directories: &[String],
+    path: &'a str,
+    old_path: Option<&'a str>,
+) -> Option<(String, &'a str, Option<&'a str>)> {
+    let (directory, rest) = path.split_once('/')?;
+    if !directories.iter().any(|d| d == directory) {
+        return None;
+    }
+    let old = match old_path {
+        Some(old) => Some(
+            old.strip_prefix(directory)
+                .and_then(|o| o.strip_prefix('/'))?,
+        ),
+        None => None,
+    };
+    Some((directory.to_owned(), rest, old))
+}
+
 pub async fn ignored(root: &Path, paths: &[String]) -> HashSet<String> {
     if paths.is_empty() || !is_repository(root).await {
         return HashSet::new();

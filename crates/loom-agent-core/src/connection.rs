@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use loom_llm::ProviderId;
 use loom_proto::{
-    AgentInfo, ApiError, ClientHello, ClientMessage, Command, ErrorCode, LoginPrompt, ModelInfo,
-    Notice, PROTOCOL_VERSION, Payload, RequestId, SequencedEvent, ServerHello, ServerMessage,
-    SessionId, TerminalClient, TerminalOwner,
+    AgentInfo, ApiError, ClientHello, ClientMessage, Command, ErrorCode, FileDiff, LoginPrompt,
+    ModelInfo, Notice, PROTOCOL_VERSION, Payload, RequestId, SequencedEvent, ServerHello,
+    ServerMessage, SessionId, TerminalClient, TerminalOwner,
 };
 use loom_tools::Workspace;
 use tokio::sync::{broadcast, mpsc};
@@ -407,10 +407,19 @@ impl Connection {
                 let worktree = file_session(&command)
                     .and_then(|id| self.agent.session(id).ok())
                     .and_then(|session| session.worktree());
+                let codespace = self.repositories.is_some() && worktree.is_none();
                 self.spawn_reply(id, async move {
                     let base = crate::git::CommitBase {
                         branch: worktree.as_ref().map(|w| w.base.as_str()),
                         merged_head: worktree.as_ref().and_then(|w| w.merged_head.as_deref()),
+                    };
+                    let nested = match &command {
+                        Command::GetWorkspaceChanges { .. } | Command::GetFileDiff { .. }
+                            if codespace =>
+                        {
+                            crate::git::nested_repositories(&root).await
+                        }
+                        _ => Vec::new(),
                     };
                     match command {
                         Command::GetFileDiff {
@@ -418,14 +427,24 @@ impl Connection {
                             old_path,
                             committed,
                             ..
-                        } => crate::git::file_diff(
-                            &root,
-                            &path,
-                            old_path.as_deref(),
-                            committed.then_some(base),
-                        )
-                        .await
-                        .map(Payload::FileDiff),
+                        } => match crate::git::split_nested(&nested, &path, old_path.as_deref()) {
+                            Some((directory, inner, old)) => crate::git::file_diff(
+                                &root.join(directory),
+                                inner,
+                                old,
+                                committed.then_some(crate::git::CommitBase::default()),
+                            )
+                            .await
+                            .map(|diff| Payload::FileDiff(FileDiff { path, ..diff })),
+                            None => crate::git::file_diff(
+                                &root,
+                                &path,
+                                old_path.as_deref(),
+                                committed.then_some(base),
+                            )
+                            .await
+                            .map(Payload::FileDiff),
+                        },
                         Command::ListDirectory { path, .. } => {
                             crate::files::list_directory(&root, &path)
                                 .await
@@ -447,6 +466,9 @@ impl Connection {
                         } => crate::files::write_file(&workspace, &path, text, expected)
                             .await
                             .map(Payload::FileWritten),
+                        _ if !nested.is_empty() => crate::git::nested_changes(&root, &nested)
+                            .await
+                            .map(Payload::WorkspaceChanges),
                         _ => crate::git::changes(&root, base)
                             .await
                             .map(Payload::WorkspaceChanges),
