@@ -39,6 +39,8 @@ object LoomIcons {
     val CircleDot = Lucide.drawable.lucide_ic_circle_dot
     val CircleX = Lucide.drawable.lucide_ic_circle_x
     val ClipboardPaste = Lucide.drawable.lucide_ic_clipboard_paste
+    val Cloud = Lucide.drawable.lucide_ic_cloud
+    val Container = Lucide.drawable.lucide_ic_container
     val Copy = Lucide.drawable.lucide_ic_copy
     val CornerDownRight = Lucide.drawable.lucide_ic_corner_down_right
     val Download = Lucide.drawable.lucide_ic_download
@@ -53,6 +55,7 @@ object LoomIcons {
     val FilePlus = Lucide.drawable.lucide_ic_file_plus
     val FileSymlink = Lucide.drawable.lucide_ic_file_symlink
     val Folder = Lucide.drawable.lucide_ic_folder
+    val FolderGit = Lucide.drawable.lucide_ic_folder_git_2
     val FolderPlus = Lucide.drawable.lucide_ic_folder_plus
     val FolderSymlink = Lucide.drawable.lucide_ic_folder_symlink
     val FoldVertical = Lucide.drawable.lucide_ic_fold_vertical

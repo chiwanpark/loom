@@ -30,6 +30,8 @@ class LoomApplication : Application() {
     val settings by lazy { Settings(this) }
     lateinit var links: AgentLinks
         private set
+    lateinit var oracles: OracleLinks
+        private set
     lateinit var directory: Directory
         private set
     lateinit var push: Push
@@ -46,6 +48,7 @@ class LoomApplication : Application() {
         super.onCreate()
         forwarding = Forwarding(this)
         links = AgentLinks(this)
+        oracles = OracleLinks(this)
         directory = Directory(this)
         push = Push(this)
         push.start()
@@ -54,6 +57,7 @@ class LoomApplication : Application() {
                 foregroundState.value = true
                 // Links may have died while the app was away.
                 links.checkAll()
+                oracles.checkAll()
             }
 
             override fun onStop(owner: LifecycleOwner) {
@@ -80,7 +84,12 @@ class LoomApplication : Application() {
                 first = false
                 current = network
                 if (changed) {
-                    scope.launch { if (foreground.value) links.checkAll() }
+                    scope.launch {
+                        if (foreground.value) {
+                            links.checkAll()
+                            oracles.checkAll()
+                        }
+                    }
                 }
             }
 

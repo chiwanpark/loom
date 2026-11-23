@@ -94,7 +94,19 @@ fun ChangesScreen(app: LoomApplication, link: AgentLink, session: String) {
                         !changes.repository -> CenteredMessage("The workspace is not a git repository.")
                         changes.files.isEmpty() -> CenteredMessage("No uncommitted changes.")
                         else -> LazyColumn(Modifier.fillMaxSize()) {
-                            items(changes.files, key = { it.path }) { change ->
+                            changes.files.forEachIndexed { index, change ->
+                                val repository = change.repository
+                                if (repository != null && repository != changes.files.getOrNull(index - 1)?.repository) {
+                                    item(key = "repository/$repository") {
+                                        Text(
+                                            repository,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp),
+                                        )
+                                    }
+                                }
+                                item(key = change.path) {
                                 ChangeRow(
                                     path = change.path,
                                     detail = change.oldPath?.let { "← $it" },
@@ -109,6 +121,7 @@ fun ChangesScreen(app: LoomApplication, link: AgentLink, session: String) {
                                     )
                                 }
                                 HorizontalDivider()
+                                }
                             }
                             if (changes.truncated) {
                                 item(key = "truncated") { Truncated("Showing the first ${changes.files.size} files.") }
