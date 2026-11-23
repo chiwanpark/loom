@@ -10,7 +10,8 @@ use loom_oracle_proto::{
     GitProviders, HostResult, Hosts, InvalidMessage, ModelAccountResult, ModelAccounts,
     OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets, RelayHostResult,
     RelayHosts, Request, Response, Role, SecretResult, Secrets, ServerHello, ServerMessage,
-    Sessions, VolumeResult, Volumes, WorkspaceResult, Workspaces, encode, parse_client_message,
+    Sessions, VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode,
+    parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
 use serde::Serialize;
@@ -528,6 +529,9 @@ impl Session {
             Command::CloseCodespace { id } => ok(CodespaceResult {
                 codespace: oracle.close_codespace(&id, me)?,
                 warnings: Vec::new(),
+            }),
+            Command::CodespaceWarnings { workspace, preset } => ok(Warnings {
+                warnings: oracle.codespace_warnings(&workspace, preset.as_deref())?,
             }),
             Command::ListGitProviders => ok(GitProviders {
                 providers: oracle.git_providers()?,

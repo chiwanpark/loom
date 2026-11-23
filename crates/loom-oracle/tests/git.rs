@@ -464,6 +464,23 @@ async fn providers_credentials_and_presets_set_up_the_git_of_a_codespace() {
         ErrorCode::BadRequest
     );
 
+    let warnings = laptop
+        .codespace_warnings("acme", Some("dev"))
+        .await
+        .unwrap();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings[0].contains("no Git credential for team/app on ghe"));
+    let warnings = laptop.codespace_warnings("acme", None).await.unwrap();
+    assert!(warnings[0].contains("no preset"), "{warnings:?}");
+    assert_eq!(
+        code(
+            laptop
+                .codespace_warnings("acme", Some("missing"))
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::NotFound
+    );
     let created = laptop
         .create_codespace_with_warnings(NewCodespace {
             workspace: "acme".into(),
