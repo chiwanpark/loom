@@ -10,7 +10,12 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::seal::{MasterKey, SealError, Sealer};
 
-const MIGRATIONS: &[&str] = &["
+mod codespaces;
+
+pub use codespaces::{CodespaceRow, HostRow, WorkspaceRow};
+
+const MIGRATIONS: &[&str] = &[
+    "
 CREATE TABLE meta (
     key TEXT PRIMARY KEY,
     value BLOB NOT NULL
@@ -46,7 +51,52 @@ CREATE TABLE audit (
     action TEXT NOT NULL,
     detail TEXT NOT NULL
 );
-"];
+",
+    "
+ALTER TABLE pairings ADD COLUMN target TEXT;
+CREATE TABLE hosts (
+    peer INTEGER PRIMARY KEY REFERENCES peers (id) ON DELETE CASCADE,
+    report TEXT,
+    reported_at INTEGER,
+    environment TEXT NOT NULL DEFAULT '{}'
+);
+INSERT INTO hosts (peer) SELECT id FROM peers WHERE role = 'host';
+CREATE TABLE workspaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    host INTEGER NOT NULL REFERENCES hosts (peer),
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE workspace_repositories (
+    workspace INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    directory TEXT NOT NULL,
+    base_branch TEXT,
+    PRIMARY KEY (workspace, position)
+);
+CREATE TABLE codespaces (
+    id TEXT PRIMARY KEY,
+    workspace INTEGER NOT NULL REFERENCES workspaces (id),
+    host INTEGER NOT NULL REFERENCES hosts (peer),
+    peer INTEGER REFERENCES peers (id) ON DELETE SET NULL,
+    state TEXT NOT NULL,
+    cpus INTEGER NOT NULL,
+    memory_mib INTEGER NOT NULL,
+    instance TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    base_branch TEXT,
+    client_version TEXT,
+    agent TEXT,
+    step TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX codespaces_host ON codespaces (host);
+CREATE INDEX codespaces_peer ON codespaces (peer);
+",
+];
 
 const KEY_CHECK: &str = "master_key_check";
 
@@ -94,6 +144,7 @@ pub struct PairingRow {
     pub created_by: Option<u64>,
     pub created_at: u64,
     pub expires_at: u64,
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +200,7 @@ fn peer_row(row: &Row<'_>) -> rusqlite::Result<PeerRow> {
     })
 }
 
-const PAIRING_COLUMNS: &str = "id, role, created_by, created_at, expires_at";
+const PAIRING_COLUMNS: &str = "id, role, created_by, created_at, expires_at, target";
 
 fn pairing_row(row: &Row<'_>) -> rusqlite::Result<PairingRow> {
     Ok(PairingRow {
@@ -158,6 +209,7 @@ fn pairing_row(row: &Row<'_>) -> rusqlite::Result<PairingRow> {
         created_by: row.get::<_, Option<i64>>(2)?.map(to_u64),
         created_at: to_u64(row.get(3)?),
         expires_at: to_u64(row.get(4)?),
+        target: row.get(5)?,
     })
 }
 
@@ -302,6 +354,9 @@ impl Store {
     ) -> StoreResult<(PeerRow, Vec<PeerRow>)> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        if role == Role::Host {
+            return codespaces::add_host_peer(tx, label, pubkey, pairing);
+        }
         let replaced = tx
             .prepare(&format!(
                 "SELECT {PEER_COLUMNS} FROM peers WHERE pubkey = ?1 OR (role = ?2 AND label = ?3)"
@@ -424,6 +479,16 @@ impl Store {
         ttl: Duration,
         created_by: Option<u64>,
     ) -> StoreResult<(PairingRow, Zeroizing<[u8; 32]>)> {
+        self.create_pairing_for(role, ttl, created_by, None)
+    }
+
+    pub fn create_pairing_for(
+        &self,
+        role: Role,
+        ttl: Duration,
+        created_by: Option<u64>,
+        target: Option<&str>,
+    ) -> StoreResult<(PairingRow, Zeroizing<[u8; 32]>)> {
         let sealer = self.sealer()?;
         let mut secret = Zeroizing::new([0u8; 32]);
         rand::fill(&mut *secret);
@@ -436,19 +501,21 @@ impl Store {
             created_by,
             created_at: now,
             expires_at: now + ttl.as_secs().max(1),
+            target: target.map(str::to_owned),
         };
         let conn = self.conn();
         conn.execute("DELETE FROM pairings WHERE expires_at <= ?1", [to_i64(now)])?;
         conn.execute(
-            "INSERT INTO pairings (id, role, secret, created_by, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO pairings (id, role, secret, created_by, created_at, expires_at, target)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 row.id,
                 role.as_str(),
                 sealed,
                 row.created_by.map(to_i64),
                 to_i64(row.created_at),
-                to_i64(row.expires_at)
+                to_i64(row.expires_at),
+                row.target
             ],
         )?;
         Ok((row, secret))
@@ -461,7 +528,7 @@ impl Store {
             .query_row(
                 &format!("DELETE FROM pairings WHERE id = ?1 RETURNING {PAIRING_COLUMNS}, secret"),
                 [id],
-                |row| Ok((pairing_row(row)?, row.get::<_, Vec<u8>>(5)?)),
+                |row| Ok((pairing_row(row)?, row.get::<_, Vec<u8>>(6)?)),
             )
             .optional()?;
         let Some((row, sealed)) = taken else {

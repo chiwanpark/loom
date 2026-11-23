@@ -1,0 +1,654 @@
+use loom_oracle_proto::{AgentAddress, CodespaceState, Environment, HostReport, Repository, Role};
+use rusqlite::{OptionalExtension, Row, Transaction, params};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use super::{
+    PEER_COLUMNS, PeerRow, Store, StoreError, StoreResult, now_unix, peer_row, to_i64, to_u64,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRow {
+    pub peer: PeerRow,
+    pub report: Option<HostReport>,
+    pub reported_at: Option<u64>,
+    pub environment: Environment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceRow {
+    pub id: u64,
+    pub name: String,
+    pub host: u64,
+    pub host_name: String,
+    pub repositories: Vec<Repository>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodespaceRow {
+    pub id: String,
+    pub workspace: u64,
+    pub workspace_name: String,
+    pub host: u64,
+    pub host_name: String,
+    pub peer: Option<u64>,
+    pub state: CodespaceState,
+    pub cpus: u32,
+    pub memory_mib: u64,
+    pub instance: String,
+    pub branch: String,
+    pub base_branch: Option<String>,
+    pub client_version: Option<String>,
+    pub agent: Option<AgentAddress>,
+    pub step: Option<String>,
+    pub error: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+fn to_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".into())
+}
+
+fn from_json<T: DeserializeOwned>(text: &str, what: &'static str) -> StoreResult<T> {
+    serde_json::from_str(text).map_err(|_| StoreError::Malformed(what))
+}
+
+pub(super) fn add_host_peer(
+    tx: Transaction<'_>,
+    label: &str,
+    pubkey: &[u8; 32],
+    pairing: Option<&str>,
+) -> StoreResult<(PeerRow, Vec<PeerRow>)> {
+    let existing = tx
+        .query_row(
+            &format!("SELECT {PEER_COLUMNS} FROM peers WHERE role = ?1 AND label = ?2"),
+            params![Role::Host.as_str(), label],
+            peer_row,
+        )
+        .optional()?;
+    let keep = existing.as_ref().map(|row| to_i64(row.id)).unwrap_or(-1);
+    let mut replaced = tx
+        .prepare(&format!(
+            "SELECT {PEER_COLUMNS} FROM peers WHERE pubkey = ?1 AND id != ?2"
+        ))?
+        .query_map(params![pubkey.as_slice(), keep], peer_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    for peer in &replaced {
+        tx.execute("DELETE FROM peers WHERE id = ?1", [to_i64(peer.id)])?;
+    }
+    let row = match existing {
+        Some(old) => {
+            tx.execute(
+                "UPDATE peers SET pubkey = ?1, pairing = ?2, push_token = NULL WHERE id = ?3",
+                params![pubkey.as_slice(), pairing, to_i64(old.id)],
+            )?;
+            let row = PeerRow {
+                pubkey: *pubkey,
+                pairing: pairing.map(str::to_owned),
+                push_token: None,
+                ..old.clone()
+            };
+            replaced.push(old);
+            row
+        }
+        None => {
+            let now = now_unix();
+            tx.execute(
+                "INSERT INTO peers (role, label, pubkey, pairing, added_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![Role::Host.as_str(), label, pubkey.as_slice(), pairing, to_i64(now)],
+            )?;
+            PeerRow {
+                id: to_u64(tx.last_insert_rowid()),
+                role: Role::Host,
+                label: label.to_owned(),
+                pubkey: *pubkey,
+                push_token: None,
+                pairing: pairing.map(str::to_owned),
+                added_at: now,
+                last_seen: None,
+            }
+        }
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO hosts (peer) VALUES (?1)",
+        [to_i64(row.id)],
+    )?;
+    tx.commit()?;
+    Ok((row, replaced))
+}
+
+const HOST_SELECT: &str = "SELECT p.id, p.role, p.label, p.pubkey, p.push_token, p.pairing, \
+     p.added_at, p.last_seen, h.report, h.reported_at, h.environment \
+     FROM hosts h JOIN peers p ON p.id = h.peer";
+
+type RawHost = (PeerRow, Option<String>, Option<i64>, String);
+
+fn raw_host(row: &Row<'_>) -> rusqlite::Result<RawHost> {
+    Ok((peer_row(row)?, row.get(8)?, row.get(9)?, row.get(10)?))
+}
+
+fn host_row((peer, report, reported_at, environment): RawHost) -> StoreResult<HostRow> {
+    Ok(HostRow {
+        peer,
+        report: report
+            .map(|text| from_json(&text, "host report"))
+            .transpose()?,
+        reported_at: reported_at.map(to_u64),
+        environment: from_json(&environment, "host environment")?,
+    })
+}
+
+const CODESPACE_SELECT: &str = "SELECT c.id, c.workspace, w.name, c.host, p.label, c.peer, \
+     c.state, c.cpus, c.memory_mib, c.instance, c.branch, c.base_branch, c.client_version, \
+     c.agent, c.step, c.error, c.created_at, c.updated_at \
+     FROM codespaces c JOIN workspaces w ON w.id = c.workspace JOIN peers p ON p.id = c.host";
+
+type RawCodespace = (CodespaceRow, Option<String>);
+
+fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
+    Ok((
+        CodespaceRow {
+            id: row.get(0)?,
+            workspace: to_u64(row.get(1)?),
+            workspace_name: row.get(2)?,
+            host: to_u64(row.get(3)?),
+            host_name: row.get(4)?,
+            peer: row.get::<_, Option<i64>>(5)?.map(to_u64),
+            state: CodespaceState::parse(&row.get::<_, String>(6)?),
+            cpus: u32::try_from(row.get::<_, i64>(7)?).unwrap_or_default(),
+            memory_mib: to_u64(row.get(8)?),
+            instance: row.get(9)?,
+            branch: row.get(10)?,
+            base_branch: row.get(11)?,
+            client_version: row.get(12)?,
+            agent: None,
+            step: row.get(14)?,
+            error: row.get(15)?,
+            created_at: to_u64(row.get(16)?),
+            updated_at: to_u64(row.get(17)?),
+        },
+        row.get(13)?,
+    ))
+}
+
+fn codespace_row((mut row, agent): RawCodespace) -> StoreResult<CodespaceRow> {
+    row.agent = agent
+        .map(|text| from_json(&text, "codespace agent"))
+        .transpose()?;
+    Ok(row)
+}
+
+fn repositories(conn: &rusqlite::Connection, workspace: u64) -> StoreResult<Vec<Repository>> {
+    let rows = conn
+        .prepare(
+            "SELECT url, directory, base_branch FROM workspace_repositories
+             WHERE workspace = ?1 ORDER BY position",
+        )?
+        .query_map([to_i64(workspace)], |row| {
+            Ok(Repository {
+                url: row.get(0)?,
+                directory: Some(row.get(1)?),
+                base_branch: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn open_codespaces(conn: &rusqlite::Connection, column: &str, id: u64) -> StoreResult<Vec<String>> {
+    let ids = conn
+        .prepare(&format!(
+            "SELECT id FROM codespaces WHERE {column} = ?1 AND state != ?2 ORDER BY id"
+        ))?
+        .query_map(
+            params![to_i64(id), CodespaceState::Closed.as_str()],
+            |row| row.get(0),
+        )?
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(ids)
+}
+
+impl Store {
+    pub fn hosts(&self) -> StoreResult<Vec<HostRow>> {
+        let conn = self.conn();
+        let rows = conn
+            .prepare(&format!("{HOST_SELECT} ORDER BY p.label"))?
+            .query_map([], raw_host)?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(host_row).collect()
+    }
+
+    pub fn host(&self, peer: u64) -> StoreResult<Option<HostRow>> {
+        let raw = self
+            .conn()
+            .query_row(
+                &format!("{HOST_SELECT} WHERE h.peer = ?1"),
+                [to_i64(peer)],
+                raw_host,
+            )
+            .optional()?;
+        raw.map(host_row).transpose()
+    }
+
+    pub fn host_by_name(&self, name: &str) -> StoreResult<Option<HostRow>> {
+        let raw = self
+            .conn()
+            .query_row(
+                &format!("{HOST_SELECT} WHERE p.label = ?1"),
+                [name],
+                raw_host,
+            )
+            .optional()?;
+        raw.map(host_row).transpose()
+    }
+
+    pub fn set_host_report(&self, peer: u64, report: &HostReport) -> StoreResult<()> {
+        self.conn().execute(
+            "UPDATE hosts SET report = ?1, reported_at = ?2 WHERE peer = ?3",
+            params![to_json(report), to_i64(now_unix()), to_i64(peer)],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_host_environment(&self, peer: u64, environment: &Environment) -> StoreResult<bool> {
+        Ok(self.conn().execute(
+            "UPDATE hosts SET environment = ?1 WHERE peer = ?2",
+            params![to_json(environment), to_i64(peer)],
+        )? > 0)
+    }
+
+    pub fn remove_host(&self, peer: u64) -> StoreResult<Option<PeerRow>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let workspaces = tx
+            .prepare("SELECT name FROM workspaces WHERE host = ?1 ORDER BY name")?
+            .query_map([to_i64(peer)], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        if !workspaces.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "the workspaces {} use this host",
+                workspaces.join(", ")
+            )));
+        }
+        let open = open_codespaces(&tx, "host", peer)?;
+        if !open.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "the codespaces {} run on this host",
+                open.join(", ")
+            )));
+        }
+        tx.execute("DELETE FROM codespaces WHERE host = ?1", [to_i64(peer)])?;
+        let removed = tx
+            .query_row(
+                &format!("DELETE FROM peers WHERE id = ?1 AND role = ?2 RETURNING {PEER_COLUMNS}"),
+                params![to_i64(peer), Role::Host.as_str()],
+                peer_row,
+            )
+            .optional()?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    fn workspace_rows(
+        &self,
+        filter: &str,
+        args: &[&dyn rusqlite::ToSql],
+    ) -> StoreResult<Vec<WorkspaceRow>> {
+        let conn = self.conn();
+        let rows = conn
+            .prepare(&format!(
+                "SELECT w.id, w.name, w.host, p.label, w.created_at
+                 FROM workspaces w JOIN peers p ON p.id = w.host {filter} ORDER BY w.name"
+            ))?
+            .query_map(args, |row| {
+                Ok(WorkspaceRow {
+                    id: to_u64(row.get(0)?),
+                    name: row.get(1)?,
+                    host: to_u64(row.get(2)?),
+                    host_name: row.get(3)?,
+                    repositories: Vec::new(),
+                    created_at: to_u64(row.get(4)?),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|mut row| {
+                row.repositories = repositories(&conn, row.id)?;
+                Ok(row)
+            })
+            .collect()
+    }
+
+    pub fn workspaces(&self) -> StoreResult<Vec<WorkspaceRow>> {
+        self.workspace_rows("", &[])
+    }
+
+    pub fn workspace_by_name(&self, name: &str) -> StoreResult<Option<WorkspaceRow>> {
+        Ok(self
+            .workspace_rows("WHERE w.name = ?1", &[&name])?
+            .into_iter()
+            .next())
+    }
+
+    pub fn create_workspace(
+        &self,
+        name: &str,
+        host: u64,
+        repositories: &[Repository],
+    ) -> StoreResult<WorkspaceRow> {
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let taken: Option<i64> = tx
+                .query_row("SELECT id FROM workspaces WHERE name = ?1", [name], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            if taken.is_some() {
+                return Err(StoreError::Conflict(format!(
+                    "a workspace has the name {name} already"
+                )));
+            }
+            tx.execute(
+                "INSERT INTO workspaces (name, host, created_at) VALUES (?1, ?2, ?3)",
+                params![name, to_i64(host), to_i64(now_unix())],
+            )?;
+            let id = tx.last_insert_rowid();
+            for (position, repository) in repositories.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO workspace_repositories (workspace, position, url, directory, base_branch)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        id,
+                        position as i64,
+                        repository.url,
+                        repository.directory.as_deref().unwrap_or_default(),
+                        repository.base_branch
+                    ],
+                )?;
+            }
+            tx.commit()?;
+        }
+        self.workspace_by_name(name)?
+            .ok_or(StoreError::Malformed("new workspace"))
+    }
+
+    pub fn delete_workspace(&self, name: &str) -> StoreResult<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let Some(id) = tx
+            .query_row("SELECT id FROM workspaces WHERE name = ?1", [name], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        let open = open_codespaces(&tx, "workspace", to_u64(id))?;
+        if !open.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "the codespaces {} use this workspace; close them first",
+                open.join(", ")
+            )));
+        }
+        tx.execute("DELETE FROM codespaces WHERE workspace = ?1", [id])?;
+        tx.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    fn codespace_rows(
+        &self,
+        filter: &str,
+        args: &[&dyn rusqlite::ToSql],
+    ) -> StoreResult<Vec<CodespaceRow>> {
+        let rows = self
+            .conn()
+            .prepare(&format!(
+                "{CODESPACE_SELECT} {filter} ORDER BY c.created_at, c.id"
+            ))?
+            .query_map(args, raw_codespace)?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(codespace_row).collect()
+    }
+
+    pub fn codespaces(&self) -> StoreResult<Vec<CodespaceRow>> {
+        self.codespace_rows("", &[])
+    }
+
+    pub fn host_codespaces(&self, host: u64) -> StoreResult<Vec<CodespaceRow>> {
+        self.codespace_rows("WHERE c.host = ?1", &[&to_i64(host)])
+    }
+
+    pub fn codespace(&self, id: &str) -> StoreResult<Option<CodespaceRow>> {
+        Ok(self
+            .codespace_rows("WHERE c.id = ?1", &[&id])?
+            .into_iter()
+            .next())
+    }
+
+    pub fn codespace_by_peer(&self, peer: u64) -> StoreResult<Option<CodespaceRow>> {
+        Ok(self
+            .codespace_rows("WHERE c.peer = ?1", &[&to_i64(peer)])?
+            .into_iter()
+            .next())
+    }
+
+    pub fn count_open_codespaces(&self, host: u64) -> StoreResult<u32> {
+        let count: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM codespaces WHERE host = ?1 AND state != ?2",
+            params![to_i64(host), CodespaceState::Closed.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    pub fn insert_codespace(&self, row: &CodespaceRow) -> StoreResult<()> {
+        self.conn().execute(
+            "INSERT INTO codespaces (id, workspace, host, peer, state, cpus, memory_mib, instance,
+                 branch, base_branch, client_version, agent, step, error, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                row.id,
+                to_i64(row.workspace),
+                to_i64(row.host),
+                row.peer.map(to_i64),
+                row.state.as_str(),
+                i64::from(row.cpus),
+                to_i64(row.memory_mib),
+                row.instance,
+                row.branch,
+                row.base_branch,
+                row.client_version,
+                row.agent.as_ref().map(to_json),
+                row.step,
+                row.error,
+                to_i64(row.created_at),
+                to_i64(row.updated_at),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_codespace(&self, row: &CodespaceRow) -> StoreResult<()> {
+        self.conn().execute(
+            "UPDATE codespaces SET peer = ?1, state = ?2, agent = ?3, step = ?4, error = ?5,
+                 updated_at = ?6 WHERE id = ?7",
+            params![
+                row.peer.map(to_i64),
+                row.state.as_str(),
+                row.agent.as_ref().map(to_json),
+                row.step,
+                row.error,
+                to_i64(row.updated_at),
+                row.id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn cancel_pairings_for(&self, target: &str) -> StoreResult<Vec<String>> {
+        let conn = self.conn();
+        let ids = conn
+            .prepare("DELETE FROM pairings WHERE target = ?1 RETURNING id")?
+            .query_map([target], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::seal::MasterKey;
+
+    fn store() -> Store {
+        let store = Store::open_in_memory().unwrap();
+        store.unlock(&MasterKey::generate()).unwrap();
+        store
+    }
+
+    fn codespace(id: &str, workspace: &WorkspaceRow) -> CodespaceRow {
+        CodespaceRow {
+            id: id.into(),
+            workspace: workspace.id,
+            workspace_name: workspace.name.clone(),
+            host: workspace.host,
+            host_name: workspace.host_name.clone(),
+            peer: None,
+            state: CodespaceState::Provisioning,
+            cpus: 2,
+            memory_mib: 4096,
+            instance: format!("loom-{id}"),
+            branch: format!("loom/{id}"),
+            base_branch: None,
+            client_version: Some("0.5.0".into()),
+            agent: None,
+            step: None,
+            error: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn a_host_keeps_its_id_when_it_joins_again() {
+        let store = store();
+        let (host, replaced) = store
+            .add_peer(Role::Host, "box", &[1; 32], Some("p1"))
+            .unwrap();
+        assert!(replaced.is_empty());
+        let row = store.host(host.id).unwrap().unwrap();
+        assert_eq!(row.peer, host);
+        assert_eq!(row.environment, Environment::default());
+        assert_eq!(store.host_by_name("box").unwrap().unwrap().peer.id, host.id);
+
+        let (again, replaced) = store
+            .add_peer(Role::Host, "box", &[2; 32], Some("p2"))
+            .unwrap();
+        assert_eq!(again.id, host.id);
+        assert_eq!(again.pubkey, [2; 32]);
+        assert_eq!(replaced, vec![host.clone()]);
+        assert!(store.peer_by_key(&[1; 32]).unwrap().is_none());
+        assert_eq!(store.hosts().unwrap().len(), 1);
+
+        let report = HostReport {
+            version: "0.5.0".into(),
+            driver: "process".into(),
+            cpus: 8,
+            memory_mib: 16384,
+            ..Default::default()
+        };
+        store.set_host_report(host.id, &report).unwrap();
+        let mut environment = Environment::default();
+        environment
+            .variables
+            .insert("HTTP_PROXY".into(), "http://proxy:3128".into());
+        assert!(store.set_host_environment(host.id, &environment).unwrap());
+        let row = store.host(host.id).unwrap().unwrap();
+        assert_eq!(row.report, Some(report));
+        assert!(row.reported_at.is_some());
+        assert_eq!(row.environment, environment);
+    }
+
+    #[test]
+    fn workspaces_and_codespaces_guard_their_deletes() {
+        let store = store();
+        let (host, _) = store.add_peer(Role::Host, "box", &[1; 32], None).unwrap();
+        let repository = Repository {
+            url: "https://github.com/acme/server.git".into(),
+            directory: Some("server".into()),
+            base_branch: Some("main".into()),
+        };
+        let workspace = store
+            .create_workspace("acme", host.id, std::slice::from_ref(&repository))
+            .unwrap();
+        assert_eq!(workspace.repositories, vec![repository.clone()]);
+        assert_eq!(workspace.host_name, "box");
+        assert!(matches!(
+            store.create_workspace("acme", host.id, &[]),
+            Err(StoreError::Conflict(_))
+        ));
+        assert!(matches!(
+            store.remove_host(host.id),
+            Err(StoreError::Conflict(_))
+        ));
+
+        let mut row = codespace("c1", &workspace);
+        store.insert_codespace(&row).unwrap();
+        assert_eq!(store.codespace("c1").unwrap().unwrap(), row);
+        assert_eq!(store.count_open_codespaces(host.id).unwrap(), 1);
+        assert!(matches!(
+            store.delete_workspace("acme"),
+            Err(StoreError::Conflict(_))
+        ));
+
+        let (peer, _) = store
+            .add_peer(Role::Codespace, "c1", &[3; 32], None)
+            .unwrap();
+        row.peer = Some(peer.id);
+        row.state = CodespaceState::Ready;
+        row.agent = Some(AgentAddress {
+            host_id: "ab".repeat(32),
+            host_key: "key".into(),
+            instance: Some("i1".into()),
+        });
+        row.step = Some("clone".into());
+        row.updated_at = 5;
+        store.save_codespace(&row).unwrap();
+        assert_eq!(store.codespace_by_peer(peer.id).unwrap().unwrap(), row);
+        assert_eq!(store.host_codespaces(host.id).unwrap(), vec![row.clone()]);
+
+        store.remove_peer(peer.id).unwrap();
+        assert_eq!(store.codespace("c1").unwrap().unwrap().peer, None);
+        row.peer = None;
+        row.state = CodespaceState::Closed;
+        store.save_codespace(&row).unwrap();
+        assert_eq!(store.count_open_codespaces(host.id).unwrap(), 0);
+        assert!(store.delete_workspace("acme").unwrap());
+        assert!(!store.delete_workspace("acme").unwrap());
+        assert!(store.codespaces().unwrap().is_empty());
+        assert_eq!(store.remove_host(host.id).unwrap().unwrap().id, host.id);
+        assert!(store.hosts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pairings_can_name_their_target() {
+        let store = store();
+        let (row, _) = store
+            .create_pairing_for(Role::Codespace, Duration::from_secs(60), None, Some("c1"))
+            .unwrap();
+        assert_eq!(row.target.as_deref(), Some("c1"));
+        let (taken, _) = store.take_pairing(&row.id).unwrap().unwrap();
+        assert_eq!(taken.target.as_deref(), Some("c1"));
+        let (row, _) = store
+            .create_pairing_for(Role::Codespace, Duration::from_secs(60), None, Some("c2"))
+            .unwrap();
+        assert_eq!(store.cancel_pairings_for("c2").unwrap(), vec![row.id]);
+        assert!(store.pairings().unwrap().is_empty());
+    }
+}

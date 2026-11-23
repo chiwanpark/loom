@@ -3,9 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use loom_client::oracle_proto::{ErrorCode, Event, Role};
+use loom_client::oracle_proto::{
+    AgentAddress, Codespace, CodespaceState, ErrorCode, Event, HostCall, HostReport,
+    InstanceReport, Repository, Role,
+};
 use loom_client::{
-    ClientError, ClientIdentity, OracleClient, OracleEndpoint, OracleEvents, pair_oracle,
+    ClientError, ClientIdentity, NewCodespace, OracleCalls, OracleClient, OracleEndpoint,
+    OracleEvents, pair_oracle,
 };
 use loom_config::{Dirs, OracleConfig};
 use loom_crypto::{FileResponder, HostIdentity, PairingUri, Pairings, Zeroizing};
@@ -302,22 +306,28 @@ async fn devices_pair_and_use_the_control_service() {
 #[tokio::test(flavor = "multi_thread")]
 async fn hosts_and_codespaces_cannot_use_device_operations() {
     let oracle = start_oracle().await;
-    for (role, label) in [(Role::Host, "office-1"), (Role::Codespace, "cs-1")] {
-        let (identity, endpoint) = oracle.pair(role, label).await;
-        let (client, _events) = OracleClient::connect(&endpoint, &identity, "test")
-            .await
-            .unwrap();
-        assert_eq!(client.hello().peer.role, role);
-        assert_eq!(client.hello().peer.label, label);
-        client.info().await.unwrap();
-        for err in [
-            client.devices().await.unwrap_err(),
-            client.subscribe().await.unwrap_err(),
-            client.create_device_pairing(None).await.unwrap_err(),
-        ] {
-            assert_eq!(code(err), ErrorCode::Forbidden);
-        }
+    let (identity, endpoint) = oracle.pair(Role::Host, "office-1").await;
+    let (client, _events) = OracleClient::connect(&endpoint, &identity, "test")
+        .await
+        .unwrap();
+    assert_eq!(client.hello().peer.role, Role::Host);
+    assert_eq!(client.hello().peer.label, "office-1");
+    client.info().await.unwrap();
+    for err in [
+        client.devices().await.unwrap_err(),
+        client.subscribe().await.unwrap_err(),
+        client.create_device_pairing(None).await.unwrap_err(),
+        client.codespaces().await.unwrap_err(),
+    ] {
+        assert_eq!(code(err), ErrorCode::Forbidden);
     }
+    let identity = ClientIdentity::generate().unwrap();
+    let no_codespace = oracle.link(Role::Codespace);
+    assert!(
+        pair_oracle(&no_codespace, &identity, "cs-1", None)
+            .await
+            .is_err()
+    );
     let (laptop, _events) = oracle.device("laptop").await;
     assert_eq!(laptop.devices().await.unwrap().len(), 1);
     oracle.shutdown.cancel();
@@ -574,4 +584,217 @@ async fn the_store_keeps_peers_and_needs_its_master_key() {
         dirs.data_home.join("loom/oracle")
     );
     restarted.shutdown.cancel();
+}
+
+async fn next_call(calls: &mut OracleCalls) -> (u64, HostCall) {
+    tokio::time::timeout(WAIT, calls.recv())
+        .await
+        .expect("timed out waiting for a call")
+        .expect("the calls ended")
+}
+
+async fn wait_codespace(
+    client: &OracleClient,
+    id: &str,
+    check: impl Fn(&Codespace) -> bool,
+) -> Codespace {
+    for _ in 0..500 {
+        let codespaces = client.codespaces().await.unwrap();
+        if let Some(codespace) = codespaces.into_iter().find(|c| c.id == id)
+            && check(&codespace)
+        {
+            return codespace;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the codespace {id} did not reach the state");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hosts_make_codespaces_whose_agents_report_to_the_oracle() {
+    let oracle = start_oracle().await;
+    let (laptop, mut events) = oracle.device("laptop").await;
+    laptop.subscribe().await.unwrap();
+
+    let link = laptop.create_host_pairing(None).await.unwrap();
+    assert_eq!(link.pairing.role, Role::Host);
+    let host_key = ClientIdentity::generate().unwrap();
+    let endpoint = pair_oracle(&link.link, &host_key, "box", None)
+        .await
+        .unwrap();
+    let (host, _host_events, mut calls) =
+        OracleClient::connect_with_calls(&endpoint, &host_key, "test-host")
+            .await
+            .unwrap();
+    assert_eq!(host.hello().peer.role, Role::Host);
+    host.host_report(HostReport {
+        version: "test".into(),
+        driver: "process".into(),
+        cpus: 4,
+        memory_mib: 8192,
+        max_codespaces: Some(1),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    host.host_instances(Vec::new()).await.unwrap();
+    let hosts = laptop.hosts().await.unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert!(hosts[0].connected);
+    let report = hosts[0].report.clone().unwrap();
+    assert_eq!(report.cpus, 4);
+    assert_eq!(report.connection_types, vec!["relay".to_owned()]);
+
+    let repository = Repository {
+        url: "https://github.com/acme/server.git".into(),
+        directory: None,
+        base_branch: None,
+    };
+    for (name, host_name) in [("Bad", "box"), ("acme", "nobox")] {
+        assert!(
+            laptop
+                .create_workspace(name, host_name, vec![repository.clone()])
+                .await
+                .is_err()
+        );
+    }
+    let workspace = laptop
+        .create_workspace("acme", "box", vec![repository.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        workspace.repositories[0].directory.as_deref(),
+        Some("server")
+    );
+    assert_eq!(
+        code(laptop.remove_host("box").await.unwrap_err()),
+        ErrorCode::Conflict
+    );
+
+    let too_big = NewCodespace {
+        workspace: "acme".into(),
+        cpus: Some(8),
+        ..Default::default()
+    };
+    assert_eq!(
+        code(laptop.create_codespace(too_big).await.unwrap_err()),
+        ErrorCode::BadRequest
+    );
+    let created = laptop
+        .create_codespace(NewCodespace {
+            workspace: "acme".into(),
+            client_version: Some("0.5.0".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.state, CodespaceState::Provisioning);
+    assert_eq!((created.cpus, created.memory_mib), (2, 4096));
+    assert_eq!(created.branch, format!("loom/{}", created.id));
+    let again = NewCodespace {
+        workspace: "acme".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        code(laptop.create_codespace(again).await.unwrap_err()),
+        ErrorCode::Conflict
+    );
+
+    let (call_id, call) = next_call(&mut calls).await;
+    let HostCall::CreateInstance(create) = call else {
+        panic!("expected a create call, got {call:?}");
+    };
+    assert_eq!(create.codespace, created.id);
+    assert_eq!(create.instance, created.instance);
+    assert_eq!(create.agent_version.as_deref(), Some("0.5.0"));
+    host.instance_progress(&created.id, "image").await.unwrap();
+    host.reply(call_id, Ok(serde_json::json!({})))
+        .await
+        .unwrap();
+    wait_codespace(&laptop, &created.id, |c| {
+        c.state == CodespaceState::Starting
+    })
+    .await;
+
+    let agent_key = ClientIdentity::generate().unwrap();
+    let agent_endpoint = pair_oracle(&create.bootstrap.link, &agent_key, "agent", None)
+        .await
+        .unwrap();
+    let (agent, _agent_events) = OracleClient::connect(&agent_endpoint, &agent_key, "test-agent")
+        .await
+        .unwrap();
+    assert_eq!(agent.hello().peer.role, Role::Codespace);
+    assert_eq!(agent.hello().peer.label, created.id);
+    assert_eq!(
+        code(agent.devices().await.unwrap_err()),
+        ErrorCode::Forbidden
+    );
+    let bundle = agent.bundle().await.unwrap();
+    assert_eq!(bundle.codespace, created.id);
+    assert_eq!(bundle.branch, created.branch);
+    assert_eq!(bundle.repositories[0].url, repository.url);
+    assert_eq!(bundle.relay_url, oracle.url);
+    assert_eq!(bundle.devices.len(), 1);
+    assert_eq!(bundle.devices[0].label, "laptop");
+
+    let mut relay_agent = start_agent(&oracle.url, "codespace");
+    agent
+        .codespace_agent(AgentAddress {
+            host_id: relay_agent.host.host_id().to_string(),
+            host_key: loom_crypto::encode_key(&relay_agent.host.static_public()),
+            instance: Some("codespace".into()),
+        })
+        .await
+        .unwrap();
+    wait_state(&mut relay_agent.state, |s| *s == LinkState::Registered).await;
+    agent.codespace_progress("clone").await.unwrap();
+    next_event(
+        &mut events,
+        |e| matches!(e, Event::CodespaceProgress { step, .. } if step == "clone"),
+    )
+    .await;
+    agent.codespace_ready().await.unwrap();
+    let ready = wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Ready).await;
+    assert_eq!(
+        ready.agent.unwrap().host_id,
+        relay_agent.host.host_id().to_string()
+    );
+
+    let closing = laptop.close_codespace(&created.id).await.unwrap();
+    assert_eq!(closing.state, CodespaceState::Closing);
+    let (call_id, call) = next_call(&mut calls).await;
+    assert_eq!(
+        call,
+        HostCall::DeleteInstance {
+            codespace: created.id.clone(),
+            instance: created.instance.clone(),
+        }
+    );
+    assert!(agent.bundle().await.is_err());
+    host.reply(call_id, Ok(serde_json::json!({})))
+        .await
+        .unwrap();
+    wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Closed).await;
+
+    host.host_instances(vec![InstanceReport {
+        codespace: "orphan1".into(),
+        instance: "loom-orphan1".into(),
+        oracle: oracle.oracle.identity().host_id().to_string(),
+        running: true,
+    }])
+    .await
+    .unwrap();
+    let (_, call) = next_call(&mut calls).await;
+    assert!(
+        matches!(&call, HostCall::DeleteInstance { codespace, .. } if codespace == "orphan1"),
+        "{call:?}"
+    );
+    laptop.delete_workspace("acme").await.unwrap();
+    next_event(
+        &mut events,
+        |e| matches!(e, Event::CodespaceRemoved { id } if *id == created.id),
+    )
+    .await;
+    laptop.remove_host("box").await.unwrap();
+    oracle.shutdown.cancel();
 }
