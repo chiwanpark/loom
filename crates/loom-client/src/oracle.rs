@@ -16,7 +16,7 @@ use loom_oracle_proto::{
     PairingLink, Pairings, Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost,
     RelayHostResult, RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo,
     SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume,
-    VolumeInput, VolumeResult, Volumes, Workspace, WorkspaceNotes, WorkspaceResult,
+    VolumeInput, VolumeResult, Volumes, Warnings, Workspace, WorkspaceNotes, WorkspaceResult,
     WorkspaceVolume, Workspaces, encode, parse_server_message,
 };
 use loom_proto::InstanceId;
@@ -82,6 +82,25 @@ impl OracleEndpoint {
             loom_transport::connect_relay(&self.endpoint(), self.agent(), identity, &self.host_key)
                 .await?,
         )
+    }
+
+    pub fn codespace_relay(&self, address: &AgentAddress) -> Result<crate::relay::RelayHost> {
+        crate::relay::RelayHost::from_parts(
+            &self.url,
+            &address.host_id,
+            &address.host_key,
+            self.access.clone(),
+        )
+    }
+
+    pub async fn connect_codespace(
+        &self,
+        address: &AgentAddress,
+        identity: &ClientIdentity,
+    ) -> Result<FrameStream> {
+        let relay = self.codespace_relay(address)?;
+        let instance = address.instance.clone().map(InstanceId);
+        relay.connect(instance.as_ref(), identity).await
     }
 }
 
@@ -547,6 +566,18 @@ impl OracleClient {
             .call::<CodespaceResult>(Command::CloseCodespace { id })
             .await?
             .codespace)
+    }
+
+    pub async fn codespace_warnings(
+        &self,
+        workspace: &str,
+        preset: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let (workspace, preset) = (workspace.to_owned(), preset.map(str::to_owned));
+        Ok(self
+            .call::<Warnings>(Command::CodespaceWarnings { workspace, preset })
+            .await?
+            .warnings)
     }
 
     pub async fn git_providers(&self) -> Result<Vec<GitProvider>> {

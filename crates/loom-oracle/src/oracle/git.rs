@@ -731,6 +731,19 @@ impl Oracle {
         Ok(())
     }
 
+    pub fn codespace_warnings(
+        &self,
+        workspace: &str,
+        preset: Option<&str>,
+    ) -> Result<Vec<String>, OracleError> {
+        let workspace = self
+            .store
+            .workspace_by_name(workspace)?
+            .ok_or_else(|| not_found(format!("no workspace has the name {workspace}")))?;
+        let preset = preset.map(|name| self.preset_by_name(name)).transpose()?;
+        self.credential_warnings(&workspace.repositories, preset.as_ref())
+    }
+
     pub(super) fn credential_warnings(
         &self,
         repositories: &[Repository],
