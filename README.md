@@ -79,7 +79,7 @@ To connect to agents on other machines, see [Remote hosts and relays](doc/remote
 | [Desktop client](doc/desktop.md) | `client.yaml`, key bindings, panels, terminals, files, and ports. |
 | [Android app](doc/android.md) | Build, pairing, and the functions of the app. |
 | [Oracle](doc/oracle.md) | Loom-Next, in development: the oracle as a relay, its control service, and the test client. |
-| [Hosts and codespaces](doc/host.md) | Loom-Next, in development: `loom-host` and the codespaces that it starts. |
+| [Hosts and codespaces](doc/host.md) | Loom-Next, in development: `loom-host`, Git workspaces, and persistent volumes. |
 | [Development](doc/development.md) | Crates and checks. |
 
 ## License

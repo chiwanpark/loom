@@ -55,6 +55,16 @@ enum CliCommand {
     /// Updates loom-agent from the latest release, or another one, where it
     /// is installed.
     Update(UpdateArgs),
+    #[command(
+        hide = true,
+        about = "Gives Git the tokens of the oracle in a codespace"
+    )]
+    GitCredential {
+        #[arg(long, value_name = "PATH")]
+        socket: PathBuf,
+        #[arg(value_name = "OPERATION")]
+        operation: String,
+    },
 }
 
 #[derive(Args)]
@@ -274,6 +284,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                 config,
                 dirs: ctx.dirs,
                 ready: None,
+                repositories: None,
             })
             .await?;
             match served {
@@ -377,6 +388,10 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                     }
                 }
             }
+        }
+        CliCommand::GitCredential { socket, operation } => {
+            loom_agent::codespace_git::credential_helper(&socket, &operation).await?;
+            Ok(0)
         }
         CliCommand::Update(args) => {
             init_logging("warn");

@@ -1,11 +1,16 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod codespace;
+mod git;
+mod volume;
 
 pub use codespace::*;
+pub use git::*;
+pub use volume::*;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const ORACLE_INSTANCE: &str = "oracle";
@@ -92,13 +97,26 @@ pub enum Command {
         name: String,
         host: String,
         repositories: Vec<Repository>,
+        #[serde(default)]
+        volumes: Vec<WorkspaceVolume>,
     },
     DeleteWorkspace {
         name: String,
     },
+    UpdateWorkspace {
+        name: String,
+        #[serde(default)]
+        host: Option<String>,
+        #[serde(default)]
+        repositories: Option<Vec<Repository>>,
+        #[serde(default)]
+        volumes: Option<Vec<WorkspaceVolume>>,
+    },
     ListCodespaces,
     CreateCodespace {
         workspace: String,
+        #[serde(default)]
+        preset: Option<String>,
         #[serde(default)]
         cpus: Option<u32>,
         #[serde(default)]
@@ -106,10 +124,48 @@ pub enum Command {
         #[serde(default)]
         base_branch: Option<String>,
         #[serde(default)]
+        base_branches: BTreeMap<String, String>,
+        #[serde(default)]
         client_version: Option<String>,
     },
     CloseCodespace {
         id: String,
+    },
+    ListGitProviders,
+    SetGitProvider(GitProviderInput),
+    DeleteGitProvider {
+        name: String,
+    },
+    ListGitCredentials,
+    SetGitCredential(GitCredentialInput),
+    DeleteGitCredential {
+        name: String,
+    },
+    CheckGitCredential {
+        name: String,
+    },
+    ListPresets,
+    SetPreset {
+        name: String,
+        yaml: String,
+    },
+    DeletePreset {
+        name: String,
+    },
+    SearchRepositories {
+        provider: String,
+        #[serde(default)]
+        query: String,
+    },
+    ListBranches {
+        provider: String,
+        owner: String,
+        repository: String,
+    },
+    ListVolumes,
+    CreateVolume(VolumeInput),
+    DeleteVolume {
+        name: String,
     },
     HostReport {
         report: HostReport,
@@ -131,6 +187,9 @@ pub enum Command {
     CodespaceReady,
     CodespaceFailed {
         error: String,
+    },
+    GitCredential {
+        url: String,
     },
 }
 
@@ -342,7 +401,32 @@ pub enum Event {
     CodespaceRemoved {
         id: String,
     },
+    GitProviderChanged {
+        provider: GitProvider,
+    },
+    GitProviderRemoved {
+        name: String,
+    },
+    GitCredentialChanged {
+        credential: GitCredential,
+    },
+    GitCredentialRemoved {
+        name: String,
+    },
+    PresetChanged {
+        preset: Preset,
+    },
+    PresetRemoved {
+        name: String,
+    },
+    VolumeChanged {
+        volume: Volume,
+    },
+    VolumeRemoved {
+        name: String,
+    },
     DeviceKeysChanged,
+    GitChanged,
     EventsLost,
     #[serde(other)]
     Unknown,
@@ -539,7 +623,7 @@ mod tests {
             parse_server_message(br#"{"type":"news","text":"hi"}"#).unwrap(),
             None
         );
-        let event = br#"{"type":"event","event":{"type":"volume_changed","id":1}}"#;
+        let event = br#"{"type":"event","event":{"type":"backup_changed","id":1}}"#;
         assert_eq!(
             parse_server_message(event).unwrap(),
             Some(ServerMessage::Event {

@@ -82,6 +82,17 @@ pub struct HostAgentConfig {
 pub struct HostRules {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_codespaces: Option<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_user: Option<HostUser>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HostUser {
+    pub uid: u32,
+    pub gid: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -241,6 +252,32 @@ impl HostConfig {
         if self.rules.max_codespaces == Some(0) {
             return Err(invalid("rules.max_codespaces", "must be 1 or more"));
         }
+        if let Some(user) = self.rules.host_user
+            && (user.uid == 0 || user.gid == 0 || user.uid == u32::MAX || user.gid == u32::MAX)
+        {
+            return Err(invalid(
+                "rules.host_user",
+                "expected a non-root UID and GID",
+            ));
+        }
+        for directory in &self.rules.directories {
+            let text = directory.to_string_lossy();
+            let valid = directory.is_absolute()
+                && text != "/"
+                && text.len() <= 200
+                && !text.ends_with('/')
+                && !text.contains("//")
+                && text
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+                && !text.split('/').any(|part| part == "." || part == "..");
+            if !valid {
+                return Err(invalid(
+                    "rules.directories",
+                    "expected absolute paths below /",
+                ));
+            }
+        }
         if self.report_interval.as_duration().as_secs() < 5 {
             return Err(invalid("report_interval", "must be 5s or more"));
         }
@@ -289,6 +326,17 @@ mod tests {
         );
         assert_eq!(config.rules.max_codespaces, Some(8));
         assert_eq!(
+            config.rules.directories,
+            vec![PathBuf::from("/srv/projects")]
+        );
+        assert_eq!(
+            config.rules.host_user,
+            Some(HostUser {
+                uid: 1000,
+                gid: 1000
+            })
+        );
+        assert_eq!(
             config.incus.url.as_deref(),
             Some("https://incus.example.com:8443")
         );
@@ -323,6 +371,11 @@ mod tests {
             ("data_dir: relative\n", "data_dir"),
             ("agent:\n  path: loom-agent\n", "agent.path"),
             ("rules:\n  max_codespaces: 0\n", "rules.max_codespaces"),
+            ("rules:\n  directories: [srv]\n", "rules.directories"),
+            (
+                "rules:\n  directories: [/srv/../etc]\n",
+                "rules.directories",
+            ),
             ("report_interval: 1s\n", "report_interval"),
             ("version: 9\n", "version"),
             ("incus:\n  url: http://x:8443\n", "incus.url"),

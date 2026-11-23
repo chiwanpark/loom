@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
-use loom_client::oracle_proto::{Bootstrap, CreateInstance, Environment};
+use loom_client::oracle_proto::{
+    Bootstrap, CreateInstance, Environment, InstanceVolume, VolumeKind,
+};
+use loom_config::{HostRules, HostUser};
 use loom_host::{
     AGENT_UNIT, Agent, CheckStatus, Driver, IMAGE_PREFIX, IncusDriver, KEY_CODESPACE, KEY_ORACLE,
-    Progress, environment_hash,
+    Progress, SetupResult, environment_hash,
 };
 use loom_incus::fake::FakeIncus;
 use tokio::sync::mpsc;
@@ -23,6 +26,7 @@ fn request(id: &str, environment: Environment) -> CreateInstance {
             workspaces_root: None,
         },
         agent_version: None,
+        volumes: Vec::new(),
     }
 }
 
@@ -48,6 +52,7 @@ async fn codespaces_are_instances_of_a_built_image() {
         fake.client(Some("loom")),
         "default".into(),
         "incusbr0".into(),
+        HostRules::default(),
     );
     let binary = dir.path().join("loom-agent");
     std::fs::write(&binary, b"agent").unwrap();
@@ -195,8 +200,11 @@ async fn codespaces_are_instances_of_a_built_image() {
         .map(|item| item.name.as_str())
         .collect();
     assert_eq!(failed, vec!["project"]);
-    assert!(driver.setup_project().await.unwrap());
-    assert!(!driver.setup_project().await.unwrap());
+    assert_eq!(driver.setup_project().await.unwrap(), SetupResult::Created);
+    assert_eq!(
+        driver.setup_project().await.unwrap(),
+        SetupResult::Unchanged
+    );
     assert!(
         driver
             .check(false)
@@ -230,6 +238,7 @@ async fn a_failed_setup_script_leaves_no_instance() {
         fake.client(Some("loom")),
         "default".into(),
         "incusbr0".into(),
+        HostRules::default(),
     );
     let binary = dir.path().join("loom-agent");
     std::fs::write(&binary, b"agent").unwrap();
@@ -255,4 +264,151 @@ async fn a_failed_setup_script_leaves_no_instance() {
     let state = fake.state();
     assert!(state.instances.is_empty());
     assert!(state.images.is_empty());
+}
+
+#[tokio::test]
+async fn custom_volumes_are_created_once_and_survive_instance_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeIncus::start(dir.path()).await;
+    let driver = |rules| {
+        IncusDriver::new(
+            fake.client(Some("loom")),
+            "default".into(),
+            "incusbr0".into(),
+            rules,
+        )
+    };
+    assert_eq!(
+        driver(HostRules::default()).setup_project().await.unwrap(),
+        SetupResult::Created
+    );
+    let source = dir.path().canonicalize().unwrap().join("shared");
+    std::fs::create_dir(&source).unwrap();
+    let driver = driver(HostRules {
+        directories: vec![source.clone()],
+        host_user: Some(HostUser {
+            uid: 1001,
+            gid: 1002,
+        }),
+        ..Default::default()
+    });
+    assert!(
+        matches!(driver.setup_project().await.unwrap(), SetupResult::Updated(keys) if keys.len() == 4)
+    );
+    assert_eq!(
+        driver.setup_project().await.unwrap(),
+        SetupResult::Unchanged
+    );
+    {
+        let state = fake.state();
+        let config = &state.projects["loom"].config;
+        assert_eq!(config["features.storage.volumes"], "true");
+        assert_eq!(config["restricted.devices.disk"], "allow");
+        assert_eq!(
+            config["restricted.devices.disk.paths"],
+            source.to_str().unwrap()
+        );
+        assert_eq!(config["restricted.idmap.uid"], "1001");
+        assert_eq!(config["restricted.idmap.gid"], "1002");
+    }
+    let binary = dir.path().join("loom-agent");
+    std::fs::write(&binary, b"agent").unwrap();
+    let agent = Agent {
+        path: binary,
+        version: None,
+    };
+    let progress = Progress::none();
+    let mut first = request("c1", Environment::default());
+    first.volumes = vec![
+        InstanceVolume {
+            name: "cache".into(),
+            kind: VolumeKind::Incus,
+            size_mib: Some(128),
+            source: None,
+            path: "/cache".into(),
+            read_only: false,
+        },
+        InstanceVolume {
+            name: "data".into(),
+            kind: VolumeKind::Directory,
+            size_mib: None,
+            source: Some(source.to_str().unwrap().to_owned()),
+            path: "/data".into(),
+            read_only: true,
+        },
+    ];
+    let mut second = request("c2", Environment::default());
+    second.volumes = first.volumes.clone();
+    second.volumes[0].read_only = true;
+    let (a, b) = tokio::join!(
+        driver.create(&first, ORACLE, &agent, &progress),
+        driver.create(&second, ORACLE, &agent, &progress)
+    );
+    a.unwrap();
+    b.unwrap();
+    {
+        let state = fake.state();
+        let volume = &state.volumes["loom-cache"]["config"];
+        for (key, value) in [
+            (KEY_ORACLE, ORACLE),
+            ("initial.uid", "1000"),
+            ("initial.gid", "1000"),
+            ("initial.mode", "0755"),
+            ("size", "128MiB"),
+        ] {
+            assert_eq!(volume[key], value);
+        }
+        let first = &state.instances["loom-c1"].instance;
+        assert_eq!(first.config["raw.idmap"], "uid 1001 1000\ngid 1002 1000");
+        assert_eq!(first.devices["volume0"]["source"], "loom-cache");
+        assert_eq!(first.devices["volume0"]["pool"], "default");
+        assert!(!first.devices["volume0"].contains_key("readonly"));
+        assert_eq!(first.devices["volume1"]["source"], source.to_str().unwrap());
+        assert_eq!(first.devices["volume1"]["readonly"], "true");
+        assert_eq!(
+            state.instances["loom-c2"].instance.devices["volume0"]["readonly"],
+            "true"
+        );
+        assert_eq!(
+            state
+                .requests
+                .iter()
+                .filter(|r| r.as_str() == "POST /1.0/storage-pools/default/volumes/custom")
+                .count(),
+            1
+        );
+    }
+    assert!(
+        format!(
+            "{:#}",
+            driver.delete_volume(ORACLE, "cache").await.unwrap_err()
+        )
+        .contains("in use")
+    );
+    assert!(
+        format!(
+            "{:#}",
+            driver.delete_volume("other", "cache").await.unwrap_err()
+        )
+        .contains("does not belong")
+    );
+    let mut wrong_owner = request("c3", Environment::default());
+    wrong_owner.volumes = vec![first.volumes[0].clone()];
+    assert!(
+        format!(
+            "{:#}",
+            driver
+                .create(&wrong_owner, "other", &agent, &progress)
+                .await
+                .unwrap_err()
+        )
+        .contains("does not belong")
+    );
+    driver.delete(ORACLE, "loom-c1").await.unwrap();
+    driver.delete(ORACLE, "loom-c2").await.unwrap();
+    assert!(fake.state().volumes.contains_key("loom-cache"));
+    driver.delete_volume(ORACLE, "cache").await.unwrap();
+    driver.delete_volume(ORACLE, "cache").await.unwrap();
+    assert!(fake.state().volumes.is_empty());
+    assert!(source.is_dir());
 }

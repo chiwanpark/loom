@@ -213,6 +213,39 @@ async fn the_cli_drives_the_control_service() {
     let err = fails(laptop, &["cancel-pairing", id]).await;
     assert!(err.contains("no pairing"), "{err}");
 
+    let provider = json(
+        laptop,
+        &[
+            "set-provider",
+            "ghe",
+            "--url",
+            "https://ghe.example.com/",
+            "--git-email",
+            "dev@example.com",
+            "--route",
+            "hosts",
+        ],
+    )
+    .await;
+    assert_eq!(provider["api_url"], "https://ghe.example.com/api/v3");
+    assert_eq!(provider["route"], "hosts");
+    let text = ok(laptop, &["providers"]).await;
+    assert!(text.contains("ghe\thttps://ghe.example.com\t"), "{text}");
+    assert!(text.contains("route hosts"), "{text}");
+    let preset_file = laptop.join("preset.yaml");
+    std::fs::write(&preset_file, "git:\n  credentials: []\n").unwrap();
+    let preset_path = preset_file.to_str().unwrap();
+    let preset = json(laptop, &["set-preset", "dev", preset_path]).await;
+    assert_eq!(preset["git_credentials"], Value::Array(vec![]));
+    std::fs::write(&preset_file, "git:\n  credentials: [nope]\n").unwrap();
+    let err = fails(laptop, &["set-preset", "dev", preset_path]).await;
+    assert!(err.contains("no such Git credential"), "{err}");
+    let err = fails(laptop, &["set-credential", "work", "--provider", "ghe"]).await;
+    assert!(err.contains("needs a token"), "{err}");
+    ok(laptop, &["delete-preset", "dev"]).await;
+    ok(laptop, &["delete-provider", "ghe"]).await;
+    assert_eq!(json(laptop, &["providers"]).await, Value::Array(vec![]));
+
     ok(laptop, &["revoke-device", &phone_id.to_string()]).await;
     let err = fails(phone, &["devices"]).await;
     assert!(err.contains("not paired"), "{err}");

@@ -81,6 +81,12 @@ pub trait Driver: Send + Sync {
     async fn list(&self, oracle: &str) -> anyhow::Result<Vec<InstanceReport>>;
 
     async fn check(&self, deep: bool) -> Vec<CheckItem>;
+
+    fn local(&self) -> bool {
+        true
+    }
+
+    async fn delete_volume(&self, oracle: &str, volume: &str) -> anyhow::Result<()>;
 }
 
 pub fn valid_instance(name: &str) -> bool {

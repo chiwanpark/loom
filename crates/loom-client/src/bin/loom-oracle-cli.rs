@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
@@ -5,14 +7,18 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use loom_client::oracle_proto::{
-    Codespace, CodespaceState, Device, DockerSettings, Environment, Event, Host, Pairing,
-    PairingLink, RelayHost, Repository, Workspace,
+    Codespace, CodespaceState, Device, DockerSettings, Environment, Event, GitCredential,
+    GitCredentialInput, GitProvider, GitProviderInput, Host, Pairing, PairingLink, Preset,
+    ProviderRoute, RelayHost, Repository, Secret, Volume, VolumeInput, VolumeKind, Workspace,
+    WorkspaceVolume,
 };
 use loom_client::{
-    AccessToken, ClientIdentity, NewCodespace, OracleClient, OracleEndpoint, OracleEvents,
+    AccessToken, Client, ClientIdentity, CloseGuardError, NewCodespace, OracleClient,
+    OracleEndpoint, OracleEvents, RelayHost as AgentRelay, choices_from_lists, close_plan,
     pair_oracle,
 };
 use loom_config::{ByteSize, Dirs, HumanDuration};
+use loom_proto::{PushRepositories, RepositoryStatus};
 use serde::{Deserialize, Serialize};
 
 const STATE_ENV: &str = "LOOM_ORACLE_CLI_STATE";
@@ -109,14 +115,42 @@ enum Command {
         name: String,
         #[arg(long)]
         host: String,
-        #[arg(long, value_name = "URL")]
-        repository: String,
+        #[arg(long = "repository", value_name = "URL[,directory=DIR][,branch=BRANCH]", value_parser = parse_repository, required = true)]
+        repositories: Vec<Repository>,
+        #[arg(long = "volume", value_name = "VOLUME:PATH[:ro]", value_parser = parse_volume)]
+        volumes: Vec<WorkspaceVolume>,
+    },
+    UpdateWorkspace {
+        name: String,
         #[arg(long)]
-        directory: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
+        host: Option<String>,
+        #[arg(long = "repository", value_name = "URL[,directory=DIR][,branch=BRANCH]", value_parser = parse_repository)]
+        repositories: Vec<Repository>,
+        #[arg(long = "volume", value_name = "VOLUME:PATH[:ro]", value_parser = parse_volume)]
+        volumes: Vec<WorkspaceVolume>,
+        #[arg(
+            long,
+            conflicts_with = "volumes",
+            help = "Remove all volumes from the workspace"
+        )]
+        no_volumes: bool,
     },
     DeleteWorkspace {
+        name: String,
+    },
+    Volumes,
+    CreateVolume {
+        name: String,
+        #[arg(long, value_parser = parse_memory, value_name = "SIZE", conflicts_with = "path")]
+        size: Option<u64>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Use this directory of the host instead of an Incus volume"
+        )]
+        path: Option<String>,
+    },
+    DeleteVolume {
         name: String,
     },
     Codespaces {
@@ -126,11 +160,15 @@ enum Command {
     CreateCodespace {
         workspace: String,
         #[arg(long)]
+        preset: Option<String>,
+        #[arg(long)]
         cpus: Option<u32>,
         #[arg(long, value_parser = parse_memory, value_name = "SIZE")]
         memory: Option<u64>,
         #[arg(long)]
         branch: Option<String>,
+        #[arg(long = "base", value_name = "DIRECTORY=BRANCH", value_parser = parse_variable)]
+        bases: Vec<(String, String)>,
         #[arg(long)]
         no_wait: bool,
     },
@@ -138,6 +176,104 @@ enum Command {
         id: String,
         #[arg(long)]
         no_wait: bool,
+        #[arg(
+            long = "push",
+            value_name = "DIRECTORY",
+            help = "Push the work of this repository first; '*' selects all"
+        )]
+        push: Vec<String>,
+        #[arg(
+            long = "discard",
+            value_name = "DIRECTORY",
+            help = "Discard the work of this repository; '*' selects all"
+        )]
+        discard: Vec<String>,
+        #[arg(
+            long,
+            help = "Commit the uncommitted changes of the pushed repositories with this message"
+        )]
+        message: Option<String>,
+        #[arg(long, help = "Close the codespace when its agent cannot tell its work")]
+        force: bool,
+    },
+    Repositories {
+        id: String,
+    },
+    Push {
+        id: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long = "directory", value_name = "DIRECTORY")]
+        directories: Vec<String>,
+    },
+    PullRequest {
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, conflicts_with = "body_file", default_value = "")]
+        body: String,
+        #[arg(long, value_name = "PATH")]
+        body_file: Option<PathBuf>,
+        #[arg(long)]
+        draft: bool,
+    },
+    Providers,
+    SetProvider {
+        name: String,
+        #[arg(long, value_name = "URL")]
+        url: String,
+        #[arg(long, value_name = "URL")]
+        api_url: Option<String>,
+        #[arg(long)]
+        git_name: Option<String>,
+        #[arg(long)]
+        git_email: Option<String>,
+        #[arg(long, value_parser = ["direct", "hosts"], default_value = "direct")]
+        route: String,
+    },
+    DeleteProvider {
+        name: String,
+    },
+    Credentials,
+    SetCredential {
+        name: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long, requires = "owner")]
+        repository: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Read the token from this file; '-' reads standard input"
+        )]
+        token_file: Option<PathBuf>,
+    },
+    CheckCredential {
+        name: String,
+    },
+    DeleteCredential {
+        name: String,
+    },
+    Presets,
+    SetPreset {
+        name: String,
+        #[arg(value_name = "PATH")]
+        file: PathBuf,
+    },
+    DeletePreset {
+        name: String,
+    },
+    Search {
+        provider: String,
+        #[arg(default_value = "")]
+        query: String,
+    },
+    Branches {
+        provider: String,
+        #[arg(value_name = "OWNER/REPOSITORY")]
+        repository: String,
     },
     ClientEntry {
         id: String,
@@ -206,6 +342,177 @@ fn parse_variable(text: &str) -> Result<(String, String), String> {
         .split_once('=')
         .ok_or_else(|| format!("{text:?} is not NAME=VALUE"))?;
     Ok((name.to_owned(), value.to_owned()))
+}
+
+fn parse_repository(text: &str) -> Result<Repository, String> {
+    let mut parts = text.split(',');
+    let mut repository = Repository {
+        url: parts.next().unwrap_or_default().to_owned(),
+        provider: None,
+        directory: None,
+        base_branch: None,
+    };
+    for part in parts {
+        match part.split_once('=') {
+            Some(("directory", value)) => repository.directory = Some(value.to_owned()),
+            Some(("branch", value)) => repository.base_branch = Some(value.to_owned()),
+            Some(("provider", value)) => repository.provider = Some(value.to_owned()),
+            _ => {
+                return Err(format!(
+                    "{part:?} is not directory=DIR, branch=BRANCH, or provider=NAME"
+                ));
+            }
+        }
+    }
+    Ok(repository)
+}
+
+fn parse_volume(text: &str) -> Result<WorkspaceVolume, String> {
+    let mut parts = text.split(':');
+    let (Some(volume), Some(path)) = (parts.next(), parts.next()) else {
+        return Err(format!("{text:?} is not VOLUME:PATH or VOLUME:PATH:ro"));
+    };
+    let read_only = match parts.next() {
+        None => false,
+        Some("ro") => true,
+        Some(other) => return Err(format!("{other:?} is not ro")),
+    };
+    if parts.next().is_some() || volume.is_empty() || path.is_empty() {
+        return Err(format!("{text:?} is not VOLUME:PATH or VOLUME:PATH:ro"));
+    }
+    Ok(WorkspaceVolume {
+        volume: volume.to_owned(),
+        path: path.to_owned(),
+        read_only,
+    })
+}
+
+fn read_token(path: &Path) -> anyhow::Result<Secret> {
+    let mut text = String::new();
+    if path == Path::new("-") {
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .context("cannot read the token from standard input")?;
+    } else {
+        text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read the token from {}", path.display()))?;
+    }
+    let token = text.trim();
+    if token.is_empty() {
+        bail!("the token is empty");
+    }
+    Ok(Secret::new(token))
+}
+
+async fn connect_codespace(
+    saved: &SavedOracle,
+    identity: &ClientIdentity,
+    codespace: &Codespace,
+) -> anyhow::Result<Client> {
+    let agent = codespace
+        .agent
+        .as_ref()
+        .with_context(|| format!("the codespace {} has no agent yet", codespace.id))?;
+    let relay =
+        AgentRelay::from_parts(&saved.url, &agent.host_id, &agent.host_key, saved.access()?)?;
+    let instance = agent.instance.clone().map(loom_proto::InstanceId);
+    let stream = relay
+        .connect(instance.as_ref(), identity)
+        .await
+        .with_context(|| format!("cannot reach the agent of the codespace {}", codespace.id))?;
+    Ok(Client::connect(stream, CLIENT_NAME).await?.0)
+}
+
+async fn find_codespace(client: &OracleClient, id: &str) -> anyhow::Result<Codespace> {
+    client
+        .codespaces()
+        .await?
+        .into_iter()
+        .find(|c| c.id == id)
+        .with_context(|| format!("no codespace has the ID {id}"))
+}
+
+fn work_text(status: &RepositoryStatus) -> String {
+    if let Some(error) = &status.error {
+        return format!("unknown: {error}");
+    }
+    let mut parts = Vec::new();
+    if status.changed_files > 0 {
+        parts.push(format!("{} changed files", status.changed_files));
+    }
+    if status.unpushed > 0 {
+        parts.push(format!("{} unpushed commits", status.unpushed));
+    }
+    if parts.is_empty() {
+        "no unsaved work".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn print_repository(status: &RepositoryStatus) {
+    let mut marks = vec![work_text(status)];
+    if let Some(base) = &status.base_branch {
+        marks.push(format!("{} ahead of {base}", status.ahead));
+    }
+    if status.pushed {
+        marks.push("pushed".to_owned());
+    }
+    if let Some(url) = &status.pull_request {
+        marks.push(format!("pull request {url}"));
+    }
+    println!(
+        "{}\t{}\t{}\t{}",
+        status.directory,
+        status.branch,
+        status.url,
+        marks.join(", ")
+    );
+}
+
+async fn guard_close(
+    agent: &Client,
+    statuses: Vec<RepositoryStatus>,
+    push: &[String],
+    discard: &[String],
+    message: Option<String>,
+) -> anyhow::Result<()> {
+    let choose = choices_from_lists(&statuses, push, discard)?;
+    let to_push = match close_plan(&statuses, choose, message.is_some()) {
+        Ok(to_push) => to_push,
+        Err(CloseGuardError::Undecided(undecided)) => {
+            let lines: Vec<String> = undecided
+                .iter()
+                .map(|s| format!("{}: {}", s.directory, work_text(s)))
+                .collect();
+            bail!(
+                "these repositories have unsaved work:\n  {}\nchoose --push <directory> or --discard <directory> for each ('*' selects all)",
+                lines.join("\n  ")
+            );
+        }
+        Err(err) => bail!("{err}; give --message to commit the changes"),
+    };
+    if to_push.is_empty() {
+        return Ok(());
+    }
+    let pushed = agent
+        .push_repositories(PushRepositories {
+            commit_message: message,
+            directories: to_push,
+        })
+        .await?;
+    let failed: Vec<String> = pushed
+        .iter()
+        .filter(|s| s.error.is_some() || s.has_unsaved_work())
+        .map(|s| format!("{}: {}", s.directory, work_text(s)))
+        .collect();
+    if !failed.is_empty() {
+        bail!("cannot push:\n  {}", failed.join("\n  "));
+    }
+    for status in &pushed {
+        eprintln!("pushed {} to {}", status.directory, status.branch);
+    }
+    Ok(())
 }
 
 fn default_label() -> String {
@@ -357,6 +664,12 @@ fn print_host(host: &Host) {
         }
     }
     marks.push(format!("{} codespaces", host.codespaces));
+    for reach in &host.reach {
+        marks.push(match &reach.error {
+            None => format!("reaches {}", reach.name),
+            Some(error) => format!("cannot reach {}: {error}", reach.name),
+        });
+    }
     println!("{}\t{}", host.name, marks.join(", "));
 }
 
@@ -364,17 +677,50 @@ fn print_workspace(workspace: &Workspace) {
     let repositories: Vec<String> = workspace
         .repositories
         .iter()
-        .map(|repository| match &repository.base_branch {
-            Some(branch) => format!("{} ({branch})", repository.url),
-            None => repository.url.clone(),
+        .map(|repository| {
+            let directory = repository.directory.as_deref().unwrap_or("?");
+            match &repository.base_branch {
+                Some(branch) => format!("{directory}={} ({branch})", repository.url),
+                None => format!("{directory}={}", repository.url),
+            }
         })
         .collect();
+    let volumes: Vec<String> = workspace
+        .volumes
+        .iter()
+        .map(|mount| {
+            let mode = if mount.read_only { ":ro" } else { "" };
+            format!("{}:{}{mode}", mount.volume, mount.path)
+        })
+        .collect();
+    let volumes = if volumes.is_empty() {
+        String::new()
+    } else {
+        format!("\tvolumes {}", volumes.join(", "))
+    };
     println!(
-        "{}\t{}\t{}",
+        "{}\t{}\t{}{volumes}",
         workspace.name,
         workspace.host,
         repositories.join(", ")
     );
+}
+
+fn print_volume(volume: &Volume) {
+    let mut marks = vec![volume.kind.to_string()];
+    if let Some(size) = volume.size_mib {
+        marks.push(ByteSize::mib(size).to_string());
+    }
+    if let Some(path) = &volume.path {
+        marks.push(format!("host path {path}"));
+    }
+    if !volume.hosts.is_empty() {
+        marks.push(format!("on {}", volume.hosts.join(", ")));
+    }
+    if volume.deleting {
+        marks.push("deletion pending".to_owned());
+    }
+    println!("{}\t{}", volume.name, marks.join(", "));
 }
 
 fn print_codespace(codespace: &Codespace) {
@@ -390,9 +736,66 @@ fn print_codespace(codespace: &Codespace) {
     if let Some(error) = &codespace.error {
         detail.push_str(&format!(", {error}"));
     }
+    if let Some(preset) = &codespace.preset {
+        detail.push_str(&format!(", preset {preset}"));
+    }
     println!(
         "{}\t{}\t{}\t{}\t{}",
         codespace.id, codespace.workspace, codespace.host, codespace.branch, detail
+    );
+}
+
+fn print_provider(provider: &GitProvider) {
+    let mut marks = vec![format!("API {}", provider.api_url)];
+    if provider.route != ProviderRoute::Direct {
+        marks.push(format!("route {}", provider.route));
+    }
+    if let Some(name) = &provider.git_name {
+        marks.push(format!("Git name {name}"));
+    }
+    if let Some(email) = &provider.git_email {
+        marks.push(format!("Git email {email}"));
+    }
+    println!(
+        "{}\t{}\t{}",
+        provider.name,
+        provider.web_url,
+        marks.join(", ")
+    );
+}
+
+fn print_credential(credential: &GitCredential) {
+    let mut marks = Vec::new();
+    if let Some(login) = &credential.login {
+        marks.push(format!("login {login}"));
+    }
+    if let Some(expires) = credential.expires_at {
+        marks.push(format!("expires {}", time(expires)));
+    }
+    match (&credential.check_error, credential.checked_at) {
+        (Some(error), _) => marks.push(format!("check failed: {error}")),
+        (None, Some(at)) => marks.push(format!("checked {}", time(at))),
+        (None, None) => marks.push("not checked".to_owned()),
+    }
+    println!(
+        "{}\t{}\t{}\t{}",
+        credential.name,
+        credential.provider,
+        credential.scope(),
+        marks.join(", ")
+    );
+}
+
+fn print_preset(preset: &Preset) {
+    let credentials = if preset.git_credentials.is_empty() {
+        "no Git credentials".to_owned()
+    } else {
+        format!("Git credentials {}", preset.git_credentials.join(", "))
+    };
+    println!(
+        "{}\t{credentials}\tchanged {}",
+        preset.name,
+        time(preset.updated_at)
     );
 }
 
@@ -428,7 +831,28 @@ fn print_event(event: &Event) {
         }
         Event::CodespaceProgress { id, step } => println!("codespace {id} step {step}"),
         Event::CodespaceRemoved { id } => println!("codespace {id} removed"),
+        Event::GitProviderChanged { provider } => {
+            print!("provider ");
+            print_provider(provider);
+        }
+        Event::GitProviderRemoved { name } => println!("provider {name} removed"),
+        Event::GitCredentialChanged { credential } => {
+            print!("credential ");
+            print_credential(credential);
+        }
+        Event::GitCredentialRemoved { name } => println!("credential {name} removed"),
+        Event::PresetChanged { preset } => {
+            print!("preset ");
+            print_preset(preset);
+        }
+        Event::PresetRemoved { name } => println!("preset {name} removed"),
+        Event::VolumeChanged { volume } => {
+            print!("volume ");
+            print_volume(volume);
+        }
+        Event::VolumeRemoved { name } => println!("volume {name} removed"),
         Event::DeviceKeysChanged => println!("the device keys changed"),
+        Event::GitChanged => println!("the Git setup changed"),
         Event::EventsLost => println!("some events were lost"),
         Event::Unknown => println!("an unknown event"),
     }
@@ -547,13 +971,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let saved = load_saved(&dir)?;
-    let (client, mut events) = OracleClient::connect(
-        &saved.endpoint()?,
-        &identity(&dir, saved.identity.as_deref())?,
-        CLIENT_NAME,
-    )
-    .await
-    .with_context(|| format!("cannot connect to the oracle {}", saved.url))?;
+    let me = identity(&dir, saved.identity.as_deref())?;
+    let (client, mut events) = OracleClient::connect(&saved.endpoint()?, &me, CLIENT_NAME)
+        .await
+        .with_context(|| format!("cannot connect to the oracle {}", saved.url))?;
     match cli.command {
         Command::Pair { .. } => unreachable!(),
         Command::Info => {
@@ -698,17 +1119,28 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::CreateWorkspace {
             name,
             host,
-            repository,
-            directory,
-            branch,
+            repositories,
+            volumes,
         } => {
-            let repository = Repository {
-                url: repository,
-                directory,
-                base_branch: branch,
-            };
             let workspace = client
-                .create_workspace(&name, &host, vec![repository])
+                .create_workspace_with_volumes(&name, &host, repositories, volumes)
+                .await?;
+            if json {
+                return print_json(&workspace);
+            }
+            print_workspace(&workspace);
+        }
+        Command::UpdateWorkspace {
+            name,
+            host,
+            repositories,
+            volumes,
+            no_volumes,
+        } => {
+            let repositories = (!repositories.is_empty()).then_some(repositories);
+            let volumes = (no_volumes || !volumes.is_empty()).then_some(volumes);
+            let workspace = client
+                .update_workspace(&name, host.as_deref(), repositories, volumes)
                 .await?;
             if json {
                 return print_json(&workspace);
@@ -719,6 +1151,38 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             client.delete_workspace(&name).await?;
             if !json {
                 println!("deleted workspace {name}");
+            }
+        }
+        Command::Volumes => {
+            let volumes = client.volumes().await?;
+            if json {
+                return print_json(&volumes);
+            }
+            volumes.iter().for_each(print_volume);
+        }
+        Command::CreateVolume { name, size, path } => {
+            let kind = if path.is_some() {
+                VolumeKind::Directory
+            } else {
+                VolumeKind::Incus
+            };
+            let volume = client
+                .create_volume(VolumeInput {
+                    name,
+                    kind,
+                    size_mib: size,
+                    path,
+                })
+                .await?;
+            if json {
+                return print_json(&volume);
+            }
+            print_volume(&volume);
+        }
+        Command::DeleteVolume { name } => {
+            client.delete_volume(&name).await?;
+            if !json {
+                println!("deleted volume {name}");
             }
         }
         Command::Codespaces { all } => {
@@ -735,23 +1199,31 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::CreateCodespace {
             workspace,
+            preset,
             cpus,
             memory,
             branch,
+            bases,
             no_wait,
         } => {
             if !no_wait {
                 client.subscribe().await?;
             }
-            let codespace = client
-                .create_codespace(NewCodespace {
+            let created = client
+                .create_codespace_with_warnings(NewCodespace {
                     workspace,
+                    preset,
                     cpus,
                     memory_mib: memory,
                     base_branch: branch,
+                    base_branches: bases.into_iter().collect::<BTreeMap<_, _>>(),
                     client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                 })
                 .await?;
+            for warning in &created.warnings {
+                eprintln!("warning: {warning}");
+            }
+            let codespace = created.codespace;
             let codespace = if no_wait {
                 codespace
             } else {
@@ -772,7 +1244,41 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 print!("{}", client_entry(&saved, &codespace, None)?);
             }
         }
-        Command::CloseCodespace { id, no_wait } => {
+        Command::CloseCodespace {
+            id,
+            no_wait,
+            push,
+            discard,
+            message,
+            force,
+        } => {
+            let codespace = find_codespace(&client, &id).await?;
+            match codespace.state {
+                CodespaceState::Ready => {
+                    let reached = async {
+                        let agent = connect_codespace(&saved, &me, &codespace).await?;
+                        let statuses = agent.repositories().await?;
+                        Ok::<_, anyhow::Error>((agent, statuses))
+                    };
+                    match reached.await {
+                        Ok((agent, statuses)) => {
+                            guard_close(&agent, statuses, &push, &discard, message).await?;
+                        }
+                        Err(err) if force => {
+                            eprintln!("warning: closing without the check: {err:#}");
+                        }
+                        Err(err) => {
+                            return Err(err.context(
+                                "cannot check the unsaved work; use --force to close the codespace anyway",
+                            ));
+                        }
+                    }
+                }
+                CodespaceState::Lost if !force => bail!(
+                    "the codespace is lost, so its agent cannot tell its unsaved work; use --force to close it"
+                ),
+                _ => {}
+            }
             if !no_wait {
                 client.subscribe().await?;
             }
@@ -788,14 +1294,224 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             print_codespace(&codespace);
         }
+        Command::Providers => {
+            let providers = client.git_providers().await?;
+            if json {
+                return print_json(&providers);
+            }
+            providers.iter().for_each(print_provider);
+        }
+        Command::SetProvider {
+            name,
+            url,
+            api_url,
+            git_name,
+            git_email,
+            route,
+        } => {
+            let provider = client
+                .set_git_provider(GitProviderInput {
+                    name,
+                    web_url: url,
+                    api_url,
+                    git_name,
+                    git_email,
+                    route: ProviderRoute::parse(&route),
+                })
+                .await?;
+            if json {
+                return print_json(&provider);
+            }
+            print_provider(&provider);
+        }
+        Command::DeleteProvider { name } => {
+            client.delete_git_provider(&name).await?;
+            if !json {
+                println!("deleted provider {name}");
+            }
+        }
+        Command::Credentials => {
+            let credentials = client.git_credentials().await?;
+            if json {
+                return print_json(&credentials);
+            }
+            credentials.iter().for_each(print_credential);
+        }
+        Command::SetCredential {
+            name,
+            provider,
+            owner,
+            repository,
+            token_file,
+        } => {
+            let token = token_file.as_deref().map(read_token).transpose()?;
+            let credential = client
+                .set_git_credential(GitCredentialInput {
+                    name,
+                    provider,
+                    owner,
+                    repository,
+                    token,
+                })
+                .await?;
+            if json {
+                return print_json(&credential);
+            }
+            print_credential(&credential);
+        }
+        Command::CheckCredential { name } => {
+            let credential = client.check_git_credential(&name).await?;
+            if json {
+                return print_json(&credential);
+            }
+            print_credential(&credential);
+        }
+        Command::DeleteCredential { name } => {
+            client.delete_git_credential(&name).await?;
+            if !json {
+                println!("deleted credential {name}");
+            }
+        }
+        Command::Presets => {
+            let presets = client.presets().await?;
+            if json {
+                return print_json(&presets);
+            }
+            presets.iter().for_each(print_preset);
+        }
+        Command::SetPreset { name, file } => {
+            let yaml = std::fs::read_to_string(&file)
+                .with_context(|| format!("cannot read {}", file.display()))?;
+            let preset = client.set_preset(&name, &yaml).await?;
+            if json {
+                return print_json(&preset);
+            }
+            print_preset(&preset);
+        }
+        Command::DeletePreset { name } => {
+            client.delete_preset(&name).await?;
+            if !json {
+                println!("deleted preset {name}");
+            }
+        }
+        Command::Search { provider, query } => {
+            let found = client.search_repositories(&provider, &query).await?;
+            if json {
+                return print_json(&found);
+            }
+            for error in &found.errors {
+                eprintln!("warning: {error}");
+            }
+            for repository in &found.repositories {
+                println!(
+                    "{}/{}\t{}\t{}{}",
+                    repository.owner,
+                    repository.name,
+                    repository.url,
+                    if repository.private {
+                        "private"
+                    } else {
+                        "public"
+                    },
+                    repository
+                        .description
+                        .as_deref()
+                        .map(|d| format!(", {d}"))
+                        .unwrap_or_default()
+                );
+            }
+            if found.more {
+                println!("(more results; refine the query)");
+            }
+        }
+        Command::Branches {
+            provider,
+            repository,
+        } => {
+            let (owner, name) = repository
+                .split_once('/')
+                .context("give the repository as OWNER/REPOSITORY")?;
+            let branches = client.branches(&provider, owner, name).await?;
+            if json {
+                return print_json(&branches);
+            }
+            for branch in &branches.branches {
+                let mark = if branches.default_branch.as_ref() == Some(branch) {
+                    "\tdefault"
+                } else {
+                    ""
+                };
+                println!("{branch}{mark}");
+            }
+            if branches.more {
+                println!("(more branches)");
+            }
+        }
         Command::ClientEntry { id, name } => {
-            let codespace = client
-                .codespaces()
-                .await?
-                .into_iter()
-                .find(|c| c.id == id)
-                .with_context(|| format!("no codespace has the ID {id}"))?;
+            let codespace = find_codespace(&client, &id).await?;
             print!("{}", client_entry(&saved, &codespace, name)?);
+        }
+        Command::Repositories { id } => {
+            let codespace = find_codespace(&client, &id).await?;
+            let agent = connect_codespace(&saved, &me, &codespace).await?;
+            let statuses = agent.repositories().await?;
+            if json {
+                return print_json(&statuses);
+            }
+            statuses.iter().for_each(print_repository);
+        }
+        Command::Push {
+            id,
+            message,
+            directories,
+        } => {
+            let codespace = find_codespace(&client, &id).await?;
+            let agent = connect_codespace(&saved, &me, &codespace).await?;
+            let statuses = agent
+                .push_repositories(PushRepositories {
+                    commit_message: message,
+                    directories,
+                })
+                .await?;
+            if json {
+                return print_json(&statuses);
+            }
+            statuses.iter().for_each(print_repository);
+            if statuses.iter().any(|s| s.error.is_some()) {
+                bail!("cannot push all repositories");
+            }
+        }
+        Command::PullRequest {
+            id,
+            title,
+            body,
+            body_file,
+            draft,
+        } => {
+            let body = match body_file {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("cannot read {}", path.display()))?,
+                None => body,
+            };
+            let codespace = find_codespace(&client, &id).await?;
+            let agent = connect_codespace(&saved, &me, &codespace).await?;
+            let results = agent.open_pull_requests(&title, &body, draft).await?;
+            if json {
+                return print_json(&results);
+            }
+            for result in &results {
+                let text = match (&result.url, &result.skipped, &result.error) {
+                    (_, _, Some(error)) => format!("error: {error}"),
+                    (Some(url), _, None) if result.created => format!("opened {url}"),
+                    (Some(url), _, None) => format!("updated {url}"),
+                    (None, Some(reason), None) => format!("skipped: {reason}"),
+                    (None, None, None) => "nothing".to_owned(),
+                };
+                println!("{}\t{text}", result.directory);
+            }
+            if results.iter().any(|r| r.error.is_some()) {
+                bail!("cannot open all pull requests");
+            }
         }
         Command::Watch { count } => {
             client.subscribe().await?;
