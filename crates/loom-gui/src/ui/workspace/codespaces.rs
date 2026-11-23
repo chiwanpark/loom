@@ -734,6 +734,7 @@ impl Workspace {
                 section = section.child(
                     h_flex()
                         .id(SharedString::from(format!("oracle-workspace-{hix}-{wix}")))
+                        .debug_selector(move || format!("oracle-workspace-{hix}-{wix}"))
                         .w_full()
                         .pl_4()
                         .pr_1()

@@ -377,12 +377,16 @@ impl Render for NewCodespaceView {
                 )
             })
             .child(
-                h_flex().justify_end().gap_2().child(
-                    Button::new("create-codespace")
-                        .primary()
-                        .label("Create")
-                        .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
-                ),
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .debug_selector(|| "create-codespace".into())
+                    .child(
+                        Button::new("create-codespace")
+                            .primary()
+                            .label("Create")
+                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                    ),
             )
     }
 }
