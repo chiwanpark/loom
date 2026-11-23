@@ -1,6 +1,6 @@
 # Loom-Next plan
 
-Status: draft for discussion (2026-11-22, revision 21). Nothing in this document is final.
+Status: draft for discussion (2026-11-22, revision 22). Nothing in this document is final.
 
 ## 1. Goal
 
@@ -41,7 +41,7 @@ Loom-Next is a self-hosted system like GitHub Codespaces.
 | Model accounts | You have more than one account for a model provider, for example a personal and a company Claude plan. The oracle keeps all accounts. A codespace uses one account for each model provider. |
 | Presets | The oracle keeps presets of agent configuration. Each preset has a name, one YAML file, `AGENTS.md`, and skills. The YAML file names its credentials in the oracle: model accounts, Git credentials, and secrets. It also sets the name of the environment variable for each secret. Each codespace uses one preset and keeps it until it closes. |
 | Classic modes | Local hosts, SSH hosts, relay hosts for directories, worktree sessions, and the pairing with agents go away after Loom-Next is stable. |
-| Branch | The development branch of Loom-Next is `loom-next`. No Loom-Next branch merges into `main` until the transition is finished. |
+| Branch | The development branch of Loom-Next is `loom-next`. No Loom-Next branch merges into `main` until the transition is finished, which is after phase 8. There are no pre-releases from `loom-next` unless you ask for them. |
 
 ## 3. Research: GitHub Codespaces
 
@@ -597,6 +597,7 @@ Phase 0 tested the two limits, and a root disk without a size, on the IncusOS ho
 - CI runs for each pull request, also for a pull request into `loom-next`. It builds the archives of the binaries and the Android app.
 - The releases contain no Loom-Next code during the transition. The first release with Loom-Next comes after the merge of `loom-next` into `main`.
 - Until then, all binaries of Loom-Next come from builds of `loom-next`: `loom-oracle`, `loom-host`, the agent with the managed mode, and the clients.
+- There are no pre-releases from `loom-next`. You ask for one when you need it.
 - From phase 3, the build workflow also makes archives of `loom-oracle` and `loom-host`.
 
 ## 9. Phases
@@ -800,8 +801,7 @@ Not tested yet:
 
 ## 13. Open questions
 
-1. End of the transition: this plan merges `loom-next` into `main` after phase 8, when the classic modes are gone. Is this correct?
-2. Builds: during the transition, the binaries of Loom-Next come from builds of `loom-next` and from CI archives. Is this sufficient, or do you want pre-releases from `loom-next`?
+There are no open questions at this time.
 
 ## 14. Clients
 
