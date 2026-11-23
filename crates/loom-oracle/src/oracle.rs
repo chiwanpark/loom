@@ -436,6 +436,10 @@ impl Oracle {
                 "a push token is 1 to {MAX_PUSH_TOKEN} printable ASCII characters"
             )));
         }
+        let before = self
+            .store
+            .peer(peer)?
+            .and_then(|row| (row.role == Role::Device).then_some(row.push_token));
         let others = self
             .store
             .set_push_token(peer, token)?
@@ -448,6 +452,9 @@ impl Oracle {
         self.audit(Some(peer), action, &format!("peer {peer}"));
         for id in others.into_iter().chain([peer]) {
             self.device_changed(id);
+        }
+        if before.is_some_and(|before| before.as_deref() != token) {
+            self.emit(Event::DeviceKeysChanged);
         }
         Ok(())
     }
