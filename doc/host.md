@@ -1,8 +1,8 @@
 # Hosts and codespaces (Loom-Next)
 
-A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 2.
+A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 3.
 
-In phase 2, a workspace has one public repository. A codespace is an Incus container. In the container, the agent clones the repository, makes the branch `loom/<codespace>`, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
+A workspace has one or more repositories. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
 
 The releases do not contain `loom-host` yet. Build it from the branch `loom-next`. The host also needs a build of `loom-agent` from this branch, because the managed mode is new:
 
@@ -132,8 +132,18 @@ Each codespace is the container `loom-<codespace>`:
 With `loom-oracle-cli`:
 
 ```sh
-loom-oracle-cli create-workspace acme --host <host> --repository https://github.com/acme/app.git
-loom-oracle-cli create-codespace acme --cpus 2 --memory 4GiB
+loom-oracle-cli set-provider github --url https://github.com
+loom-oracle-cli set-credential acme-token --provider github --owner acme --token-file - < token.txt
+loom-oracle-cli set-preset work preset.yaml
+loom-oracle-cli create-workspace acme --host <host> --repository github:acme/app --repository github:acme/lib
+loom-oracle-cli create-codespace acme --preset work --cpus 2 --memory 4GiB
+```
+
+`preset.yaml` names the credentials:
+
+```yaml
+git:
+  credentials: [acme-token]
 ```
 
 `create-codespace` shows the steps until the codespace is ready. Then it shows a host entry for `client.yaml` of the desktop client. `loom-oracle-cli client-entry <id>` shows the entry again.
@@ -156,11 +166,24 @@ In a codespace, `loom-agent serve --managed` runs the agent:
 
 1. The bootstrap file `~/.config/loom/bootstrap.json` of the agent contains a one-time link for this codespace.
 2. The agent makes its keys and pairs with the oracle. Then it deletes the bootstrap file. It keeps the address of the oracle in `managed.json` in its data directory, so it can start again without the link.
-3. The agent clones the repository into the workspaces root and makes the branch `loom/<codespace>`.
+3. The agent sets up Git for the providers of the preset, clones each repository, and makes the branch `loom/<codespace>` in each clone.
 4. The agent accepts the keys of the devices of the oracle. When you pair or revoke a device, the agent gets the change.
 5. The agent registers with the relay of the oracle and reports `ready`.
 
 `--bootstrap <path>` selects a different bootstrap file.
+
+| Workspace | Directory of each clone | Root directory of the agent |
+| --- | --- | --- |
+| One repository | `/workspaces/<directory>` | The clone. |
+| More than one repository | `/workspaces/<workspace>/<directory>` | `/workspaces/<workspace>` |
+
+The Git setup of a codespace is in the data directory of the agent (`~/.local/share/loom/git`). The global Git configuration of the user includes the file `git/config`:
+
+- For each provider with a credential in the preset, `loom-agent git-credential` is the only credential helper. It asks the agent through the socket `git/credential.sock`, and the agent asks the oracle.
+- Each clone has the Git name and email of its provider in its own configuration. Other clones of a provider get them through `includeIf "hasconfig:remote.*.url:…"`.
+- The agent writes the token for `gh` of each provider into `~/.config/gh/hosts.yml`. It keeps the hosts that it did not write.
+
+When the oracle sends `git_changed`, the agent writes these files again.
 
 ## Codespace states
 
