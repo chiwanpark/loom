@@ -8,14 +8,13 @@
 | `crates/loom-gui` | The desktop client `loom`, built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui). |
 | `crates/loom-relay` | The relay `loom-relay`. |
 | `crates/loom-oracle` | The oracle `loom-oracle` of Loom-Next: the relay, the control service, and the store. See [Oracle](oracle.md). |
-| `crates/loom-oracle-cli` | The test client `loom-oracle-cli` for the control service of the oracle. |
 | `loom-oracle-proto` | The JSON messages of the control service. |
 | `loom-agent-core` | The agent core. |
 | `loom-llm` | The model providers. |
 | `loom-tools` | The tools and the sandbox. |
 | `loom-proto` | The wire protocol. |
 | `loom-transport` | The transports. |
-| `loom-client` | The client library. |
+| `loom-client` | The client library. Its default feature `cli` adds the test client `loom-oracle-cli` for the control service of the oracle. The desktop and Android clients do not use this feature. |
 | `loom-view-model` | The view model that the clients share. |
 | `loom-mobile` | The Rust core of the Android client and its Kotlin bindings. |
 | `loom-config` | The configuration. |

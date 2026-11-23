@@ -11,7 +11,7 @@ In phase 1, the oracle does these things:
 The releases do not contain the oracle yet. Build it from the branch `loom-next`:
 
 ```sh
-cargo build --release -p loom-oracle -p loom-oracle-cli
+cargo build --release --bin loom-oracle --bin loom-oracle-cli
 ```
 
 ## Components
