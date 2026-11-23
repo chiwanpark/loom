@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::HttpClient;
@@ -116,6 +117,37 @@ impl ProviderStatus {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LentCredential {
+    pub section: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+impl std::fmt::Debug for LentCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LentCredential")
+            .field("section", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl LentCredential {
+    pub(crate) fn new<T: Serialize>(section: &T, expires_at: Option<u64>) -> Result<Self> {
+        let section = serde_json::to_value(section)
+            .map_err(|e| LlmError::Unsupported(format!("cannot lend a credential: {e}")))?;
+        Ok(Self::from_section(section, expires_at))
+    }
+
+    pub(crate) fn from_section(section: Value, expires_at: Option<u64>) -> Self {
+        Self {
+            section,
+            expires_at,
+        }
+    }
+}
+
 struct Pending {
     provider: ProviderId,
     created: Instant,
@@ -170,11 +202,19 @@ impl Auth {
         kinds(&self.shared).iter().map(|k| k.id()).collect()
     }
 
+    fn writable(&self) -> Result<()> {
+        match self.shared.store.read_only() {
+            Some(reason) => Err(LlmError::Unsupported(reason)),
+            None => Ok(()),
+        }
+    }
+
     pub async fn start_login(
         &self,
         provider: &ProviderId,
         method: LoginMethod,
     ) -> Result<LoginStarted> {
+        self.writable()?;
         let started = require_kind(&self.shared, provider)?
             .start_login(&self.shared, method)
             .await?;
@@ -228,6 +268,7 @@ impl Auth {
     }
 
     pub async fn set_api_key(&self, provider: &ProviderId, key: Option<String>) -> Result<()> {
+        self.writable()?;
         let key = key.filter(|k| !k.trim().is_empty());
         require_kind(&self.shared, provider)?
             .set_api_key(&self.shared, key)
@@ -235,21 +276,25 @@ impl Auth {
     }
 
     pub async fn select_account(&self, provider: &ProviderId, account: &str) -> Result<()> {
+        self.writable()?;
         require_kind(&self.shared, provider)?
             .select_account(&self.shared, account)
             .await
     }
 
     pub async fn logout(&self, provider: &ProviderId) -> Result<()> {
+        self.writable()?;
         require_kind(&self.shared, provider)?
             .logout(&self.shared)
             .await
     }
 
     pub async fn provider_status(&self, provider: &ProviderId) -> Result<ProviderStatus> {
-        require_kind(&self.shared, provider)?
+        let status = require_kind(&self.shared, provider)?
             .status(&self.shared)
-            .await
+            .await?;
+        let names = self.shared.store.account_names().await;
+        Ok(self.shown(status, &names))
     }
 
     /// Who the signed-in account of `provider` is, from the stored sign-in
@@ -262,10 +307,49 @@ impl Auth {
 
     pub async fn status(&self) -> Result<Vec<ProviderStatus>> {
         let mut all = Vec::new();
+        let names = self.shared.store.account_names().await;
         for kind in kinds(&self.shared) {
-            all.push(kind.status(&self.shared).await?);
+            let status = kind.status(&self.shared).await?;
+            all.push(self.shown(status, &names));
         }
         Ok(all)
+    }
+
+    fn shown(
+        &self,
+        mut status: ProviderStatus,
+        names: &std::collections::BTreeMap<String, String>,
+    ) -> ProviderStatus {
+        if self.shared.store.read_only().is_some() {
+            status.login_methods.clear();
+        }
+        if let Some(name) = names.get(status.provider.as_str()) {
+            for account in status.accounts.iter_mut().filter(|a| a.active) {
+                account.label = Some(match account.label.take() {
+                    Some(label) => format!("{name} ({label})"),
+                    None => name.clone(),
+                });
+            }
+            if status.accounts.is_empty() && status.api_key_set {
+                status.accounts.push(AccountStatus {
+                    id: name.clone(),
+                    label: Some(name.clone()),
+                    active: true,
+                    signed_in: true,
+                });
+            }
+        }
+        status
+    }
+
+    pub async fn lend(
+        &self,
+        provider: &ProviderId,
+        margin_secs: u64,
+    ) -> Result<Option<LentCredential>> {
+        require_kind(&self.shared, provider)?
+            .lend(&self.shared, margin_secs)
+            .await
     }
 }
 

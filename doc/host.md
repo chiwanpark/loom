@@ -1,6 +1,6 @@
 # Hosts and codespaces (Loom-Next)
 
-A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 3.
+A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 4.
 
 A workspace has one or more repositories and can have persistent volumes. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
 
@@ -167,19 +167,24 @@ With `loom-oracle-cli`:
 ```sh
 loom-oracle-cli set-provider github --url https://github.com
 loom-oracle-cli set-credential acme-token --provider github --owner acme --token-file - < token.txt
+loom-oracle-cli sign-in work --provider anthropic
 loom-oracle-cli set-preset work preset.yaml
 loom-oracle-cli create-workspace acme --host <host> --repository github:acme/app --repository github:acme/lib
-loom-oracle-cli create-codespace acme --preset work --cpus 2 --memory 4GiB
+loom-oracle-cli create-codespace acme --preset work --cpus 2 --memory 4GiB --message "Fix the failing tests."
 ```
 
-`preset.yaml` names the credentials:
+`preset.yaml` names the model account and the Git credentials:
 
 ```yaml
+llm:
+  default_model: anthropic/claude-sonnet-4-5
+  accounts:
+    anthropic: work
 git:
   credentials: [acme-token]
 ```
 
-`create-codespace` shows the steps until the codespace is ready. Then it shows a host entry for `client.yaml` of the desktop client. `loom-oracle-cli client-entry <id>` shows the entry again.
+`create-codespace` shows the steps until the codespace is ready. Then it shows a host entry for `client.yaml` of the desktop client. `loom-oracle-cli client-entry <id>` shows the entry again. With `--message`, the agent starts a session with this message when the codespace is ready. A client does not need to be connected.
 
 The device keys of the oracle are the keys that the agent of a codespace accepts. Thus, the desktop client must use a key that is paired with the oracle. Pair the key of the desktop client with `loom-oracle-cli pair <link> --identity ~/.local/share/loom/client_identity.json`.
 
@@ -200,8 +205,9 @@ In a codespace, `loom-agent serve --managed` runs the agent:
 1. The bootstrap file `~/.config/loom/bootstrap.json` of the agent contains a one-time link for this codespace.
 2. The agent makes its keys and pairs with the oracle. Then it deletes the bootstrap file. It keeps the address of the oracle in `managed.json` in its data directory, so it can start again without the link.
 3. The agent sets up Git for the providers of the preset, clones each repository, and makes the branch `loom/<codespace>` in each clone.
-4. The agent accepts the keys of the devices of the oracle. When you pair or revoke a device, the agent gets the change.
-5. The agent registers with the relay of the oracle and reports `ready`.
+4. The agent writes the agent configuration of its preset and gets the model credentials from the oracle. See [Agent configuration in a codespace](oracle.md#agent-configuration-in-a-codespace). If the configuration is not valid, the codespace fails.
+5. The agent accepts the keys of the devices of the oracle. When you pair or revoke a device, the agent gets the change.
+6. The agent registers with the relay of the oracle and reports `ready`. If the codespace has a first message, the agent then starts a session with it.
 
 `--bootstrap <path>` selects a different bootstrap file.
 

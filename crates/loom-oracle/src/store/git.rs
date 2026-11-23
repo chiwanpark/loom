@@ -47,8 +47,23 @@ pub struct PresetRow {
     pub name: String,
     pub yaml: String,
     pub credentials: Vec<String>,
+    pub agents_md: String,
+    pub files: Vec<String>,
+    pub accounts: Vec<(String, u64, String)>,
+    pub secrets: Vec<(String, u64, String)>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PresetInput<'a> {
+    pub name: &'a str,
+    pub yaml: &'a str,
+    pub agents_md: Option<&'a str>,
+    pub files: Option<&'a [(String, String)]>,
+    pub credentials: &'a [u64],
+    pub accounts: &'a [(String, u64)],
+    pub secrets: &'a [(String, u64)],
 }
 
 const PROVIDER_SELECT: &str =
@@ -359,7 +374,8 @@ impl Store {
         let conn = self.conn();
         let mut rows = conn
             .prepare(&format!(
-                "SELECT id, name, yaml, created_at, updated_at FROM presets {filter} ORDER BY name"
+                "SELECT id, name, yaml, created_at, updated_at, agents_md FROM presets {filter}
+                 ORDER BY name"
             ))?
             .query_map(args, |r| {
                 Ok(PresetRow {
@@ -367,6 +383,10 @@ impl Store {
                     name: r.get(1)?,
                     yaml: r.get(2)?,
                     credentials: Vec::new(),
+                    agents_md: r.get(5)?,
+                    files: Vec::new(),
+                    accounts: Vec::new(),
+                    secrets: Vec::new(),
                     created_at: to_u64(r.get(3)?),
                     updated_at: to_u64(r.get(4)?),
                 })
@@ -381,6 +401,30 @@ impl Store {
                 )?
                 .query_map([to_i64(row.id)], |r| r.get(0))?
                 .collect::<Result<Vec<String>, _>>()?;
+            row.files = conn
+                .prepare("SELECT path FROM preset_files WHERE preset = ?1 ORDER BY path")?
+                .query_map([to_i64(row.id)], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            row.accounts = conn
+                .prepare(
+                    "SELECT a.provider, m.id, m.name FROM preset_model_accounts a
+                     JOIN model_accounts m ON m.id = a.account
+                     WHERE a.preset = ?1 ORDER BY a.provider",
+                )?
+                .query_map([to_i64(row.id)], |r| {
+                    Ok((r.get(0)?, to_u64(r.get(1)?), r.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            row.secrets = conn
+                .prepare(
+                    "SELECT s.variable, x.id, x.name FROM preset_secrets s
+                     JOIN secrets x ON x.id = s.secret
+                     WHERE s.preset = ?1 ORDER BY s.variable",
+                )?
+                .query_map([to_i64(row.id)], |r| {
+                    Ok((r.get(0)?, to_u64(r.get(1)?), r.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
         }
         Ok(rows)
     }
@@ -403,36 +447,66 @@ impl Store {
             .next())
     }
 
-    pub fn put_preset(
-        &self,
-        name: &str,
-        yaml: &str,
-        credentials: &[u64],
-    ) -> StoreResult<PresetRow> {
+    pub fn put_preset(&self, input: &PresetInput<'_>) -> StoreResult<PresetRow> {
         {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
             let now = to_i64(now_unix());
             let id: i64 = tx.query_row(
-                "INSERT INTO presets (name, yaml, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+                "INSERT INTO presets (name, yaml, created_at, updated_at, agents_md)
+                 VALUES (?1, ?2, ?3, ?3, coalesce(?4, ''))
                  ON CONFLICT (name) DO UPDATE SET yaml = excluded.yaml,
-                     updated_at = excluded.updated_at
+                     updated_at = excluded.updated_at,
+                     agents_md = coalesce(?4, presets.agents_md)
                  RETURNING id",
-                params![name, yaml, now],
+                params![input.name, input.yaml, now, input.agents_md],
                 |r| r.get(0),
             )?;
             tx.execute("DELETE FROM preset_git_credentials WHERE preset = ?1", [id])?;
-            for (position, credential) in credentials.iter().enumerate() {
+            for (position, credential) in input.credentials.iter().enumerate() {
                 tx.execute(
                     "INSERT INTO preset_git_credentials (preset, position, credential)
                      VALUES (?1, ?2, ?3)",
                     params![id, position as i64, to_i64(*credential)],
                 )?;
             }
+            tx.execute("DELETE FROM preset_model_accounts WHERE preset = ?1", [id])?;
+            for (provider, account) in input.accounts {
+                tx.execute(
+                    "INSERT INTO preset_model_accounts (preset, provider, account)
+                     VALUES (?1, ?2, ?3)",
+                    params![id, provider, to_i64(*account)],
+                )?;
+            }
+            tx.execute("DELETE FROM preset_secrets WHERE preset = ?1", [id])?;
+            for (variable, secret) in input.secrets {
+                tx.execute(
+                    "INSERT INTO preset_secrets (preset, variable, secret) VALUES (?1, ?2, ?3)",
+                    params![id, variable, to_i64(*secret)],
+                )?;
+            }
+            if let Some(files) = input.files {
+                tx.execute("DELETE FROM preset_files WHERE preset = ?1", [id])?;
+                for (path, content) in files {
+                    tx.execute(
+                        "INSERT INTO preset_files (preset, path, content) VALUES (?1, ?2, ?3)",
+                        params![id, path, content],
+                    )?;
+                }
+            }
             tx.commit()?;
         }
-        self.preset_by_name(name)?
+        self.preset_by_name(input.name)?
             .ok_or(StoreError::Malformed("new preset"))
+    }
+
+    pub fn preset_files(&self, preset: u64) -> StoreResult<Vec<(String, String)>> {
+        let files = self
+            .conn()
+            .prepare("SELECT path, content FROM preset_files WHERE preset = ?1 ORDER BY path")?
+            .query_map([to_i64(preset)], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(files)
     }
 
     pub fn delete_preset(&self, name: &str) -> StoreResult<bool> {
@@ -596,13 +670,54 @@ mod tests {
         let all = store
             .put_credential("all", ghe.id, None, None, Some("ghp_all"))
             .unwrap();
+        let account = store
+            .put_model_account(&super::super::NewModelAccount {
+                name: "work",
+                provider: "anthropic",
+                kind: loom_oracle_proto::AccountKind::SignIn,
+                credentials: b"{}",
+                email: None,
+                organization: None,
+                account_id: None,
+            })
+            .unwrap();
+        let secret = store.put_secret("npm", "token").unwrap();
+        let files = vec![("skills/a/SKILL.md".to_owned(), "x".to_owned())];
         let preset = store
-            .put_preset("dev", "git: {}\n", &[all.id, work.id])
+            .put_preset(&PresetInput {
+                name: "dev",
+                yaml: "git: {}\n",
+                agents_md: Some("rules"),
+                files: Some(&files),
+                credentials: &[all.id, work.id],
+                accounts: &[("anthropic".to_owned(), account.id)],
+                secrets: &[("NPM_TOKEN".to_owned(), secret.id)],
+            })
             .unwrap();
         assert_eq!(
             preset.credentials,
             vec!["all".to_owned(), "work".to_owned()]
         );
+        assert_eq!(preset.agents_md, "rules");
+        assert_eq!(preset.files, vec!["skills/a/SKILL.md".to_owned()]);
+        assert_eq!(
+            preset.accounts,
+            vec![("anthropic".to_owned(), account.id, "work".to_owned())]
+        );
+        assert_eq!(
+            preset.secrets,
+            vec![("NPM_TOKEN".to_owned(), secret.id, "npm".to_owned())]
+        );
+        assert_eq!(store.presets_with_account(account.id).unwrap(), vec!["dev"]);
+        assert_eq!(store.presets_with_secret(secret.id).unwrap(), vec!["dev"]);
+        assert!(matches!(
+            store.delete_model_account("work"),
+            Err(StoreError::Conflict(_))
+        ));
+        assert!(matches!(
+            store.delete_secret("npm"),
+            Err(StoreError::Conflict(_))
+        ));
         let ordered: Vec<String> = store
             .preset_credentials(preset.id)
             .unwrap()
@@ -622,9 +737,20 @@ mod tests {
             store.delete_provider("ghe"),
             Err(StoreError::Conflict(_))
         ));
-        let again = store.put_preset("dev", "", &[all.id]).unwrap();
+        let again = store
+            .put_preset(&PresetInput {
+                name: "dev",
+                yaml: "",
+                credentials: &[all.id],
+                ..PresetInput::default()
+            })
+            .unwrap();
         assert_eq!(again.id, preset.id);
         assert_eq!(again.credentials, vec!["all".to_owned()]);
+        assert_eq!(again.agents_md, "rules");
+        assert_eq!(again.files, vec!["skills/a/SKILL.md".to_owned()]);
+        assert!(again.accounts.is_empty());
+        assert!(store.delete_secret("npm").unwrap());
         assert!(store.delete_credential("work").unwrap());
 
         let (host, _) = store.add_peer(Role::Host, "box", &[1; 32], None).unwrap();

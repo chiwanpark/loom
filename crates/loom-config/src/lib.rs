@@ -28,6 +28,7 @@ pub use host::{
     HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver, HostRules, HostUser,
     IncusCertificates, IncusDriverConfig, ProcessDriverConfig, host_config_schema,
 };
+pub use load::{MANAGED_SECTIONS, ManagedSettings};
 pub use oracle::{
     ORACLE_CONFIG_ENV, ORACLE_CONFIG_FILE, ORACLE_DATA_DIR, ORACLE_MASTER_KEY_FILE, OracleConfig,
     oracle_config_schema,

@@ -3,8 +3,10 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,35 +56,64 @@ pub fn now_unix() -> u64 {
         .unwrap_or_default()
 }
 
-#[derive(Debug, Clone)]
-pub struct CredentialStore {
+#[async_trait]
+pub trait CredentialSource: Send + Sync {
+    fn location(&self) -> PathBuf;
+
+    async fn load(&self) -> Result<Credentials>;
+
+    async fn lock(&self) -> Result<Box<dyn CredentialLock>>;
+
+    fn read_only(&self) -> Option<String> {
+        None
+    }
+
+    async fn account_names(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+}
+
+#[async_trait]
+pub trait CredentialLock: Send + Sync {
+    async fn load(&self) -> Result<Credentials>;
+
+    async fn save(&self, credentials: Credentials) -> Result<()>;
+}
+
+struct FileSource {
     path: PathBuf,
 }
 
-pub struct StoreGuard {
+struct FileLock {
     path: PathBuf,
     _lock: File,
 }
 
-impl CredentialStore {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    pub fn in_dir(data_dir: &Path) -> Self {
-        Self::new(data_dir.join(CREDENTIALS_FILE))
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub async fn load(&self) -> Result<Credentials> {
+#[async_trait]
+impl CredentialLock for FileLock {
+    async fn load(&self) -> Result<Credentials> {
         let path = self.path.clone();
         blocking(move || read_credentials(&path)).await
     }
 
-    pub async fn lock(&self) -> Result<StoreGuard> {
+    async fn save(&self, credentials: Credentials) -> Result<()> {
+        let path = self.path.clone();
+        blocking(move || write_credentials(&path, &credentials)).await
+    }
+}
+
+#[async_trait]
+impl CredentialSource for FileSource {
+    fn location(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    async fn load(&self) -> Result<Credentials> {
+        let path = self.path.clone();
+        blocking(move || read_credentials(&path)).await
+    }
+
+    async fn lock(&self) -> Result<Box<dyn CredentialLock>> {
         let path = self.path.clone();
         blocking(move || {
             let lock_path = lock_path(&path);
@@ -106,9 +137,72 @@ impl CredentialStore {
                 path: lock_path,
                 source,
             })?;
-            Ok(StoreGuard { path, _lock: file })
+            Ok(Box::new(FileLock { path, _lock: file }) as Box<dyn CredentialLock>)
         })
         .await
+    }
+}
+
+#[derive(Clone)]
+pub struct CredentialStore {
+    source: Arc<dyn CredentialSource>,
+    path: PathBuf,
+}
+
+impl std::fmt::Debug for CredentialStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialStore")
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
+pub struct StoreGuard {
+    path: PathBuf,
+    lock: Box<dyn CredentialLock>,
+}
+
+impl CredentialStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self {
+            source: Arc::new(FileSource { path: path.clone() }),
+            path,
+        }
+    }
+
+    pub fn in_dir(data_dir: &Path) -> Self {
+        Self::new(data_dir.join(CREDENTIALS_FILE))
+    }
+
+    pub fn from_source(source: Arc<dyn CredentialSource>) -> Self {
+        Self {
+            path: source.location(),
+            source,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn read_only(&self) -> Option<String> {
+        self.source.read_only()
+    }
+
+    pub async fn account_names(&self) -> BTreeMap<String, String> {
+        self.source.account_names().await
+    }
+
+    pub async fn load(&self) -> Result<Credentials> {
+        self.source.load().await
+    }
+
+    pub async fn lock(&self) -> Result<StoreGuard> {
+        Ok(StoreGuard {
+            path: self.path.clone(),
+            lock: self.source.lock().await?,
+        })
     }
 
     pub async fn update<R, F>(&self, f: F) -> Result<R>
@@ -117,14 +211,10 @@ impl CredentialStore {
         R: Send + 'static,
     {
         let guard = self.lock().await?;
-        blocking(move || {
-            let mut creds = read_credentials(&guard.path)?;
-            let result = f(&mut creds);
-            write_credentials(&guard.path, &creds)?;
-            drop(guard);
-            Ok(result)
-        })
-        .await
+        let mut creds = guard.load().await?;
+        let result = f(&mut creds);
+        guard.save(creds).await?;
+        Ok(result)
     }
 
     pub(crate) async fn load_section<T: DeserializeOwned>(
@@ -155,13 +245,11 @@ impl CredentialStore {
 
 impl StoreGuard {
     pub async fn load(&self) -> Result<Credentials> {
-        let path = self.path.clone();
-        blocking(move || read_credentials(&path)).await
+        self.lock.load().await
     }
 
     pub async fn save(&self, creds: Credentials) -> Result<()> {
-        let path = self.path.clone();
-        blocking(move || write_credentials(&path, &creds)).await
+        self.lock.save(creds).await
     }
 
     pub(crate) async fn load_section<T: DeserializeOwned>(

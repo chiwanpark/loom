@@ -1,10 +1,40 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::agent::AgentConfig;
+use crate::agent::{AgentConfig, PolicyAction};
 use crate::dirs::Dirs;
 use crate::error::ConfigError;
+
+pub const MANAGED_SECTIONS: &[&str] = &[
+    "allowed_roots",
+    "socket",
+    "storage",
+    "lifecycle",
+    "worktrees",
+    "relay.enabled",
+    "relay.url",
+    "environment.env_file",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedSettings {
+    pub relay_url: String,
+    pub allowed_roots: Vec<PathBuf>,
+    pub workspace: PathBuf,
+    pub env_file: PathBuf,
+}
+
+fn has_key(document: &Value, key: &str) -> bool {
+    let mut value = document;
+    for part in key.split('.') {
+        match value.get(part) {
+            Some(next) => value = next,
+            None => return false,
+        }
+    }
+    true
+}
 
 pub(crate) fn parse_yaml<T: serde::de::DeserializeOwned + Default>(
     text: &str,
@@ -42,6 +72,75 @@ impl AgentConfig {
         let mut config: Self = parse_yaml(text, origin)?;
         config.expand_paths(&dirs.home);
         config.validate(origin)?;
+        for (key, used) in [
+            ("llm.accounts", !config.llm.accounts.is_empty()),
+            (
+                "environment.secrets",
+                !config.environment.secrets.is_empty(),
+            ),
+        ] {
+            if used {
+                return Err(ConfigError::invalid(
+                    origin,
+                    key,
+                    "only a preset of the oracle can name credentials",
+                ));
+            }
+        }
+        Ok(config)
+    }
+
+    pub fn parse_preset(text: &str, origin: &str, dirs: &Dirs) -> Result<Self, ConfigError> {
+        let document: Value = serde_saphyr::from_str(text).map_err(|err| ConfigError::Parse {
+            origin: origin.to_string(),
+            message: err.to_string(),
+        })?;
+        let mut config: Self = parse_yaml(text, origin)?;
+        if let Some(key) = MANAGED_SECTIONS.iter().find(|key| has_key(&document, key)) {
+            return Err(ConfigError::invalid(
+                origin,
+                *key,
+                "the managed mode sets this itself; remove it",
+            ));
+        }
+        if !has_key(&document, "policy.default") {
+            config.policy.default = PolicyAction::Allow;
+        }
+        config.expand_paths(&dirs.home);
+        config.validate(origin)?;
+        Ok(config)
+    }
+
+    pub fn read_preset(path: &Path, dirs: &Dirs) -> Result<Self, ConfigError> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(ConfigError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        Self::parse_preset(&text, &path.display().to_string(), dirs)
+    }
+
+    pub fn apply_managed(&mut self, settings: &ManagedSettings) {
+        self.relay.enabled = true;
+        self.relay.url = Some(settings.relay_url.clone());
+        self.allowed_roots = settings.allowed_roots.clone();
+        self.lifecycle.default_workspace = Some(settings.workspace.clone());
+        self.environment.env_file = Some(settings.env_file.clone());
+    }
+
+    pub fn load_preset(
+        path: &Path,
+        dirs: &Dirs,
+        settings: &ManagedSettings,
+    ) -> Result<Self, ConfigError> {
+        let mut config = Self::read_preset(path, dirs)?;
+        config.apply_managed(settings);
+        config.validate(&path.display().to_string())?;
         Ok(config)
     }
 
@@ -328,5 +427,96 @@ mod tests {
         let mut expected = AgentConfig::default();
         expected.expand_paths(&dirs().home);
         assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn presets_name_accounts_and_secrets_and_allow_by_default() {
+        let config = AgentConfig::parse_preset(
+            "llm:\n  accounts:\n    anthropic: work\nenvironment:\n  secrets:\n    NPM_TOKEN: npm-work\n",
+            "preset work",
+            &dirs(),
+        )
+        .unwrap();
+        assert_eq!(config.llm.accounts["anthropic"], "work");
+        assert_eq!(config.environment.secrets["NPM_TOKEN"], "npm-work");
+        assert_eq!(config.policy.default, PolicyAction::Allow);
+
+        let asks = AgentConfig::parse_preset("policy:\n  default: ask\n", "p", &dirs()).unwrap();
+        assert_eq!(asks.policy.default, PolicyAction::Ask);
+        assert_eq!(
+            AgentConfig::parse_preset("", "p", &dirs())
+                .unwrap()
+                .policy
+                .default,
+            PolicyAction::Allow
+        );
+        assert_eq!(parse("").unwrap().policy.default, PolicyAction::Ask);
+        for text in [
+            "llm:\n  accounts:\n    anthropic: work\n",
+            "environment:\n  secrets:\n    NPM_TOKEN: npm\n",
+        ] {
+            assert!(
+                parse(text)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("only a preset")
+            );
+        }
+    }
+
+    #[test]
+    fn presets_leave_the_managed_sections_to_the_agent() {
+        for (text, field) in [
+            ("storage:\n  data_dir: /x\n", "storage"),
+            ("relay:\n  url: wss://x\n", "relay.url"),
+            ("environment:\n  env_file: .env\n", "environment.env_file"),
+            ("allowed_roots: [/]\n", "allowed_roots"),
+        ] {
+            match AgentConfig::parse_preset(text, "p", &dirs()) {
+                Err(ConfigError::Invalid { field: actual, .. }) => assert_eq!(actual, field),
+                other => panic!("expected invalid {field}, got {other:?}"),
+            }
+        }
+        for (text, field) in [
+            (
+                "environment:\n  secrets:\n    'A B': x\n",
+                "environment.secrets.A B",
+            ),
+            (
+                "llm:\n  accounts:\n    anthropic: ''\n",
+                "llm.accounts.anthropic",
+            ),
+        ] {
+            match AgentConfig::parse_preset(text, "p", &dirs()) {
+                Err(ConfigError::Invalid { field: actual, .. }) => assert_eq!(actual, field),
+                other => panic!("expected invalid {field}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_loaded_preset_gets_the_managed_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.yaml");
+        std::fs::write(&path, "llm:\n  default_reasoning_effort: high\n").unwrap();
+        let settings = ManagedSettings {
+            relay_url: "wss://oracle.test".into(),
+            allowed_roots: vec![PathBuf::from("/workspaces")],
+            workspace: PathBuf::from("/workspaces/app"),
+            env_file: PathBuf::from("/home/u/.local/share/loom/secrets.env"),
+        };
+        let config = AgentConfig::load_preset(&path, &dirs(), &settings).unwrap();
+        assert!(config.relay.enabled);
+        assert_eq!(config.relay.url.as_deref(), Some("wss://oracle.test"));
+        assert_eq!(config.allowed_roots, settings.allowed_roots);
+        assert_eq!(
+            config.lifecycle.default_workspace,
+            Some(settings.workspace.clone())
+        );
+        assert_eq!(config.environment.env_file, Some(settings.env_file.clone()));
+        assert_eq!(config.policy.default, PolicyAction::Allow);
+        let missing =
+            AgentConfig::load_preset(&dir.path().join("none.yaml"), &dirs(), &settings).unwrap();
+        assert!(missing.relay.enabled);
     }
 }

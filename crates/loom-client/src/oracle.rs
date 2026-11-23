@@ -7,14 +7,17 @@ use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
     AgentAddress, Branches, Bundle, ClientHello, ClientMessage, Codespace, CodespaceResult,
-    Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment, Event, GitCredential,
-    GitCredentialInput, GitCredentialResult, GitCredentials, GitProvider, GitProviderInput,
-    GitProviderResult, GitProviders, GitTokenResult, Host, HostCall, HostReport, HostResult, Hosts,
-    InstanceReport, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing,
-    PairingLink, Pairings, Preset, PresetResult, Presets, RelayHost, RelayHostResult, RelayHosts,
-    Reply, Repository, RepositorySearch, Request, ServerHello, ServerMessage, Volume, VolumeInput,
-    VolumeResult, Volumes, Workspace, WorkspaceResult, WorkspaceVolume, Workspaces, encode,
-    parse_server_message,
+    CodespaceSession, Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment,
+    Event, FirstMessage, FirstMessageResult, GitCredential, GitCredentialInput,
+    GitCredentialResult, GitCredentials, GitProvider, GitProviderInput, GitProviderResult,
+    GitProviders, GitTokenResult, Host, HostCall, HostReport, HostResult, Hosts, InstanceReport,
+    ModelAccount, ModelAccountResult, ModelAccounts, ModelCredentials, ModelLogin, ModelLoginInput,
+    ModelLoginMethod, Models, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing,
+    PairingLink, Pairings, Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost,
+    RelayHostResult, RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo,
+    SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume,
+    VolumeInput, VolumeResult, Volumes, Workspace, WorkspaceNotes, WorkspaceResult,
+    WorkspaceVolume, Workspaces, encode, parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -147,6 +150,7 @@ pub struct NewCodespace {
     pub base_branch: Option<String>,
     pub base_branches: BTreeMap<String, String>,
     pub client_version: Option<String>,
+    pub first_message: Option<FirstMessage>,
 }
 
 fn done(result: Result<Empty>) -> Result<()> {
@@ -532,6 +536,7 @@ impl OracleClient {
             base_branch: new.base_branch,
             base_branches: new.base_branches,
             client_version: new.client_version,
+            first_message: new.first_message,
         })
         .await
     }
@@ -595,16 +600,174 @@ impl OracleClient {
     }
 
     pub async fn set_preset(&self, name: &str, yaml: &str) -> Result<Preset> {
+        self.set_full_preset(name, yaml, None, None).await
+    }
+
+    pub async fn set_full_preset(
+        &self,
+        name: &str,
+        yaml: &str,
+        agents_md: Option<&str>,
+        files: Option<Vec<PresetFile>>,
+    ) -> Result<Preset> {
         let (name, yaml) = (name.to_owned(), yaml.to_owned());
+        let agents_md = agents_md.map(str::to_owned);
         Ok(self
-            .call::<PresetResult>(Command::SetPreset { name, yaml })
+            .call::<PresetResult>(Command::SetPreset {
+                name,
+                yaml,
+                agents_md,
+                files,
+            })
             .await?
             .preset)
+    }
+
+    pub async fn preset(&self, name: &str) -> Result<PresetDetail> {
+        let name = name.to_owned();
+        self.call(Command::GetPreset { name }).await
     }
 
     pub async fn delete_preset(&self, name: &str) -> Result<()> {
         let name = name.to_owned();
         done(self.call(Command::DeletePreset { name }).await)
+    }
+
+    pub async fn model_accounts(&self) -> Result<Vec<ModelAccount>> {
+        Ok(self
+            .call::<ModelAccounts>(Command::ListModelAccounts)
+            .await?
+            .accounts)
+    }
+
+    pub async fn start_model_login(
+        &self,
+        account: &str,
+        provider: &str,
+        method: ModelLoginMethod,
+    ) -> Result<ModelLogin> {
+        let (account, provider) = (account.to_owned(), provider.to_owned());
+        self.call(Command::StartModelLogin {
+            account,
+            provider,
+            method,
+        })
+        .await
+    }
+
+    pub async fn complete_model_login(
+        &self,
+        login: &str,
+        input: ModelLoginInput,
+    ) -> Result<ModelAccount> {
+        let login = login.to_owned();
+        Ok(self
+            .call::<ModelAccountResult>(Command::CompleteModelLogin { login, input })
+            .await?
+            .account)
+    }
+
+    pub async fn cancel_model_login(&self, login: &str) -> Result<()> {
+        let login = login.to_owned();
+        done(self.call(Command::CancelModelLogin { login }).await)
+    }
+
+    pub async fn set_model_api_key(
+        &self,
+        account: &str,
+        provider: &str,
+        api_key: &str,
+    ) -> Result<ModelAccount> {
+        let (account, provider) = (account.to_owned(), provider.to_owned());
+        Ok(self
+            .call::<ModelAccountResult>(Command::SetModelApiKey {
+                account,
+                provider,
+                api_key: Secret::new(api_key),
+            })
+            .await?
+            .account)
+    }
+
+    pub async fn delete_model_account(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeleteModelAccount { name }).await)
+    }
+
+    pub async fn models(&self, preset: &str) -> Result<Models> {
+        let preset = preset.to_owned();
+        self.call(Command::ListModels { preset }).await
+    }
+
+    pub async fn secrets(&self) -> Result<Vec<SecretInfo>> {
+        Ok(self.call::<Secrets>(Command::ListSecrets).await?.secrets)
+    }
+
+    pub async fn set_secret(&self, name: &str, value: &str) -> Result<SecretInfo> {
+        let name = name.to_owned();
+        Ok(self
+            .call::<SecretResult>(Command::SetSecret {
+                name,
+                value: Secret::new(value),
+            })
+            .await?
+            .secret)
+    }
+
+    pub async fn delete_secret(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeleteSecret { name }).await)
+    }
+
+    pub async fn workspace_notes(&self, workspace: &str) -> Result<WorkspaceNotes> {
+        let workspace = workspace.to_owned();
+        self.call(Command::GetWorkspaceNotes { workspace }).await
+    }
+
+    pub async fn set_workspace_notes(&self, workspace: &str, text: &str) -> Result<WorkspaceNotes> {
+        let (workspace, text) = (workspace.to_owned(), text.to_owned());
+        self.call(Command::SetWorkspaceNotes { workspace, text })
+            .await
+    }
+
+    pub async fn sessions(&self, codespace: Option<&str>) -> Result<Vec<CodespaceSession>> {
+        let codespace = codespace.map(str::to_owned);
+        Ok(self
+            .call::<Sessions>(Command::ListSessions { codespace })
+            .await?
+            .sessions)
+    }
+
+    pub async fn model_credentials(&self) -> Result<ModelCredentials> {
+        self.call(Command::ModelCredentials).await
+    }
+
+    pub async fn codespace_notes(&self, text: &str) -> Result<()> {
+        let text = text.to_owned();
+        done(self.call(Command::CodespaceNotes { text }).await)
+    }
+
+    pub async fn session_summaries(
+        &self,
+        sessions: Vec<SessionSummary>,
+        removed: Vec<String>,
+        full: bool,
+    ) -> Result<()> {
+        done(
+            self.call(Command::SessionSummaries {
+                sessions,
+                removed,
+                full,
+            })
+            .await,
+        )
+    }
+
+    pub async fn take_first_message(&self) -> Result<Option<FirstMessage>> {
+        Ok(self
+            .call::<FirstMessageResult>(Command::TakeFirstMessage)
+            .await?
+            .message)
     }
 
     pub async fn search_repositories(

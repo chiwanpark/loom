@@ -4985,6 +4985,7 @@ dependencies = [
  "loom-config",
  "loom-crypto",
  "loom-github",
+ "loom-llm",
  "loom-oracle-proto",
  "loom-proto",
  "loom-relay",

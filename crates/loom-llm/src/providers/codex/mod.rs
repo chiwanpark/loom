@@ -10,8 +10,8 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::{
-    AccountInfo, AccountStatus, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
-    ProviderStatus, RedirectSpec,
+    AccountInfo, AccountStatus, LentCredential, LoginInput, LoginMethod, LoginMethodInfo,
+    LoginPrompt, ProviderStatus, RedirectSpec,
 };
 use crate::error::{LlmError, Result};
 use crate::kind::{
@@ -81,26 +81,37 @@ pub(crate) async fn signed_in(shared: &Shared) -> Result<bool> {
         .is_some())
 }
 
-pub(crate) async fn access_token(shared: &Shared) -> Result<(String, String)> {
+async fn fresh_credential(shared: &Shared, margin_secs: u64) -> Result<CodexCredential> {
     let credential = shared
         .store
         .load_section::<CodexCredential>(ID.as_str())
         .await?
         .ok_or_else(not_signed_in)?;
-    if credential.is_fresh(REFRESH_MARGIN_SECS) {
-        return Ok((credential.access_token, credential.account_id));
+    if credential.is_fresh(margin_secs) {
+        return Ok(credential);
     }
     let guard = shared.store.lock().await?;
     let credential = guard
         .load_section::<CodexCredential>(ID.as_str())
         .await?
         .ok_or_else(not_signed_in)?;
-    if credential.is_fresh(REFRESH_MARGIN_SECS) {
-        return Ok((credential.access_token, credential.account_id));
+    if credential.is_fresh(margin_secs) {
+        return Ok(credential);
+    }
+    if credential.refresh_token.is_empty() {
+        return Err(LlmError::NotAuthenticated {
+            provider: ID.to_string(),
+            message: "missing refresh token; sign in again".into(),
+        });
     }
     let refreshed = client(shared).refresh(&credential).await?;
     guard.save_section(ID.as_str(), Some(&refreshed)).await?;
-    Ok((refreshed.access_token, refreshed.account_id))
+    Ok(refreshed)
+}
+
+pub(crate) async fn access_token(shared: &Shared) -> Result<(String, String)> {
+    let credential = fresh_credential(shared, REFRESH_MARGIN_SECS).await?;
+    Ok((credential.access_token, credential.account_id))
 }
 
 async fn save(store: &CredentialStore, credential: CodexCredential) -> Result<AccountInfo> {
@@ -253,5 +264,17 @@ impl ProviderKind for Kind {
             .store
             .update_section::<CodexCredential, _, _>(ID.as_str(), |section| *section = None)
             .await
+    }
+
+    async fn lend(&self, shared: &Shared, margin_secs: u64) -> Result<Option<LentCredential>> {
+        if !signed_in(shared).await? {
+            return Ok(None);
+        }
+        let mut credential = fresh_credential(shared, margin_secs).await?;
+        credential.refresh_token = String::new();
+        Ok(Some(LentCredential::new(
+            &credential,
+            Some(credential.expires_at),
+        )?))
     }
 }
