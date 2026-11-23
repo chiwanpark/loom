@@ -158,6 +158,10 @@ async fn connect(
 
 pub fn sync_devices(data_dir: &Path, devices: &[DeviceKey]) -> anyhow::Result<bool> {
     let clients = AuthorizedClients::in_dir(data_dir);
+    let tokens: Vec<([u8; 32], &str)> = devices
+        .iter()
+        .filter_map(|device| Some((decode_key(&device.pubkey)?, device.push_token.as_deref()?)))
+        .collect();
     let wanted: Vec<([u8; 32], &str)> = devices
         .iter()
         .filter_map(|device| Some((decode_key(&device.pubkey)?, device.label.as_str())))
@@ -178,6 +182,16 @@ pub fn sync_devices(data_dir: &Path, devices: &[DeviceKey]) -> anyhow::Result<bo
     for (pubkey, label) in wanted {
         if !present.contains(&(pubkey, label)) {
             clients.authorize(pubkey, label)?;
+            changed = true;
+        }
+    }
+    let current = clients.list()?;
+    for (pubkey, token) in tokens {
+        let Some(client) = current.iter().find(|c| c.pubkey == pubkey) else {
+            continue;
+        };
+        if client.push_token.as_deref() != Some(token) {
+            clients.set_push_token(&pubkey, Some(token))?;
             changed = true;
         }
     }
@@ -643,6 +657,7 @@ mod tests {
         DeviceKey {
             label: label.into(),
             pubkey: encode_key(&key(byte)),
+            push_token: None,
         }
     }
 
@@ -664,6 +679,20 @@ mod tests {
         let list = clients.list().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].pubkey, key(2));
+
+        let mut phone = device("phone", 2);
+        phone.push_token = Some("fresh".into());
+        let mut laptop = device("laptop", 1);
+        laptop.push_token = Some("fresh".into());
+        assert!(sync_devices(dir.path(), &[phone.clone()]).unwrap());
+        assert!(!sync_devices(dir.path(), &[phone]).unwrap());
+        assert_eq!(
+            clients.list().unwrap()[0].push_token.as_deref(),
+            Some("fresh")
+        );
+        assert!(sync_devices(dir.path(), &[device("phone", 2), laptop]).unwrap());
+        let list = clients.list().unwrap();
+        assert_eq!(list.iter().filter(|c| c.push_token.is_some()).count(), 1);
     }
 
     #[test]

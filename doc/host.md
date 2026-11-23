@@ -206,7 +206,7 @@ In a codespace, `loom-agent serve --managed` runs the agent:
 2. The agent makes its keys and pairs with the oracle. Then it deletes the bootstrap file. It keeps the address of the oracle in `managed.json` in its data directory, so it can start again without the link.
 3. The agent sets up Git for the providers of the preset, clones each repository, and makes the branch `loom/<codespace>` in each clone.
 4. The agent writes the agent configuration of its preset and gets the model credentials from the oracle. See [Agent configuration in a codespace](oracle.md#agent-configuration-in-a-codespace). If the configuration is not valid, the codespace fails.
-5. The agent accepts the keys of the devices of the oracle. When you pair or revoke a device, the agent gets the change.
+5. The agent accepts the keys of the devices of the oracle. It also gets the push token of each device, so it can send notifications to the Android app through the relay of the oracle. When you pair or revoke a device, or a device sets a new push token, the agent gets the change.
 6. The agent registers with the relay of the oracle and reports `ready`. If the codespace has a first message, the agent then starts a session with it.
 
 `--bootstrap <path>` selects a different bootstrap file.
