@@ -4820,6 +4820,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-github"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "loom-gui"
 version = "0.5.0"
 dependencies = [
