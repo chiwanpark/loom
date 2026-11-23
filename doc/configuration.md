@@ -37,6 +37,7 @@ loom-agent config schema   # show the JSON Schema
 | Provider | Sign-in |
 | --- | --- |
 | `anthropic` | Claude Pro/Max account (browser) |
+| `github-copilot` | GitHub.com account with Copilot access (device code) |
 | `openai` | ChatGPT account (browser) or API key (`OPENAI_API_KEY`) |
 | `openai-codex` | ChatGPT account (browser or device code) |
 | `opencode-go` | [OpenCode Go](https://opencode.ai/docs/console/go/) API key (`OPENCODE_API_KEY`) |
@@ -48,6 +49,11 @@ The `anthropic` provider uses message threads by default on Anthropic's API. Whe
 If the thread expires, Loom sends the full history again.
 To turn off threads, set `llm.providers.anthropic.message_threads: false`.
 Threads are off by default for custom base URLs. Set `message_threads: true` only if the endpoint supports the Anthropic message-threads beta.
+
+For GitHub Copilot, choose **Device code** and enter the code on the GitHub page that opens.
+After sign-in, select a Copilot model in the model picker.
+To make it the default, set `llm.default_model` to `github-copilot/<model-id>` with a model ID from the picker.
+Loom does not change which models your account or organization enables.
 
 The agent keeps the credentials in `credentials.json` in its data directory. The data directory is `storage.data_dir`. The default is `~/.local/share/loom`.
 

@@ -13,6 +13,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### New features
 
 - **OpenCode Go.** Loom gets the current model list from OpenCode Go. Set `OPENCODE_API_KEY` on the agent or enter a key in **Providers and sign-in…**.
+- **GitHub Copilot.** Sign in with a GitHub device code and select a Copilot model that your account can use. See [Model providers](doc/configuration.md#model-providers).
 - **Restart after an update.** The new `loom-agent update --restart` option restarts the running agents of the replaced binary in place. The agents keep their sessions. See [Updates](doc/install.md#agent).
 - **Anthropic message threads.** Loom sends only new messages and the billing block when it can continue a thread. If the thread expires, Loom sends the full history again. See [Model providers](doc/configuration.md#model-providers).
 

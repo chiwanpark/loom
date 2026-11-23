@@ -53,6 +53,7 @@ The prebuilt binaries are on the [releases page](https://github.com/chiwanpark/l
    ```
 
 4. In the menu of the agent, choose **Providers and sign-in…** and sign in to a [model provider](doc/configuration.md#model-providers), such as OpenCode Go.
+   For GitHub Copilot, choose **Device code** and complete sign-in on GitHub.
 
 5. Press `ctrl-n` or click **+** next to the host to start a session.
 
