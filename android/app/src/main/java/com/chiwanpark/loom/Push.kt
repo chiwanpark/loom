@@ -50,6 +50,7 @@ class Push(private val app: LoomApplication) {
         token = newToken
         told.clear()
         app.links.all.forEach(::linked)
+        app.oracles.all.forEach(::oracleLinked)
     }
 
     /**
@@ -58,6 +59,24 @@ class Push(private val app: LoomApplication) {
      * so one agent of a host is enough.
      */
     fun linked(link: AgentLink) {
+        val current = token ?: return
+        if (link.state != LinkState.Connected) return
+        val host = link.host
+        if (app.oracles.find(host) != null) return
+        if (told[host] == current || !telling.add(host)) return
+        app.scope.launch {
+            try {
+                link.connection().setPushToken(current)
+                told[host] = current
+            } catch (e: LoomException) {
+                Log.w(TAG, "could not register for notifications with $host: ${e.userMessage()}")
+            } finally {
+                telling.remove(host)
+            }
+        }
+    }
+
+    fun oracleLinked(link: OracleLink) {
         val current = token ?: return
         if (link.state != LinkState.Connected) return
         val host = link.host
@@ -78,6 +97,7 @@ class Push(private val app: LoomApplication) {
     fun tellAgain() {
         told.clear()
         app.links.all.forEach(::linked)
+        app.oracles.all.forEach(::oracleLinked)
     }
 
     private fun createChannels() {
@@ -105,7 +125,7 @@ class Push(private val app: LoomApplication) {
             PushKind.FINISHED -> CHANNEL_FINISHED to (notice.detail ?: "Finished.")
             PushKind.FAILED -> CHANNEL_FAILED to "Failed" + (notice.detail?.let { ": $it" } ?: "")
         }
-        val workspace = notice.workspace.trimEnd('/').substringAfterLast('/')
+        val workspace = if (notice.codespace != null) notice.workspace else notice.workspace.trimEnd('/').substringAfterLast('/')
         val open = Intent(app, MainActivity::class.java).apply {
             action = ACTION_OPEN_SESSION
             putExtra(EXTRA_HOST, notice.host)

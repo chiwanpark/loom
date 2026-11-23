@@ -43,8 +43,13 @@ import com.chiwanpark.loom.AgentLink
 import com.chiwanpark.loom.HostAgents
 import com.chiwanpark.loom.LinkState
 import com.chiwanpark.loom.LoomApplication
+import com.chiwanpark.loom.OracleLink
 import com.chiwanpark.loom.Screen
+import com.chiwanpark.loom.core.AgentConnection
+import com.chiwanpark.loom.core.Codespace
+import com.chiwanpark.loom.core.CodespaceSession
 import com.chiwanpark.loom.core.Loom
+import com.chiwanpark.loom.core.LoomException
 import com.chiwanpark.loom.core.SessionStatus
 import com.chiwanpark.loom.core.SessionSummary
 import kotlinx.coroutines.flow.drop
@@ -69,12 +74,19 @@ private fun groupOf(status: SessionStatus): Group = when (status) {
 
 /** A row of the home screen: a session, or an agent that has none or cannot be reached. */
 private sealed interface Row {
-    val link: AgentLink
+    data class Session(val link: AgentLink, val session: SessionSummary) : Row
 
-    data class Session(override val link: AgentLink, val session: SessionSummary) : Row
+    data class Agent(val link: AgentLink) : Row
 
-    data class Agent(override val link: AgentLink) : Row
+    data class Remote(val oracle: OracleLink, val item: CodespaceSession) : Row
 }
+
+private val Row.summary: SessionSummary?
+    get() = when (this) {
+        is Row.Session -> session
+        is Row.Remote -> item.session
+        is Row.Agent -> null
+    }
 
 /** Every session of every agent on the paired hosts, grouped by what it is doing. */
 @Composable
@@ -87,8 +99,11 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
     var choosingAgent by remember { mutableStateOf(false) }
     var choosingDirectory by remember { mutableStateOf(false) }
     var worktreeFor by remember { mutableStateOf<AgentLink?>(null) }
-    var renaming by remember { mutableStateOf<Row.Session?>(null) }
-    var deleting by remember { mutableStateOf<Row.Session?>(null) }
+    var renaming by remember { mutableStateOf<Row?>(null) }
+    var deleting by remember { mutableStateOf<Row?>(null) }
+    var choosingWorkspace by remember { mutableStateOf(false) }
+    var pullRequest by remember { mutableStateOf<Pair<OracleLink, Codespace>?>(null) }
+    var closing by remember { mutableStateOf<Pair<OracleLink, Codespace>?>(null) }
 
     // Looks for agents when the screen opens and whenever the app comes back.
     LaunchedEffect(Unit) {
@@ -100,14 +115,38 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
     links.forEach { link ->
         LaunchedEffect(link) { link.notices.collect { snackbar.showSnackbar(it.message) } }
     }
+    val oracles = directory.hosts.filter { it.oracle }.map { app.oracles.get(loom, it.name) }
+    oracles.forEach { oracle ->
+        LaunchedEffect(oracle) { oracle.notices.collect { snackbar.showSnackbar(it) } }
+    }
+    val oracleHosts = oracles.map { it.host }.toSet()
     val manyHosts = directory.hosts.size > 1
-    val connected = links.filter { it.state == LinkState.Connected }
-    val groups = groupRows(links, showArchived)
+    val connected = links.filter { it.state == LinkState.Connected && it.host !in oracleHosts }
+    val groups = groupRows(links.filter { it.host !in oracleHosts }, oracles, showArchived)
     val hostColors = directory.hosts.associate { it.name to hostColor(it.color) }
 
     fun newSession(link: AgentLink) = scope.attempt(snackbar) {
         val session = link.connection().createSession(null)
         app.navigator.push(Screen.Conversation(link.host, link.instance, session.id))
+    }
+
+    suspend fun connectionOf(row: Row): AgentConnection = when (row) {
+        is Row.Session -> row.link.connection()
+        is Row.Agent -> row.link.connection()
+        is Row.Remote -> {
+            val instance = row.item.instance ?: throw LoomException.Offline("The codespace has no agent.")
+            app.links.get(loom, row.oracle.host, instance).awaitConnection()
+        }
+    }
+
+    fun open(row: Row) {
+        when (row) {
+            is Row.Session -> app.navigator.push(Screen.Conversation(row.link.host, row.link.instance, row.session.id))
+            is Row.Remote -> row.item.instance?.let { instance ->
+                app.navigator.push(Screen.Conversation(row.oracle.host, instance, row.item.session.id))
+            }
+            is Row.Agent -> {}
+        }
     }
 
     Scaffold(
@@ -129,7 +168,9 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
             }
         },
         floatingActionButton = {
-            if (connected.isNotEmpty()) {
+            if (oracles.isNotEmpty()) {
+                FloatingActionButton(onClick = { choosingWorkspace = true }) { LoomIcon(LoomIcons.Plus, "New") }
+            } else if (connected.isNotEmpty()) {
                 // It asks where, as the session may go to a directory without an agent yet.
                 FloatingActionButton(onClick = { choosingAgent = true }) { LoomIcon(LoomIcons.Plus, "New session") }
             }
@@ -145,7 +186,7 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                 ) {
                     Button(onClick = { app.navigator.push(Screen.Pair()) }) { Text("Pair with a host") }
                 }
-                groups.isEmpty() && !directory.refreshing -> Message(
+                groups.isEmpty() && oracles.isEmpty() && !directory.refreshing -> Message(
                     hostProblems(directory.hosts.map { it.name }, directory.agents)
                         ?: "No agent on your hosts is connected to the relay. Start one with " +
                         "`loom-agent serve`, with the relay enabled in its agent.yaml.",
@@ -175,17 +216,25 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                         items(rows, key = { row -> rowKey(row) }) { row ->
                             when (row) {
                                 is Row.Session -> SessionRow(
-                                    row,
+                                    row.session,
                                     agentName = agentLabel(row.link, manyHosts, hostColors[row.link.host]),
-                                    onOpen = {
-                                        app.navigator.push(
-                                            Screen.Conversation(row.link.host, row.link.instance, row.session.id),
-                                        )
-                                    },
+                                    onOpen = { open(row) },
                                     onRename = { renaming = row },
                                     onArchive = {
                                         scope.attempt(snackbar) {
                                             row.link.connection().archiveSession(row.session.id, !row.session.archived)
+                                        }
+                                    },
+                                    onDelete = { deleting = row },
+                                )
+                                is Row.Remote -> SessionRow(
+                                    row.item.session,
+                                    agentName = codespaceLabel(row, manyHosts, hostColors[row.oracle.host]),
+                                    onOpen = { open(row) },
+                                    onRename = { renaming = row },
+                                    onArchive = {
+                                        scope.attempt(snackbar) {
+                                            connectionOf(row).archiveSession(row.item.session.id, !row.item.session.archived)
                                         }
                                     },
                                     onDelete = { deleting = row },
@@ -198,6 +247,17 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                             }
                             HorizontalDivider()
                         }
+                    }
+                    if (oracles.isNotEmpty()) {
+                        workspaceItems(
+                            app,
+                            loom,
+                            oracles,
+                            scope,
+                            snackbar,
+                            onPullRequest = { oracle, codespace -> pullRequest = oracle to codespace },
+                            onClose = { oracle, codespace -> closing = oracle to codespace },
+                        )
                     }
                 }
             }
@@ -247,34 +307,59 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
             onDismiss = { choosingDirectory = false },
         )
     }
-    renaming?.let { row ->
+    if (choosingWorkspace) {
+        NewCodespaceChooser(
+            oracles = oracles,
+            withAgents = connected.isNotEmpty(),
+            onWorkspace = { oracle, workspace ->
+                choosingWorkspace = false
+                app.navigator.push(Screen.NewCodespace(oracle.host, workspace))
+            },
+            onAgent = {
+                choosingWorkspace = false
+                choosingAgent = true
+            },
+            onDismiss = { choosingWorkspace = false },
+        )
+    }
+    CodespaceActions(
+        app,
+        loom,
+        scope,
+        snackbar,
+        pullRequest = pullRequest,
+        onPullRequestDone = { pullRequest = null },
+        closing = closing,
+        onClosingDone = { closing = null },
+    )
+    renaming?.let { row -> row.summary?.let { row to it } }?.let { (row, session) ->
         TextInputDialog(
             title = "Rename session",
-            initial = row.session.title,
+            initial = session.title,
             label = "Title (empty for the first message)",
             confirm = "Rename",
             onConfirm = { title ->
                 scope.attempt(snackbar) {
-                    row.link.connection().renameSession(row.session.id, title.trim().ifEmpty { null })
+                    connectionOf(row).renameSession(session.id, title.trim().ifEmpty { null })
                 }
             },
             onDismiss = { renaming = null },
         )
     }
-    deleting?.let { row ->
-        val worktree = row.session.worktree
+    deleting?.let { row -> row.summary?.let { row to it } }?.let { (row, session) ->
+        val worktree = session.worktree
         ConfirmDialog(
-            title = "Delete “${row.session.title}”?",
+            title = "Delete “${session.title}”?",
             text = "The session and its conversation are deleted on the agent for good." +
                 (worktree?.let { " Its worktree and the branch ${it.branch} are removed too, also changes that were not merged." } ?: ""),
             confirm = "Delete",
             onConfirm = {
                 scope.attempt(snackbar) {
-                    val connection = row.link.connection()
+                    val connection = connectionOf(row)
                     if (worktree != null) {
-                        connection.removeWorktree(row.session.id, true)
+                        connection.removeWorktree(session.id, true)
                     } else {
-                        connection.deleteSession(row.session.id)
+                        connection.deleteSession(session.id)
                     }
                 }
             },
@@ -284,7 +369,11 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
 }
 
 /** The rows by section, newest sessions first; agents without sessions sit with the idle ones. */
-private fun groupRows(links: List<AgentLink>, showArchived: Boolean): List<Pair<Group, List<Row>>> {
+private fun groupRows(
+    links: List<AgentLink>,
+    oracles: List<OracleLink>,
+    showArchived: Boolean,
+): List<Pair<Group, List<Row>>> {
     val rows = mutableMapOf<Group, MutableList<Row>>()
     for (link in links) {
         if (link.state != LinkState.Connected) {
@@ -303,8 +392,19 @@ private fun groupRows(links: List<AgentLink>, showArchived: Boolean): List<Pair<
             rows.getOrPut(group) { mutableListOf() }.add(Row.Session(link, session))
         }
     }
+    for (oracle in oracles) {
+        for (item in oracle.lists?.sessions.orEmpty()) {
+            val group = if (item.session.archived) {
+                if (!showArchived) continue
+                Group.Archived
+            } else {
+                groupOf(item.session.status)
+            }
+            rows.getOrPut(group) { mutableListOf() }.add(Row.Remote(oracle, item))
+        }
+    }
     return Group.entries.mapNotNull { group ->
-        rows[group]?.sortedByDescending { (it as? Row.Session)?.session?.createdAt ?: ULong.MAX_VALUE }
+        rows[group]?.sortedByDescending { it.summary?.createdAt ?: ULong.MAX_VALUE }
             ?.let { group to it }
     }
 }
@@ -312,12 +412,24 @@ private fun groupRows(links: List<AgentLink>, showArchived: Boolean): List<Pair<
 private fun rowKey(row: Row): String = when (row) {
     is Row.Session -> "s/${row.link.host}/${row.link.instance}/${row.session.id}"
     is Row.Agent -> "a/${row.link.host}/${row.link.instance}"
+    is Row.Remote -> "r/${row.oracle.host}/${row.item.codespace}/${row.item.session.id}"
 }
 
 /** The agent's workspace name, with its host's when there are several hosts. */
 private fun agentName(link: AgentLink, withHost: Boolean): String {
     val name = shortWorkspace(link.workspace) ?: link.instance.take(8)
     return if (withHost) "$name on ${link.host}" else name
+}
+
+private fun codespaceLabel(row: Row.Remote, withHost: Boolean, hostColor: Color?): AnnotatedString {
+    val name = "${row.item.workspace} · ${row.item.branch}"
+    if (!withHost) return AnnotatedString(name)
+    val text = "$name on ${row.oracle.host}"
+    if (hostColor == null) return AnnotatedString(text)
+    return buildAnnotatedString {
+        append(text)
+        addStyle(SpanStyle(color = hostColor), text.length - row.oracle.host.length, text.length)
+    }
 }
 
 /** [agentName], with the host's name in the host's color. */
@@ -339,14 +451,13 @@ private fun hostProblems(hosts: List<String>, agents: Map<String, HostAgents>): 
 
 @Composable
 private fun SessionRow(
-    row: Row.Session,
+    session: SessionSummary,
     agentName: AnnotatedString,
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onArchive: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val session = row.session
     var menu by remember { mutableStateOf(false) }
     CompactListItem(
         modifier = Modifier.clickable(onClick = onOpen),

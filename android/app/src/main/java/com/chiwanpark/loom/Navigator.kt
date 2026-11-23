@@ -8,6 +8,10 @@ sealed interface AgentScreen {
     val instance: String
 }
 
+sealed interface OracleScreen {
+    val host: String
+}
+
 /** A place in the app. */
 sealed interface Screen {
     /** Every session of every agent on the paired hosts. */
@@ -78,6 +82,10 @@ sealed interface Screen {
 
     /** The text size and the fonts of text and code. */
     data object Font : Screen
+
+    data class NewCodespace(override val host: String, val workspace: String) : Screen, OracleScreen
+
+    data class CodespaceProgress(override val host: String, val codespace: String) : Screen, OracleScreen
 }
 
 /** The screens the user went through, the current one last. */
@@ -120,7 +128,10 @@ class Navigator {
 
     /** Drops the screens of `host`, as when it is removed. */
     fun leaveHost(host: String) {
-        stack.removeAll { screen -> screen is AgentScreen && screen.host == host }
+        stack.removeAll { screen ->
+            (screen is AgentScreen && screen.host == host) ||
+                (screen is OracleScreen && screen.host == host)
+        }
         if (stack.isEmpty()) stack.add(Screen.Home)
     }
 }

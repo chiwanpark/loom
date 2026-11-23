@@ -60,6 +60,36 @@ The relay also needs a key of the same Firebase project. See [Notifications for 
 
 To scan the QR code, the phone needs Google Play services. To paste the link, it does not.
 
+## Codespaces
+
+Loom-Next is in development. An oracle keeps workspaces, presets, and codespaces. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
+
+To pair with an oracle, run `loom-oracle-cli pair-device` on a device that is paired with the oracle. Then use **Pair with a host** in the app, and scan the QR code or paste the link. The app keeps the oracle as a host with the mark **Oracle**.
+
+Under **Workspaces**, the start screen shows each oracle with its workspaces and their codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The sessions of the codespaces come from the oracle, and the start screen puts them into groups with the other sessions. The app connects to the agent of a codespace only when you open a session.
+
+### New codespace
+
+1. Press **+** next to a workspace. Or press **+** on the start screen and select a workspace.
+2. Select the preset. The screen starts with the preset and the limits of the last codespace of the workspace. It shows the host of the workspace and the model accounts of the preset. It shows a warning for each repository that has no Git credential in the preset.
+3. Set the CPU limit and the memory limit, for example `4 GiB`.
+4. Optional: type a base branch for each repository.
+5. Optional: type the first message and select its model.
+6. Press **Create**.
+
+A progress screen shows the steps of the start. When the codespace is ready, press **Open**.
+
+### Codespace menu
+
+- **New session** adds a session in the codespace.
+- **Open pull request** asks for a title, a body, and the draft mark. For each repository with commits, the agent pushes the branch and opens a pull request. The app then opens the first pull request in the browser.
+- **Start progress** shows the steps of a codespace that starts or that failed.
+- **Close codespace** shows the close guard. For each repository with unsaved work, select **Push** or **Discard**. A push of changed files needs a commit message. If a push fails, the codespace stays open.
+
+In a codespace with more than one repository, **Changes** shows the files under the name of their repository.
+
+The app tells the oracle where to send notifications. The oracle gives this to the agents of the codespaces, so they can send notifications to the app.
+
 ## Sessions
 
 The start screen shows all sessions of all agents on the paired hosts. It puts them into groups by state, as the Sessions panel of the desktop client does. On this screen, you can start, rename, archive, and delete sessions. A completed session becomes idle when you open it in the app.
