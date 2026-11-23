@@ -21,7 +21,7 @@ bindgen = ["uniffi/cli"]
 
 [dependencies]
 base64 = "0.23.1"
-loom-client = { path = "../loom-client" }
+loom-client = { path = "../loom-client", default-features = false }
 loom-crypto = { path = "../loom-crypto" }
 loom-vt = { path = "../loom-vt" }
 loom-view-model = { path = "../loom-view-model" }

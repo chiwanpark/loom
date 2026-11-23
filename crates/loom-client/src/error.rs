@@ -13,6 +13,8 @@ pub enum ClientError {
     Rejected(ApiError),
     #[error("{}", .0.message)]
     Api(ApiError),
+    #[error("{}", .0.message)]
+    Oracle(loom_oracle_proto::OracleError),
     #[error("the connection is closed")]
     Closed,
     #[error("protocol error: {0}")]
