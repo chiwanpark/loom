@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt};
-use loom_client::{Notification, Notifications};
+use loom_client::oracle_proto::Event;
+use loom_client::{Notification, Notifications, OracleEvents};
 
 #[derive(Clone)]
 pub struct Backend {
@@ -42,6 +43,18 @@ impl Backend {
         self.runtime.spawn(async move {
             while let Some(note) = notifications.recv().await {
                 if tx.unbounded_send(note).is_err() {
+                    break;
+                }
+            }
+        });
+        rx
+    }
+
+    pub fn forward_oracle(&self, mut events: OracleEvents) -> mpsc::UnboundedReceiver<Event> {
+        let (tx, rx) = mpsc::unbounded();
+        self.runtime.spawn(async move {
+            while let Some(event) = events.recv().await {
+                if tx.unbounded_send(event).is_err() {
                     break;
                 }
             }

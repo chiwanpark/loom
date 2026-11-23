@@ -1,3 +1,4 @@
+pub mod close_codespace;
 pub mod code;
 pub mod dialogs;
 pub mod diff;
@@ -7,6 +8,7 @@ pub mod files;
 pub mod image_preview;
 pub mod media_view;
 pub mod messages;
+pub mod new_codespace;
 pub mod new_session;
 pub mod notes_view;
 pub mod notify;
