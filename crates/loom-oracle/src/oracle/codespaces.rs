@@ -953,6 +953,7 @@ impl Oracle {
             .map(|peer| DeviceKey {
                 label: peer.label,
                 pubkey: loom_crypto::encode_key(&peer.pubkey),
+                push_token: peer.push_token,
             })
             .collect())
     }
