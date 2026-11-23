@@ -357,6 +357,7 @@ Commands of devices:
 | `delete_volume` | `name` | |
 | `list_codespaces` | | `codespaces` |
 | `create_codespace` | `workspace`, optional `preset`, `cpus`, `memory_mib`, `base_branch`, `base_branches` (directory to branch), `client_version`, `first_message` (`text` and optional `model`) | `codespace`, `warnings` |
+| `codespace_warnings` | `workspace`, optional `preset` | `warnings`: the warnings that `create_codespace` gives for this workspace and preset |
 | `close_codespace` | `id` | `codespace` |
 
 The environment of a host has `base_image`, `setup_script`, `variables`, `ca_certificates`, and `docker.registry_mirrors`. All are optional.

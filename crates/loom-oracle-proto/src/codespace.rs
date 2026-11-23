@@ -289,6 +289,12 @@ pub struct CodespaceResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Warnings {
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Instances {
     pub instances: Vec<InstanceReport>,

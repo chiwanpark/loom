@@ -18,7 +18,7 @@ pub use connect::{
 pub use error::{ClientError, Result};
 pub use forward::{PortForward, Tunnel};
 pub use login::BrowserCallback;
-pub use loom_crypto::ClientIdentity;
+pub use loom_crypto::{ClientIdentity, PairingUri};
 pub use loom_oracle_proto as oracle_proto;
 pub use loom_proto as proto;
 pub use loom_transport::{
