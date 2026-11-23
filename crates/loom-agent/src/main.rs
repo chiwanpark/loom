@@ -284,6 +284,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                 config,
                 dirs: ctx.dirs,
                 ready: None,
+                repositories: None,
             })
             .await?;
             match served {

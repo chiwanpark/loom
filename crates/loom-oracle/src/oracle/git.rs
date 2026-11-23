@@ -59,14 +59,7 @@ fn url_host(url: &str) -> &str {
 }
 
 pub fn provider_path(web_url: &str, url: &str) -> Option<(String, String)> {
-    let head = url.get(..web_url.len())?;
-    if !head.eq_ignore_ascii_case(web_url) {
-        return None;
-    }
-    let rest = &url[web_url.len()..];
-    rest.starts_with('/')
-        .then(|| repository_path(rest))
-        .flatten()
+    loom_github::repository_of(web_url, url)
 }
 
 fn valid_text(text: &str, max: usize) -> bool {

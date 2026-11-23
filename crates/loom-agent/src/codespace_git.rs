@@ -225,6 +225,14 @@ fn write_gh(paths: &GitPaths, setup: &GitSetup) -> anyhow::Result<()> {
 }
 
 async fn git_output(args: &[&str], dir: Option<&Path>) -> anyhow::Result<std::process::Output> {
+    git_output_within(args, dir, GIT_TIMEOUT).await
+}
+
+pub(crate) async fn git_output_within(
+    args: &[&str],
+    dir: Option<&Path>,
+    timeout: Duration,
+) -> anyhow::Result<std::process::Output> {
     let mut command = tokio::process::Command::new("git");
     command
         .args(args)
@@ -234,7 +242,7 @@ async fn git_output(args: &[&str], dir: Option<&Path>) -> anyhow::Result<std::pr
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    tokio::time::timeout(GIT_TIMEOUT, command.output())
+    tokio::time::timeout(timeout, command.output())
         .await
         .map_err(|_| anyhow::anyhow!("git {} took too long", args.join(" ")))?
         .context("cannot run git")

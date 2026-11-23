@@ -1,4 +1,5 @@
 pub mod codespace_git;
+pub mod codespace_repos;
 pub mod logging;
 pub mod managed;
 pub mod push;

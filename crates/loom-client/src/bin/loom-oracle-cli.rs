@@ -12,10 +12,12 @@ use loom_client::oracle_proto::{
     ProviderRoute, RelayHost, Repository, Secret, Workspace,
 };
 use loom_client::{
-    AccessToken, ClientIdentity, NewCodespace, OracleClient, OracleEndpoint, OracleEvents,
+    AccessToken, Client, ClientIdentity, CloseGuardError, NewCodespace, OracleClient,
+    OracleEndpoint, OracleEvents, RelayHost as AgentRelay, choices_from_lists, close_plan,
     pair_oracle,
 };
 use loom_config::{ByteSize, Dirs, HumanDuration};
+use loom_proto::{PushRepositories, RepositoryStatus};
 use serde::{Deserialize, Serialize};
 
 const STATE_ENV: &str = "LOOM_ORACLE_CLI_STATE";
@@ -148,6 +150,46 @@ enum Command {
         id: String,
         #[arg(long)]
         no_wait: bool,
+        #[arg(
+            long = "push",
+            value_name = "DIRECTORY",
+            help = "Push the work of this repository first; '*' selects all"
+        )]
+        push: Vec<String>,
+        #[arg(
+            long = "discard",
+            value_name = "DIRECTORY",
+            help = "Discard the work of this repository; '*' selects all"
+        )]
+        discard: Vec<String>,
+        #[arg(
+            long,
+            help = "Commit the uncommitted changes of the pushed repositories with this message"
+        )]
+        message: Option<String>,
+        #[arg(long, help = "Close the codespace when its agent cannot tell its work")]
+        force: bool,
+    },
+    Repositories {
+        id: String,
+    },
+    Push {
+        id: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long = "directory", value_name = "DIRECTORY")]
+        directories: Vec<String>,
+    },
+    PullRequest {
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, conflicts_with = "body_file", default_value = "")]
+        body: String,
+        #[arg(long, value_name = "PATH")]
+        body_file: Option<PathBuf>,
+        #[arg(long)]
+        draft: bool,
     },
     Providers,
     SetProvider {
@@ -314,6 +356,117 @@ fn read_token(path: &Path) -> anyhow::Result<Secret> {
         bail!("the token is empty");
     }
     Ok(Secret::new(token))
+}
+
+async fn connect_codespace(
+    saved: &SavedOracle,
+    identity: &ClientIdentity,
+    codespace: &Codespace,
+) -> anyhow::Result<Client> {
+    let agent = codespace
+        .agent
+        .as_ref()
+        .with_context(|| format!("the codespace {} has no agent yet", codespace.id))?;
+    let relay =
+        AgentRelay::from_parts(&saved.url, &agent.host_id, &agent.host_key, saved.access()?)?;
+    let instance = agent.instance.clone().map(loom_proto::InstanceId);
+    let stream = relay
+        .connect(instance.as_ref(), identity)
+        .await
+        .with_context(|| format!("cannot reach the agent of the codespace {}", codespace.id))?;
+    Ok(Client::connect(stream, CLIENT_NAME).await?.0)
+}
+
+async fn find_codespace(client: &OracleClient, id: &str) -> anyhow::Result<Codespace> {
+    client
+        .codespaces()
+        .await?
+        .into_iter()
+        .find(|c| c.id == id)
+        .with_context(|| format!("no codespace has the ID {id}"))
+}
+
+fn work_text(status: &RepositoryStatus) -> String {
+    if let Some(error) = &status.error {
+        return format!("unknown: {error}");
+    }
+    let mut parts = Vec::new();
+    if status.changed_files > 0 {
+        parts.push(format!("{} changed files", status.changed_files));
+    }
+    if status.unpushed > 0 {
+        parts.push(format!("{} unpushed commits", status.unpushed));
+    }
+    if parts.is_empty() {
+        "no unsaved work".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn print_repository(status: &RepositoryStatus) {
+    let mut marks = vec![work_text(status)];
+    if let Some(base) = &status.base_branch {
+        marks.push(format!("{} ahead of {base}", status.ahead));
+    }
+    if status.pushed {
+        marks.push("pushed".to_owned());
+    }
+    if let Some(url) = &status.pull_request {
+        marks.push(format!("pull request {url}"));
+    }
+    println!(
+        "{}\t{}\t{}\t{}",
+        status.directory,
+        status.branch,
+        status.url,
+        marks.join(", ")
+    );
+}
+
+async fn guard_close(
+    agent: &Client,
+    statuses: Vec<RepositoryStatus>,
+    push: &[String],
+    discard: &[String],
+    message: Option<String>,
+) -> anyhow::Result<()> {
+    let choose = choices_from_lists(&statuses, push, discard)?;
+    let to_push = match close_plan(&statuses, choose, message.is_some()) {
+        Ok(to_push) => to_push,
+        Err(CloseGuardError::Undecided(undecided)) => {
+            let lines: Vec<String> = undecided
+                .iter()
+                .map(|s| format!("{}: {}", s.directory, work_text(s)))
+                .collect();
+            bail!(
+                "these repositories have unsaved work:\n  {}\nchoose --push <directory> or --discard <directory> for each ('*' selects all)",
+                lines.join("\n  ")
+            );
+        }
+        Err(err) => bail!("{err}; give --message to commit the changes"),
+    };
+    if to_push.is_empty() {
+        return Ok(());
+    }
+    let pushed = agent
+        .push_repositories(PushRepositories {
+            commit_message: message,
+            directories: to_push,
+        })
+        .await?;
+    let failed: Vec<String> = pushed
+        .iter()
+        .filter(|s| s.error.is_some() || s.has_unsaved_work())
+        .map(|s| format!("{}: {}", s.directory, work_text(s)))
+        .collect();
+    if !failed.is_empty() {
+        bail!("cannot push:\n  {}", failed.join("\n  "));
+    }
+    for status in &pushed {
+        eprintln!("pushed {} to {}", status.directory, status.branch);
+    }
+    Ok(())
 }
 
 fn default_label() -> String {
@@ -737,13 +890,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let saved = load_saved(&dir)?;
-    let (client, mut events) = OracleClient::connect(
-        &saved.endpoint()?,
-        &identity(&dir, saved.identity.as_deref())?,
-        CLIENT_NAME,
-    )
-    .await
-    .with_context(|| format!("cannot connect to the oracle {}", saved.url))?;
+    let me = identity(&dir, saved.identity.as_deref())?;
+    let (client, mut events) = OracleClient::connect(&saved.endpoint()?, &me, CLIENT_NAME)
+        .await
+        .with_context(|| format!("cannot connect to the oracle {}", saved.url))?;
     match cli.command {
         Command::Pair { .. } => unreachable!(),
         Command::Info => {
@@ -975,7 +1125,41 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 print!("{}", client_entry(&saved, &codespace, None)?);
             }
         }
-        Command::CloseCodespace { id, no_wait } => {
+        Command::CloseCodespace {
+            id,
+            no_wait,
+            push,
+            discard,
+            message,
+            force,
+        } => {
+            let codespace = find_codespace(&client, &id).await?;
+            match codespace.state {
+                CodespaceState::Ready => {
+                    let reached = async {
+                        let agent = connect_codespace(&saved, &me, &codespace).await?;
+                        let statuses = agent.repositories().await?;
+                        Ok::<_, anyhow::Error>((agent, statuses))
+                    };
+                    match reached.await {
+                        Ok((agent, statuses)) => {
+                            guard_close(&agent, statuses, &push, &discard, message).await?;
+                        }
+                        Err(err) if force => {
+                            eprintln!("warning: closing without the check: {err:#}");
+                        }
+                        Err(err) => {
+                            return Err(err.context(
+                                "cannot check the unsaved work; use --force to close the codespace anyway",
+                            ));
+                        }
+                    }
+                }
+                CodespaceState::Lost if !force => bail!(
+                    "the codespace is lost, so its agent cannot tell its unsaved work; use --force to close it"
+                ),
+                _ => {}
+            }
             if !no_wait {
                 client.subscribe().await?;
             }
@@ -1145,13 +1329,70 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::ClientEntry { id, name } => {
-            let codespace = client
-                .codespaces()
-                .await?
-                .into_iter()
-                .find(|c| c.id == id)
-                .with_context(|| format!("no codespace has the ID {id}"))?;
+            let codespace = find_codespace(&client, &id).await?;
             print!("{}", client_entry(&saved, &codespace, name)?);
+        }
+        Command::Repositories { id } => {
+            let codespace = find_codespace(&client, &id).await?;
+            let agent = connect_codespace(&saved, &me, &codespace).await?;
+            let statuses = agent.repositories().await?;
+            if json {
+                return print_json(&statuses);
+            }
+            statuses.iter().for_each(print_repository);
+        }
+        Command::Push {
+            id,
+            message,
+            directories,
+        } => {
+            let codespace = find_codespace(&client, &id).await?;
+            let agent = connect_codespace(&saved, &me, &codespace).await?;
+            let statuses = agent
+                .push_repositories(PushRepositories {
+                    commit_message: message,
+                    directories,
+                })
+                .await?;
+            if json {
+                return print_json(&statuses);
+            }
+            statuses.iter().for_each(print_repository);
+            if statuses.iter().any(|s| s.error.is_some()) {
+                bail!("cannot push all repositories");
+            }
+        }
+        Command::PullRequest {
+            id,
+            title,
+            body,
+            body_file,
+            draft,
+        } => {
+            let body = match body_file {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("cannot read {}", path.display()))?,
+                None => body,
+            };
+            let codespace = find_codespace(&client, &id).await?;
+            let agent = connect_codespace(&saved, &me, &codespace).await?;
+            let results = agent.open_pull_requests(&title, &body, draft).await?;
+            if json {
+                return print_json(&results);
+            }
+            for result in &results {
+                let text = match (&result.url, &result.skipped, &result.error) {
+                    (_, _, Some(error)) => format!("error: {error}"),
+                    (Some(url), _, None) if result.created => format!("opened {url}"),
+                    (Some(url), _, None) => format!("updated {url}"),
+                    (None, Some(reason), None) => format!("skipped: {reason}"),
+                    (None, None, None) => "nothing".to_owned(),
+                };
+                println!("{}\t{text}", result.directory);
+            }
+            if results.iter().any(|r| r.error.is_some()) {
+                bail!("cannot open all pull requests");
+            }
         }
         Command::Watch { count } => {
             client.subscribe().await?;

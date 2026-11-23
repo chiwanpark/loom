@@ -150,7 +150,7 @@ git:
 
 The device keys of the oracle are the keys that the agent of a codespace accepts. Thus, the desktop client must use a key that is paired with the oracle. Pair the key of the desktop client with `loom-oracle-cli pair <link> --identity ~/.local/share/loom/client_identity.json`.
 
-`loom-oracle-cli close-codespace <id>` deletes the container of the codespace and revokes the keys of its agent.
+`loom-oracle-cli close-codespace <id>` deletes the container of the codespace and revokes the keys of its agent. Before that, the close guard checks the unsaved work. See [Git in a codespace](#git-in-a-codespace).
 
 ## Git providers
 
@@ -184,6 +184,27 @@ The Git setup of a codespace is in the data directory of the agent (`~/.local/sh
 - The agent writes the token for `gh` of each provider into `~/.config/gh/hosts.yml`. It keeps the hosts that it did not write.
 
 When the oracle sends `git_changed`, the agent writes these files again.
+
+## Git in a codespace
+
+A client asks the agent of a codespace for these Git actions:
+
+| Action | `loom-oracle-cli` | What the agent does |
+| --- | --- | --- |
+| Status | `repositories <id>` | Shows the branch, the base branch, the changed files, the commits after the base, and the commits that are not pushed, for each clone. |
+| Push | `push <id>` | Pushes the branch of each clone that has commits that are not pushed. With `--message`, it first commits all changes. |
+| Pull request | `pull-request <id> --title <title>` | For each clone of a provider with commits after the base, pushes the branch and opens a pull request into the base. If the branch has an open pull request, the agent uses it. When it opens more than one, it adds links to the others to each body. |
+
+The agent sends the API calls for pull requests to the provider with the token that the oracle selects for the repository. It does not use `gh`. A repository without a provider gets no pull request.
+
+The close guard runs before a codespace closes. It asks the agent for the state of each clone. A clone has unsaved work when it has changed files or commits that are not pushed. For each repository with unsaved work, choose one:
+
+- `--push <directory>` pushes the branch. If the clone has changed files, also give `--message` to commit them.
+- `--discard <directory>` loses the work.
+
+`*` selects all repositories. The close stops if a repository with work has no choice.
+
+If the agent does not answer, the close stops. `--force` closes the codespace without the check. A lost codespace also needs `--force`.
 
 ## Codespace states
 

@@ -454,3 +454,40 @@ pub enum MergeStrategy {
     /// One new commit with the changes of the branch, and this message.
     Squash { message: String },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryStatus {
+    pub directory: String,
+    pub path: String,
+    pub url: String,
+    pub provider: Option<String>,
+    pub branch: String,
+    pub base_branch: Option<String>,
+    pub changed_files: u32,
+    pub ahead: u32,
+    pub unpushed: u32,
+    pub pushed: bool,
+    pub pull_request: Option<String>,
+    pub error: Option<String>,
+}
+
+impl RepositoryStatus {
+    pub fn has_unsaved_work(&self) -> bool {
+        self.changed_files > 0 || self.unpushed > 0
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushRepositories {
+    pub commit_message: Option<String>,
+    pub directories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestResult {
+    pub directory: String,
+    pub url: Option<String>,
+    pub created: bool,
+    pub skipped: Option<String>,
+    pub error: Option<String>,
+}

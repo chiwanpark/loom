@@ -40,6 +40,17 @@ pub fn repository_path(path: &str) -> Option<(String, String)> {
     (valid(owner) && valid(name)).then(|| (owner.to_owned(), name.to_owned()))
 }
 
+pub fn repository_of(web_url: &str, url: &str) -> Option<(String, String)> {
+    let head = url.get(..web_url.len())?;
+    if !head.eq_ignore_ascii_case(web_url) {
+        return None;
+    }
+    let rest = &url[web_url.len()..];
+    rest.starts_with('/')
+        .then(|| repository_path(rest))
+        .flatten()
+}
+
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;
@@ -402,7 +413,7 @@ pub struct PullRequest {
     pub body: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewPullRequest {
     pub title: String,
     pub body: String,

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, watch};
 
 use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
+use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
 use crate::serve::{ServeOptions, Served, Started, serve};
 
 pub const BOOTSTRAP_FILE: &str = "bootstrap.json";
@@ -215,6 +217,24 @@ impl Layout {
     pub fn managed(&self) -> Vec<ManagedClone> {
         self.clones.iter().map(|c| c.clone.clone()).collect()
     }
+
+    pub fn repositories(&self) -> Vec<RepositoryClone> {
+        self.clones
+            .iter()
+            .map(|c| RepositoryClone {
+                directory: c
+                    .clone
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path: c.clone.path.clone(),
+                url: c.url.clone(),
+                provider: c.clone.provider.clone(),
+                base_branch: c.base_branch.clone(),
+            })
+            .collect()
+    }
 }
 
 pub fn layout(workspaces_root: &Path, bundle: &Bundle) -> anyhow::Result<Layout> {
@@ -307,7 +327,7 @@ struct Link {
     git: GitPaths,
     clones: Vec<ManagedClone>,
     clients: watch::Sender<OracleClient>,
-    setup: GitSetup,
+    setup: watch::Sender<GitSetup>,
 }
 
 impl Link {
@@ -324,11 +344,11 @@ impl Link {
             Ok(false) => {}
             Err(err) => tracing::error!(error = %err, "cannot write the devices"),
         }
-        if bundle.git != self.setup {
+        if bundle.git != *self.setup.borrow() {
             match apply_all(&self.git, &bundle.git, &self.clones).await {
                 Ok(()) => {
                     tracing::info!("updated the Git setup");
-                    self.setup = bundle.git;
+                    self.setup.send_replace(bundle.git);
                 }
                 Err(err) => {
                     tracing::error!(error = %format!("{err:#}"), "cannot update the Git setup")
@@ -421,7 +441,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
     sync_devices(&data_dir, &bundle.devices)?;
     let git = GitPaths::new(&data_dir, &dirs.config_home)?;
     let (clients, client_watch) = watch::channel(client.clone());
-    let helper = serve_credentials(&git, client_watch)?;
+    let helper = serve_credentials(&git, client_watch.clone())?;
     let layout = match layout(&state.workspaces_root, &bundle) {
         Ok(layout) => layout,
         Err(err) => {
@@ -457,6 +477,9 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
     config.lifecycle.default_workspace = Some(workspace.clone());
     std::fs::create_dir_all(&workspace)
         .with_context(|| format!("cannot make {}", workspace.display()))?;
+    let (setup, setup_watch) = watch::channel(bundle.git.clone());
+    let repositories =
+        CodespaceRepositories::new(layout.repositories(), setup_watch, client_watch, &git.dir)?;
     let (ready, started) = oneshot::channel();
     let link = Link {
         endpoint,
@@ -466,7 +489,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         git,
         clones,
         clients,
-        setup: bundle.git.clone(),
+        setup,
     };
     let task = tokio::spawn(link.run(client, events, started));
     let served = serve(ServeOptions {
@@ -475,6 +498,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         config,
         dirs,
         ready: Some(ready),
+        repositories: Some(Arc::new(repositories)),
     })
     .await;
     task.abort();

@@ -19,6 +19,7 @@ loom-agent-core = { path = "../loom-agent-core" }
 loom-client = { path = "../loom-client", default-features = false }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
+loom-github = { path = "../loom-github" }
 loom-llm = { path = "../loom-llm" }
 loom-proto = { path = "../loom-proto" }
 loom-telemetry = { path = "../loom-telemetry" }
@@ -48,7 +49,6 @@ futures = "0.3.34"
 loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
-loom-github = { path = "../loom-github" }
 loom-host = { path = "../loom-host" }
 loom-llm = { path = "../loom-llm" }
 loom-oracle = { path = "../loom-oracle" }

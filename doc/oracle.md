@@ -123,7 +123,10 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `delete-workspace <name>` | Deletes a workspace. The oracle refuses this while a codespace of the workspace is open. |
 | `codespaces [--all]` | Lists the codespaces. `--all` also shows the closed codespaces. |
 | `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. |
-| `close-codespace <id> [--no-wait]` | Closes a codespace. The host deletes its instance. |
+| `close-codespace <id> [--push <directory>]… [--discard <directory>]… [--message <message>] [--force] [--no-wait]` | Closes a codespace. The host deletes its instance. First, the close guard asks the agent for the unsaved work of each repository. See [the host document](host.md#git-in-a-codespace). |
+| `repositories <id>` | Shows the state of each repository of a codespace. |
+| `push <id> [--message <message>] [--directory <directory>]…` | Pushes the branch of each repository of a codespace. With `--message`, the agent first commits the uncommitted changes. |
+| `pull-request <id> --title <title> [--body <text> \| --body-file <path>] [--draft]` | Opens a pull request for each repository of a codespace that has commits. |
 | `client-entry <id> [--name <name>]` | Shows the host entry for `client.yaml` of the desktop client. |
 | `watch [--count <n>]` | Shows the events of the oracle until you stop it. |
 

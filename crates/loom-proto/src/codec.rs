@@ -36,7 +36,10 @@ pub fn undecodable_request_id(frame: &[u8]) -> Option<crate::RequestId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClientMessage, Command};
+    use crate::{
+        ClientMessage, Command, Payload, PullRequestResult, PushRepositories, RepositoryStatus,
+        ServerMessage,
+    };
 
     #[test]
     fn finds_the_id_of_a_request_with_an_unknown_command() {
@@ -52,5 +55,54 @@ mod tests {
         assert_eq!(undecodable_request_id(&unknown), Some(42));
         let hello = postcard::to_allocvec(&(0u32, 1u16)).unwrap();
         assert_eq!(undecodable_request_id(&hello), None);
+    }
+
+    #[test]
+    fn repository_messages_survive_the_codec() {
+        for command in [
+            Command::ListRepositories,
+            Command::PushRepositories(PushRepositories::default()),
+            Command::OpenPullRequests {
+                title: "t".into(),
+                body: String::new(),
+                draft: true,
+            },
+        ] {
+            let message = ClientMessage::Request { id: 7, command };
+            let back: ClientMessage = decode(&encode(&message).unwrap()).unwrap();
+            assert_eq!(back, message);
+        }
+        let status = RepositoryStatus {
+            directory: "app".into(),
+            path: "/workspaces/app".into(),
+            url: "https://github.com/acme/app.git".into(),
+            provider: None,
+            branch: "loom/c1".into(),
+            base_branch: None,
+            changed_files: 0,
+            ahead: 0,
+            unpushed: 0,
+            pushed: false,
+            pull_request: None,
+            error: None,
+        };
+        let result = PullRequestResult {
+            directory: "app".into(),
+            url: None,
+            created: false,
+            skipped: Some("no changes".into()),
+            error: None,
+        };
+        for payload in [
+            Payload::Repositories(vec![status]),
+            Payload::PullRequests(vec![result]),
+        ] {
+            let message = ServerMessage::Response {
+                id: 7,
+                result: Ok(payload),
+            };
+            let back: ServerMessage = decode(&encode(&message).unwrap()).unwrap();
+            assert_eq!(back, message);
+        }
     }
 }
