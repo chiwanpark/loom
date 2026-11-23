@@ -55,6 +55,7 @@ struct State {
     /// Updates that go out in the order they came.
     queue: Vec<AgentUpdate>,
     terminals: Terminals,
+    directories: Vec<String>,
 }
 
 struct Open {
@@ -445,7 +446,17 @@ fn session_id(id: String) -> SessionId {
     SessionId(id)
 }
 
+impl Shared {
+    pub(crate) fn directories(&self) -> Vec<String> {
+        self.lock().directories.clone()
+    }
+}
+
 impl AgentConnection {
+    pub(crate) fn set_directories(&self, directories: Vec<String>) {
+        self.shared.lock().directories = directories;
+    }
+
     pub(crate) async fn open(
         relay: RelayHost,
         instance: InstanceId,
@@ -471,6 +482,7 @@ impl AgentConnection {
                 open: HashMap::new(),
                 queue: Vec::new(),
                 terminals: Terminals::default(),
+                directories: Vec::new(),
             }),
             wake: Notify::new(),
         });

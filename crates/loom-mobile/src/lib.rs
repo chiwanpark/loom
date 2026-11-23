@@ -15,6 +15,7 @@ mod error;
 mod files;
 mod highlight;
 mod hosts;
+mod oracle;
 mod ports;
 mod records;
 mod runtime;
@@ -26,6 +27,11 @@ pub use error::LoomError;
 pub use files::{DirectoryListing, EntryKind, FileEntry, FileView};
 pub use highlight::{CodeLine, Highlight, Span};
 pub use hosts::{CLIENT_NAME, Loom};
+pub use oracle::{
+    BaseBranch, Codespace, CodespaceSession, CodespaceStatus, CreatedCodespace, NewCodespaceForm,
+    NewCodespaceRequest, OracleConnection, OracleLists, OracleModel, OracleModels, OraclePreset,
+    OracleRepository, OracleWorkspace, PullRequestOutcome, RepositoryState, close_plan,
+};
 pub use ports::{Forward, HostPort};
 pub use records::*;
 pub use terminal::{

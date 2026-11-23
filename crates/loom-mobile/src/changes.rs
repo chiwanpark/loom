@@ -56,6 +56,7 @@ pub struct GitChange {
     pub added: u32,
     pub removed: u32,
     pub binary: bool,
+    pub repository: Option<String>,
 }
 
 /// The uncommitted changes of the workspace.
@@ -70,8 +71,8 @@ pub struct GitChanges {
     pub truncated: bool,
 }
 
-impl From<proto::WorkspaceChanges> for GitChanges {
-    fn from(changes: proto::WorkspaceChanges) -> Self {
+impl GitChanges {
+    fn of(changes: proto::WorkspaceChanges, directories: &[String]) -> Self {
         Self {
             repository: changes.repository,
             branch: changes.branch,
@@ -79,6 +80,8 @@ impl From<proto::WorkspaceChanges> for GitChanges {
                 .files
                 .into_iter()
                 .map(|file| GitChange {
+                    repository: loom_view_model::codespaces::repository_of(&file.path, directories)
+                        .map(str::to_owned),
                     path: file.path,
                     old_path: file.old_path,
                     kind: file.status.into(),
@@ -231,12 +234,13 @@ impl AgentConnection {
     /// The uncommitted changes in git of the workspace, or of the worktree
     /// of `session`.
     pub async fn git_changes(self: Arc<Self>, session: Option<String>) -> Result<GitChanges> {
+        let directories = self.shared.directories();
         with_client(&self.shared, move |client| async move {
-            Ok(client
+            let changes = client
                 .in_session(session.map(SessionId))
                 .workspace_changes()
-                .await?
-                .into())
+                .await?;
+            Ok(GitChanges::of(changes, &directories))
         })
         .await
     }
