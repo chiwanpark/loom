@@ -110,7 +110,7 @@ hosts:
   host_key: Qm9i…
 ```
 
-The client then shows the oracle under **Workspaces**. For each workspace, it shows the repositories and the codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The lists come from the oracle. The client connects to the agent of a codespace only when you open a session.
+The client then shows the oracle under **Workspaces**. For each workspace, it shows the host, the repositories, and the codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The lists come from the oracle. The client connects to the agent of a codespace only when you open a session.
 
 ### New codespace
 
