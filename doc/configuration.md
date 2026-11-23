@@ -39,6 +39,7 @@ loom-agent config schema   # show the JSON Schema
 | `anthropic` | Claude Pro/Max account (browser) |
 | `openai` | ChatGPT account (browser) or API key (`OPENAI_API_KEY`) |
 | `openai-codex` | ChatGPT account (browser or device code) |
+| `opencode-go` | [OpenCode Go](https://opencode.ai/docs/console/go/) API key (`OPENCODE_API_KEY`) |
 | Any OpenAI-compatible server | API key. Configure it in `llm.providers`. |
 
 To sign in, use **Providers and sign-in…** in the menu of the agent.
@@ -49,6 +50,8 @@ To turn off threads, set `llm.providers.anthropic.message_threads: false`.
 Threads are off by default for custom base URLs. Set `message_threads: true` only if the endpoint supports the Anthropic message-threads beta.
 
 The agent keeps the credentials in `credentials.json` in its data directory. The data directory is `storage.data_dir`. The default is `~/.local/share/loom`.
+
+For OpenCode Go, paste a Console API key from a Go workspace in **Providers and sign-in…**, or set `OPENCODE_API_KEY` in the agent's environment. The environment variable takes precedence over the stored key. Select an OpenCode Go model in the model picker, or set `llm.default_model` to a model such as `opencode-go/deepseek-v4.1-flash`.
 
 This example adds an OpenAI-compatible server, such as a local model:
 

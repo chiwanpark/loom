@@ -139,7 +139,7 @@ impl LlmProvider for AnthropicProvider {
             }
         };
         let tools = request.tools.iter().map(|t| t.name.clone()).collect();
-        let stream = stream::chunk_stream(&request.model, tools, response);
+        let stream = stream::chunk_stream(ID, &request.model, tools, response);
         if mode.threaded()
             && let Some((threads, id)) = session
             && let Some(prefix) = Prefix::for_request(&token, &full)

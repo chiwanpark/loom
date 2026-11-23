@@ -62,6 +62,13 @@ fn effort(effort: ReasoningEffort) -> Option<&'static str> {
 }
 
 pub(crate) fn build_body(request: &CompletionRequest) -> Value {
+    build_body_with_reasoning_history(request, None)
+}
+
+pub(crate) fn build_body_with_reasoning_history(
+    request: &CompletionRequest,
+    reasoning_history: Option<(&str, &str)>,
+) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = &request.system {
         messages.push(json!({"role": "system", "content": system}));
@@ -89,6 +96,23 @@ pub(crate) fn build_body(request: &CompletionRequest) -> Value {
                 });
                 if !calls.is_empty() {
                     entry["tool_calls"] = Value::Array(calls);
+                }
+                if let Some((provider, field)) = reasoning_history
+                    && assistant.provider == provider
+                    && assistant.model == request.model
+                {
+                    let reasoning = assistant
+                        .content
+                        .iter()
+                        .filter_map(|item| match item {
+                            AssistantContent::Reasoning { summary, .. } => Some(summary.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !reasoning.is_empty() {
+                        entry[field] = json!(reasoning);
+                    }
                 }
                 messages.push(entry);
             }
@@ -216,11 +240,10 @@ impl ChatState {
             return Ok(out);
         };
         if let Some(delta) = choice.get("delta") {
-            let reasoning = delta
-                .get("reasoning_content")
-                .or_else(|| delta.get("reasoning"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty());
+            let reasoning = ["reasoning_content", "reasoning"]
+                .into_iter()
+                .filter_map(|key| delta[key].as_str())
+                .find(|s| !s.is_empty());
             if let Some(reasoning) = reasoning {
                 if self.reasoning.is_none() {
                     self.reasoning = Some(String::new());

@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 
 use super::ID;
 use crate::error::{LlmError, Result};
+use crate::provider::ProviderId;
 use crate::types::{
     AssistantContent, AssistantMessage, CompletionRequest, InputContent, Message,
     ModelCapabilities, ReasoningEffort,
@@ -119,10 +120,23 @@ pub(super) fn first_user_text(body: &Value) -> Option<&str> {
 }
 
 pub(super) fn assistant_param(message: &AssistantMessage) -> Value {
-    json!({"role": "assistant", "content": assistant_content(message, &message.model)})
+    json!({"role": "assistant", "content": assistant_content(message, &ID, &message.model, true)})
 }
 
 pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
+    build(request, &ID, true)
+}
+
+pub(crate) fn build_api_key_body(
+    request: &CompletionRequest,
+    provider: &ProviderId,
+) -> Result<Value> {
+    let mut body = build(request, provider, false)?;
+    cache_tail(&mut body);
+    Ok(body)
+}
+
+fn build(request: &CompletionRequest, provider: &ProviderId, claude_code: bool) -> Result<Value> {
     let mut messages = Vec::new();
     for message in &request.messages {
         match message {
@@ -146,12 +160,12 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
                 append(
                     &mut messages,
                     "assistant",
-                    assistant_content(message, &request.model),
+                    assistant_content(message, provider, &request.model, claude_code),
                 );
             }
         }
     }
-    build_params(request, messages)
+    build_params(request, messages, claude_code)
 }
 
 pub(super) fn cache_tail(body: &mut Value) {
@@ -165,8 +179,21 @@ pub(super) fn cache_tail(body: &mut Value) {
     }
 }
 
-fn assistant_content(message: &AssistantMessage, model: &str) -> Vec<Value> {
-    let same_model = message.provider == ID && message.model == model;
+fn wire_tool_name(name: &str, claude_code: bool) -> String {
+    if claude_code {
+        tool_name(name)
+    } else {
+        name.to_owned()
+    }
+}
+
+fn assistant_content(
+    message: &AssistantMessage,
+    provider: &ProviderId,
+    model: &str,
+    claude_code: bool,
+) -> Vec<Value> {
+    let same_model = &message.provider == provider && message.model == model;
     message
         .content
         .iter()
@@ -182,7 +209,7 @@ fn assistant_content(message: &AssistantMessage, model: &str) -> Vec<Value> {
                 }
             }
             AssistantContent::ToolCall(call) => Some(json!({
-                "type": "tool_use", "id": call.call_id, "name": tool_name(&call.name),
+                "type": "tool_use", "id": call.call_id, "name": wire_tool_name(&call.name, claude_code),
                 // Arguments that were not a JSON object were never run, and the
                 // API takes only an object here.
                 "input": if call.arguments.is_object() { call.arguments.clone() } else { json!({}) },
@@ -192,45 +219,60 @@ fn assistant_content(message: &AssistantMessage, model: &str) -> Vec<Value> {
         .collect()
 }
 
-fn build_params(request: &CompletionRequest, messages: Vec<Value>) -> Result<Value> {
+fn build_params(
+    request: &CompletionRequest,
+    messages: Vec<Value>,
+    claude_code: bool,
+) -> Result<Value> {
     let mut system = Vec::new();
-    system.push(json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}));
+    if claude_code {
+        system.push(json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}));
+    }
     if let Some(text) = request.system.as_deref().filter(|s| !s.is_empty()) {
         system.push(json!({"type": "text", "text": text}));
     }
-    system.last_mut().unwrap()["cache_control"] = json!({"type": "ephemeral"});
+    if let Some(last) = system.last_mut() {
+        last["cache_control"] = json!({"type": "ephemeral"});
+    }
     let mut body = json!({
         "model": request.model,
         "messages": messages,
-        "system": system,
         "max_tokens": request.max_output_tokens.unwrap_or(default_max_tokens(&request.capabilities)),
         "stream": true,
     });
+    if !system.is_empty() {
+        body["system"] = system.into();
+    }
     if !request.tools.is_empty() {
         let mut tools: Vec<Value> = request.tools.iter().map(|t| json!({
-            "name": tool_name(&t.name), "description": t.description, "input_schema": t.parameters,
+            "name": wire_tool_name(&t.name, claude_code), "description": t.description, "input_schema": t.parameters,
         })).collect();
         tools.last_mut().unwrap()["cache_control"] = json!({"type": "ephemeral"});
         body["tools"] = tools.into();
     }
     let caps = &request.capabilities;
+    let claude = claude_code || request.model.starts_with("claude-");
     if let Some(effort) = request.reasoning {
         // A model that cannot turn thinking off thinks as little as it can.
         let off = effort == ReasoningEffort::None;
         if off && caps.thinking_off != Some(false) {
             body["thinking"] = json!({"type": "disabled"});
         } else if adaptive_thinking(&request.model, caps) {
-            body["thinking"] = json!({"type": "adaptive", "display": THINKING_DISPLAY});
+            body["thinking"] = json!({"type": "adaptive"});
+            if claude {
+                body["thinking"]["display"] = json!(THINKING_DISPLAY);
+            }
             let wanted = match effort {
                 ReasoningEffort::None | ReasoningEffort::Minimal => ReasoningEffort::Low,
                 other => other,
             };
-            let effort = match caps.nearest_effort(wanted) {
-                Some(effort) => effort,
+            let effort = caps.nearest_effort(wanted).or_else(|| {
                 // Without a list, stay with the efforts every adaptive model takes.
-                None => wanted.min(ReasoningEffort::High),
-            };
-            body["output_config"] = json!({"effort": effort.as_str()});
+                claude.then_some(wanted.min(ReasoningEffort::High))
+            });
+            if let Some(effort) = effort {
+                body["output_config"] = json!({"effort": effort.as_str()});
+            }
         } else {
             let budget = match effort {
                 ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low => 1024,
@@ -252,8 +294,10 @@ fn build_params(request: &CompletionRequest, messages: Vec<Value>) -> Result<Val
             body["thinking"] = json!({
                 "type": "enabled",
                 "budget_tokens": budget.min(max - 1),
-                "display": THINKING_DISPLAY,
             });
+            if claude {
+                body["thinking"]["display"] = json!(THINKING_DISPLAY);
+            }
         }
     }
     Ok(body)
