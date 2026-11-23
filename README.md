@@ -78,6 +78,7 @@ To connect to agents on other machines, see [Remote hosts and relays](doc/remote
 | [Skills](doc/skills.md) | Instructions for special tasks in the Agent Skills format. |
 | [Desktop client](doc/desktop.md) | `client.yaml`, key bindings, panels, terminals, files, and ports. |
 | [Android app](doc/android.md) | Build, pairing, and the functions of the app. |
+| [Oracle](doc/oracle.md) | Loom-Next, in development: the oracle as a relay, its control service, and the test client. |
 | [Development](doc/development.md) | Crates and checks. |
 
 ## License

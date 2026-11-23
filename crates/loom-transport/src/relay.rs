@@ -50,8 +50,8 @@ async fn next(link: &mut WsLink) -> Result<RelayFrame, RelayError> {
     }
 }
 
-async fn send(link: &WsLink, frame: RelayFrame) -> Result<(), RelayError> {
-    link.tx.send(frame).await.map_err(|_| RelayError::Closed)
+async fn send(tx: &mpsc::Sender<RelayFrame>, frame: RelayFrame) -> Result<(), RelayError> {
+    tx.send(frame).await.map_err(|_| RelayError::Closed)
 }
 
 pub struct RelayClient {
@@ -66,7 +66,7 @@ impl RelayClient {
     }
 
     pub async fn list_agents(&mut self, host: HostId) -> Result<Vec<InstanceId>, RelayError> {
-        send(&self.link, RelayFrame::ListAgents { host }).await?;
+        send(&self.link.tx, RelayFrame::ListAgents { host }).await?;
         loop {
             match next(&mut self.link).await? {
                 RelayFrame::Agents { host: h, instances } if h == host => return Ok(instances),
@@ -82,7 +82,7 @@ impl RelayClient {
         mut self,
         agent: AgentId,
     ) -> Result<(PacketChannel, AbortOnDrop), RelayError> {
-        send(&self.link, RelayFrame::Open { agent }).await?;
+        send(&self.link.tx, RelayFrame::Open { agent }).await?;
         let channel = loop {
             match next(&mut self.link).await? {
                 RelayFrame::Opened { channel, .. } => break channel,
@@ -301,7 +301,7 @@ async fn run_link(
 ) -> Result<(), RelayError> {
     let mut link = ws::connect(&options.endpoint, AGENT_PATH).await?;
     send(
-        &link,
+        &link.tx,
         RelayFrame::AgentHello {
             host_pubkey: options.host.verifying_key(),
             instance: options.instance.clone(),
@@ -315,7 +315,7 @@ async fn run_link(
                 let signature = options
                     .host
                     .sign(&agent_auth_message(&nonce, &options.instance));
-                send(&link, RelayFrame::AgentAuth { signature }).await?;
+                send(&link.tx, RelayFrame::AgentAuth { signature }).await?;
             }
             RelayFrame::Registered { .. } => break,
             RelayFrame::Error { code, message } => {
@@ -329,17 +329,61 @@ async fn run_link(
     tracing::info!(relay = %options.endpoint.url, version, "registered with the relay");
 
     // Notifications go out only through a relay that knows them.
-    let (mut outgoing, rejected) = match push {
+    let (outgoing, rejected) = match push {
         Some(push) if version >= 2 => (Some(&mut push.outgoing), Some(push.rejected.clone())),
         _ => (None, None),
     };
+    let WsLink { tx, mut rx, _task } = link;
+    serve_registered(
+        &tx,
+        &mut rx,
+        &options.host,
+        &options.responder,
+        outgoing,
+        rejected,
+        incoming,
+        shutdown,
+    )
+    .await
+}
+
+pub struct LocalLink {
+    pub tx: mpsc::Sender<RelayFrame>,
+    pub rx: mpsc::Receiver<RelayFrame>,
+}
+
+pub async fn serve_local_link(
+    link: LocalLink,
+    host: Arc<HostIdentity>,
+    responder: Arc<dyn Responder>,
+    incoming: mpsc::Sender<IncomingChannel>,
+    shutdown: CancellationToken,
+) -> Result<(), RelayError> {
+    let LocalLink { tx, mut rx } = link;
+    serve_registered(
+        &tx, &mut rx, &host, &responder, None, None, &incoming, &shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_registered(
+    link_tx: &mpsc::Sender<RelayFrame>,
+    link_rx: &mut mpsc::Receiver<RelayFrame>,
+    host: &Arc<HostIdentity>,
+    responder: &Arc<dyn Responder>,
+    mut outgoing: Option<&mut mpsc::Receiver<PushRequest>>,
+    rejected: Option<mpsc::UnboundedSender<String>>,
+    incoming: &mpsc::Sender<IncomingChannel>,
+    shutdown: &CancellationToken,
+) -> Result<(), RelayError> {
     let mut channels: HashMap<ChannelId, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let (out_tx, mut out_rx) = mpsc::channel::<(ChannelId, Option<Vec<u8>>)>(CHANNEL_QUEUE);
     let mut tasks = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
-            frame = link.rx.recv() => {
+            frame = link_rx.recv() => {
                 let Some(frame) = frame else {
                     return Err(RelayError::Closed);
                 };
@@ -357,10 +401,11 @@ async fn run_link(
                             }
                             let _ = out.send((channel, None)).await;
                         });
-                        let options = options.clone();
+                        let host = host.clone();
+                        let responder = responder.clone();
                         let incoming = incoming.clone();
                         tasks.spawn(async move {
-                            match loom_crypto::respond(theirs, &options.host, options.responder.as_ref()).await {
+                            match loom_crypto::respond(theirs, &host, responder.as_ref()).await {
                                 Ok((secure, peer)) => {
                                     let stream = FrameStream::secure(
                                         secure,
@@ -395,7 +440,7 @@ async fn run_link(
                         if overflow {
                             tracing::warn!(channel, "closing a relay channel that fell behind");
                             channels.remove(&channel);
-                            send(&link, RelayFrame::Close { channel }).await?;
+                            send(link_tx, RelayFrame::Close { channel }).await?;
                         }
                     }
                     RelayFrame::Closed { channel, .. } => {
@@ -417,19 +462,19 @@ async fn run_link(
                     outgoing = None;
                     continue;
                 };
-                send(&link, RelayFrame::Push { token, payload }).await?;
+                send(link_tx, RelayFrame::Push { token, payload }).await?;
             }
             item = out_rx.recv() => {
                 let Some((channel, packet)) = item else { continue };
                 match packet {
                     Some(payload) => {
                         if channels.contains_key(&channel) {
-                            send(&link, RelayFrame::Data { channel, payload }).await?;
+                            send(link_tx, RelayFrame::Data { channel, payload }).await?;
                         }
                     }
                     None => {
                         if channels.remove(&channel).is_some() {
-                            send(&link, RelayFrame::Close { channel }).await?;
+                            send(link_tx, RelayFrame::Close { channel }).await?;
                         }
                     }
                 }
