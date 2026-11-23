@@ -93,6 +93,7 @@ pub(crate) async fn api_error(provider: &str, response: reqwest::Response) -> Ll
     let error = parsed.as_ref().and_then(|v| v.get("error"));
     let code = error.and_then(|e| {
         e.get("code")
+            .or_else(|| e.pointer("/details/error_code"))
             .or_else(|| e.get("type"))
             .and_then(Value::as_str)
             .map(str::to_owned)

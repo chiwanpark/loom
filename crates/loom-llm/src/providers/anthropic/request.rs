@@ -1,10 +1,11 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::{CLAUDE_CODE_VERSION, ID};
+use super::ID;
 use crate::error::{LlmError, Result};
 use crate::types::{
-    AssistantContent, CompletionRequest, InputContent, Message, ModelCapabilities, ReasoningEffort,
+    AssistantContent, AssistantMessage, CompletionRequest, InputContent, Message,
+    ModelCapabilities, ReasoningEffort,
 };
 
 /// Ask for the summarized thinking text. Newer models default to `omitted`,
@@ -80,7 +81,7 @@ fn append(messages: &mut Vec<Value>, role: &str, content: Vec<Value>) {
     }
 }
 
-fn billing_header(text: &str) -> String {
+pub(super) fn billing_block(text: &str, version: &str) -> Value {
     let cch: String = Sha256::digest(text.as_bytes())
         .iter()
         .take(3)
@@ -91,21 +92,34 @@ fn billing_header(text: &str) -> String {
         .iter()
         .map(|i| units.get(*i).copied().unwrap_or(b'0' as u16))
         .collect();
-    let salted = format!(
-        "59cf53e54c78{}{}",
-        String::from_utf16_lossy(&sample),
-        CLAUDE_CODE_VERSION
-    );
+    let salted = format!("59cf53e54c78{}{version}", String::from_utf16_lossy(&sample));
     let suffix: String = Sha256::digest(salted.as_bytes())
         .iter()
         .take(2)
         .map(|b| format!("{b:02x}"))
         .collect();
-    format!(
-        "x-anthropic-billing-header: cc_version={CLAUDE_CODE_VERSION}.{}; cc_entrypoint=sdk-cli; cch={};",
+    let text = format!(
+        "x-anthropic-billing-header: cc_version={version}.{}; cc_entrypoint=sdk-cli; cch={};",
         &suffix[..3],
         &cch[..5]
-    )
+    );
+    json!({"type": "text", "text": text})
+}
+
+pub(super) fn first_user_text(body: &Value) -> Option<&str> {
+    body["messages"]
+        .as_array()?
+        .iter()
+        .find(|m| m["role"] == "user")?["content"]
+        .as_array()?
+        .iter()
+        .find(|b| b["type"] == "text")?["text"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+}
+
+pub(super) fn assistant_param(message: &AssistantMessage) -> Value {
+    json!({"role": "assistant", "content": assistant_content(message, &message.model)})
 }
 
 pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
@@ -129,48 +143,62 @@ pub(super) fn build_body(request: &CompletionRequest) -> Result<Value> {
                 );
             }
             Message::Assistant(message) => {
-                let same_model = message.provider == ID && message.model == request.model;
-                let content = message.content.iter().filter_map(|c| match c {
-                    AssistantContent::Text { text, .. } if !text.is_empty() => Some(json!({"type": "text", "text": text})),
-                    AssistantContent::Reasoning { provider_data: Some(data), .. } if same_model => {
-                        match data["type"].as_str() {
-                            Some("thinking") if data["signature"].as_str().is_some_and(|s| !s.is_empty()) => Some(data.clone()),
-                            Some("redacted_thinking") => Some(data.clone()),
-                            _ => None,
-                        }
-                    }
-                    AssistantContent::ToolCall(call) => Some(json!({
-                        "type": "tool_use", "id": call.call_id, "name": tool_name(&call.name),
-                        // Arguments that were not a JSON object were never run, and the
-                        // API takes only an object here.
-                        "input": if call.arguments.is_object() { call.arguments.clone() } else { json!({}) },
-                    })),
-                    _ => None,
-                }).collect();
-                append(&mut messages, "assistant", content);
+                append(
+                    &mut messages,
+                    "assistant",
+                    assistant_content(message, &request.model),
+                );
             }
         }
     }
-    let first_text = messages
-        .iter()
-        .find(|m| m["role"] == "user")
-        .and_then(|m| m["content"].as_array())
-        .and_then(|c| c.iter().find(|b| b["type"] == "text"))
-        .and_then(|b| b["text"].as_str());
-    let mut system = Vec::new();
-    if let Some(text) = first_text.filter(|s| !s.is_empty()) {
-        system.push(json!({"type": "text", "text": billing_header(text)}));
+    build_params(request, messages)
+}
+
+pub(super) fn cache_tail(body: &mut Value) {
+    if let Some(last) = body["messages"]
+        .as_array_mut()
+        .and_then(|m| m.last_mut())
+        .filter(|m| m["role"] == "user")
+        && let Some(block) = last["content"].as_array_mut().and_then(|c| c.last_mut())
+    {
+        block["cache_control"] = json!({"type": "ephemeral"});
     }
+}
+
+fn assistant_content(message: &AssistantMessage, model: &str) -> Vec<Value> {
+    let same_model = message.provider == ID && message.model == model;
+    message
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            AssistantContent::Text { text, .. } if !text.is_empty() => {
+                Some(json!({"type": "text", "text": text}))
+            }
+            AssistantContent::Reasoning { provider_data: Some(data), .. } if same_model => {
+                match data["type"].as_str() {
+                    Some("thinking") if data["signature"].as_str().is_some_and(|s| !s.is_empty()) => Some(data.clone()),
+                    Some("redacted_thinking") => Some(data.clone()),
+                    _ => None,
+                }
+            }
+            AssistantContent::ToolCall(call) => Some(json!({
+                "type": "tool_use", "id": call.call_id, "name": tool_name(&call.name),
+                // Arguments that were not a JSON object were never run, and the
+                // API takes only an object here.
+                "input": if call.arguments.is_object() { call.arguments.clone() } else { json!({}) },
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
+fn build_params(request: &CompletionRequest, messages: Vec<Value>) -> Result<Value> {
+    let mut system = Vec::new();
     system.push(json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}));
     if let Some(text) = request.system.as_deref().filter(|s| !s.is_empty()) {
         system.push(json!({"type": "text", "text": text}));
     }
     system.last_mut().unwrap()["cache_control"] = json!({"type": "ephemeral"});
-    if let Some(last) = messages.last_mut().filter(|m| m["role"] == "user")
-        && let Some(block) = last["content"].as_array_mut().and_then(|c| c.last_mut())
-    {
-        block["cache_control"] = json!({"type": "ephemeral"});
-    }
     let mut body = json!({
         "model": request.model,
         "messages": messages,

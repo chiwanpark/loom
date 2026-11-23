@@ -13,6 +13,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### New features
 
 - **Restart after an update.** The new `loom-agent update --restart` option restarts the running agents of the replaced binary in place. The agents keep their sessions. See [Updates](doc/install.md#agent).
+- **Anthropic message threads.** Loom sends only new messages and the billing block when it can continue a thread. If the thread expires, Loom sends the full history again. See [Model providers](doc/configuration.md#model-providers).
 
 ### Changes
 
@@ -23,6 +24,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 ### Fixes
 
 - **Updates of older agents.** The desktop app and the Android app could not update an agent that spoke an older protocol. Now they update the agents of 0.4.0 and later also when the protocol is different. The update no longer needs a connected agent. When a connection fails because the agent is older, the apps tell you how to update it.
+- **Anthropic billing version.** Loom reports Claude Code 2.1.323 by default. If Anthropic requires a higher billing version, Loom retries once with the version Anthropic names.
 
 ## 0.5.0
 

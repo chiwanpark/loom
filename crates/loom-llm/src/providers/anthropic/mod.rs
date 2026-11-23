@@ -2,6 +2,8 @@ mod auth;
 mod inference;
 mod request;
 mod stream;
+mod threads;
+mod version;
 
 use std::sync::Arc;
 
@@ -21,7 +23,6 @@ use crate::provider::{LlmProvider, ProviderId};
 use auth::{Client, Credential};
 
 pub(crate) const ID: ProviderId = ProviderId::from_static("anthropic");
-const CLAUDE_CODE_VERSION: &str = "2.1.322";
 
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +37,7 @@ struct Settings {
     #[serde(rename = "auth")]
     _auth: AuthMode,
     base_url: Option<String>,
+    message_threads: Option<bool>,
 }
 
 impl Settings {
