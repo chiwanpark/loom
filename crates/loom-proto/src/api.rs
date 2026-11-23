@@ -9,8 +9,9 @@ use crate::auth::{
 };
 use crate::relay::HostId;
 use crate::session::{
-    ContentPart, Decision, Delivery, EventWindow, MergeStrategy, PendingMessage, SequencedEvent,
-    SessionId, SessionInfo, ToolCallId, UsageSoFar, WorktreeOptions, WorktreeStatus,
+    ContentPart, Decision, Delivery, EventWindow, MergeStrategy, PendingMessage, PullRequestResult,
+    PushRepositories, RepositoryStatus, SequencedEvent, SessionId, SessionInfo, ToolCallId,
+    UsageSoFar, WorktreeOptions, WorktreeStatus,
 };
 
 pub const PROTOCOL_VERSION: u16 = 20;
@@ -486,6 +487,13 @@ pub enum Command {
         session: SessionId,
         enabled: bool,
     },
+    ListRepositories,
+    PushRepositories(PushRepositories),
+    OpenPullRequests {
+        title: String,
+        body: String,
+        draft: bool,
+    },
 }
 
 /// The most bytes in one [`Command::UploadChunk`].
@@ -623,6 +631,8 @@ pub enum Payload {
     Merged(String),
     /// The URL of a pull request.
     PullRequest(String),
+    Repositories(Vec<RepositoryStatus>),
+    PullRequests(Vec<PullRequestResult>),
 }
 
 /// Older events of a session, from [`Command::GetHistory`].

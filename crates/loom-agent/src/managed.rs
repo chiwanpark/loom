@@ -2,19 +2,23 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use loom_client::oracle_proto::{
-    AgentAddress, Bootstrap, Bundle, DeviceKey, Event, repository_directory, valid_directory,
+    AgentAddress, Bootstrap, Bundle, DeviceKey, Event, GitSetup, repository_directory,
+    valid_directory,
 };
 use loom_client::{ClientIdentity, OracleClient, OracleEndpoint, OracleEvents, pair_oracle};
 use loom_config::{AgentConfig, Dirs};
 use loom_crypto::{AuthorizedClients, HostIdentity, decode_key, encode_key};
 use loom_transport::{AccessToken, LinkState};
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
+use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
+use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
 use crate::serve::{ServeOptions, Served, Started, serve};
 
 pub const BOOTSTRAP_FILE: &str = "bootstrap.json";
@@ -196,52 +200,123 @@ async fn git(args: &[&str], dir: Option<&Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn prepare_workspace(root: &Path, bundle: &Bundle) -> anyhow::Result<PathBuf> {
-    let repository = bundle
-        .repositories
-        .first()
-        .context("the workspace has no repository")?;
-    let directory = repository
-        .directory
-        .clone()
-        .or_else(|| repository_directory(&repository.url))
-        .filter(|directory| valid_directory(directory))
-        .context("the repository has no valid directory name")?;
-    let path = root.join(&directory);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedClone {
+    pub clone: ManagedClone,
+    pub url: String,
+    pub base_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    pub root: PathBuf,
+    pub clones: Vec<PlannedClone>,
+}
+
+impl Layout {
+    pub fn managed(&self) -> Vec<ManagedClone> {
+        self.clones.iter().map(|c| c.clone.clone()).collect()
+    }
+
+    pub fn repositories(&self) -> Vec<RepositoryClone> {
+        self.clones
+            .iter()
+            .map(|c| RepositoryClone {
+                directory: c
+                    .clone
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path: c.clone.path.clone(),
+                url: c.url.clone(),
+                provider: c.clone.provider.clone(),
+                base_branch: c.base_branch.clone(),
+            })
+            .collect()
+    }
+}
+
+pub fn layout(workspaces_root: &Path, bundle: &Bundle) -> anyhow::Result<Layout> {
+    if bundle.repositories.is_empty() {
+        bail!("the workspace has no repository");
+    }
+    let root = if bundle.repositories.len() == 1 {
+        None
+    } else if valid_directory(&bundle.workspace) {
+        Some(workspaces_root.join(&bundle.workspace))
+    } else {
+        bail!("{:?} is not a valid directory name", bundle.workspace);
+    };
+    let mut clones: Vec<PlannedClone> = Vec::new();
+    for repository in &bundle.repositories {
+        let directory = repository
+            .directory
+            .clone()
+            .or_else(|| repository_directory(&repository.url))
+            .filter(|directory| valid_directory(directory))
+            .with_context(|| format!("{} has no valid directory name", repository.url))?;
+        let path = root.as_deref().unwrap_or(workspaces_root).join(&directory);
+        if clones.iter().any(|c| c.clone.path == path) {
+            bail!("two repositories have the directory {directory}");
+        }
+        clones.push(PlannedClone {
+            clone: ManagedClone {
+                path,
+                provider: repository.provider.clone(),
+            },
+            url: repository.url.clone(),
+            base_branch: repository.base_branch.clone(),
+        });
+    }
+    let root = root.unwrap_or_else(|| clones[0].clone.path.clone());
+    Ok(Layout { root, clones })
+}
+
+async fn prepare_clone(planned: &PlannedClone, branch: &str) -> anyhow::Result<()> {
+    let path = &planned.clone.path;
     if path.join(".git").exists() {
-        return Ok(path);
+        return Ok(());
     }
     if path.exists() {
         bail!("{} is there already, but it is not a clone", path.display());
     }
-    std::fs::create_dir_all(root).with_context(|| format!("cannot make {}", root.display()))?;
-    let partial = root.join(format!(".{directory}.partial"));
+    let parent = path.parent().context("a clone has no parent directory")?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("a clone has no directory name")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("cannot make {}", parent.display()))?;
+    let partial = parent.join(format!(".{name}.partial"));
     if partial.exists() {
         std::fs::remove_dir_all(&partial)
             .with_context(|| format!("cannot remove {}", partial.display()))?;
     }
     let partial_text = partial.to_string_lossy().into_owned();
     let mut args = vec!["clone", "--quiet"];
-    if let Some(branch) = &repository.base_branch {
+    if let Some(branch) = &planned.base_branch {
         args.extend(["--branch", branch]);
     }
-    args.extend(["--", &repository.url, &partial_text]);
-    git(&args, None).await?;
-    git(&["switch", "--quiet", "-c", &bundle.branch], Some(&partial)).await?;
-    std::fs::rename(&partial, &path)
+    args.extend(["--", &planned.url, &partial_text]);
+    git(&args, None)
+        .await
+        .with_context(|| format!("cannot clone {}", planned.url))?;
+    git(&["switch", "--quiet", "-c", branch], Some(&partial)).await?;
+    git(
+        &["config", "--local", "push.autoSetupRemote", "true"],
+        Some(&partial),
+    )
+    .await?;
+    std::fs::rename(&partial, path)
         .with_context(|| format!("cannot move the clone to {}", path.display()))?;
-    Ok(path)
+    Ok(())
 }
 
-async fn refresh_devices(client: &OracleClient, data_dir: &Path) {
-    match client.bundle().await {
-        Ok(bundle) => match sync_devices(data_dir, &bundle.devices) {
-            Ok(true) => tracing::info!(devices = bundle.devices.len(), "updated the devices"),
-            Ok(false) => {}
-            Err(err) => tracing::error!(error = %err, "cannot write the devices"),
-        },
-        Err(err) => tracing::warn!(error = %err, "cannot read the devices from the oracle"),
+pub async fn prepare_clones(layout: &Layout, branch: &str) -> anyhow::Result<()> {
+    for planned in &layout.clones {
+        prepare_clone(planned, branch).await?;
     }
+    Ok(())
 }
 
 struct Link {
@@ -249,9 +324,39 @@ struct Link {
     identity: ClientIdentity,
     data_dir: PathBuf,
     address: AgentAddress,
+    git: GitPaths,
+    clones: Vec<ManagedClone>,
+    clients: watch::Sender<OracleClient>,
+    setup: watch::Sender<GitSetup>,
 }
 
 impl Link {
+    async fn refresh(&mut self, client: &OracleClient) {
+        let bundle = match client.bundle().await {
+            Ok(bundle) => bundle,
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot read the bundle from the oracle");
+                return;
+            }
+        };
+        match sync_devices(&self.data_dir, &bundle.devices) {
+            Ok(true) => tracing::info!(devices = bundle.devices.len(), "updated the devices"),
+            Ok(false) => {}
+            Err(err) => tracing::error!(error = %err, "cannot write the devices"),
+        }
+        if bundle.git != *self.setup.borrow() {
+            match apply_all(&self.git, &bundle.git, &self.clones).await {
+                Ok(()) => {
+                    tracing::info!("updated the Git setup");
+                    self.setup.send_replace(bundle.git);
+                }
+                Err(err) => {
+                    tracing::error!(error = %format!("{err:#}"), "cannot update the Git setup")
+                }
+            }
+        }
+    }
+
     async fn run(
         mut self,
         mut client: OracleClient,
@@ -280,8 +385,11 @@ impl Link {
                 Err(err) => tracing::warn!(error = %err, "cannot report to the oracle"),
             }
             while let Some(event) = events.recv().await {
-                if matches!(event, Event::DeviceKeysChanged | Event::EventsLost) {
-                    refresh_devices(&client, &self.data_dir).await;
+                if matches!(
+                    event,
+                    Event::DeviceKeysChanged | Event::GitChanged | Event::EventsLost
+                ) {
+                    self.refresh(&client).await;
                 }
             }
             tracing::warn!("lost the connection to the oracle");
@@ -290,7 +398,8 @@ impl Link {
             if let Err(err) = client.subscribe().await {
                 tracing::warn!(error = %err, "cannot subscribe to the oracle");
             }
-            refresh_devices(&client, &self.data_dir).await;
+            self.clients.send_replace(client.clone());
+            self.refresh(&client).await;
         }
     }
 }
@@ -330,27 +439,57 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
     client.subscribe().await?;
     let bundle = client.bundle().await.context("cannot get the bundle")?;
     sync_devices(&data_dir, &bundle.devices)?;
-    let _ = client.codespace_progress("clone").await;
-    let workspace = match prepare_workspace(&state.workspaces_root, &bundle).await {
-        Ok(workspace) => workspace,
+    let git = GitPaths::new(&data_dir, &dirs.config_home)?;
+    let (clients, client_watch) = watch::channel(client.clone());
+    let helper = serve_credentials(&git, client_watch.clone())?;
+    let layout = match layout(&state.workspaces_root, &bundle) {
+        Ok(layout) => layout,
         Err(err) => {
             let message = format!("{err:#}");
-            tracing::error!(error = %message, "cannot prepare the workspace");
+            tracing::error!(error = %message, "cannot plan the clones");
             client.codespace_failed(&message).await?;
             return Ok(Served::Exit(0));
         }
     };
+    let clones = layout.managed();
+    let _ = client.codespace_progress("clone").await;
+    let prepared = async {
+        crate::codespace_git::apply(&git, &bundle.git)
+            .await
+            .context("cannot set up Git")?;
+        prepare_clones(&layout, &bundle.branch).await?;
+        apply_all(&git, &bundle.git, &clones)
+            .await
+            .context("cannot set up Git")
+    };
+    if let Err(err) = prepared.await {
+        let message = format!("{err:#}");
+        tracing::error!(error = %message, "cannot prepare the workspace");
+        client.codespace_failed(&message).await?;
+        helper.abort();
+        return Ok(Served::Exit(0));
+    }
+    let workspace = layout.root.clone();
     let _ = client.codespace_progress("agent").await;
     config.relay.enabled = true;
     config.relay.url = Some(bundle.relay_url.clone());
     config.allowed_roots = vec![state.workspaces_root.clone()];
     config.lifecycle.default_workspace = Some(workspace.clone());
+    std::fs::create_dir_all(&workspace)
+        .with_context(|| format!("cannot make {}", workspace.display()))?;
+    let (setup, setup_watch) = watch::channel(bundle.git.clone());
+    let repositories =
+        CodespaceRepositories::new(layout.repositories(), setup_watch, client_watch, &git.dir)?;
     let (ready, started) = oneshot::channel();
     let link = Link {
         endpoint,
         identity,
         data_dir,
         address,
+        git,
+        clones,
+        clients,
+        setup,
     };
     let task = tokio::spawn(link.run(client, events, started));
     let served = serve(ServeOptions {
@@ -359,9 +498,11 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         config,
         dirs,
         ready: Some(ready),
+        repositories: Some(Arc::new(repositories)),
     })
     .await;
     task.abort();
+    helper.abort();
     served
 }
 
@@ -432,7 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_workspace_is_a_clone_on_the_branch_of_the_codespace() {
+    async fn each_repository_is_a_clone_on_the_branch_of_the_codespace() {
         let dir = tempfile::tempdir().unwrap();
         let origin = dir.path().join("origin");
         std::fs::create_dir_all(&origin).unwrap();
@@ -441,29 +582,61 @@ mod tests {
         run(&origin, &["add", "README.md"]).await;
         run(&origin, &["commit", "--quiet", "-m", "first"]).await;
         let root = dir.path().join("workspaces");
-        let bundle = Bundle {
+        let mut bundle = Bundle {
             codespace: "c1".into(),
             workspace: "acme".into(),
             branch: "loom/c1".into(),
             repositories: vec![Repository {
                 url: origin.to_string_lossy().into_owned(),
+                provider: None,
                 directory: Some("server".into()),
                 base_branch: Some("main".into()),
             }],
             devices: Vec::new(),
             relay_url: "ws://127.0.0.1:1".into(),
+            preset: None,
+            git: Default::default(),
         };
-        let path = prepare_workspace(&root, &bundle).await.unwrap();
-        assert_eq!(path, root.join("server"));
+        let single = layout(&root, &bundle).unwrap();
+        assert_eq!(single.root, root.join("server"));
+        prepare_clones(&single, &bundle.branch).await.unwrap();
+        let path = &single.root;
         assert!(path.join("README.md").exists());
         let head = std::fs::read_to_string(path.join(".git/HEAD")).unwrap();
         assert_eq!(head.trim(), "ref: refs/heads/loom/c1");
-        assert_eq!(prepare_workspace(&root, &bundle).await.unwrap(), path);
+        prepare_clones(&single, &bundle.branch).await.unwrap();
+
+        let mut second = bundle.repositories[0].clone();
+        second.directory = Some("client".into());
+        second.provider = Some("ghe".into());
+        bundle.repositories.push(second);
+        let double = layout(&root, &bundle).unwrap();
+        assert_eq!(double.root, root.join("acme"));
+        assert_eq!(
+            double.managed(),
+            vec![
+                ManagedClone {
+                    path: root.join("acme/server"),
+                    provider: None,
+                },
+                ManagedClone {
+                    path: root.join("acme/client"),
+                    provider: Some("ghe".into()),
+                },
+            ]
+        );
+        prepare_clones(&double, &bundle.branch).await.unwrap();
+        assert!(root.join("acme/client/README.md").exists());
+        let mut same = bundle.clone();
+        same.repositories[1].directory = Some("server".into());
+        assert!(layout(&root, &same).is_err());
 
         let mut missing = bundle.clone();
+        missing.repositories.truncate(1);
         missing.repositories[0].directory = Some("other".into());
         missing.repositories[0].url = dir.path().join("nothing").to_string_lossy().into_owned();
-        let err = prepare_workspace(&root, &missing).await.unwrap_err();
+        let planned = layout(&root, &missing).unwrap();
+        let err = prepare_clones(&planned, &missing.branch).await.unwrap_err();
         assert!(format!("{err:#}").contains("git clone failed"), "{err:#}");
         assert!(!root.join("other").exists());
     }

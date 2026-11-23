@@ -9,6 +9,11 @@ agent:
   path: ~/bin/loom-agent
 rules:
   max_codespaces: 8
+  directories:
+  - /srv/projects
+  host_user:
+    uid: 1000
+    gid: 1000
 report_interval: 2m
 logging:
   level: info

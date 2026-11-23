@@ -647,6 +647,7 @@ async fn hosts_make_codespaces_whose_agents_report_to_the_oracle() {
 
     let repository = Repository {
         url: "https://github.com/acme/server.git".into(),
+        provider: None,
         directory: None,
         base_branch: None,
     };

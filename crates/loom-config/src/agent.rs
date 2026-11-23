@@ -29,6 +29,8 @@ pub struct AgentConfig {
     pub environment: EnvironmentConfig,
     #[serde(skip_serializing_if = "WorktreesConfig::is_default")]
     pub worktrees: WorktreesConfig,
+    #[serde(skip_serializing_if = "GitConfig::is_default")]
+    pub git: GitConfig,
     pub sandbox: SandboxConfig,
     pub context: ContextConfig,
     pub limits: LimitsConfig,
@@ -53,6 +55,7 @@ impl Default for AgentConfig {
             policy: PolicyConfig::default(),
             environment: EnvironmentConfig::default(),
             worktrees: WorktreesConfig::default(),
+            git: GitConfig::default(),
             sandbox: SandboxConfig::default(),
             context: ContextConfig::default(),
             limits: LimitsConfig::default(),
@@ -491,6 +494,19 @@ pub struct WorktreesConfig {
 }
 
 impl WorktreesConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct GitConfig {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<String>,
+}
+
+impl GitConfig {
     fn is_default(&self) -> bool {
         *self == Self::default()
     }

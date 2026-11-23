@@ -1,8 +1,12 @@
-use loom_oracle_proto::{AgentAddress, CodespaceState, Environment, HostReport, Repository, Role};
+use loom_oracle_proto::{
+    AgentAddress, CodespaceState, Environment, HostReport, InstanceVolume, Repository, Role,
+    WorkspaceVolume,
+};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::volumes::{put_codespace_volumes, put_workspace_volumes, workspace_volumes};
 use super::{
     PEER_COLUMNS, PeerRow, Store, StoreError, StoreResult, now_unix, peer_row, to_i64, to_u64,
 };
@@ -22,6 +26,7 @@ pub struct WorkspaceRow {
     pub host: u64,
     pub host_name: String,
     pub repositories: Vec<Repository>,
+    pub volumes: Vec<WorkspaceVolume>,
     pub created_at: u64,
 }
 
@@ -32,6 +37,8 @@ pub struct CodespaceRow {
     pub workspace_name: String,
     pub host: u64,
     pub host_name: String,
+    pub preset: Option<u64>,
+    pub preset_name: Option<String>,
     pub peer: Option<u64>,
     pub state: CodespaceState,
     pub cpus: u32,
@@ -39,6 +46,7 @@ pub struct CodespaceRow {
     pub instance: String,
     pub branch: String,
     pub base_branch: Option<String>,
+    pub repositories: Vec<Repository>,
     pub client_version: Option<String>,
     pub agent: Option<AgentAddress>,
     pub step: Option<String>,
@@ -142,10 +150,11 @@ fn host_row((peer, report, reported_at, environment): RawHost) -> StoreResult<Ho
 
 const CODESPACE_SELECT: &str = "SELECT c.id, c.workspace, w.name, c.host, p.label, c.peer, \
      c.state, c.cpus, c.memory_mib, c.instance, c.branch, c.base_branch, c.client_version, \
-     c.agent, c.step, c.error, c.created_at, c.updated_at \
-     FROM codespaces c JOIN workspaces w ON w.id = c.workspace JOIN peers p ON p.id = c.host";
+     c.agent, c.step, c.error, c.created_at, c.updated_at, c.preset, s.name, c.repositories \
+     FROM codespaces c JOIN workspaces w ON w.id = c.workspace JOIN peers p ON p.id = c.host \
+     LEFT JOIN presets s ON s.id = c.preset";
 
-type RawCodespace = (CodespaceRow, Option<String>);
+type RawCodespace = (CodespaceRow, Option<String>, String);
 
 fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
     Ok((
@@ -155,6 +164,8 @@ fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
             workspace_name: row.get(2)?,
             host: to_u64(row.get(3)?),
             host_name: row.get(4)?,
+            preset: row.get::<_, Option<i64>>(18)?.map(to_u64),
+            preset_name: row.get(19)?,
             peer: row.get::<_, Option<i64>>(5)?.map(to_u64),
             state: CodespaceState::parse(&row.get::<_, String>(6)?),
             cpus: u32::try_from(row.get::<_, i64>(7)?).unwrap_or_default(),
@@ -162,6 +173,7 @@ fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
             instance: row.get(9)?,
             branch: row.get(10)?,
             base_branch: row.get(11)?,
+            repositories: Vec::new(),
             client_version: row.get(12)?,
             agent: None,
             step: row.get(14)?,
@@ -170,31 +182,72 @@ fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
             updated_at: to_u64(row.get(17)?),
         },
         row.get(13)?,
+        row.get(20)?,
     ))
 }
 
-fn codespace_row((mut row, agent): RawCodespace) -> StoreResult<CodespaceRow> {
+fn codespace_row((mut row, agent, repositories): RawCodespace) -> StoreResult<CodespaceRow> {
     row.agent = agent
         .map(|text| from_json(&text, "codespace agent"))
         .transpose()?;
+    row.repositories = from_json(&repositories, "codespace repositories")?;
     Ok(row)
 }
 
 fn repositories(conn: &rusqlite::Connection, workspace: u64) -> StoreResult<Vec<Repository>> {
     let rows = conn
         .prepare(
-            "SELECT url, directory, base_branch FROM workspace_repositories
-             WHERE workspace = ?1 ORDER BY position",
+            "SELECT r.url, p.name, r.directory, r.base_branch FROM workspace_repositories r
+             LEFT JOIN providers p ON p.id = r.provider
+             WHERE r.workspace = ?1 ORDER BY r.position",
         )?
         .query_map([to_i64(workspace)], |row| {
             Ok(Repository {
                 url: row.get(0)?,
-                directory: Some(row.get(1)?),
-                base_branch: row.get(2)?,
+                provider: row.get(1)?,
+                directory: Some(row.get(2)?),
+                base_branch: row.get(3)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+fn put_repositories(
+    tx: &Transaction<'_>,
+    workspace: i64,
+    repositories: &[Repository],
+) -> StoreResult<()> {
+    tx.execute(
+        "DELETE FROM workspace_repositories WHERE workspace = ?1",
+        [workspace],
+    )?;
+    for (position, repository) in repositories.iter().enumerate() {
+        let provider = match &repository.provider {
+            Some(name) => Some(
+                tx.query_row("SELECT id FROM providers WHERE name = ?1", [name], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .optional()?
+                .ok_or_else(|| StoreError::Conflict(format!("there is no provider {name}")))?,
+            ),
+            None => None,
+        };
+        tx.execute(
+            "INSERT INTO workspace_repositories
+                 (workspace, position, url, provider, directory, base_branch)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                workspace,
+                position as i64,
+                repository.url,
+                provider,
+                repository.directory.as_deref().unwrap_or_default(),
+                repository.base_branch
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn open_codespaces(conn: &rusqlite::Connection, column: &str, id: u64) -> StoreResult<Vec<String>> {
@@ -279,6 +332,16 @@ impl Store {
                 open.join(", ")
             )));
         }
+        let volumes = tx
+            .prepare("SELECT v.name FROM volume_hosts h JOIN volumes v ON v.id = h.volume WHERE h.host = ?1 ORDER BY v.name")?
+            .query_map([to_i64(peer)], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !volumes.is_empty() {
+            return Err(StoreError::Conflict(format!(
+                "this host may hold the volumes {}; delete them first",
+                volumes.join(", ")
+            )));
+        }
         tx.execute("DELETE FROM codespaces WHERE host = ?1", [to_i64(peer)])?;
         let removed = tx
             .query_row(
@@ -309,6 +372,7 @@ impl Store {
                     host: to_u64(row.get(2)?),
                     host_name: row.get(3)?,
                     repositories: Vec::new(),
+                    volumes: Vec::new(),
                     created_at: to_u64(row.get(4)?),
                 })
             })?
@@ -316,6 +380,7 @@ impl Store {
         rows.into_iter()
             .map(|mut row| {
                 row.repositories = repositories(&conn, row.id)?;
+                row.volumes = workspace_volumes(&conn, row.id)?;
                 Ok(row)
             })
             .collect()
@@ -337,6 +402,7 @@ impl Store {
         name: &str,
         host: u64,
         repositories: &[Repository],
+        volumes: &[WorkspaceVolume],
     ) -> StoreResult<WorkspaceRow> {
         {
             let mut conn = self.conn();
@@ -356,23 +422,47 @@ impl Store {
                 params![name, to_i64(host), to_i64(now_unix())],
             )?;
             let id = tx.last_insert_rowid();
-            for (position, repository) in repositories.iter().enumerate() {
-                tx.execute(
-                    "INSERT INTO workspace_repositories (workspace, position, url, directory, base_branch)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        id,
-                        position as i64,
-                        repository.url,
-                        repository.directory.as_deref().unwrap_or_default(),
-                        repository.base_branch
-                    ],
-                )?;
-            }
+            put_repositories(&tx, id, repositories)?;
+            put_workspace_volumes(&tx, id, volumes)?;
             tx.commit()?;
         }
         self.workspace_by_name(name)?
             .ok_or(StoreError::Malformed("new workspace"))
+    }
+
+    pub fn update_workspace(
+        &self,
+        name: &str,
+        host: Option<u64>,
+        repositories: Option<&[Repository]>,
+        volumes: Option<&[WorkspaceVolume]>,
+    ) -> StoreResult<Option<WorkspaceRow>> {
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let Some(id) = tx
+                .query_row("SELECT id FROM workspaces WHERE name = ?1", [name], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            if let Some(host) = host {
+                tx.execute(
+                    "UPDATE workspaces SET host = ?1 WHERE id = ?2",
+                    params![to_i64(host), id],
+                )?;
+            }
+            if let Some(repositories) = repositories {
+                put_repositories(&tx, id, repositories)?;
+            }
+            if let Some(volumes) = volumes {
+                put_workspace_volumes(&tx, id, volumes)?;
+            }
+            tx.commit()?;
+        }
+        self.workspace_by_name(name)
     }
 
     pub fn delete_workspace(&self, name: &str) -> StoreResult<bool> {
@@ -445,11 +535,18 @@ impl Store {
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
-    pub fn insert_codespace(&self, row: &CodespaceRow) -> StoreResult<()> {
-        self.conn().execute(
+    pub fn insert_codespace(
+        &self,
+        row: &CodespaceRow,
+        volumes: &[InstanceVolume],
+    ) -> StoreResult<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO codespaces (id, workspace, host, peer, state, cpus, memory_mib, instance,
-                 branch, base_branch, client_version, agent, step, error, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 branch, base_branch, client_version, agent, step, error, created_at, updated_at,
+                 preset, repositories)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 row.id,
                 to_i64(row.workspace),
@@ -467,8 +564,12 @@ impl Store {
                 row.error,
                 to_i64(row.created_at),
                 to_i64(row.updated_at),
+                row.preset.map(to_i64),
+                to_json(&row.repositories),
             ],
         )?;
+        put_codespace_volumes(&tx, &row.id, row.host, volumes)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -519,6 +620,8 @@ mod tests {
             workspace_name: workspace.name.clone(),
             host: workspace.host,
             host_name: workspace.host_name.clone(),
+            preset: None,
+            preset_name: None,
             peer: None,
             state: CodespaceState::Provisioning,
             cpus: 2,
@@ -526,6 +629,7 @@ mod tests {
             instance: format!("loom-{id}"),
             branch: format!("loom/{id}"),
             base_branch: None,
+            repositories: workspace.repositories.clone(),
             client_version: Some("0.5.0".into()),
             agent: None,
             step: None,
@@ -581,25 +685,50 @@ mod tests {
         let (host, _) = store.add_peer(Role::Host, "box", &[1; 32], None).unwrap();
         let repository = Repository {
             url: "https://github.com/acme/server.git".into(),
+            provider: None,
             directory: Some("server".into()),
             base_branch: Some("main".into()),
         };
         let workspace = store
-            .create_workspace("acme", host.id, std::slice::from_ref(&repository))
+            .create_workspace("acme", host.id, std::slice::from_ref(&repository), &[])
             .unwrap();
         assert_eq!(workspace.repositories, vec![repository.clone()]);
         assert_eq!(workspace.host_name, "box");
         assert!(matches!(
-            store.create_workspace("acme", host.id, &[]),
+            store.create_workspace("acme", host.id, &[], &[]),
             Err(StoreError::Conflict(_))
         ));
         assert!(matches!(
             store.remove_host(host.id),
             Err(StoreError::Conflict(_))
         ));
+        let two = [
+            repository.clone(),
+            Repository {
+                url: "https://github.com/acme/client.git".into(),
+                directory: Some("client".into()),
+                ..repository.clone()
+            },
+        ];
+        let changed = store
+            .update_workspace("acme", Some(host.id), Some(&two), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.repositories, two.to_vec());
+        assert!(
+            store
+                .update_workspace("none", None, None, None)
+                .unwrap()
+                .is_none()
+        );
+        let workspace = store
+            .update_workspace("acme", None, Some(std::slice::from_ref(&repository)), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace.repositories, vec![repository.clone()]);
 
         let mut row = codespace("c1", &workspace);
-        store.insert_codespace(&row).unwrap();
+        store.insert_codespace(&row, &[]).unwrap();
         assert_eq!(store.codespace("c1").unwrap().unwrap(), row);
         assert_eq!(store.count_open_codespaces(host.id).unwrap(), 1);
         assert!(matches!(

@@ -1,16 +1,21 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
-use loom_client::oracle_proto::{Bootstrap, CreateInstance, Environment, InstanceReport};
-use loom_incus::{Exec, FileOwner, Incus, IncusError, Project, StateAction};
+use loom_client::oracle_proto::{
+    Bootstrap, CreateInstance, Environment, InstanceReport, InstanceVolume, VolumeKind,
+};
+use loom_config::HostRules;
+use loom_incus::{Exec, FileOwner, Incus, IncusError, Project, StateAction, StoragePool};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::driver::{
     Agent, CheckItem, CheckStatus, Driver, DriverReport, Progress, valid_instance,
 };
+use crate::volumes::{DEV_GID, DEV_UID, idmap, incus_volume, prepare_mounts};
 
 pub const KEY_ORACLE: &str = "user.loom.oracle";
 pub const KEY_CODESPACE: &str = "user.loom.codespace";
@@ -37,7 +42,63 @@ pub struct IncusDriver {
     incus: Incus,
     pool: String,
     network: String,
+    rules: HostRules,
     build: tokio::sync::Mutex<()>,
+    volumes: tokio::sync::Mutex<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupResult {
+    Created,
+    Updated(Vec<String>),
+    Unchanged,
+}
+
+fn subordinate_entry(file: &str, id: u32) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let parts: Vec<&str> = line.trim().split(':').collect();
+        let [user, start, count] = parts[..] else {
+            return false;
+        };
+        let (Ok(start), Ok(count)) = (start.parse::<u64>(), count.parse::<u64>()) else {
+            return false;
+        };
+        user == "root" && start <= u64::from(id) && u64::from(id) < start + count
+    })
+}
+
+fn project_quotas(source: &Path, mountinfo: &str) -> Option<bool> {
+    let (_, options) = mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            let mount_point = mount
+                .split_whitespace()
+                .nth(4)?
+                .replace("\\040", " ")
+                .replace("\\011", "\t")
+                .replace("\\012", "\n")
+                .replace("\\134", "\\");
+            let mount_point = Path::new(&mount_point);
+            let depth = mount_point.components().count();
+            let options = filesystem.split_whitespace().nth(2)?;
+            source.starts_with(mount_point).then_some((depth, options))
+        })
+        .max_by_key(|(depth, _)| *depth)?;
+    Some(
+        options
+            .split(',')
+            .any(|opt| matches!(opt, "prjquota" | "pquota")),
+    )
+}
+
+fn local_project_quotas(pool: &StoragePool) -> Option<bool> {
+    let path = std::fs::canonicalize(pool.config.as_ref()?.get("source")?).ok()?;
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    project_quotas(&path, &mountinfo)
 }
 
 pub fn image_source(base: &str) -> anyhow::Result<Value> {
@@ -103,12 +164,14 @@ fn incus_error(err: IncusError) -> anyhow::Error {
 }
 
 impl IncusDriver {
-    pub fn new(incus: Incus, pool: String, network: String) -> Self {
+    pub fn new(incus: Incus, pool: String, network: String, rules: HostRules) -> Self {
         Self {
             incus,
             pool,
             network,
+            rules,
             build: tokio::sync::Mutex::new(()),
+            volumes: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -116,11 +179,81 @@ impl IncusDriver {
         &self.incus
     }
 
-    fn devices(&self) -> Value {
+    fn base_devices(&self) -> Value {
         json!({
             "root": {"type": "disk", "path": "/", "pool": self.pool},
             "eth0": {"type": "nic", "name": "eth0", "network": self.network},
         })
+    }
+
+    fn devices(&self, volumes: &[InstanceVolume]) -> anyhow::Result<Value> {
+        let mut devices = self.base_devices();
+        for (index, volume) in volumes.iter().enumerate() {
+            let device = match (volume.kind, &volume.source) {
+                (VolumeKind::Incus, None) => json!({
+                    "type": "disk",
+                    "pool": self.pool,
+                    "source": incus_volume(&volume.name)?,
+                    "path": volume.path,
+                }),
+                (VolumeKind::Directory, Some(source)) => json!({
+                    "type": "disk",
+                    "source": source,
+                    "path": volume.path,
+                }),
+                _ => bail!("the volume {} has an unknown kind", volume.name),
+            };
+            let mut device = device;
+            if volume.read_only {
+                device["readonly"] = Value::String("true".into());
+            }
+            devices[format!("volume{index}")] = device;
+        }
+        Ok(devices)
+    }
+
+    async fn ensure_volumes(
+        &self,
+        oracle: &str,
+        volumes: &[InstanceVolume],
+        progress: &Progress,
+    ) -> anyhow::Result<()> {
+        for volume in volumes.iter().filter(|v| v.kind == VolumeKind::Incus) {
+            let name = incus_volume(&volume.name)?;
+            match self
+                .incus
+                .storage_volume(&self.pool, &name)
+                .await
+                .map_err(incus_error)?
+            {
+                Some(found) => {
+                    let owner = found.config.get(KEY_ORACLE).map(String::as_str);
+                    if owner != Some(oracle) {
+                        bail!(
+                            "the storage volume {name} exists already, but it does not belong to this oracle"
+                        );
+                    }
+                }
+                None => {
+                    progress.step("volume");
+                    let mut config = BTreeMap::from([
+                        (KEY_ORACLE.to_owned(), oracle.to_owned()),
+                        ("initial.uid".to_owned(), DEV_UID.to_string()),
+                        ("initial.gid".to_owned(), DEV_GID.to_string()),
+                        ("initial.mode".to_owned(), "0755".to_owned()),
+                    ]);
+                    if let Some(size) = volume.size_mib {
+                        config.insert("size".to_owned(), format!("{size}MiB"));
+                    }
+                    self.incus
+                        .create_storage_volume(&self.pool, &name, &config)
+                        .await
+                        .map_err(incus_error)
+                        .with_context(|| format!("cannot create the storage volume {name}"))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn remove(&self, name: &str) -> anyhow::Result<()> {
@@ -313,7 +446,7 @@ impl IncusDriver {
                 KEY_ORACLE: oracle,
                 KEY_BUILD: hash,
             },
-            "devices": self.devices(),
+            "devices": self.base_devices(),
             "profiles": [],
         });
         self.incus
@@ -368,18 +501,51 @@ impl IncusDriver {
         Ok(alias)
     }
 
-    pub async fn setup_project(&self) -> anyhow::Result<bool> {
+    fn volume_keys(&self) -> BTreeMap<String, String> {
+        let mut keys = BTreeMap::new();
+        if !self.rules.directories.is_empty() {
+            let paths: Vec<String> = self
+                .rules
+                .directories
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            keys.insert("restricted.devices.disk".to_owned(), "allow".to_owned());
+            keys.insert("restricted.devices.disk.paths".to_owned(), paths.join(","));
+        }
+        if let Some(user) = self.rules.host_user {
+            keys.insert("restricted.idmap.uid".to_owned(), user.uid.to_string());
+            keys.insert("restricted.idmap.gid".to_owned(), user.gid.to_string());
+        }
+        keys
+    }
+
+    pub async fn setup_project(&self) -> anyhow::Result<SetupResult> {
         let project = self
             .incus
             .project()
             .context("set incus.project in host.yaml")?
             .to_owned();
+        let keys = self.volume_keys();
         match self.incus.project_info(&project).await {
-            Ok(_) => return Ok(false),
+            Ok(info) => {
+                let missing: BTreeMap<String, String> = keys
+                    .into_iter()
+                    .filter(|(key, value)| info.config.get(key) != Some(value))
+                    .collect();
+                if missing.is_empty() {
+                    return Ok(SetupResult::Unchanged);
+                }
+                self.incus
+                    .update_project(&project, &missing)
+                    .await
+                    .map_err(incus_error)?;
+                return Ok(SetupResult::Updated(missing.into_keys().collect()));
+            }
             Err(err) if err.is_not_found() => {}
             Err(err) => return Err(incus_error(err)),
         }
-        let config = BTreeMap::from([
+        let mut config = BTreeMap::from([
             ("features.images".to_owned(), "true".to_owned()),
             ("features.profiles".to_owned(), "true".to_owned()),
             ("features.storage.volumes".to_owned(), "true".to_owned()),
@@ -393,6 +559,7 @@ impl IncusDriver {
                 self.network.clone(),
             ),
         ]);
+        config.extend(keys);
         self.incus
             .create_project(&Project {
                 name: project,
@@ -401,7 +568,97 @@ impl IncusDriver {
             })
             .await
             .map_err(incus_error)?;
-        Ok(true)
+        Ok(SetupResult::Created)
+    }
+
+    fn check_volumes(
+        &self,
+        project: Option<&BTreeMap<String, String>>,
+        pool: Option<&StoragePool>,
+        initial_owner: bool,
+    ) -> CheckItem {
+        let mut problems = Vec::new();
+        let mut notes = Vec::new();
+        if let Some(config) = project
+            && config.get("restricted").map(String::as_str) == Some("true")
+        {
+            let missing: Vec<String> = self
+                .volume_keys()
+                .into_iter()
+                .filter(|(key, value)| config.get(key) != Some(value))
+                .map(|(key, _)| key)
+                .collect();
+            if !missing.is_empty() {
+                problems.push(format!(
+                    "the project lacks {}; run `loom-host setup`",
+                    missing.join(", ")
+                ));
+            }
+            if config.get("features.storage.volumes").map(String::as_str) != Some("true") {
+                problems.push("set features.storage.volumes=true for this project".to_owned());
+            }
+        }
+        if let Some(user) = self.rules.host_user {
+            if self.incus.is_local() {
+                for (file, id) in [("/etc/subuid", user.uid), ("/etc/subgid", user.gid)] {
+                    if !subordinate_entry(file, id) {
+                        problems.push(format!("add root:{id}:1 to {file}, then restart Incus"));
+                    }
+                }
+            } else {
+                notes.push("cannot check /etc/subuid and /etc/subgid of a remote Incus".to_owned());
+            }
+        }
+        for directory in &self.rules.directories {
+            if !self.incus.is_local() {
+                problems.push("host directories need the local Incus socket".to_owned());
+                break;
+            }
+            if let Err(err) =
+                crate::volumes::host_directory(&self.rules, &directory.to_string_lossy())
+            {
+                problems.push(err);
+            }
+        }
+        if !self.rules.directories.is_empty() && self.rules.host_user.is_none() {
+            problems.push("set rules.host_user to mount host directories".to_owned());
+        }
+        if !initial_owner {
+            notes.push("Incus does not advertise storage_initial_owner; update Incus to use custom volumes".to_owned());
+        }
+        match pool.map(|pool| pool.driver.as_str()) {
+            Some("dir") => {
+                let quotas = pool
+                    .filter(|_| self.incus.is_local())
+                    .and_then(local_project_quotas);
+                notes.push(match quotas {
+                    Some(true) => "project quotas detected on the dir pool filesystem",
+                    Some(false) => "no project quotas detected on the dir pool filesystem; size limits may not apply",
+                    None => "cannot check project quotas of the dir pool; size limits require project quotas",
+                }.to_owned());
+            }
+            Some("zfs" | "btrfs" | "lvm") => {
+                notes.push("the pool supports volume size limits".to_owned())
+            }
+            None => {}
+            Some(other) => notes.push(format!("the {other} pool may not limit sizes")),
+        }
+        if problems.is_empty() {
+            let mut detail = if self.rules.directories.is_empty() {
+                "Incus volumes".to_owned()
+            } else {
+                format!(
+                    "Incus volumes and host directories ({} roots)",
+                    self.rules.directories.len()
+                )
+            };
+            for note in notes {
+                detail.push_str(&format!("; {note}"));
+            }
+            CheckItem::new("volumes", CheckStatus::Ok, detail)
+        } else {
+            CheckItem::new("volumes", CheckStatus::Failed, problems.join("; "))
+        }
     }
 
     async fn check_docker(&self, items: &mut Vec<CheckItem>) {
@@ -440,7 +697,7 @@ impl IncusDriver {
             "type": "container",
             "source": {"type": "image", "alias": alias},
             "config": {"security.nesting": "true"},
-            "devices": self.devices(),
+            "devices": self.base_devices(),
             "profiles": [],
         });
         let result = async {
@@ -530,9 +787,13 @@ impl Driver for IncusDriver {
         {
             bail!("the instance {} exists already", request.instance);
         }
+        let volumes = prepare_mounts(&self.rules, self.local(), &request.volumes)?;
         let alias = self
             .ensure_image(&request.environment, oracle, progress)
             .await?;
+        let devices = self.devices(&volumes)?;
+        let volume_guard = self.volumes.lock().await;
+        self.ensure_volumes(oracle, &volumes, progress).await?;
         progress.step("instance");
         let mut config = json!({
             "limits.cpu": request.cpus.to_string(),
@@ -544,12 +805,15 @@ impl Driver for IncusDriver {
         if let Some(version) = &agent.version {
             config["user.loom.agent_version"] = Value::String(version.clone());
         }
+        if let Some(user) = self.rules.host_user {
+            config["raw.idmap"] = Value::String(idmap(user));
+        }
         let body = json!({
             "name": request.instance,
             "type": "container",
             "source": {"type": "image", "alias": alias},
             "config": config,
-            "devices": self.devices(),
+            "devices": devices,
             "profiles": [],
         });
         self.incus
@@ -557,6 +821,7 @@ impl Driver for IncusDriver {
             .await
             .map_err(incus_error)
             .context("cannot create the instance")?;
+        drop(volume_guard);
         progress.step("agent");
         let binary = tokio::fs::read(&agent.path)
             .await
@@ -638,20 +903,54 @@ impl Driver for IncusDriver {
             .collect())
     }
 
+    fn local(&self) -> bool {
+        self.incus.is_local()
+    }
+
+    async fn delete_volume(&self, oracle: &str, volume: &str) -> anyhow::Result<()> {
+        let _volume_guard = self.volumes.lock().await;
+        let name = incus_volume(volume)?;
+        let Some(found) = self
+            .incus
+            .storage_volume(&self.pool, &name)
+            .await
+            .map_err(incus_error)?
+        else {
+            return Ok(());
+        };
+        if found.config.get(KEY_ORACLE).map(String::as_str) != Some(oracle) {
+            bail!("the storage volume {name} does not belong to this oracle");
+        }
+        if !found.used_by.is_empty() {
+            bail!(
+                "the storage volume {name} is in use by {}",
+                found.used_by.join(", ")
+            );
+        }
+        self.incus
+            .delete_storage_volume(&self.pool, &name)
+            .await
+            .map_err(incus_error)
+            .with_context(|| format!("cannot delete the storage volume {name}"))
+    }
+
     async fn check(&self, deep: bool) -> Vec<CheckItem> {
         let mut items = Vec::new();
         let target = self.incus.target();
-        match self.incus.server().await {
-            Ok(server) if server.auth == "trusted" => items.push(CheckItem::new(
-                "incus",
-                CheckStatus::Ok,
-                format!(
-                    "{target}: Incus {} on {} {}",
-                    server.environment.server_version,
-                    server.environment.kernel_architecture,
-                    server.environment.kernel_version
-                ),
-            )),
+        let server = match self.incus.server().await {
+            Ok(server) if server.auth == "trusted" => {
+                items.push(CheckItem::new(
+                    "incus",
+                    CheckStatus::Ok,
+                    format!(
+                        "{target}: Incus {} on {} {}",
+                        server.environment.server_version,
+                        server.environment.kernel_architecture,
+                        server.environment.kernel_version
+                    ),
+                ));
+                server
+            }
             Ok(_) => {
                 items.push(CheckItem::new(
                     "incus",
@@ -668,10 +967,12 @@ impl Driver for IncusDriver {
                 ));
                 return items;
             }
-        }
+        };
         let project = self.incus.project().unwrap_or("default").to_owned();
+        let mut project_config = None;
         match self.incus.project_info(&project).await {
             Ok(info) => {
+                project_config = Some(info.config.clone());
                 let restricted = info.config.get("restricted").map(String::as_str) == Some("true");
                 let nesting = info
                     .config
@@ -702,6 +1003,7 @@ impl Driver for IncusDriver {
                 format!("cannot read the project {project}: {}", err.message()),
             )),
         }
+        let mut storage_pool = None;
         match self.incus.storage_pool(&self.pool).await {
             Ok(pool) => {
                 let note = match pool.driver.as_str() {
@@ -714,6 +1016,7 @@ impl Driver for IncusDriver {
                     CheckStatus::Ok,
                     format!("{} ({}){note}", pool.name, pool.driver),
                 ));
+                storage_pool = Some(pool);
             }
             Err(err) => items.push(CheckItem::new(
                 "pool",
@@ -721,6 +1024,16 @@ impl Driver for IncusDriver {
                 format!("{}: {}", self.pool, err.message()),
             )),
         }
+        items.push(
+            self.check_volumes(
+                project_config.as_ref(),
+                storage_pool.as_ref(),
+                server
+                    .api_extensions
+                    .iter()
+                    .any(|ext| ext == "storage_initial_owner"),
+            ),
+        );
         match self.incus.network(&self.network).await {
             Ok(network) => items.push(CheckItem::new(
                 "network",
@@ -764,6 +1077,26 @@ impl Driver for IncusDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dir_pool_quotas_come_from_the_mount_covering_the_pool_source() {
+        let mountinfo = "20 1 0:1 / / rw - ext4 /dev/root rw\n\
+                         21 20 0:2 / /srv/dev\\040pool rw - xfs /dev/data rw,prjquota\n\
+                         22 21 0:3 / /srv/dev\\040pool/no-quota rw - xfs /dev/dev rw,noquota\n";
+        assert_eq!(
+            project_quotas(Path::new("/srv/pool"), mountinfo),
+            Some(false)
+        );
+        assert_eq!(
+            project_quotas(Path::new("/srv/dev pool/volumes"), mountinfo),
+            Some(true)
+        );
+        assert_eq!(
+            project_quotas(Path::new("/srv/dev pool/no-quota/volumes"), mountinfo),
+            Some(false)
+        );
+        assert_eq!(project_quotas(Path::new("/srv/pool"), ""), None);
+    }
 
     #[test]
     fn base_images_come_from_known_remotes() {

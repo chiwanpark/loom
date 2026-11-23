@@ -19,6 +19,7 @@ loom-agent-core = { path = "../loom-agent-core" }
 loom-client = { path = "../loom-client", default-features = false }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
+loom-github = { path = "../loom-github" }
 loom-llm = { path = "../loom-llm" }
 loom-proto = { path = "../loom-proto" }
 loom-telemetry = { path = "../loom-telemetry" }
@@ -29,6 +30,7 @@ loom-version = { path = "../loom-version" }
 nix = { version = "0.31.3", features = ["signal"] }
 qrcode = { version = "0.14.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = "2.1.1"
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

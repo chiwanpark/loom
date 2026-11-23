@@ -867,6 +867,40 @@ impl Client {
         }
     }
 
+    pub async fn repositories(&self) -> Result<Vec<loom_proto::RepositoryStatus>> {
+        match self.request(Command::ListRepositories).await? {
+            Payload::Repositories(statuses) => Ok(statuses),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn push_repositories(
+        &self,
+        request: loom_proto::PushRepositories,
+    ) -> Result<Vec<loom_proto::RepositoryStatus>> {
+        match self.request(Command::PushRepositories(request)).await? {
+            Payload::Repositories(statuses) => Ok(statuses),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn open_pull_requests(
+        &self,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> Result<Vec<loom_proto::PullRequestResult>> {
+        let command = Command::OpenPullRequests {
+            title: title.to_owned(),
+            body: body.to_owned(),
+            draft,
+        };
+        match self.request(command).await? {
+            Payload::PullRequests(results) => Ok(results),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// Merges the branch of a session's worktree into its base, and returns
     /// the new commit. With `remove`, removes the worktree after the merge.
     pub async fn merge_worktree(
