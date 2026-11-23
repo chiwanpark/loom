@@ -333,7 +333,8 @@ async fn load(client: &OracleClient) -> Result<Lists, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use gpui::{AppContext, TestAppContext};
@@ -343,7 +344,7 @@ mod tests {
 
     use super::*;
 
-    fn dirs(root: &std::path::Path) -> Dirs {
+    pub(crate) fn dirs(root: &std::path::Path) -> Dirs {
         Dirs {
             home: root.to_path_buf(),
             config_home: root.join("config"),
@@ -353,7 +354,7 @@ mod tests {
         }
     }
 
-    fn wait(cx: &mut TestAppContext, mut done: impl FnMut(&mut gpui::App) -> bool) {
+    pub(crate) fn wait(cx: &mut TestAppContext, mut done: impl FnMut(&mut gpui::App) -> bool) {
         cx.executor().allow_parking();
         for _ in 0..1000 {
             cx.run_until_parked();
@@ -365,80 +366,113 @@ mod tests {
         panic!("timed out waiting for the oracle");
     }
 
+    pub(crate) struct TestOracle {
+        pub oracle: Arc<loom_oracle::Oracle>,
+        pub entry: HostEntry,
+        pub env: Env,
+        pub backend: Backend,
+        shutdown: tokio_util::sync::CancellationToken,
+    }
+
+    impl Drop for TestOracle {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+        }
+    }
+
+    impl TestOracle {
+        pub(crate) fn start(root: &std::path::Path) -> Self {
+            let backend = Backend::new().unwrap();
+            let oracle_dirs = dirs(&root.join("oracle"));
+            let (oracle, shutdown) = futures::executor::block_on(backend.run(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let config = OracleConfig {
+                    url: Some(format!("ws://{addr}")),
+                    listen: addr.to_string(),
+                    ..Default::default()
+                };
+                let oracle = loom_oracle::Oracle::open(&config, &oracle_dirs).unwrap();
+                let shutdown = tokio_util::sync::CancellationToken::new();
+                tokio::spawn(loom_oracle::serve(
+                    oracle.clone(),
+                    listener,
+                    shutdown.clone(),
+                ));
+                for _ in 0..200 {
+                    if oracle.relay().online_agents() == 1 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                (oracle, shutdown)
+            }))
+            .unwrap();
+            let env = Env {
+                dirs: dirs(&root.join("client")),
+                agent_bin: "/nonexistent/loom-agent".into(),
+                codespaces: Default::default(),
+            };
+            let device = oracle
+                .create_pairing(Role::Device, Duration::from_secs(60), None)
+                .unwrap()
+                .link;
+            let pair_env = env.clone();
+            let entry =
+                futures::executor::block_on(backend.run(async move {
+                    connection::pair(&pair_env, &device, "laptop", "next").await
+                }))
+                .unwrap()
+                .unwrap();
+            Self {
+                oracle,
+                entry,
+                env,
+                backend,
+                shutdown,
+            }
+        }
+
+        pub(crate) fn pair_host(&self, label: &str) -> (OracleClient, loom_client::OracleEvents) {
+            let host = self
+                .oracle
+                .create_pairing(Role::Host, Duration::from_secs(60), None)
+                .unwrap()
+                .link;
+            let label = label.to_owned();
+            futures::executor::block_on(self.backend.run(async move {
+                let identity = ClientIdentity::generate().unwrap();
+                let endpoint = pair_oracle(&host, &identity, &label, None).await.unwrap();
+                OracleClient::connect(&endpoint, &identity, "test")
+                    .await
+                    .unwrap()
+            }))
+            .unwrap()
+        }
+    }
+
     #[gpui::test]
     fn a_paired_oracle_lists_and_follows_its_hosts(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let backend = Backend::new().unwrap();
-        let oracle_dirs = dirs(&root.join("oracle"));
-        let (oracle, shutdown) = futures::executor::block_on(backend.run(async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let config = OracleConfig {
-                url: Some(format!("ws://{addr}")),
-                listen: addr.to_string(),
-                ..Default::default()
-            };
-            let oracle = loom_oracle::Oracle::open(&config, &oracle_dirs).unwrap();
-            let shutdown = tokio_util::sync::CancellationToken::new();
-            tokio::spawn(loom_oracle::serve(
-                oracle.clone(),
-                listener,
-                shutdown.clone(),
-            ));
-            for _ in 0..200 {
-                if oracle.relay().online_agents() == 1 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            (oracle, shutdown)
-        }))
-        .unwrap();
-        let env = Env {
-            dirs: dirs(&root.join("client")),
-            agent_bin: "/nonexistent/loom-agent".into(),
-            codespaces: Default::default(),
-        };
-        let device = oracle
-            .create_pairing(Role::Device, Duration::from_secs(60), None)
-            .unwrap()
-            .link;
-        let pair_env = env.clone();
-        let entry = futures::executor::block_on(
-            backend
-                .run(async move { connection::pair(&pair_env, &device, "laptop", "next").await }),
-        )
-        .unwrap()
-        .unwrap();
-        let HostEntry::Oracle { name, url, .. } = &entry else {
-            panic!("{entry:?}");
+        let test = TestOracle::start(&root);
+        let HostEntry::Oracle { name, url, .. } = &test.entry else {
+            panic!("{:?}", test.entry);
         };
         assert_eq!(name, "next");
         assert!(url.starts_with("ws://127.0.0.1:"), "{url}");
 
-        let link = cx.new(|cx| OracleLink::new(entry, env, backend.clone(), cx));
+        let (entry, env, backend) = (test.entry.clone(), test.env.clone(), test.backend.clone());
+        let link = cx.new(|cx| OracleLink::new(entry, env, backend, cx));
         wait(cx, |cx| link.read(cx).status == OracleStatus::Connected);
         assert!(link.read_with(cx, |link, _| link.hosts.is_empty()));
 
-        let host = oracle
-            .create_pairing(Role::Host, Duration::from_secs(60), None)
-            .unwrap()
-            .link;
-        let _host = futures::executor::block_on(backend.run(async move {
-            let identity = ClientIdentity::generate().unwrap();
-            let endpoint = pair_oracle(&host, &identity, "office", None).await.unwrap();
-            OracleClient::connect(&endpoint, &identity, "test")
-                .await
-                .unwrap()
-        }))
-        .unwrap();
+        let _host = test.pair_host("office");
         wait(cx, |cx| {
             link.read(cx)
                 .hosts
                 .iter()
                 .any(|h| h.name == "office" && h.connected)
         });
-        shutdown.cancel();
     }
 }

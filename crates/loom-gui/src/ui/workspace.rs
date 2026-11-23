@@ -5874,6 +5874,80 @@ mod tests {
         cx.update(|window, cx| window.has_active_dialog(cx))
     }
 
+    #[gpui::test]
+    fn an_oracle_shows_its_workspaces_and_opens_new_codespace(cx: &mut TestAppContext) {
+        use crate::oracle::tests::{TestOracle, wait};
+        use loom_client::oracle_proto::{Repository, Role};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let test = TestOracle::start(&root);
+        let _host = test.pair_host("box");
+        let host = test.oracle.store().peers(Some(Role::Host)).unwrap()[0].id;
+        let repository = |url: &str| Repository {
+            url: url.into(),
+            provider: None,
+            directory: None,
+            base_branch: None,
+        };
+        test.oracle
+            .store()
+            .create_workspace(
+                "acme",
+                host,
+                &[
+                    repository("https://github.com/acme/server.git"),
+                    repository("https://github.com/acme/web.git"),
+                ],
+                &[],
+            )
+            .unwrap();
+        test.oracle.set_preset("dev", "", None, None, None).unwrap();
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::ui::bind_keys(&Default::default(), cx);
+        });
+        let config = ClientConfig {
+            hosts: vec![test.entry.clone()],
+            ..Default::default()
+        };
+        let (env, backend) = (test.env.clone(), test.backend.clone());
+        let slot = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let config_path = root.join("client.yaml");
+            move |window, cx| {
+                let ws = cx.new(|cx| Workspace::new(backend, env, config, config_path, window, cx));
+                *slot.borrow_mut() = Some(ws.clone());
+                Root::new(ws, window, cx)
+            }
+        });
+        let ws: Entity<Workspace> = slot.borrow_mut().take().unwrap();
+        wait(cx, |cx| {
+            ws.read(cx).hosts[0].oracle.as_ref().is_some_and(|link| {
+                !link.read(cx).workspaces.is_empty() && !link.read(cx).presets.is_empty()
+            })
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("oracle-workspace-0-0").is_some());
+        assert!(!has_dialog(cx));
+
+        let link = ws.read_with(cx, |ws, _| ws.hosts[0].oracle.clone().unwrap());
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_codespace_dialog(link.clone(), "acme", window, cx)
+        });
+        cx.run_until_parked();
+        assert!(has_dialog(cx));
+        assert!(cx.debug_bounds("create-codespace").is_some());
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+
+        cx.dispatch_action(NewCodespace);
+        cx.run_until_parked();
+        assert!(has_dialog(cx));
+    }
+
     #[test]
     fn keymaps_naming_the_old_left_panel_action_still_work() {
         assert_eq!(ToggleSessions.name(), "loom::ToggleSessions");
