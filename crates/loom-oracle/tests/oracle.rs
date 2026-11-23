@@ -194,6 +194,16 @@ async fn devices_pair_and_use_the_control_service() {
     })
     .await;
     phone_client.set_push_token(Some("token-1")).await.unwrap();
+    let keys = oracle.oracle.device_keys().unwrap();
+    assert!(
+        keys.iter()
+            .any(|d| d.label == "phone" && d.push_token.as_deref() == Some("token-1")),
+        "{keys:?}"
+    );
+    assert!(
+        keys.iter()
+            .any(|d| d.label == "laptop" && d.push_token.is_none())
+    );
     let renamed = laptop.rename_device(phone.id, "pixel").await.unwrap();
     assert_eq!(renamed.label, "pixel");
     assert!(renamed.push);

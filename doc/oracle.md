@@ -385,7 +385,7 @@ Commands of codespace agents:
 | Command | Fields | Result |
 | --- | --- | --- |
 | `subscribe` | | The agent gets `device_keys_changed`, `git_changed`, and `config_changed`. |
-| `codespace_bundle` | | The repositories, the branch, the keys of the devices, the relay URL, the preset, the Git setup of each provider, the agent configuration with the secret values, and the notes. |
+| `codespace_bundle` | | The repositories, the branch, the keys and the push tokens of the devices, the relay URL, the preset, the Git setup of each provider, the agent configuration with the secret values, and the notes. |
 | `codespace_agent` | `address`: `host_id`, `host_key`, `instance` | The relay of the oracle accepts this agent. |
 | `codespace_progress` | `step` | |
 | `codespace_ready` | | |
