@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use loom_oracle_proto::{
-    ClientMessage, Command, DeviceResult, Devices, Empty, ErrorCode, Event, InvalidMessage,
-    OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, RelayHostResult, RelayHosts, Request,
-    Response, Role, ServerHello, ServerMessage, encode, parse_client_message,
+    ClientMessage, CodespaceResult, Codespaces, Command, DeviceResult, Devices, Empty, ErrorCode,
+    Event, HostResult, Hosts, InvalidMessage, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo,
+    RelayHostResult, RelayHosts, Request, Response, Role, ServerHello, ServerMessage,
+    WorkspaceResult, Workspaces, encode, parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
 use serde::Serialize;
@@ -33,10 +34,34 @@ async fn next_event(
     }
 }
 
+async fn next_call(calls: &mut Option<mpsc::Receiver<ServerMessage>>) -> Option<ServerMessage> {
+    match calls {
+        Some(calls) => calls.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn forbidden(role: Role, who: &str) -> OracleError {
+    OracleError::new(
+        ErrorCode::Forbidden,
+        format!("a {role} cannot do this; only {who} can"),
+    )
+}
+
+fn shown_to(role: Role, event: &Event) -> bool {
+    match role {
+        Role::Device => !matches!(event, Event::DeviceKeysChanged),
+        Role::Codespace => matches!(event, Event::DeviceKeysChanged | Event::EventsLost),
+        _ => false,
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
 enum Step {
     Stop,
     Frame(Bytes),
     Event(Result<Event, broadcast::error::RecvError>),
+    Call(ServerMessage),
 }
 
 pub struct Session {
@@ -44,15 +69,22 @@ pub struct Session {
     peer: PeerRow,
     kill: CancellationToken,
     events: Option<broadcast::Receiver<Event>>,
+    calls: Option<mpsc::Receiver<ServerMessage>>,
 }
 
 impl Session {
-    pub fn new(oracle: Arc<Oracle>, peer: PeerRow, kill: CancellationToken) -> Self {
+    pub fn new(
+        oracle: Arc<Oracle>,
+        peer: PeerRow,
+        kill: CancellationToken,
+        calls: Option<mpsc::Receiver<ServerMessage>>,
+    ) -> Self {
         Self {
             oracle,
             peer,
             kill,
             events: None,
+            calls,
         }
     }
 
@@ -130,12 +162,20 @@ impl Session {
                     _ => Step::Stop,
                 },
                 event = next_event(&mut self.events) => Step::Event(event),
+                call = next_call(&mut self.calls) => match call {
+                    Some(call) => Step::Call(call),
+                    None => Step::Stop,
+                },
             };
             let message = match step {
                 Step::Stop => break,
-                Step::Event(Ok(event)) => ServerMessage::Event { event },
+                Step::Call(call) => call,
+                Step::Event(Ok(event)) if !shown_to(self.peer.role, &event) => continue,
+                Step::Event(Ok(event)) => ServerMessage::Event {
+                    event: Box::new(event),
+                },
                 Step::Event(Err(broadcast::error::RecvError::Lagged(_))) => ServerMessage::Event {
-                    event: Event::EventsLost,
+                    event: Box::new(Event::EventsLost),
                 },
                 Step::Event(Err(broadcast::error::RecvError::Closed)) => {
                     self.events = None;
@@ -153,6 +193,12 @@ impl Session {
                         })
                     }
                     Ok(ClientMessage::Hello(_)) => continue,
+                    Ok(ClientMessage::Reply(reply)) => {
+                        if self.peer.role == Role::Host {
+                            self.oracle.reply(self.peer.id, reply);
+                        }
+                        continue;
+                    }
                     Err(InvalidMessage {
                         id: Some(id),
                         error,
@@ -173,26 +219,76 @@ impl Session {
         if command == Command::OracleInfo {
             return ok(self.oracle.info());
         }
-        if self.peer.role != Role::Device {
-            return Err(OracleError::new(
-                ErrorCode::Forbidden,
-                format!("a {} cannot do this; only devices can", self.peer.role),
-            ));
+        match self.peer.role {
+            Role::Device => self.handle_device(command),
+            Role::Host => self.handle_host(command),
+            Role::Codespace => self.handle_codespace(command),
+            Role::Unknown => Err(forbidden(self.peer.role, "known peers")),
         }
+    }
+
+    fn subscribe(&mut self, subscribe: bool) -> Result<Value, OracleError> {
+        if !subscribe {
+            self.events = None;
+        } else if self.events.is_none() {
+            self.events = Some(self.oracle.subscribe());
+        }
+        ok(Empty {})
+    }
+
+    fn handle_host(&mut self, command: Command) -> Result<Value, OracleError> {
         let oracle = &self.oracle;
+        let me = self.peer.id;
+        match command {
+            Command::HostReport { report } => {
+                oracle.host_report(me, &report)?;
+                ok(Empty {})
+            }
+            Command::HostInstances { instances } => {
+                oracle.host_instances(me, instances)?;
+                ok(Empty {})
+            }
+            Command::InstanceProgress { codespace, step } => {
+                oracle.instance_progress(me, &codespace, &step)?;
+                ok(Empty {})
+            }
+            _ => Err(forbidden(self.peer.role, "devices")),
+        }
+    }
+
+    fn handle_codespace(&mut self, command: Command) -> Result<Value, OracleError> {
+        let me = self.peer.id;
+        match command {
+            Command::Subscribe => self.subscribe(true),
+            Command::Unsubscribe => self.subscribe(false),
+            Command::CodespaceBundle => ok(self.oracle.bundle(me)?),
+            Command::CodespaceAgent { address } => {
+                self.oracle.codespace_agent(me, &address)?;
+                ok(Empty {})
+            }
+            Command::CodespaceProgress { step } => {
+                self.oracle.codespace_progress(me, &step)?;
+                ok(Empty {})
+            }
+            Command::CodespaceReady => {
+                self.oracle.codespace_ready(me)?;
+                ok(Empty {})
+            }
+            Command::CodespaceFailed { error } => {
+                self.oracle.codespace_failed(me, &error)?;
+                ok(Empty {})
+            }
+            _ => Err(forbidden(self.peer.role, "devices")),
+        }
+    }
+
+    fn handle_device(&mut self, command: Command) -> Result<Value, OracleError> {
+        let oracle = self.oracle.clone();
         let me = Some(self.peer.id);
         match command {
             Command::OracleInfo => ok(oracle.info()),
-            Command::Subscribe => {
-                if self.events.is_none() {
-                    self.events = Some(oracle.subscribe());
-                }
-                ok(Empty {})
-            }
-            Command::Unsubscribe => {
-                self.events = None;
-                ok(Empty {})
-            }
+            Command::Subscribe => self.subscribe(true),
+            Command::Unsubscribe => self.subscribe(false),
             Command::ListDevices => ok(Devices {
                 devices: oracle.devices()?,
             }),
@@ -227,6 +323,59 @@ impl Session {
                 oracle.remove_relay_host(&host_id, me)?;
                 ok(Empty {})
             }
+            Command::CreateHostPairing { ttl_secs } => {
+                ok(oracle.create_pairing(Role::Host, pairing_ttl(ttl_secs)?, me)?)
+            }
+            Command::ListHosts => ok(Hosts {
+                hosts: oracle.hosts()?,
+            }),
+            Command::RemoveHost { name } => {
+                oracle.remove_host(&name, me)?;
+                ok(Empty {})
+            }
+            Command::SetHostEnvironment { name, environment } => ok(HostResult {
+                host: oracle.set_host_environment(&name, &environment, me)?,
+            }),
+            Command::ListWorkspaces => ok(Workspaces {
+                workspaces: oracle.workspaces()?,
+            }),
+            Command::CreateWorkspace {
+                name,
+                host,
+                repositories,
+            } => ok(WorkspaceResult {
+                workspace: oracle.create_workspace(&name, &host, &repositories, me)?,
+            }),
+            Command::DeleteWorkspace { name } => {
+                oracle.delete_workspace(&name, me)?;
+                ok(Empty {})
+            }
+            Command::ListCodespaces => ok(Codespaces {
+                codespaces: oracle.codespaces()?,
+            }),
+            Command::CreateCodespace {
+                workspace,
+                cpus,
+                memory_mib,
+                base_branch,
+                client_version,
+            } => ok(CodespaceResult {
+                codespace: oracle.create_codespace(
+                    &workspace,
+                    cpus,
+                    memory_mib,
+                    base_branch,
+                    client_version,
+                    me,
+                )?,
+            }),
+            Command::CloseCodespace { id } => ok(CodespaceResult {
+                codespace: oracle.close_codespace(&id, me)?,
+            }),
+            Command::HostReport { .. }
+            | Command::HostInstances { .. }
+            | Command::InstanceProgress { .. } => Err(forbidden(self.peer.role, "hosts")),
+            _ => Err(forbidden(self.peer.role, "codespaces")),
         }
     }
 }

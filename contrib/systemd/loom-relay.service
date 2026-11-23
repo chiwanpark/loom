@@ -22,7 +22,6 @@
 
 [Unit]
 Description=Loom relay
-Documentation=https://github.com/chiwanpark/loom#through-a-relay
 After=network-online.target
 Wants=network-online.target
 

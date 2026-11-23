@@ -12,8 +12,9 @@ use loom_crypto::HostIdentity;
 use loom_llm::{Auth, CredentialStore, ProviderId};
 use loom_proto::{AgentInfo, InstanceId, TelemetryStatus};
 use loom_telemetry::{AgentIdentity, Telemetry, UserIdentity};
-use loom_transport::{AgentEntry, Registry, RegistryError, UnixFrameListener};
+use loom_transport::{AgentEntry, LinkState, Registry, RegistryError, UnixFrameListener};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::push::PushObserver;
@@ -28,6 +29,12 @@ pub struct ServeOptions {
     pub config_path: PathBuf,
     pub config: AgentConfig,
     pub dirs: Dirs,
+    pub ready: Option<oneshot::Sender<Started>>,
+}
+
+pub struct Started {
+    pub instance: InstanceId,
+    pub relay: Option<watch::Receiver<LinkState>>,
 }
 
 /// How an agent ended.
@@ -56,6 +63,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         config_path,
         config,
         dirs,
+        ready,
     } = options;
     let workspace = resolve_workspace(workspace.as_deref(), &config, &dirs)?;
     let instance = new_instance_id();
@@ -149,6 +157,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         supervisor: Some(Arc::new(supervisor)),
         host_keys: Some(host_keys.clone()),
     };
+    let mut relay_state = None;
     if let Some(endpoint) = relay_endpoint {
         let url = endpoint.url.clone();
         let mut handle = start_relay(
@@ -159,6 +168,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
             push_events,
             shutdown.clone(),
         );
+        relay_state = Some(handle.state.clone());
         if !wait_registered(&mut handle).await {
             tracing::warn!(relay = %url, "not registered with the relay yet; continuing in the background");
         }
@@ -169,6 +179,12 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
     let mut usr1 = signal(SignalKind::user_defined1())?;
     registration.publish(entry)?;
     tracing::info!(%instance, workspace = %workspace.display(), socket = %socket.display(), "agent ready");
+    if let Some(ready) = ready {
+        let _ = ready.send(Started {
+            instance: InstanceId(instance.clone()),
+            relay: relay_state,
+        });
+    }
     let signals = shutdown.clone();
     let restart_signal = restart.clone();
     tokio::spawn(async move {

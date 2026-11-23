@@ -3,6 +3,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod codespace;
+
+pub use codespace::*;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const ORACLE_INSTANCE: &str = "oracle";
 pub const DEFAULT_PAIRING_TTL_SECS: u64 = 600;
@@ -13,6 +17,7 @@ pub const MAX_PAIRING_TTL_SECS: u64 = 7 * 24 * 3600;
 pub enum ClientMessage {
     Hello(ClientHello),
     Request(Request),
+    Reply(Reply),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +30,15 @@ pub struct ClientHello {
 pub struct Request {
     pub id: u64,
     pub command: Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<OracleError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +75,63 @@ pub enum Command {
     RemoveRelayHost {
         host_id: String,
     },
+    CreateHostPairing {
+        #[serde(default)]
+        ttl_secs: Option<u64>,
+    },
+    ListHosts,
+    RemoveHost {
+        name: String,
+    },
+    SetHostEnvironment {
+        name: String,
+        environment: Environment,
+    },
+    ListWorkspaces,
+    CreateWorkspace {
+        name: String,
+        host: String,
+        repositories: Vec<Repository>,
+    },
+    DeleteWorkspace {
+        name: String,
+    },
+    ListCodespaces,
+    CreateCodespace {
+        workspace: String,
+        #[serde(default)]
+        cpus: Option<u32>,
+        #[serde(default)]
+        memory_mib: Option<u64>,
+        #[serde(default)]
+        base_branch: Option<String>,
+        #[serde(default)]
+        client_version: Option<String>,
+    },
+    CloseCodespace {
+        id: String,
+    },
+    HostReport {
+        report: HostReport,
+    },
+    HostInstances {
+        instances: Vec<InstanceReport>,
+    },
+    InstanceProgress {
+        codespace: String,
+        step: String,
+    },
+    CodespaceBundle,
+    CodespaceAgent {
+        address: AgentAddress,
+    },
+    CodespaceProgress {
+        step: String,
+    },
+    CodespaceReady,
+    CodespaceFailed {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,7 +140,8 @@ pub enum ServerMessage {
     Hello(ServerHello),
     Rejected(OracleError),
     Response(Response),
-    Event { event: Event },
+    Event { event: Box<Event> },
+    Call { id: u64, call: HostCall },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +320,29 @@ pub enum Event {
     RelayHostRemoved {
         host_id: String,
     },
+    HostChanged {
+        host: Host,
+    },
+    HostRemoved {
+        name: String,
+    },
+    WorkspaceChanged {
+        workspace: Workspace,
+    },
+    WorkspaceRemoved {
+        name: String,
+    },
+    CodespaceChanged {
+        codespace: Codespace,
+    },
+    CodespaceProgress {
+        id: String,
+        step: String,
+    },
+    CodespaceRemoved {
+        id: String,
+    },
+    DeviceKeysChanged,
     EventsLost,
     #[serde(other)]
     Unknown,
@@ -261,6 +356,7 @@ pub enum ErrorCode {
     NotFound,
     Forbidden,
     Conflict,
+    Unavailable,
     Internal,
     #[serde(other)]
     Unknown,
@@ -346,7 +442,7 @@ pub fn parse_server_message(bytes: &[u8]) -> Result<Option<ServerMessage>, serde
     let value: Value = serde_json::from_slice(bytes)?;
     let known = matches!(
         value.get("type").and_then(Value::as_str),
-        Some("hello" | "rejected" | "response" | "event")
+        Some("hello" | "rejected" | "response" | "event" | "call")
     );
     if !known {
         return Ok(None);
@@ -376,7 +472,7 @@ mod tests {
             })
         );
         let event = ServerMessage::Event {
-            event: Event::DeviceRemoved { id: 7 },
+            event: Box::new(Event::DeviceRemoved { id: 7 }),
         };
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
@@ -443,18 +539,18 @@ mod tests {
             parse_server_message(br#"{"type":"news","text":"hi"}"#).unwrap(),
             None
         );
-        let event = br#"{"type":"event","event":{"type":"codespace_changed","id":1}}"#;
+        let event = br#"{"type":"event","event":{"type":"volume_changed","id":1}}"#;
         assert_eq!(
             parse_server_message(event).unwrap(),
             Some(ServerMessage::Event {
-                event: Event::Unknown
+                event: Box::new(Event::Unknown)
             })
         );
         let device = br#"{"type":"event","event":{"type":"device_changed","device":{"id":1,"label":"a","added_at":2,"color":"red"}}}"#;
         assert_eq!(
             parse_server_message(device).unwrap(),
             Some(ServerMessage::Event {
-                event: Event::DeviceChanged {
+                event: Box::new(Event::DeviceChanged {
                     device: Device {
                         id: 1,
                         label: "a".into(),
@@ -463,7 +559,7 @@ mod tests {
                         push: false,
                         connected: false,
                     }
-                }
+                })
             })
         );
         let error = br#"{"type":"response","id":1,"error":{"code":"too_late","message":"m"}}"#;
@@ -477,6 +573,36 @@ mod tests {
         };
         assert_eq!(hello.peer.role, Role::Unknown);
         assert!(parse_server_message(br#"{"type":"hello"}"#).is_err());
+    }
+
+    #[test]
+    fn hosts_get_calls_and_send_replies() {
+        let call = ServerMessage::Call {
+            id: 4,
+            call: HostCall::DeleteInstance {
+                codespace: "c1".into(),
+                instance: "loom-c1".into(),
+            },
+        };
+        let bytes = encode(&call).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            serde_json::json!({
+                "type": "call",
+                "id": 4,
+                "call": {"type": "delete_instance", "codespace": "c1", "instance": "loom-c1"},
+            })
+        );
+        assert_eq!(parse_server_message(&bytes).unwrap(), Some(call));
+        let reply = br#"{"type":"reply","id":4,"result":{"ok":true},"extra":1}"#;
+        assert_eq!(
+            parse_client_message(reply).unwrap(),
+            ClientMessage::Reply(Reply {
+                id: 4,
+                result: Some(serde_json::json!({"ok": true})),
+                error: None,
+            })
+        );
     }
 
     #[test]

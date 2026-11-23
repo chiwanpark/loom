@@ -9,6 +9,8 @@
 | `crates/loom-relay` | The relay `loom-relay`. |
 | `crates/loom-oracle` | The oracle `loom-oracle` of Loom-Next: the relay, the control service, and the store. See [Oracle](oracle.md). |
 | `loom-oracle-proto` | The JSON messages of the control service. |
+| `crates/loom-host` | The host daemon `loom-host` of Loom-Next. It starts and deletes the codespaces of the oracle. See [Hosts and codespaces](host.md). |
+| `loom-incus` | A client for the REST API of Incus, over the local socket or HTTPS with a client certificate. The feature `fake` adds a fake Incus server for tests. |
 | `loom-agent-core` | The agent core. |
 | `loom-llm` | The model providers. |
 | `loom-tools` | The tools and the sandbox. |

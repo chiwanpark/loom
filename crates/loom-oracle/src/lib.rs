@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use oracle::{
     CREDENTIALS_ENV, Oracle, RelayHosts, STORE_FILE, master_key_path, open_store, pairing_link,
-    pairing_ttl,
+    pairing_ttl, valid_branch, validate_environment,
 };
 pub use seal::{MasterKey, SealError, Sealer};
 pub use store::{Store, StoreError};
