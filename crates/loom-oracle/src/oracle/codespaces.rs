@@ -677,6 +677,7 @@ impl Oracle {
                 if row.state == CodespaceState::Closing {
                     row.state = CodespaceState::Closed;
                     row.error = None;
+                    row.step = None;
                     true
                 } else {
                     false
@@ -783,6 +784,7 @@ impl Oracle {
                     if closing {
                         row.state = CodespaceState::Closed;
                         row.error = None;
+                        row.step = None;
                     }
                     closing
                 }),
@@ -925,7 +927,12 @@ impl Oracle {
                 row.step = None;
                 true
             }
-            CodespaceState::Ready => false,
+            CodespaceState::Ready => {
+                let changed = row.step.is_some() || row.error.is_some();
+                row.step = None;
+                row.error = None;
+                changed
+            }
             other => {
                 refused = Some(other);
                 false

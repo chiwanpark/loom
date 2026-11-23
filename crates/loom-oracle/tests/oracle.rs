@@ -759,6 +759,13 @@ async fn hosts_make_codespaces_whose_agents_report_to_the_oracle() {
         ready.agent.unwrap().host_id,
         relay_agent.host.host_id().to_string()
     );
+    assert_eq!(ready.step, None);
+    agent.codespace_progress("clone").await.unwrap();
+    agent.codespace_ready().await.unwrap();
+    wait_codespace(&laptop, &created.id, |c| {
+        c.state == CodespaceState::Ready && c.step.is_none()
+    })
+    .await;
 
     let closing = laptop.close_codespace(&created.id).await.unwrap();
     assert_eq!(closing.state, CodespaceState::Closing);
