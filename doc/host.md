@@ -236,6 +236,8 @@ A client asks the agent of a codespace for these Git actions:
 
 The agent sends the API calls for pull requests to the provider with the token that the oracle selects for the repository. It does not use `gh`. A repository without a provider gets no pull request.
 
+In a codespace with more than one repository, the **Changes** panel shows the changes of all clones. The path of each file starts with the directory of its clone.
+
 The close guard runs before a codespace closes. It asks the agent for the state of each clone. A clone has unsaved work when it has changed files or commits that are not pushed. For each repository with unsaved work, choose one:
 
 - `--push <directory>` pushes the branch. If the clone has changed files, also give `--message` to commit them.

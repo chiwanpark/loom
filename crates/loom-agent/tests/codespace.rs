@@ -652,6 +652,18 @@ async fn a_codespace_pushes_and_opens_pull_requests_with_the_credentials_of_its_
     );
 
     std::fs::write(lib.join("more.txt"), "more\n").unwrap();
+    let changes = agent.workspace_changes().await.unwrap();
+    assert!(changes.repository);
+    let paths: Vec<&str> = changes.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["lib/more.txt"]);
+    let diff = agent.file_diff("lib/more.txt", None, false).await.unwrap();
+    assert_eq!(diff.path, "lib/more.txt");
+    assert!(diff.diff.contains("+more"), "{}", diff.diff);
+    let err = agent
+        .file_diff("other/more.txt", None, false)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not a git repository"), "{err}");
     let statuses = agent.repositories().await.unwrap();
     let work: Vec<(&str, u32, u32, u32)> = statuses
         .iter()

@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use loom_agent_core::git::{CommitBase, changes, file_diff};
+use loom_agent_core::git::{
+    CommitBase, changes, file_diff, nested_changes, nested_repositories, split_nested,
+};
 use loom_proto::{ChangeStatus, ErrorCode};
 
 fn run(dir: &Path, args: &[&str]) {
@@ -202,4 +204,54 @@ async fn handles_repositories_without_commits_and_plain_directories() {
     );
     let diff = file_diff(root, "loose.bin", None, None).await.unwrap();
     assert!(diff.binary, "{}", diff.diff);
+}
+
+#[tokio::test]
+async fn lists_the_changes_of_repositories_in_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for name in ["server", "client"] {
+        let repo = root.join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        run(&repo, &["init", "-q"]);
+        write(&repo, "a.txt", "one\n");
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "init"]);
+    }
+    write(root, "notes/plain.txt", "not a repository\n");
+    write(root, "server/a.txt", "two\n");
+    write(root, "client/new.txt", "new\n");
+
+    let directories = nested_repositories(root).await;
+    assert_eq!(directories, ["client", "server"]);
+    assert!(nested_repositories(&root.join("server")).await.is_empty());
+
+    let found = nested_changes(root, &directories).await.unwrap();
+    assert!(found.repository);
+    assert_eq!(found.branch.as_deref(), Some("main"));
+    let summary: Vec<_> = found
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.status))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            ("client/new.txt", ChangeStatus::Untracked),
+            ("server/a.txt", ChangeStatus::Modified),
+        ]
+    );
+
+    let (directory, inner, old) = split_nested(&directories, "server/a.txt", None).unwrap();
+    assert_eq!((directory.as_str(), inner, old), ("server", "a.txt", None));
+    assert_eq!(split_nested(&directories, "notes/plain.txt", None), None);
+    assert_eq!(split_nested(&directories, "a.txt", None), None);
+    assert_eq!(
+        split_nested(&directories, "server/b.txt", Some("client/a.txt")),
+        None
+    );
+    let diff = file_diff(&root.join(directory), inner, old, None)
+        .await
+        .unwrap();
+    assert!(diff.diff.contains("-one\n+two\n"), "{}", diff.diff);
 }
