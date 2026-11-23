@@ -241,7 +241,7 @@ private fun WorkspaceRow(workspace: OracleWorkspace, onNew: () -> Unit) {
         headlineContent = { Text(workspace.name) },
         supportingContent = {
             Text(
-                workspace.repositories.joinToString(", ") { it.directory },
+                "${workspace.host} · " + workspace.repositories.joinToString(", ") { it.directory },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

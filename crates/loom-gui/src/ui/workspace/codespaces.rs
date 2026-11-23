@@ -627,7 +627,11 @@ impl Workspace {
                         .collect();
                     (
                         workspace.name.clone(),
-                        directories(&workspace.repositories).join(", "),
+                        format!(
+                            "{} · {}",
+                            workspace.host,
+                            directories(&workspace.repositories).join(", ")
+                        ),
                         codespaces,
                     )
                 })
