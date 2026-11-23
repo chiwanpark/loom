@@ -127,11 +127,23 @@ pub(super) fn git_credential(row: &CredentialRow) -> GitCredential {
     }
 }
 
-fn preset(row: &PresetRow) -> Preset {
+pub(super) fn preset(row: &PresetRow) -> Preset {
     Preset {
         name: row.name.clone(),
         yaml: row.yaml.clone(),
         git_credentials: row.credentials.clone(),
+        agents_md: row.agents_md.clone(),
+        files: row.files.clone(),
+        model_accounts: row
+            .accounts
+            .iter()
+            .map(|(provider, _, name)| (provider.clone(), name.clone()))
+            .collect(),
+        secrets: row
+            .secrets
+            .iter()
+            .map(|(variable, _, name)| (variable.clone(), name.clone()))
+            .collect(),
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
@@ -183,7 +195,7 @@ pub fn parse_preset(name: &str, yaml: &str) -> Result<AgentConfig, OracleError> 
             "the YAML file of a preset has up to {MAX_PRESET} bytes"
         )));
     }
-    AgentConfig::parse(yaml, &format!("preset {name}"), &preset_dirs())
+    AgentConfig::parse_preset(yaml, &format!("preset {name}"), &preset_dirs())
         .map_err(|err| bad_request(err.to_string()))
 }
 
@@ -389,7 +401,7 @@ impl Oracle {
         ))
     }
 
-    fn git_changed(&self) {
+    pub(super) fn git_changed(&self) {
         self.emit(Event::GitChanged);
     }
 
@@ -603,18 +615,11 @@ impl Oracle {
         Ok(self.store.presets()?.iter().map(preset).collect())
     }
 
-    pub fn set_preset(
+    pub(super) fn preset_git_credentials(
         &self,
         name: &str,
-        yaml: &str,
-        by: Option<u64>,
-    ) -> Result<Preset, OracleError> {
-        if !valid_name(name) {
-            return Err(bad_request(format!(
-                "{name:?} is not a preset name: use 1 to 40 lowercase letters, digits, and '-', and start with a letter"
-            )));
-        }
-        let config = parse_preset(name, yaml)?;
+        config: &AgentConfig,
+    ) -> Result<Vec<u64>, OracleError> {
         let mut ids = Vec::new();
         for credential in &config.git.credentials {
             let row = self.store.credential_by_name(credential)?.ok_or_else(|| {
@@ -629,14 +634,7 @@ impl Oracle {
             }
             ids.push(row.id);
         }
-        let row = self.store.put_preset(name, yaml, &ids)?;
-        self.audit(by, "preset_set", &format!("preset {name}"));
-        let preset = preset(&row);
-        self.emit(Event::PresetChanged {
-            preset: preset.clone(),
-        });
-        self.git_changed();
-        Ok(preset)
+        Ok(ids)
     }
 
     pub fn delete_preset(&self, name: &str, by: Option<u64>) -> Result<(), OracleError> {

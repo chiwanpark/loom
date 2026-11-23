@@ -1,11 +1,11 @@
 # Oracle (Loom-Next)
 
-The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 3.
+The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 4.
 
 The oracle does these things:
 
 - It is a relay. Current agents and clients use it as they use `loom-relay`.
-- It has a control service. Paired devices manage hosts, Git providers and credentials, presets, workspaces, and volumes through this service.
+- It has a control service. Paired devices manage hosts, Git providers and credentials, model accounts, secrets, presets, workspaces, notes, and volumes through this service.
 - It starts codespaces on hosts. See [Hosts and codespaces](host.md).
 - It keeps its data in a SQLite store. It encrypts the secrets in the store with a master key.
 
@@ -114,8 +114,20 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `check-credential <name>` | Checks the token again. |
 | `delete-credential <name>` | Deletes a Git credential. The oracle refuses this while a preset uses it. |
 | `presets` | Lists the presets. |
-| `set-preset <name> <path>` | Adds or changes a preset from an `agent.yaml` file. |
+| `set-preset <name> <path> [--agents-md <path>] [--skills <directory>]` | Adds or changes a preset from an `agent.yaml` file. `--agents-md` sets `AGENTS.md`. `--skills` sets the skills from the skill directories in this directory. Without these options, the preset keeps its `AGENTS.md` and skills. |
+| `show-preset <name>` | Shows a preset with its YAML file, `AGENTS.md`, and skill files. |
 | `delete-preset <name>` | Deletes a preset. The oracle refuses this while an open codespace uses it. |
+| `accounts` | Lists the model accounts. The list does not show the credentials. |
+| `sign-in <account> --provider <provider> [--device-code]` | Signs in a model account. The CLI shows a URL or a device code. |
+| `set-api-key <account> --provider <provider> [--key-file <path>]` | Adds or changes a model account with an API key. The default `--key-file -` reads the key from standard input. |
+| `delete-account <name>` | Deletes a model account. The oracle refuses this while a preset uses it. |
+| `models <preset>` | Lists the models that a preset can use, with the account of each model. |
+| `secrets` | Lists the secrets. The list does not show the values. |
+| `set-secret <name> [--value-file <path>]` | Adds or changes a secret. The default `--value-file -` reads the value from standard input. |
+| `delete-secret <name>` | Deletes a secret. The oracle refuses this while a preset uses it. |
+| `notes <workspace>` | Shows the notes of a workspace. |
+| `set-notes <workspace> <path>` | Replaces the notes of a workspace. `-` reads them from standard input. |
+| `sessions [--codespace <id>]` | Lists the sessions of the codespaces. |
 | `search <provider> [<query>]` | Searches the repositories of a provider. |
 | `branches <provider> <owner>/<repository>` | Lists the branches of a repository. |
 | `workspaces` | Lists the workspaces. |
@@ -126,7 +138,7 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `create-volume <name> [--size <size> \| --path <host-directory>]` | Defines a volume. Without `--path`, it defines a custom Incus volume. |
 | `delete-volume <name>` | Deletes the definition and its custom volume on each tracked host. It does not delete the contents of a host directory. |
 | `codespaces [--all]` | Lists the codespaces. `--all` also shows the closed codespaces. |
-| `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. |
+| `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--message <text> \| --message-file <path>] [--model <provider>/<model>] [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. `--message` sets the first message: the agent starts a session with it when the codespace is ready. `--model` sets the model of this session. |
 | `close-codespace <id> [--push <directory>]… [--discard <directory>]… [--message <message>] [--force] [--no-wait]` | Closes a codespace. The host deletes its instance. First, the close guard asks the agent for the unsaved work of each repository. See [the host document](host.md#git-in-a-codespace). |
 | `repositories <id>` | Shows the state of each repository of a codespace. |
 | `push <id> [--message <message>] [--directory <directory>]…` | Pushes the branch of each repository of a codespace. With `--message`, the agent first commits the uncommitted changes. |
@@ -186,14 +198,50 @@ When the oracle saves a credential, it reads the user and the expiry date of the
 
 ### Presets
 
-A preset is an `agent.yaml` file. The oracle validates it when you save it. Phase 3 uses only its `git.credentials` section, a list of credential names:
+A preset is an agent configuration with a name. It has an `agent.yaml` file, an optional `AGENTS.md`, and optional skills. The oracle validates the preset when you save it.
+
+The YAML file can name credentials of the oracle:
 
 ```yaml
+llm:
+  default_model: anthropic/claude-sonnet-4-5
+  accounts:
+    anthropic: work
 git:
   credentials: [ghe-work, github-personal]
+environment:
+  secrets:
+    NPM_TOKEN: npm-work
 ```
 
-A codespace with a preset can use these credentials. For each repository, the codespace uses the credential with the smallest scope that matches. If two credentials have the same scope, the first in the list wins.
+- `llm.accounts` gives the model account of each provider. A codespace can use only the providers that have an account. The account must be of the same provider.
+- `git.credentials` is a list of Git credential names.
+- `environment.secrets` gives the secret of each environment variable. Two variables can use the same secret.
+
+All names must exist when you save the preset. The oracle refuses to delete a model account, a Git credential, or a secret while a preset uses it.
+
+The agent sets some sections itself: `allowed_roots`, `socket`, `storage`, `lifecycle`, `worktrees`, `relay.enabled`, `relay.url`, and `environment.env_file`. A preset with one of these sections is not valid. In a preset, the default of `policy.default` is `allow`, because the codespace is the sandbox. The file can set `policy.default: ask`.
+
+The skills are files in skill directories, for example `skills/review/SKILL.md` and `skills/review/scripts/run.sh`. Each skill directory must have a `SKILL.md` file. A preset has up to 200 skill files with up to 512KiB together.
+
+When a preset, a model account, or a secret of a preset changes, the oracle sends `config_changed` with the names of the presets. The codespaces of these presets read the new configuration. New sessions use it at once.
+
+### Model accounts
+
+A model account is a sign-in or an API key for one model provider. It has a name and a provider. The oracle keeps the credentials sealed with the master key and refreshes the tokens.
+
+```sh
+loom-oracle-cli sign-in work --provider anthropic
+loom-oracle-cli set-api-key team --provider openai --key-file key.txt
+```
+
+A provider with a sign-in, such as `anthropic` or `openai-codex`, can have a sign-in account. A custom provider, such as one of type `openai-compatible`, needs an API key account.
+
+A codespace never gets a refresh token. The agent asks the oracle for an access token that is valid for 30 minutes or more. It asks again before the token expires. The oracle refreshes the token of an account only once at a time, so many codespaces can use one account. In a codespace, the agent cannot sign in or sign out. Its status shows the name of the account.
+
+### Git in a codespace
+
+For each repository, the codespace uses the credential of the preset with the smallest scope that matches. If two credentials have the same scope, the first in the list wins.
 
 The codespace configures Git for each provider:
 
@@ -202,6 +250,18 @@ The codespace configures Git for each provider:
 - The Git name and email come from the provider. If the provider has no name, the codespace uses the login of the credential. If the provider is github.com and has no email, the codespace uses the noreply address of the login. For other providers, set the email on the provider. When the codespace has no email for a provider, the oracle shows a warning.
 
 When a provider, a credential, or a preset changes, the oracle sends `git_changed` to the codespaces. They read the new setup.
+
+### Agent configuration in a codespace
+
+The agent of a codespace writes its preset to these files:
+
+- `agent.yaml` goes to `~/.config/loom/agent.yaml`, and `AGENTS.md` goes to `~/.config/loom/AGENTS.md`.
+- The skills go to `~/.config/loom/skills/`.
+- The secrets go to `~/.local/share/loom/secrets.env`, with mode 0600. The agent reads this file as its environment file. The model sees only the variable names.
+
+The agent also reads `AGENTS.md`, `.loom/skills/`, and `.agents/skills/` of each repository of the workspace.
+
+The oracle keeps the notes of each workspace. A new codespace gets the notes of its workspace. When the agent changes its notes, it sends them to the oracle. The agent also sends a summary of each session: the title, the state, and the model.
 
 ## Workspace volumes
 
@@ -271,8 +331,21 @@ Commands of devices:
 | `check_git_credential` | `name` | `credential` |
 | `delete_git_credential` | `name` | |
 | `list_presets` | | `presets` |
-| `set_preset` | `name`, `yaml` | `preset` |
+| `set_preset` | `name`, `yaml`, optional `agents_md` and `files` (each with `path` and `content`) | `preset` |
+| `get_preset` | `name` | `preset`, `files` |
 | `delete_preset` | `name` | |
+| `list_model_accounts` | | `accounts` |
+| `start_model_login` | `account`, `provider`, `method` (`browser` with optional `redirect_uri`, or `device_code`) | `login`, `account`, `provider`, `prompt` |
+| `complete_model_login` | `login`, `input` (`redirect` with `url`, or `code` with `code`) | `account` |
+| `cancel_model_login` | `login` | |
+| `set_model_api_key` | `account`, `provider`, `api_key` | `account` |
+| `delete_model_account` | `name` | |
+| `list_models` | `preset` | `models`, `default_model`, `errors` |
+| `list_secrets` | | `secrets` |
+| `set_secret` | `name`, `value` | `secret` |
+| `delete_secret` | `name` | |
+| `get_workspace_notes`, `set_workspace_notes` | `workspace`, and `text` to set | `workspace`, `text`, `updated_at` |
+| `list_sessions` | optional `codespace` | `sessions` |
 | `search_repositories` | `provider`, `query` | `repositories`, `more`, `errors` |
 | `list_branches` | `provider`, `owner`, `repository` | `branches`, `default_branch`, `more` |
 | `list_workspaces` | | `workspaces` |
@@ -283,7 +356,7 @@ Commands of devices:
 | `create_volume` | `name`, `kind` (`incus` or `directory`), optional `size_mib` or `path` | `volume` |
 | `delete_volume` | `name` | |
 | `list_codespaces` | | `codespaces` |
-| `create_codespace` | `workspace`, optional `preset`, `cpus`, `memory_mib`, `base_branch`, `base_branches` (directory to branch), `client_version` | `codespace`, `warnings` |
+| `create_codespace` | `workspace`, optional `preset`, `cpus`, `memory_mib`, `base_branch`, `base_branches` (directory to branch), `client_version`, `first_message` (`text` and optional `model`) | `codespace`, `warnings` |
 | `close_codespace` | `id` | `codespace` |
 
 The environment of a host has `base_image`, `setup_script`, `variables`, `ca_certificates`, and `docker.registry_mirrors`. All are optional.
@@ -310,19 +383,25 @@ Commands of codespace agents:
 
 | Command | Fields | Result |
 | --- | --- | --- |
-| `subscribe` | | The agent gets `device_keys_changed` and `git_changed`. |
-| `codespace_bundle` | | The repositories, the branch, the keys of the devices, the relay URL, the preset, and the Git setup of each provider. |
+| `subscribe` | | The agent gets `device_keys_changed`, `git_changed`, and `config_changed`. |
+| `codespace_bundle` | | The repositories, the branch, the keys of the devices, the relay URL, the preset, the Git setup of each provider, the agent configuration with the secret values, and the notes. |
 | `codespace_agent` | `address`: `host_id`, `host_key`, `instance` | The relay of the oracle accepts this agent. |
 | `codespace_progress` | `step` | |
 | `codespace_ready` | | |
 | `codespace_failed` | `error` | |
 | `git_credential` | `url` | `token` with `username`, `password`, and `expires_at`, or no token |
+| `model_credentials` | | `sections` (the credential of each provider, without refresh tokens), `accounts`, `valid_secs`, `errors` |
+| `codespace_notes` | `text` | |
+| `session_summaries` | `sessions`, `removed`, `full` | With `full`, the oracle removes the sessions that are not in the list. |
+| `take_first_message` | | `message`, or no message. The oracle gives the first message only once. |
 
 A codespace has one of these states: `provisioning`, `starting`, `ready`, `closing`, `closed`, `failed`, and `lost`.
 
 The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_removed`, `relay_host_changed`, `relay_host_removed`, `host_changed`, `host_removed`, `workspace_changed`, `workspace_removed`, `codespace_changed`, `codespace_progress`, `codespace_removed`, `git_provider_changed`, `git_provider_removed`, `git_credential_changed`, `git_credential_removed`, `preset_changed`, and `preset_removed`. A closed codespace is removed with its workspace or its host. If a client reads the events too slowly, the oracle sends `events_lost`. Then the client reads the lists again.
 
 Volume changes send `volume_changed` and `volume_removed` to devices.
+
+Phase 4 adds these events for devices: `model_account_changed`, `model_account_removed`, `model_login_finished`, `secret_changed`, `secret_removed`, `workspace_notes_changed`, `session_changed`, `session_removed`, and `config_changed`. A device sign-in with a device code ends with `model_login_finished`.
 
 The error codes are `bad_request`, `unknown_command`, `not_found`, `forbidden`, `conflict`, `unavailable`, and `internal`.
 

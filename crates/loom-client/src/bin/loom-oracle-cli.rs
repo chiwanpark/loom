@@ -7,10 +7,11 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use loom_client::oracle_proto::{
-    Codespace, CodespaceState, Device, DockerSettings, Environment, Event, GitCredential,
-    GitCredentialInput, GitProvider, GitProviderInput, Host, Pairing, PairingLink, Preset,
-    ProviderRoute, RelayHost, Repository, Secret, Volume, VolumeInput, VolumeKind, Workspace,
-    WorkspaceVolume,
+    Codespace, CodespaceState, Device, DockerSettings, Environment, Event, FirstMessage,
+    GitCredential, GitCredentialInput, GitProvider, GitProviderInput, Host, ModelAccount,
+    ModelLoginInput, ModelLoginMethod, ModelLoginPrompt, Pairing, PairingLink, Preset, PresetFile,
+    ProviderRoute, RelayHost, Repository, Secret, SecretInfo, Volume, VolumeInput, VolumeKind,
+    Workspace, WorkspaceVolume,
 };
 use loom_client::{
     AccessToken, Client, ClientIdentity, CloseGuardError, NewCodespace, OracleClient,
@@ -170,6 +171,17 @@ enum Command {
         #[arg(long = "base", value_name = "DIRECTORY=BRANCH", value_parser = parse_variable)]
         bases: Vec<(String, String)>,
         #[arg(long)]
+        message: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with = "message",
+            help = "Read the first message from this file; '-' reads standard input"
+        )]
+        message_file: Option<PathBuf>,
+        #[arg(long, value_name = "PROVIDER/MODEL")]
+        model: Option<String>,
+        #[arg(long)]
         no_wait: bool,
     },
     CloseCodespace {
@@ -261,9 +273,75 @@ enum Command {
         name: String,
         #[arg(value_name = "PATH")]
         file: PathBuf,
+        #[arg(long, value_name = "PATH", help = "Set AGENTS.md from this file")]
+        agents_md: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "DIRECTORY",
+            help = "Set the skills from the skill directories in this directory"
+        )]
+        skills: Option<PathBuf>,
+    },
+    ShowPreset {
+        name: String,
     },
     DeletePreset {
         name: String,
+    },
+    Accounts,
+    SignIn {
+        account: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long, help = "Use the device code instead of the browser")]
+        device_code: bool,
+    },
+    SetApiKey {
+        account: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "-",
+            help = "Read the API key from this file; '-' reads standard input"
+        )]
+        key_file: PathBuf,
+    },
+    DeleteAccount {
+        name: String,
+    },
+    Models {
+        preset: String,
+    },
+    Secrets,
+    SetSecret {
+        name: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "-",
+            help = "Read the value from this file; '-' reads standard input"
+        )]
+        value_file: PathBuf,
+    },
+    DeleteSecret {
+        name: String,
+    },
+    Notes {
+        workspace: String,
+    },
+    SetNotes {
+        workspace: String,
+        #[arg(
+            value_name = "PATH",
+            help = "Read the notes from this file; '-' reads standard input"
+        )]
+        file: PathBuf,
+    },
+    Sessions {
+        #[arg(long)]
+        codespace: Option<String>,
     },
     Search {
         provider: String,
@@ -388,20 +466,92 @@ fn parse_volume(text: &str) -> Result<WorkspaceVolume, String> {
 }
 
 fn read_token(path: &Path) -> anyhow::Result<Secret> {
-    let mut text = String::new();
-    if path == Path::new("-") {
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .context("cannot read the token from standard input")?;
-    } else {
-        text = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read the token from {}", path.display()))?;
-    }
+    let text = read_text(path, "the token")?;
     let token = text.trim();
     if token.is_empty() {
         bail!("the token is empty");
     }
     Ok(Secret::new(token))
+}
+
+fn read_text(path: &Path, what: &str) -> anyhow::Result<String> {
+    let mut text = String::new();
+    if path == Path::new("-") {
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .with_context(|| format!("cannot read {what} from standard input"))?;
+    } else {
+        text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {what} from {}", path.display()))?;
+    }
+    Ok(text)
+}
+
+fn read_skills(root: &Path) -> anyhow::Result<Vec<PresetFile>> {
+    fn walk(dir: &Path, prefix: &str, files: &mut Vec<PresetFile>) -> anyhow::Result<()> {
+        let mut entries = std::fs::read_dir(dir)
+            .with_context(|| format!("cannot read {}", dir.display()))?
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let relative = format!("{prefix}/{name}");
+            if entry.file_type()?.is_dir() {
+                walk(&path, &relative, files)?;
+            } else {
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("cannot read {} as text", path.display()))?;
+                files.push(PresetFile {
+                    path: relative,
+                    content,
+                });
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(root, "skills", &mut files)?;
+    Ok(files)
+}
+
+fn print_account(account: &ModelAccount) {
+    let mut marks = vec![account.kind.to_string()];
+    marks.extend(account.email.clone());
+    marks.extend(
+        account
+            .organization
+            .clone()
+            .map(|o| format!("organization {o}")),
+    );
+    if !account.presets.is_empty() {
+        marks.push(format!("presets {}", account.presets.join(", ")));
+    }
+    if let Some(error) = &account.error {
+        marks.push(format!("error: {error}"));
+    }
+    println!(
+        "{}\t{}\t{}",
+        account.name,
+        account.provider,
+        marks.join(", ")
+    );
+}
+
+fn print_secret(secret: &SecretInfo) {
+    let presets = if secret.presets.is_empty() {
+        "no presets".to_owned()
+    } else {
+        format!("presets {}", secret.presets.join(", "))
+    };
+    println!(
+        "{}\t{presets}\tchanged {}",
+        secret.name,
+        time(secret.updated_at)
+    );
 }
 
 async fn connect_codespace(
@@ -792,9 +942,26 @@ fn print_preset(preset: &Preset) {
     } else {
         format!("Git credentials {}", preset.git_credentials.join(", "))
     };
+    let mut parts = vec![credentials];
+    if !preset.model_accounts.is_empty() {
+        let accounts: Vec<String> = preset
+            .model_accounts
+            .iter()
+            .map(|(provider, account)| format!("{provider}={account}"))
+            .collect();
+        parts.push(format!("model accounts {}", accounts.join(", ")));
+    }
+    if !preset.secrets.is_empty() {
+        let names: Vec<&str> = preset.secrets.keys().map(String::as_str).collect();
+        parts.push(format!("secrets {}", names.join(", ")));
+    }
+    if !preset.files.is_empty() {
+        parts.push(format!("{} skill files", preset.files.len()));
+    }
     println!(
-        "{}\t{credentials}\tchanged {}",
+        "{}\t{}\tchanged {}",
         preset.name,
+        parts.join("; "),
         time(preset.updated_at)
     );
 }
@@ -851,6 +1018,45 @@ fn print_event(event: &Event) {
             print_volume(volume);
         }
         Event::VolumeRemoved { name } => println!("volume {name} removed"),
+        Event::ModelAccountChanged { account } => {
+            print!("model account ");
+            print_account(account);
+        }
+        Event::ModelAccountRemoved { name } => println!("model account {name} removed"),
+        Event::ModelLoginFinished {
+            login,
+            account,
+            error,
+        } => match (account, error) {
+            (Some(account), _) => println!("sign-in {login} finished: {}", account.name),
+            (None, Some(error)) => println!("sign-in {login} failed: {error}"),
+            (None, None) => println!("sign-in {login} finished"),
+        },
+        Event::SecretChanged { secret } => {
+            print!("secret ");
+            print_secret(secret);
+        }
+        Event::SecretRemoved { name } => println!("secret {name} removed"),
+        Event::WorkspaceNotesChanged { workspace, .. } => {
+            println!("the notes of workspace {workspace} changed")
+        }
+        Event::SessionChanged { session } => println!(
+            "session {} of codespace {}: {}, {}",
+            session.session.id,
+            session.codespace,
+            session.session.title.as_deref().unwrap_or("no title"),
+            session.session.state
+        ),
+        Event::SessionRemoved { codespace, id } => {
+            println!("session {id} of codespace {codespace} removed")
+        }
+        Event::ConfigChanged { presets } => {
+            if presets.is_empty() {
+                println!("the agent configurations changed")
+            } else {
+                println!("the presets {} changed", presets.join(", "))
+            }
+        }
         Event::DeviceKeysChanged => println!("the device keys changed"),
         Event::GitChanged => println!("the Git setup changed"),
         Event::EventsLost => println!("some events were lost"),
@@ -1204,8 +1410,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             memory,
             branch,
             bases,
+            message,
+            message_file,
+            model,
             no_wait,
         } => {
+            let text = match (message, message_file) {
+                (Some(text), _) => Some(text),
+                (None, Some(path)) => Some(read_text(&path, "the first message")?),
+                (None, None) => None,
+            };
+            if model.is_some() && text.is_none() {
+                bail!("--model needs --message or --message-file");
+            }
+            let first_message = text.map(|text| FirstMessage { text, model });
             if !no_wait {
                 client.subscribe().await?;
             }
@@ -1218,6 +1436,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     base_branch: branch,
                     base_branches: bases.into_iter().collect::<BTreeMap<_, _>>(),
                     client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                    first_message,
                 })
                 .await?;
             for warning in &created.warnings {
@@ -1379,19 +1598,215 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             presets.iter().for_each(print_preset);
         }
-        Command::SetPreset { name, file } => {
+        Command::SetPreset {
+            name,
+            file,
+            agents_md,
+            skills,
+        } => {
             let yaml = std::fs::read_to_string(&file)
                 .with_context(|| format!("cannot read {}", file.display()))?;
-            let preset = client.set_preset(&name, &yaml).await?;
+            let agents_md = agents_md
+                .as_deref()
+                .map(|path| read_text(path, "AGENTS.md"))
+                .transpose()?;
+            let files = skills.as_deref().map(read_skills).transpose()?;
+            let preset = client
+                .set_full_preset(&name, &yaml, agents_md.as_deref(), files)
+                .await?;
             if json {
                 return print_json(&preset);
             }
             print_preset(&preset);
         }
+        Command::ShowPreset { name } => {
+            let detail = client.preset(&name).await?;
+            if json {
+                return print_json(&detail);
+            }
+            print_preset(&detail.preset);
+            println!("--- YAML\n{}", detail.preset.yaml.trim_end());
+            if !detail.preset.agents_md.is_empty() {
+                println!("--- AGENTS.md\n{}", detail.preset.agents_md.trim_end());
+            }
+            for file in &detail.files {
+                println!("--- {}\n{}", file.path, file.content.trim_end());
+            }
+        }
         Command::DeletePreset { name } => {
             client.delete_preset(&name).await?;
             if !json {
                 println!("deleted preset {name}");
+            }
+        }
+        Command::Accounts => {
+            let accounts = client.model_accounts().await?;
+            if json {
+                return print_json(&accounts);
+            }
+            accounts.iter().for_each(print_account);
+        }
+        Command::SignIn {
+            account,
+            provider,
+            device_code,
+        } => {
+            client.subscribe().await?;
+            let method = if device_code {
+                ModelLoginMethod::DeviceCode
+            } else {
+                ModelLoginMethod::Browser { redirect_uri: None }
+            };
+            let login = client
+                .start_model_login(&account, &provider, method)
+                .await?;
+            let account = match &login.prompt {
+                ModelLoginPrompt::OpenUrl { url, .. } => {
+                    eprintln!(
+                        "Open this URL, sign in, and paste the code or the URL that you get:"
+                    );
+                    eprintln!("{url}");
+                    let mut line = String::new();
+                    std::io::stdin()
+                        .read_line(&mut line)
+                        .context("cannot read the code")?;
+                    let line = line.trim().to_owned();
+                    let input = if line.starts_with("http://") || line.starts_with("https://") {
+                        ModelLoginInput::Redirect { url: line }
+                    } else {
+                        ModelLoginInput::Code { code: line }
+                    };
+                    client.complete_model_login(&login.login, input).await?
+                }
+                ModelLoginPrompt::DeviceCode {
+                    user_code,
+                    verification_uri,
+                    ..
+                } => {
+                    eprintln!("Open {verification_uri} and enter the code {user_code}.");
+                    loop {
+                        let event = tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {
+                                let _ = client.cancel_model_login(&login.login).await;
+                                bail!("stopped the sign-in");
+                            }
+                            event = events.recv() => event,
+                        };
+                        match event {
+                            None => bail!("lost the connection to the oracle"),
+                            Some(Event::ModelLoginFinished {
+                                login: finished,
+                                account,
+                                error,
+                            }) if finished == login.login => match (account, error) {
+                                (Some(account), _) => break account,
+                                (None, error) => bail!(
+                                    "the sign-in failed: {}",
+                                    error.unwrap_or_else(|| "no reason".into())
+                                ),
+                            },
+                            Some(_) => {}
+                        }
+                    }
+                }
+                ModelLoginPrompt::Unknown => bail!("the oracle asks for an unknown sign-in"),
+            };
+            if json {
+                return print_json(&account);
+            }
+            print_account(&account);
+        }
+        Command::SetApiKey {
+            account,
+            provider,
+            key_file,
+        } => {
+            let key = read_token(&key_file)?;
+            let account = client
+                .set_model_api_key(&account, &provider, key.expose())
+                .await?;
+            if json {
+                return print_json(&account);
+            }
+            print_account(&account);
+        }
+        Command::DeleteAccount { name } => {
+            client.delete_model_account(&name).await?;
+            if !json {
+                println!("deleted model account {name}");
+            }
+        }
+        Command::Models { preset } => {
+            let models = client.models(&preset).await?;
+            if json {
+                return print_json(&models);
+            }
+            for error in &models.errors {
+                eprintln!("warning: {error}");
+            }
+            for model in &models.models {
+                let default = models.default_model.as_deref() == Some(model.id.as_str());
+                println!(
+                    "{}\t{}{}",
+                    model.id,
+                    model.account.as_deref().unwrap_or("-"),
+                    if default { "\tdefault" } else { "" }
+                );
+            }
+        }
+        Command::Secrets => {
+            let secrets = client.secrets().await?;
+            if json {
+                return print_json(&secrets);
+            }
+            secrets.iter().for_each(print_secret);
+        }
+        Command::SetSecret { name, value_file } => {
+            let value = read_text(&value_file, "the secret")?;
+            let value = value.strip_suffix('\n').unwrap_or(&value);
+            let secret = client.set_secret(&name, value).await?;
+            if json {
+                return print_json(&secret);
+            }
+            print_secret(&secret);
+        }
+        Command::DeleteSecret { name } => {
+            client.delete_secret(&name).await?;
+            if !json {
+                println!("deleted secret {name}");
+            }
+        }
+        Command::Notes { workspace } => {
+            let notes = client.workspace_notes(&workspace).await?;
+            if json {
+                return print_json(&notes);
+            }
+            print!("{}", notes.text);
+        }
+        Command::SetNotes { workspace, file } => {
+            let text = read_text(&file, "the notes")?;
+            let notes = client.set_workspace_notes(&workspace, &text).await?;
+            if json {
+                return print_json(&notes);
+            }
+            println!("set the notes of workspace {}", notes.workspace);
+        }
+        Command::Sessions { codespace } => {
+            let sessions = client.sessions(codespace.as_deref()).await?;
+            if json {
+                return print_json(&sessions);
+            }
+            for entry in &sessions {
+                let session = &entry.session;
+                println!(
+                    "{}\t{}\t{}\t{}{}\tchanged {}",
+                    entry.codespace,
+                    session.id,
+                    session.state,
+                    session.title.as_deref().unwrap_or("-"),
+                    if session.archived { " (archived)" } else { "" },
+                    time(session.updated_at)
+                );
             }
         }
         Command::Search { provider, query } => {

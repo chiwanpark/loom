@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use loom_agent_core::{
-    Agent, AgentOptions, Observers, Repositories, SessionObserver, TelemetryReport, watch_config,
+    Agent, AgentOptions, ConfigLoader, Observers, Repositories, SessionObserver, TelemetryReport,
+    watch_config,
 };
 use loom_config::{AgentConfig, Dirs};
 use loom_crypto::HostIdentity;
@@ -31,11 +32,15 @@ pub struct ServeOptions {
     pub dirs: Dirs,
     pub ready: Option<oneshot::Sender<Started>>,
     pub repositories: Option<Arc<dyn Repositories>>,
+    pub credentials: Option<CredentialStore>,
+    pub config_loader: Option<ConfigLoader>,
+    pub repository_dirs: Vec<PathBuf>,
 }
 
 pub struct Started {
     pub instance: InstanceId,
     pub relay: Option<watch::Receiver<LinkState>>,
+    pub agent: Agent,
 }
 
 /// How an agent ended.
@@ -66,6 +71,9 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         dirs,
         ready,
         repositories,
+        credentials,
+        config_loader,
+        repository_dirs,
     } = options;
     let workspace = resolve_workspace(workspace.as_deref(), &config, &dirs)?;
     let instance = new_instance_id();
@@ -91,11 +99,17 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         HostIdentity::load_or_create(&data_dir).context("could not load the host identity")?,
     );
     let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
-    let user = telemetry_user(&config, &data_dir).await;
+    let store = credentials
+        .clone()
+        .unwrap_or_else(|| CredentialStore::in_dir(&data_dir));
+    let user = telemetry_user(&config, store).await;
     let (telemetry, report) = start_telemetry(&config, &instance, &workspace, user);
     let mut options = AgentOptions::new(&workspace, config, dirs.clone());
     options.config_path = Some(config_path.clone());
     options.sandbox_exe = std::env::current_exe().ok();
+    options.credentials = credentials;
+    options.config_loader = config_loader;
+    options.repository_dirs = repository_dirs;
     // Notifications go through the relay, so only an agent with one sends them.
     let (push_observer, push_events) = match relay_endpoint {
         Some(_) => {
@@ -154,7 +168,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         updating: tokio::sync::Mutex::new(()),
     };
     let ctx = ServerContext {
-        agent,
+        agent: agent.clone(),
         info,
         supervisor: Some(Arc::new(supervisor)),
         host_keys: Some(host_keys.clone()),
@@ -186,6 +200,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         let _ = ready.send(Started {
             instance: InstanceId(instance.clone()),
             relay: relay_state,
+            agent,
         });
     }
     let signals = shutdown.clone();
@@ -259,7 +274,7 @@ fn start_telemetry(
 /// configuration, else from the Anthropic sign-in; the email comes last
 /// from `git config --global user.email`. The agent reads them when it
 /// starts.
-async fn telemetry_user(config: &AgentConfig, data_dir: &Path) -> UserIdentity {
+async fn telemetry_user(config: &AgentConfig, store: CredentialStore) -> UserIdentity {
     let telemetry = &config.telemetry;
     let mut user = UserIdentity {
         email: telemetry.user_email.clone(),
@@ -269,7 +284,7 @@ async fn telemetry_user(config: &AgentConfig, data_dir: &Path) -> UserIdentity {
     if !telemetry.enabled {
         return user;
     }
-    let auth = Auth::new(CredentialStore::in_dir(data_dir), loom_llm::http_client());
+    let auth = Auth::new(store, loom_llm::http_client());
     match auth.account_identity(&ProviderId::from("anthropic")).await {
         Ok(Some(account)) => {
             user.email = user.email.or(account.email);
@@ -346,7 +361,7 @@ mod tests {
         config.telemetry.enabled = true;
         config.telemetry.user_email = Some("set@example.com".into());
         assert_eq!(
-            telemetry_user(&config, dir.path()).await,
+            telemetry_user(&config, CredentialStore::in_dir(dir.path())).await,
             UserIdentity {
                 email: Some("set@example.com".into()),
                 account_uuid: Some("account-1".into()),
@@ -356,7 +371,7 @@ mod tests {
 
         // Without telemetry, the agent does not look at the sign-in.
         config.telemetry.enabled = false;
-        let user = telemetry_user(&config, dir.path()).await;
+        let user = telemetry_user(&config, CredentialStore::in_dir(dir.path())).await;
         assert_eq!(user.account_uuid, None);
     }
 }

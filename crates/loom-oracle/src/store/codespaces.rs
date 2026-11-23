@@ -51,6 +51,7 @@ pub struct CodespaceRow {
     pub agent: Option<AgentAddress>,
     pub step: Option<String>,
     pub error: Option<String>,
+    pub first_message: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -150,7 +151,8 @@ fn host_row((peer, report, reported_at, environment): RawHost) -> StoreResult<Ho
 
 const CODESPACE_SELECT: &str = "SELECT c.id, c.workspace, w.name, c.host, p.label, c.peer, \
      c.state, c.cpus, c.memory_mib, c.instance, c.branch, c.base_branch, c.client_version, \
-     c.agent, c.step, c.error, c.created_at, c.updated_at, c.preset, s.name, c.repositories \
+     c.agent, c.step, c.error, c.created_at, c.updated_at, c.preset, s.name, c.repositories, \
+     c.first_message \
      FROM codespaces c JOIN workspaces w ON w.id = c.workspace JOIN peers p ON p.id = c.host \
      LEFT JOIN presets s ON s.id = c.preset";
 
@@ -178,6 +180,7 @@ fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
             agent: None,
             step: row.get(14)?,
             error: row.get(15)?,
+            first_message: row.get(21)?,
             created_at: to_u64(row.get(16)?),
             updated_at: to_u64(row.get(17)?),
         },
@@ -545,8 +548,8 @@ impl Store {
         tx.execute(
             "INSERT INTO codespaces (id, workspace, host, peer, state, cpus, memory_mib, instance,
                  branch, base_branch, client_version, agent, step, error, created_at, updated_at,
-                 preset, repositories)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                 preset, repositories, first_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 row.id,
                 to_i64(row.workspace),
@@ -566,6 +569,7 @@ impl Store {
                 to_i64(row.updated_at),
                 row.preset.map(to_i64),
                 to_json(&row.repositories),
+                row.first_message,
             ],
         )?;
         put_codespace_volumes(&tx, &row.id, row.host, volumes)?;
@@ -634,6 +638,7 @@ mod tests {
             agent: None,
             step: None,
             error: None,
+            first_message: None,
             created_at: 1,
             updated_at: 1,
         }

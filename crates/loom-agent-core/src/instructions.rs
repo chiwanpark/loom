@@ -38,6 +38,7 @@ pub struct PromptInputs<'a> {
     pub base: Option<&'a str>,
     pub system_agents_md: &'a Path,
     pub workspace_root: &'a Path,
+    pub repository_dirs: &'a [PathBuf],
     pub max_bytes: usize,
     pub tools: &'a [ToolSpec],
     /// The skills to list, if any.
@@ -59,13 +60,21 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
     let mut sections = vec![base.trim_end().to_owned()];
     let mut warnings = Vec::new();
     let workspace_md = inputs.workspace_root.join(AGENTS_MD);
-    for (label, path) in [
+    let mut files = vec![
         (
-            "System-wide instructions",
+            "System-wide instructions".to_owned(),
             inputs.system_agents_md.to_path_buf(),
         ),
-        ("Workspace instructions", workspace_md),
-    ] {
+        ("Workspace instructions".to_owned(), workspace_md),
+    ];
+    files.extend(
+        inputs
+            .repository_dirs
+            .iter()
+            .filter(|dir| dir.as_path() != inputs.workspace_root)
+            .map(|dir| ("Repository instructions".to_owned(), dir.join(AGENTS_MD))),
+    );
+    for (label, path) in files {
         match read_capped(&path, inputs.max_bytes).await {
             Ok(Some((text, truncated))) => {
                 if truncated {
@@ -271,6 +280,7 @@ mod tests {
                     base: None,
                     system_agents_md: &missing,
                     workspace_root: &dir,
+                    repository_dirs: &[],
                     max_bytes: 1024,
                     tools: &tools,
                     skills: None,
@@ -307,6 +317,7 @@ mod tests {
                     base: None,
                     system_agents_md: &missing,
                     workspace_root: &dir,
+                    repository_dirs: &[],
                     max_bytes: 1024,
                     tools: &tools,
                     skills: None,
@@ -347,6 +358,10 @@ mod tests {
         std::fs::create_dir(&workspace).unwrap();
         std::fs::write(&system, "SYSTEM RULE").unwrap();
         std::fs::write(workspace.join("AGENTS.md"), "WORKSPACE RULE").unwrap();
+        let api = workspace.join("api");
+        std::fs::create_dir(&api).unwrap();
+        std::fs::write(api.join("AGENTS.md"), "REPOSITORY RULE").unwrap();
+        let repositories = [workspace.clone(), api.clone(), workspace.join("web")];
         let tools = tools();
         let catalog = Catalog {
             skills: vec![crate::skills::Skill {
@@ -368,6 +383,7 @@ mod tests {
             base: None,
             system_agents_md: &system,
             workspace_root: &workspace,
+            repository_dirs: &repositories,
             max_bytes: 1024,
             tools: &tools,
             skills: Some(&catalog),
@@ -386,10 +402,17 @@ mod tests {
         let builtin = text.find("You are Loom").unwrap();
         let sys = text.find("SYSTEM RULE").unwrap();
         let ws = text.find("WORKSPACE RULE").unwrap();
+        let repository = text.find("REPOSITORY RULE").unwrap();
         let skills = text.find("# Skills").unwrap();
         let vars = text.find("# Environment variables").unwrap();
         let env = text.find("# Environment\n").unwrap();
-        assert!(builtin < sys && sys < ws && ws < skills && skills < vars && vars < env);
+        assert!(builtin < sys && sys < ws && ws < repository && repository < skills);
+        assert!(skills < vars && vars < env);
+        assert_eq!(text.matches("WORKSPACE RULE").count(), 1);
+        assert!(text.contains(&format!(
+            "# Repository instructions ({})",
+            api.join("AGENTS.md").display()
+        )));
         assert!(text.contains("- Secret: `LAKECTL_SECRET`."));
         assert!(text.contains("- Not secret: `AWS_REGION`."));
         assert!(text.contains("\n- pdf: PDF files."));
@@ -405,6 +428,7 @@ mod tests {
             base: None,
             system_agents_md: &system,
             workspace_root: &workspace,
+            repository_dirs: &[],
             max_bytes: 1024,
             tools: &tools,
             skills,
@@ -428,6 +452,7 @@ mod tests {
             base: None,
             system_agents_md: &dir.path().join("missing.md"),
             workspace_root: dir.path(),
+            repository_dirs: &[],
             max_bytes: 7,
             tools: &tools,
             skills: None,
@@ -453,6 +478,7 @@ mod tests {
             base: Some("You are a careful reviewer.\n"),
             system_agents_md: &dir.path().join("missing.md"),
             workspace_root: dir.path(),
+            repository_dirs: &[],
             max_bytes: 1024,
             tools: &tools,
             skills: None,

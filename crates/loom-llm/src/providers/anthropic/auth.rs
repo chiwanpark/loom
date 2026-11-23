@@ -33,8 +33,8 @@ pub(super) struct Credential {
 }
 
 impl Credential {
-    pub fn is_fresh(&self) -> bool {
-        !self.access_token.is_empty() && self.expires_at > now_unix().saturating_add(300)
+    pub fn is_fresh(&self, margin_secs: u64) -> bool {
+        !self.access_token.is_empty() && self.expires_at > now_unix().saturating_add(margin_secs)
     }
 }
 

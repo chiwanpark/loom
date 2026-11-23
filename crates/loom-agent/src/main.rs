@@ -259,9 +259,10 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
     let ctx = Ctx { dirs, config_path };
     match cli.command {
         CliCommand::Serve(args) => {
-            let config = ctx.load()?;
-            init_logging(level_name(config.logging.level));
             if args.managed {
+                let config =
+                    AgentConfig::read_preset(&ctx.config_path, &ctx.dirs).unwrap_or_default();
+                init_logging(level_name(config.logging.level));
                 let served = serve_managed(ManagedOptions {
                     bootstrap: args.bootstrap,
                     config_path: ctx.config_path,
@@ -274,6 +275,8 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                     Served::Restart(exe) => Err(restart(&exe)),
                 };
             }
+            let config = ctx.load()?;
+            init_logging(level_name(config.logging.level));
             let workspace = if args.default { None } else { args.workspace };
             if workspace.is_none() && !args.default {
                 bail!("pass --workspace <path> or --default");
@@ -285,6 +288,9 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                 dirs: ctx.dirs,
                 ready: None,
                 repositories: None,
+                credentials: None,
+                config_loader: None,
+                repository_dirs: Vec::new(),
             })
             .await?;
             match served {

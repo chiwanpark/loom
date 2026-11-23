@@ -6,10 +6,12 @@ use serde_json::Value;
 
 mod codespace;
 mod git;
+mod preset;
 mod volume;
 
 pub use codespace::*;
 pub use git::*;
+pub use preset::*;
 pub use volume::*;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -127,6 +129,8 @@ pub enum Command {
         base_branches: BTreeMap<String, String>,
         #[serde(default)]
         client_version: Option<String>,
+        #[serde(default)]
+        first_message: Option<FirstMessage>,
     },
     CloseCodespace {
         id: String,
@@ -148,6 +152,13 @@ pub enum Command {
     SetPreset {
         name: String,
         yaml: String,
+        #[serde(default)]
+        agents_md: Option<String>,
+        #[serde(default)]
+        files: Option<Vec<PresetFile>>,
+    },
+    GetPreset {
+        name: String,
     },
     DeletePreset {
         name: String,
@@ -191,6 +202,62 @@ pub enum Command {
     GitCredential {
         url: String,
     },
+    ListModelAccounts,
+    StartModelLogin {
+        account: String,
+        provider: String,
+        method: ModelLoginMethod,
+    },
+    CompleteModelLogin {
+        login: String,
+        input: ModelLoginInput,
+    },
+    CancelModelLogin {
+        login: String,
+    },
+    SetModelApiKey {
+        account: String,
+        provider: String,
+        api_key: Secret,
+    },
+    DeleteModelAccount {
+        name: String,
+    },
+    ListModels {
+        preset: String,
+    },
+    ListSecrets,
+    SetSecret {
+        name: String,
+        value: Secret,
+    },
+    DeleteSecret {
+        name: String,
+    },
+    GetWorkspaceNotes {
+        workspace: String,
+    },
+    SetWorkspaceNotes {
+        workspace: String,
+        text: String,
+    },
+    ListSessions {
+        #[serde(default)]
+        codespace: Option<String>,
+    },
+    ModelCredentials,
+    CodespaceNotes {
+        text: String,
+    },
+    SessionSummaries {
+        #[serde(default)]
+        sessions: Vec<SessionSummary>,
+        #[serde(default)]
+        removed: Vec<String>,
+        #[serde(default)]
+        full: bool,
+    },
+    TakeFirstMessage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -424,6 +491,41 @@ pub enum Event {
     },
     VolumeRemoved {
         name: String,
+    },
+    ModelAccountChanged {
+        account: ModelAccount,
+    },
+    ModelAccountRemoved {
+        name: String,
+    },
+    ModelLoginFinished {
+        login: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<ModelAccount>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    SecretChanged {
+        secret: SecretInfo,
+    },
+    SecretRemoved {
+        name: String,
+    },
+    WorkspaceNotesChanged {
+        workspace: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        updated_at: Option<u64>,
+    },
+    SessionChanged {
+        session: CodespaceSession,
+    },
+    SessionRemoved {
+        codespace: String,
+        id: String,
+    },
+    ConfigChanged {
+        #[serde(default)]
+        presets: Vec<String>,
     },
     DeviceKeysChanged,
     GitChanged,

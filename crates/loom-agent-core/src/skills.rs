@@ -64,11 +64,15 @@ impl SkillSources {
 
     /// The directories of skills, the first ones winning over later ones
     /// with skills of the same name.
-    fn roots(&self, workspace: &Path) -> Vec<PathBuf> {
+    fn roots(&self, workspace: &Path, repositories: &[PathBuf]) -> Vec<PathBuf> {
         let mut roots = vec![
             workspace.join(".loom/skills"),
             workspace.join(".agents/skills"),
         ];
+        for repository in repositories.iter().filter(|dir| dir.as_path() != workspace) {
+            roots.push(repository.join(".loom/skills"));
+            roots.push(repository.join(".agents/skills"));
+        }
         roots.extend(self.user_dirs.iter().cloned());
         roots.extend(self.config.paths.iter().map(|path| workspace.join(path)));
         roots
@@ -77,12 +81,16 @@ impl SkillSources {
     /// The skills for a session in `workspace`. Reads the directories again
     /// each time, so that new and changed skills apply at once.
     pub fn discover(&self, workspace: &Path) -> Catalog {
+        self.discover_with(workspace, &[])
+    }
+
+    pub fn discover_with(&self, workspace: &Path, repositories: &[PathBuf]) -> Catalog {
         let mut catalog = Catalog::default();
         if !self.config.enabled {
             return catalog;
         }
         let mut found: BTreeMap<String, Skill> = BTreeMap::new();
-        for root in self.roots(workspace) {
+        for root in self.roots(workspace, repositories) {
             for dir in skill_dirs(&root) {
                 match load(&dir) {
                     Ok(skill) => {
@@ -555,6 +563,37 @@ mod tests {
             "{section}"
         );
         assert!(section.contains("\n- review: Project review."), "{section}");
+    }
+
+    #[test]
+    fn each_repository_has_skills_after_the_workspace() {
+        let env = env();
+        let api = env.workspace.join("api");
+        write_skill(
+            &api.join(".agents/skills"),
+            "deploy",
+            "name: deploy\ndescription: Deploy the API.",
+            "api",
+        );
+        write_skill(
+            &api.join(".loom/skills"),
+            "review",
+            "name: review\ndescription: API review.",
+            "api review",
+        );
+        write_skill(
+            &env.home.join(".config/loom/skills"),
+            "review",
+            "name: review\ndescription: User review.",
+            "user",
+        );
+        let sources = sources(&env, SkillsConfig::default());
+        let catalog = sources.discover_with(&env.workspace, &[env.workspace.clone(), api]);
+        let names: Vec<&str> = catalog.skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["deploy", "review"]);
+        assert_eq!(catalog.get("review").unwrap().description, "API review.");
+        let alone = sources.discover(&env.workspace);
+        assert_eq!(alone.get("review").unwrap().description, "User review.");
     }
 
     #[test]

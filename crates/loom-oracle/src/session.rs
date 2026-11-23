@@ -6,10 +6,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use loom_oracle_proto::{
     ClientMessage, CodespaceResult, Codespaces, Command, DeviceResult, Devices, Empty, ErrorCode,
-    Event, GitCredentialResult, GitCredentials, GitProviderResult, GitProviders, HostResult, Hosts,
-    InvalidMessage, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets,
-    RelayHostResult, RelayHosts, Request, Response, Role, ServerHello, ServerMessage, VolumeResult,
-    Volumes, WorkspaceResult, Workspaces, encode, parse_client_message,
+    Event, FirstMessageResult, GitCredentialResult, GitCredentials, GitProviderResult,
+    GitProviders, HostResult, Hosts, InvalidMessage, ModelAccountResult, ModelAccounts,
+    OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets, RelayHostResult,
+    RelayHosts, Request, Response, Role, SecretResult, Secrets, ServerHello, ServerMessage,
+    Sessions, VolumeResult, Volumes, WorkspaceResult, Workspaces, encode, parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
 use serde::Serialize;
@@ -58,7 +59,10 @@ fn shown_to(role: Role, event: &Event) -> bool {
         Role::Device => !matches!(event, Event::DeviceKeysChanged | Event::GitChanged),
         Role::Codespace => matches!(
             event,
-            Event::DeviceKeysChanged | Event::GitChanged | Event::EventsLost
+            Event::DeviceKeysChanged
+                | Event::GitChanged
+                | Event::ConfigChanged { .. }
+                | Event::EventsLost
         ),
         _ => false,
     }
@@ -256,11 +260,20 @@ impl Session {
     }
 
     fn later(&self, command: Command) -> Result<Later, Box<Command>> {
+        let oracle = self.oracle.clone();
+        let me = Some(self.peer.id);
+        if self.peer.role == Role::Codespace {
+            let peer = self.peer.id;
+            return match command {
+                Command::ModelCredentials => Ok(Box::pin(async move {
+                    ok(oracle.model_credentials(peer).await?)
+                })),
+                other => Err(Box::new(other)),
+            };
+        }
         if self.peer.role != Role::Device {
             return Err(Box::new(command));
         }
-        let oracle = self.oracle.clone();
-        let me = Some(self.peer.id);
         Ok(match command {
             Command::CreateWorkspace {
                 name,
@@ -304,6 +317,7 @@ impl Session {
                 base_branch,
                 base_branches,
                 client_version,
+                first_message,
             } => Box::pin(async move {
                 let args = NewCodespaceArgs {
                     workspace,
@@ -313,6 +327,7 @@ impl Session {
                     base_branch,
                     base_branches,
                     client_version,
+                    first_message,
                 };
                 let (codespace, warnings) = oracle.create_codespace(args, me).await?;
                 ok(CodespaceResult {
@@ -346,6 +361,34 @@ impl Session {
                 oracle.delete_volume(&name, me).await?;
                 ok(Empty {})
             }),
+            Command::StartModelLogin {
+                account,
+                provider,
+                method,
+            } => Box::pin(async move {
+                ok(oracle
+                    .start_model_login(&account, &provider, method, me)
+                    .await?)
+            }),
+            Command::CompleteModelLogin { login, input } => Box::pin(async move {
+                ok(ModelAccountResult {
+                    account: oracle.complete_model_login(&login, input, me).await?,
+                })
+            }),
+            Command::SetModelApiKey {
+                account,
+                provider,
+                api_key,
+            } => Box::pin(async move {
+                ok(ModelAccountResult {
+                    account: oracle
+                        .set_model_api_key(&account, &provider, &api_key, me)
+                        .await?,
+                })
+            }),
+            Command::ListModels { preset } => {
+                Box::pin(async move { ok(oracle.list_models(&preset).await?) })
+            }
             other => return Err(Box::new(other)),
         })
     }
@@ -402,6 +445,22 @@ impl Session {
                 ok(Empty {})
             }
             Command::GitCredential { url } => ok(self.oracle.git_token(me, &url)?),
+            Command::CodespaceNotes { text } => {
+                self.oracle.codespace_notes(me, &text)?;
+                ok(Empty {})
+            }
+            Command::SessionSummaries {
+                sessions,
+                removed,
+                full,
+            } => {
+                self.oracle
+                    .session_summaries(me, &sessions, &removed, full)?;
+                ok(Empty {})
+            }
+            Command::TakeFirstMessage => ok(FirstMessageResult {
+                message: self.oracle.take_first_message(me)?,
+            }),
             _ => Err(forbidden(self.peer.role, "devices")),
         }
     }
@@ -490,13 +549,53 @@ impl Session {
             Command::ListPresets => ok(Presets {
                 presets: oracle.presets()?,
             }),
-            Command::SetPreset { name, yaml } => ok(PresetResult {
-                preset: oracle.set_preset(&name, &yaml, me)?,
+            Command::SetPreset {
+                name,
+                yaml,
+                agents_md,
+                files,
+            } => ok(PresetResult {
+                preset: oracle.set_preset(
+                    &name,
+                    &yaml,
+                    agents_md.as_deref(),
+                    files.as_deref(),
+                    me,
+                )?,
             }),
+            Command::GetPreset { name } => ok(oracle.preset_detail(&name)?),
             Command::DeletePreset { name } => {
                 oracle.delete_preset(&name, me)?;
                 ok(Empty {})
             }
+            Command::ListModelAccounts => ok(ModelAccounts {
+                accounts: oracle.model_accounts()?,
+            }),
+            Command::CancelModelLogin { login } => {
+                oracle.cancel_model_login(&login)?;
+                ok(Empty {})
+            }
+            Command::DeleteModelAccount { name } => {
+                oracle.delete_model_account(&name, me)?;
+                ok(Empty {})
+            }
+            Command::ListSecrets => ok(Secrets {
+                secrets: oracle.secrets()?,
+            }),
+            Command::SetSecret { name, value } => ok(SecretResult {
+                secret: oracle.set_secret(&name, &value, me)?,
+            }),
+            Command::DeleteSecret { name } => {
+                oracle.delete_secret(&name, me)?;
+                ok(Empty {})
+            }
+            Command::GetWorkspaceNotes { workspace } => ok(oracle.workspace_notes(&workspace)?),
+            Command::SetWorkspaceNotes { workspace, text } => {
+                ok(oracle.set_workspace_notes(&workspace, &text, me)?)
+            }
+            Command::ListSessions { codespace } => ok(Sessions {
+                sessions: oracle.sessions(codespace.as_deref())?,
+            }),
             Command::ListVolumes => ok(Volumes {
                 volumes: oracle.volumes()?,
             }),

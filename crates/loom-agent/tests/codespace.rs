@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loom_client::oracle_proto::{
-    Codespace, CodespaceState, GitCredentialInput, GitProviderInput, ProviderRoute, Repository,
+    Codespace, CodespaceState, FirstMessage, GitCredentialInput, GitProviderInput, ModelAccount,
+    ModelLoginInput, ModelLoginMethod, ModelLoginPrompt, PresetFile, ProviderRoute, Repository,
     Role, Secret,
 };
 use loom_client::{
@@ -13,10 +14,11 @@ use loom_client::{
 use loom_config::{Dirs, HostConfig, OracleConfig};
 use loom_host::{AgentCache, Host, JoinOptions, ProcessDriver, join};
 use loom_oracle::Oracle;
-use loom_proto::PushRepositories;
+use loom_proto::{LoginMethod, PolicyAction, PushRepositories};
+use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
-use wiremock::matchers::{header, method, path, path_regex};
+use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const BIN: &str = env!("CARGO_BIN_EXE_loom-agent");
@@ -331,6 +333,7 @@ struct Env {
     url: String,
     shutdown: CancellationToken,
     laptop: ClientIdentity,
+    oracle: Arc<Oracle>,
     device: OracleClient,
     codespaces: PathBuf,
     _agents: Agents,
@@ -412,6 +415,7 @@ async fn start(root: &Path) -> Env {
         url,
         shutdown,
         laptop,
+        oracle,
         device,
         codespaces,
         _agents: agents,
@@ -744,5 +748,333 @@ async fn a_codespace_pushes_and_opens_pull_requests_with_the_credentials_of_its_
 
     device.close_codespace(&ready.id).await.unwrap();
     wait_codespace(device, &ready.id, |c| c.state == CodespaceState::Closed).await;
+    env.shutdown.cancel();
+}
+
+fn answer(text: &str) -> ResponseTemplate {
+    let events = [
+        json!({"type": "message_start", "message": {"id": "m", "model": "claude-test", "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
+        json!({"type": "message_stop"}),
+    ];
+    let body: String = events
+        .iter()
+        .map(|event| {
+            format!(
+                "event: {}\ndata: {event}\n\n",
+                event["type"].as_str().unwrap()
+            )
+        })
+        .collect();
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body)
+}
+
+async fn sign_in(device: &OracleClient, account: &str, code: &str) -> ModelAccount {
+    let login = device
+        .start_model_login(
+            account,
+            "anthropic",
+            ModelLoginMethod::Browser { redirect_uri: None },
+        )
+        .await
+        .unwrap();
+    let ModelLoginPrompt::OpenUrl { url, .. } = login.prompt else {
+        panic!("not a browser sign-in: {:?}", login.prompt);
+    };
+    let state = url
+        .split(['?', '&'])
+        .find_map(|part| part.strip_prefix("state="))
+        .unwrap();
+    device
+        .complete_model_login(
+            &login.login,
+            ModelLoginInput::Code {
+                code: format!("{code}#{state}"),
+            },
+        )
+        .await
+        .unwrap()
+}
+
+async fn wait_for<T>(what: &str, mut check: impl AsyncFnMut() -> Option<T>) -> T {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        if let Some(found) = check().await {
+            return found;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn model_request(llm: &MockServer, text: &str) -> wiremock::Request {
+    wait_for(
+        &format!("no request to the model has {text:?}"),
+        async || {
+            llm.received_requests()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|request| {
+                    request.url.path() == "/v1/messages"
+                        && String::from_utf8_lossy(&request.body).contains(text)
+                })
+        },
+    )
+    .await
+}
+
+fn bearer(request: &wiremock::Request) -> String {
+    request
+        .headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codespace_starts_its_first_turn_with_the_model_account_of_its_preset() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let public = root.join("public");
+    bare_repository(&root, &public, "app", "README.md").await;
+    let files = serve_git(public, None).await;
+    let llm = MockServer::start().await;
+    let token = |code: &str, access: &str, refresh: &str, expires: u64, who: &str| {
+        Mock::given(method("POST"))
+            .and(path("/v1/oauth/token"))
+            .and(body_partial_json(
+                json!({"grant_type": "authorization_code", "code": code}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access, "refresh_token": refresh, "expires_in": expires,
+                "account": {"uuid": format!("account-{who}"), "email_address": format!("{who}@example.com")},
+                "organization": {"uuid": format!("org-{who}"), "name": who},
+            })))
+            .expect(1)
+    };
+    token("work-code", "access-work-1", "refresh-work-1", 600, "work")
+        .mount(&llm)
+        .await;
+    token(
+        "personal-code",
+        "access-personal-1",
+        "refresh-personal-1",
+        3600,
+        "personal",
+    )
+    .mount(&llm)
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .and(body_partial_json(
+            json!({"grant_type": "refresh_token", "refresh_token": "refresh-work-1"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "access-work-2", "refresh_token": "refresh-work-2", "expires_in": 3600,
+        })))
+        .expect(1)
+        .mount(&llm)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "claude-test", "display_name": "Claude Test"}], "has_more": false,
+        })))
+        .mount(&llm)
+        .await;
+    for (access, text) in [
+        ("access-work-2", "Hi from work"),
+        ("access-personal-1", "Hi from personal"),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("authorization", format!("Bearer {access}").as_str()))
+            .respond_with(answer(text))
+            .mount(&llm)
+            .await;
+    }
+    let env = start(&root).await;
+    env.oracle.set_model_auth_base_url("anthropic", &llm.uri());
+    let (device, url, laptop) = (&env.device, &env.url, &env.laptop);
+
+    let work = sign_in(device, "work", "work-code").await;
+    assert_eq!(work.email.as_deref(), Some("work@example.com"));
+    assert_eq!(work.organization.as_deref(), Some("org-work"));
+    sign_in(device, "personal", "personal-code").await;
+    device.set_secret("npm-work", "npm-token-1").await.unwrap();
+    let preset = |account: &str| {
+        format!(
+            "llm:\n  default_model: anthropic/claude-test\n  accounts:\n    anthropic: {account}\n  providers:\n    anthropic:\n      base_url: {}\nenvironment:\n  secrets:\n    NPM_TOKEN: npm-work\n",
+            llm.uri()
+        )
+    };
+    let skill = PresetFile {
+        path: "skills/review/SKILL.md".into(),
+        content: "---\nname: review\ndescription: Review the work.\n---\nReview it.\n".into(),
+    };
+    device
+        .set_full_preset(
+            "work",
+            &preset("work"),
+            Some("PRESET RULE"),
+            Some(vec![skill]),
+        )
+        .await
+        .unwrap();
+    device
+        .set_full_preset("personal", &preset("personal"), None, None)
+        .await
+        .unwrap();
+    let models = device.models("work").await.unwrap();
+    assert!(models.errors.is_empty(), "{:?}", models.errors);
+    assert_eq!(
+        models.default_model.as_deref(),
+        Some("anthropic/claude-test")
+    );
+    assert!(
+        models
+            .models
+            .iter()
+            .any(|m| m.id == "anthropic/claude-test" && m.account.as_deref() == Some("work"))
+    );
+
+    device
+        .create_workspace("acme", "box", vec![repository(format!("{files}/app.git"))])
+        .await
+        .unwrap();
+    device
+        .set_workspace_notes("acme", "NOTE FROM THE ORACLE")
+        .await
+        .unwrap();
+    let first = |preset: &str, text: &str| NewCodespace {
+        workspace: "acme".into(),
+        preset: Some(preset.into()),
+        cpus: Some(1),
+        memory_mib: Some(512),
+        first_message: Some(FirstMessage {
+            text: text.into(),
+            model: None,
+        }),
+        ..Default::default()
+    };
+    let created = device
+        .create_codespace(first("work", "Hello from work"))
+        .await
+        .unwrap();
+    assert!(created.first_message);
+    let ready = wait_codespace(device, &created.id, |c| c.state == CodespaceState::Ready).await;
+    let request = model_request(&llm, "Hello from work").await;
+    assert_eq!(bearer(&request), "Bearer access-work-2");
+    let body = String::from_utf8_lossy(&request.body).into_owned();
+    assert!(body.contains("PRESET RULE"), "{body}");
+    assert!(body.contains("review: Review the work."), "{body}");
+    assert!(body.contains("`NPM_TOKEN`"), "{body}");
+    assert!(!body.contains("npm-token-1"), "{body}");
+    let taken = wait_codespace(device, &created.id, |c| !c.first_message).await;
+    assert_eq!(taken.state, CodespaceState::Ready);
+
+    let summaries = wait_for("the oracle has no completed session", async || {
+        let sessions = device.sessions(Some(&created.id)).await.unwrap();
+        sessions
+            .iter()
+            .any(|s| s.session.state == "completed")
+            .then_some(sessions)
+    })
+    .await;
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].workspace, "acme");
+
+    let home = env.codespaces.join(&created.instance).join("home");
+    let env_file = home.join(".local/share/loom/secrets.env");
+    assert_eq!(
+        std::fs::read_to_string(&env_file).unwrap(),
+        "NPM_TOKEN='npm-token-1'\n"
+    );
+    assert!(home.join(".config/loom/skills/review/SKILL.md").is_file());
+
+    let agent = connect_agent(url, &ready, laptop).await.unwrap();
+    let sessions = agent.list_sessions().await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].policy_default, PolicyAction::Allow);
+    let providers = agent.list_providers().await.unwrap();
+    let anthropic = providers
+        .iter()
+        .find(|p| p.provider == "anthropic")
+        .unwrap();
+    assert!(anthropic.login_methods.is_empty());
+    assert_eq!(
+        anthropic.accounts[0].label.as_deref(),
+        Some("work (work@example.com)")
+    );
+    assert!(
+        agent
+            .start_login("anthropic", LoginMethod::DeviceCode)
+            .await
+            .is_err()
+    );
+    let notes = agent.notes().await.unwrap();
+    assert_eq!(notes.text, "NOTE FROM THE ORACLE");
+    agent
+        .write_notes("NOTE FROM THE AGENT".into(), notes.version)
+        .await
+        .unwrap();
+    wait_for("the oracle did not get the notes", async || {
+        let notes = device.workspace_notes("acme").await.unwrap();
+        (notes.text == "NOTE FROM THE AGENT").then_some(())
+    })
+    .await;
+
+    device.set_secret("npm-work", "npm-token-2").await.unwrap();
+    wait_for("the agent did not write the new secret", async || {
+        std::fs::read_to_string(&env_file)
+            .unwrap()
+            .contains("npm-token-2")
+            .then_some(())
+    })
+    .await;
+
+    let other = device
+        .create_codespace(first("personal", "Hello from personal"))
+        .await
+        .unwrap();
+    wait_codespace(device, &other.id, |c| c.state == CodespaceState::Ready).await;
+    let request = model_request(&llm, "Hello from personal").await;
+    assert_eq!(bearer(&request), "Bearer access-personal-1");
+    let home = env.codespaces.join(&other.instance).join("home");
+    assert!(!home.join(".config/loom/AGENTS.md").exists());
+
+    device
+        .set_full_preset("work", &preset("personal"), None, None)
+        .await
+        .unwrap();
+    wait_for("the agent did not change its account", async || {
+        let providers = agent.list_providers().await.unwrap();
+        providers
+            .iter()
+            .find(|p| p.provider == "anthropic")
+            .and_then(|p| p.accounts.first())
+            .and_then(|a| a.label.as_deref())
+            .is_some_and(|label| label.starts_with("personal"))
+            .then_some(())
+    })
+    .await;
+    agent
+        .send_text(&sessions[0].id, "Again with personal")
+        .await
+        .unwrap();
+    let request = model_request(&llm, "Again with personal").await;
+    assert_eq!(bearer(&request), "Bearer access-personal-1");
+
+    for id in [&created.id, &other.id] {
+        device.close_codespace(id).await.unwrap();
+        wait_codespace(device, id, |c| c.state == CodespaceState::Closed).await;
+    }
     env.shutdown.cancel();
 }

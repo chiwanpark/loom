@@ -5,9 +5,9 @@ use std::time::Duration;
 use loom_crypto::decode_key;
 use loom_oracle_proto::{
     AgentAddress, Bootstrap, Bundle, CONNECTION_RELAY, Codespace, CodespaceState, CreateInstance,
-    DEFAULT_CPUS, DEFAULT_MEMORY_MIB, DeviceKey, Environment, ErrorCode, Event, Host, HostCall,
-    HostReport, InstanceReport, OracleError, Reply, Repository, Role, ServerMessage, Workspace,
-    WorkspaceVolume, valid_name,
+    DEFAULT_CPUS, DEFAULT_MEMORY_MIB, DeviceKey, Environment, ErrorCode, Event, FirstMessage, Host,
+    HostCall, HostReport, InstanceReport, OracleError, Reply, Repository, Role, ServerMessage,
+    Workspace, WorkspaceVolume, valid_name,
 };
 use loom_proto::relay::HostId;
 use serde_json::Value;
@@ -25,6 +25,7 @@ pub struct NewCodespaceArgs {
     pub base_branch: Option<String>,
     pub base_branches: BTreeMap<String, String>,
     pub client_version: Option<String>,
+    pub first_message: Option<FirstMessage>,
 }
 
 const BOOTSTRAP_TTL: Duration = Duration::from_secs(6 * 3600);
@@ -180,6 +181,7 @@ pub(super) fn codespace(row: &CodespaceRow) -> Codespace {
         agent: row.agent.clone(),
         step: row.step.clone(),
         error: row.error.clone(),
+        first_message: row.first_message.is_some(),
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
@@ -518,6 +520,7 @@ impl Oracle {
             base_branch,
             base_branches,
             client_version,
+            first_message,
         } = args;
         let _workspace_guard = self.workspace_lock.lock().await;
         let workspace = self
@@ -525,6 +528,10 @@ impl Oracle {
             .workspace_by_name(&workspace)?
             .ok_or_else(|| not_found(format!("no workspace has the name {workspace}")))?;
         let preset = preset.map(|name| self.preset_by_name(&name)).transpose()?;
+        let first_message = first_message
+            .as_ref()
+            .map(Oracle::check_first_message)
+            .transpose()?;
         let host = self
             .store
             .host(workspace.host)?
@@ -605,6 +612,7 @@ impl Oracle {
             agent: None,
             step: None,
             error: None,
+            first_message,
             created_at: now,
             updated_at: now,
         };
@@ -830,6 +838,7 @@ impl Oracle {
                     agent: None,
                     step: None,
                     error: None,
+                    first_message: None,
                     created_at: 0,
                     updated_at: 0,
                 });
@@ -919,15 +928,20 @@ impl Oracle {
             row.repositories.clone()
         };
         let git = self.git_setup(row.preset, &repositories)?;
+        let agent = self.preset_bundle(row.preset)?;
+        let notes = self.store.notes(workspace.id)?.map(|(text, _)| text);
+        let workspace_name = workspace.name.clone();
         Ok(Bundle {
             codespace: row.id.clone(),
-            workspace: workspace.name,
+            workspace: workspace_name,
             branch: row.branch.clone(),
             repositories,
             devices: self.device_keys()?,
             relay_url: self.url.clone(),
             preset: row.preset_name.clone(),
             git,
+            agent,
+            notes,
         })
     }
 

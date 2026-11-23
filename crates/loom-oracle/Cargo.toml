@@ -21,6 +21,7 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
 loom-github = { path = "../loom-github" }
+loom-llm = { path = "../loom-llm" }
 loom-oracle-proto = { path = "../loom-oracle-proto" }
 loom-proto = { path = "../loom-proto" }
 loom-relay = { path = "../loom-relay" }

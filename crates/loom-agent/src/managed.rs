@@ -7,16 +7,21 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use loom_client::oracle_proto::{
-    AgentAddress, Bootstrap, Bundle, DeviceKey, Event, GitSetup, repository_directory,
-    valid_directory,
+    AgentAddress, Bootstrap, Bundle, DeviceKey, Event, GitSetup, PresetBundle,
+    repository_directory, valid_directory,
 };
 use loom_client::{ClientIdentity, OracleClient, OracleEndpoint, OracleEvents, pair_oracle};
-use loom_config::{AgentConfig, Dirs};
+use loom_config::{AgentConfig, Dirs, ManagedSettings};
 use loom_crypto::{AuthorizedClients, HostIdentity, decode_key, encode_key};
+use loom_llm::CredentialStore;
 use loom_transport::{AccessToken, LinkState};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
 
+use crate::codespace_agent::{
+    OracleCredentials, PresetPaths, SECRETS_FILE, first_wait, report_notes, report_sessions,
+    start_first_message, write_preset,
+};
 use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
 use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
 use crate::serve::{ServeOptions, Served, Started, serve};
@@ -328,6 +333,11 @@ struct Link {
     clones: Vec<ManagedClone>,
     clients: watch::Sender<OracleClient>,
     setup: watch::Sender<GitSetup>,
+    paths: PresetPaths,
+    preset: Option<String>,
+    agent_setup: PresetBundle,
+    notes: Option<String>,
+    wake: Arc<Notify>,
 }
 
 impl Link {
@@ -355,6 +365,31 @@ impl Link {
                 }
             }
         }
+        if bundle.agent != self.agent_setup {
+            match write_preset(&self.paths, &bundle.agent) {
+                Ok(()) => {
+                    tracing::info!(preset = %bundle.agent.name, "updated the agent configuration");
+                    self.agent_setup = bundle.agent;
+                }
+                Err(err) => {
+                    tracing::error!(error = %format!("{err:#}"), "cannot write the agent configuration")
+                }
+            }
+        }
+    }
+
+    fn concerns(&self, event: &Event) -> bool {
+        match event {
+            Event::DeviceKeysChanged | Event::GitChanged | Event::EventsLost => true,
+            Event::ConfigChanged { presets } => {
+                presets.is_empty()
+                    || self
+                        .preset
+                        .as_ref()
+                        .is_some_and(|preset| presets.contains(preset))
+            }
+            _ => false,
+        }
     }
 
     async fn run(
@@ -367,6 +402,13 @@ impl Link {
             return;
         };
         self.address.instance = Some(started.instance.0.clone());
+        let agent = started.agent.clone();
+        if agent.notes().trim().is_empty()
+            && let Some(notes) = self.notes.as_ref().filter(|notes| !notes.trim().is_empty())
+            && let Err(err) = agent.set_notes(notes.clone())
+        {
+            tracing::warn!(error = %err, "cannot write the notes of the workspace");
+        }
         if let Some(mut relay) = started.relay
             && relay
                 .wait_for(|s| *s == LinkState::Registered)
@@ -375,6 +417,16 @@ impl Link {
         {
             return;
         }
+        let reporters = [
+            tokio::spawn(report_sessions(agent.clone(), self.clients.subscribe())),
+            tokio::spawn(report_notes(
+                agent.clone(),
+                self.clients.subscribe(),
+                self.notes.take(),
+            )),
+        ];
+        let _reporters = AbortOnDrop(reporters.into_iter().collect());
+        let mut first = true;
         loop {
             let reported = async {
                 client.codespace_agent(self.address.clone()).await?;
@@ -384,12 +436,16 @@ impl Link {
                 Ok(()) => tracing::info!("told the oracle that the codespace is ready"),
                 Err(err) => tracing::warn!(error = %err, "cannot report to the oracle"),
             }
+            if first {
+                first = false;
+                start_first_message(&agent, &client).await;
+            }
             while let Some(event) = events.recv().await {
-                if matches!(
-                    event,
-                    Event::DeviceKeysChanged | Event::GitChanged | Event::EventsLost
-                ) {
+                if self.concerns(&event) {
                     self.refresh(&client).await;
+                    if matches!(event, Event::ConfigChanged { .. } | Event::EventsLost) {
+                        self.wake.notify_one();
+                    }
                 }
             }
             tracing::warn!("lost the connection to the oracle");
@@ -400,6 +456,17 @@ impl Link {
             }
             self.clients.send_replace(client.clone());
             self.refresh(&client).await;
+            self.wake.notify_one();
+        }
+    }
+}
+
+struct AbortOnDrop(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
         }
     }
 }
@@ -408,7 +475,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
     let ManagedOptions {
         bootstrap,
         config_path,
-        mut config,
+        config,
         dirs,
     } = options;
     let data_dir = loom_agent_core::data_dir(&config, &dirs);
@@ -471,13 +538,50 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
     }
     let workspace = layout.root.clone();
     let _ = client.codespace_progress("agent").await;
-    config.relay.enabled = true;
-    config.relay.url = Some(bundle.relay_url.clone());
-    config.allowed_roots = vec![state.workspaces_root.clone()];
-    config.lifecycle.default_workspace = Some(workspace.clone());
     std::fs::create_dir_all(&workspace)
         .with_context(|| format!("cannot make {}", workspace.display()))?;
+    let paths = PresetPaths {
+        config: config_path.clone(),
+        agents_md: dirs.system_agents_md(),
+        skills: dirs.config_dir().join("skills"),
+        env_file: data_dir.join(SECRETS_FILE),
+    };
+    let settings = ManagedSettings {
+        relay_url: bundle.relay_url.clone(),
+        allowed_roots: vec![state.workspaces_root.clone()],
+        workspace: workspace.clone(),
+        env_file: paths.env_file.clone(),
+    };
+    let config = match write_preset(&paths, &bundle.agent)
+        .and_then(|()| Ok(managed_config(&config_path, &dirs, &settings)?))
+    {
+        Ok(config) => config,
+        Err(err) => {
+            let message = format!(
+                "the preset {} does not work here: {err:#}",
+                bundle.agent.name
+            );
+            tracing::error!(error = %message, "cannot set up the agent");
+            client.codespace_failed(&message).await?;
+            helper.abort();
+            return Ok(Served::Exit(0));
+        }
+    };
+    let loader: loom_agent_core::ConfigLoader =
+        Arc::new(move |path: &Path, dirs: &Dirs| managed_config(path, dirs, &settings));
+    let credentials = OracleCredentials::new(client_watch.clone());
+    let fetched = credentials.fetch().await;
+    if let Err(err) = &fetched {
+        tracing::warn!(error = %format!("{err:#}"), "cannot get the model credentials");
+    }
+    let wake = Arc::new(Notify::new());
+    let refresher = tokio::spawn(
+        credentials
+            .clone()
+            .keep_fresh(first_wait(&fetched), wake.clone()),
+    );
     let (setup, setup_watch) = watch::channel(bundle.git.clone());
+    let repository_dirs = layout.repositories().into_iter().map(|r| r.path).collect();
     let repositories =
         CodespaceRepositories::new(layout.repositories(), setup_watch, client_watch, &git.dir)?;
     let (ready, started) = oneshot::channel();
@@ -490,6 +594,11 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         clones,
         clients,
         setup,
+        paths,
+        preset: bundle.preset.clone(),
+        agent_setup: bundle.agent.clone(),
+        notes: bundle.notes.clone(),
+        wake,
     };
     let task = tokio::spawn(link.run(client, events, started));
     let served = serve(ServeOptions {
@@ -499,11 +608,25 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         dirs,
         ready: Some(ready),
         repositories: Some(Arc::new(repositories)),
+        credentials: Some(CredentialStore::from_source(credentials)),
+        config_loader: Some(loader),
+        repository_dirs,
     })
     .await;
     task.abort();
+    refresher.abort();
     helper.abort();
     served
+}
+
+fn managed_config(
+    path: &Path,
+    dirs: &Dirs,
+    settings: &ManagedSettings,
+) -> Result<AgentConfig, loom_config::ConfigError> {
+    let mut config = AgentConfig::load_preset(path, dirs, settings)?;
+    loom_llm::limit_to_accounts(&mut config.llm);
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -596,6 +719,8 @@ mod tests {
             relay_url: "ws://127.0.0.1:1".into(),
             preset: None,
             git: Default::default(),
+            agent: Default::default(),
+            notes: None,
         };
         let single = layout(&root, &bundle).unwrap();
         assert_eq!(single.root, root.join("server"));

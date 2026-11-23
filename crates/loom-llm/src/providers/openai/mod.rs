@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::auth::{
-    AccountInfo, AccountStatus, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
-    ProviderStatus, RedirectSpec,
+    AccountInfo, AccountStatus, LentCredential, LoginInput, LoginMethod, LoginMethodInfo,
+    LoginPrompt, ProviderStatus, RedirectSpec,
 };
 use crate::error::{LlmError, Result};
 use crate::kind::{
@@ -99,26 +99,70 @@ pub(crate) async fn stored_api_key(shared: &Shared) -> Result<Option<String>> {
 }
 
 pub(crate) async fn chatgpt_access_token(shared: &Shared) -> Result<String> {
+    let creds = fresh_chatgpt(shared, REFRESH_MARGIN_SECS).await?;
+    creds
+        .active_account()
+        .and_then(|a| a.tokens.as_ref())
+        .map(|t| t.access_token.clone())
+        .ok_or_else(not_signed_in)
+}
+
+async fn fresh_chatgpt(shared: &Shared, margin_secs: u64) -> Result<OpenAiCredentials> {
     let creds = load(&shared.store).await?;
     let account = creds.active_account().ok_or_else(not_signed_in)?;
     let tokens = account.tokens.as_ref().ok_or_else(not_signed_in)?;
-    if tokens.is_fresh(REFRESH_MARGIN_SECS) {
-        return Ok(tokens.access_token.clone());
+    if tokens.is_fresh(margin_secs) {
+        return Ok(creds);
     }
     let client_id = account.client_id.clone();
     let guard = shared.store.lock().await?;
     let mut creds: OpenAiCredentials = guard.load_section(ID.as_str()).await?.unwrap_or_default();
     let account = creds.account_mut(&client_id).ok_or_else(not_signed_in)?;
-    if let Some(tokens) = &account.tokens
-        && tokens.is_fresh(REFRESH_MARGIN_SECS)
-    {
-        return Ok(tokens.access_token.clone());
+    match &account.tokens {
+        Some(tokens) if tokens.is_fresh(margin_secs) => return Ok(creds),
+        Some(tokens) if tokens.refresh_token.is_empty() => {
+            return Err(LlmError::NotAuthenticated {
+                provider: ID.to_string(),
+                message: "missing refresh token; sign in again".into(),
+            });
+        }
+        _ => {}
     }
     let tokens = client(shared).refresh(account).await?;
-    let access = tokens.access_token.clone();
     account.tokens = Some(tokens);
     guard.save_section(ID.as_str(), Some(&creds)).await?;
-    Ok(access)
+    Ok(creds)
+}
+
+async fn lend(shared: &Shared, margin_secs: u64) -> Result<Option<LentCredential>> {
+    let stored = load(&shared.store).await?;
+    let signed_in = stored
+        .active_account()
+        .is_some_and(|account| account.tokens.is_some());
+    if !signed_in {
+        let Some(key) = stored.api_key else {
+            return Ok(None);
+        };
+        let lent = OpenAiCredentials {
+            api_key: Some(key),
+            ..OpenAiCredentials::default()
+        };
+        return Ok(Some(LentCredential::new(&lent, None)?));
+    }
+    let creds = fresh_chatgpt(shared, margin_secs).await?;
+    let mut account = creds.active_account().cloned().ok_or_else(not_signed_in)?;
+    account.id_token = None;
+    let expires_at = account.tokens.as_mut().map(|tokens| {
+        tokens.refresh_token = String::new();
+        tokens.expires_at
+    });
+    let lent = OpenAiCredentials {
+        host_id: None,
+        api_key: creds.api_key.clone(),
+        active: Some(account.client_id.clone()),
+        accounts: vec![account],
+    };
+    Ok(Some(LentCredential::new(&lent, expires_at)?))
 }
 
 struct BrowserLogin {
@@ -299,5 +343,9 @@ impl ProviderKind for Kind {
                 Ok(())
             })
             .await?
+    }
+
+    async fn lend(&self, shared: &Shared, margin_secs: u64) -> Result<Option<LentCredential>> {
+        lend(shared, margin_secs).await
     }
 }
