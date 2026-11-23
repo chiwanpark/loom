@@ -2,9 +2,9 @@
 
 A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 3.
 
-A workspace has one or more repositories. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
+A workspace has one or more repositories and can have persistent volumes. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
 
-The releases do not contain `loom-host` yet. Build it from the branch `loom-next`. The host also needs a build of `loom-agent` from this branch, because the managed mode is new:
+The releases do not contain `loom-host` yet. Get `loom-host` and `loom-agent` from the CI archives for the same `loom-next` build, or build them:
 
 ```sh
 cargo build --release --bin loom-host --bin loom-agent
@@ -18,6 +18,7 @@ cargo build --release --bin loom-host --bin loom-agent
 | `process` | Starts each codespace agent as a local process of the user of `loom-host`. There is no container and no limit. Use it for tests and for the development of Loom. |
 
 The `incus` driver needs Incus 6.0 or later. The tests used Incus 6.0.4 with the `dir` pool and Incus 7.6 on IncusOS with ZFS.
+Custom volumes also need the `storage_initial_owner` Incus API extension (Incus 6.0.3 or later in the 6.0 series).
 
 ## Set up a Linux host
 
@@ -97,6 +98,8 @@ The members of `incus-admin` have full control of Incus. If you do not want this
 | `process.root` | The directory of the codespaces of the `process` driver. The default is `codespaces` in `data_dir`. |
 | `agent.path` | The `loom-agent` binary for the codespaces. If it is not set, the host downloads the release of the version of each client and keeps it in `agents/` in the data directory. |
 | `rules.max_codespaces` | The maximum number of codespaces on this host. The oracle cannot change this rule. |
+| `rules.directories` | The allowed absolute paths for host directory volumes. Each path allows that directory and its descendants. |
+| `rules.host_user` | The non-root host `uid` and `gid` that Incus maps to `dev` (1000:1000). |
 | `report_interval` | How often the host sends its instances to the oracle. The default is `60s`. |
 | `logging.level` | The log level. |
 
@@ -126,6 +129,36 @@ Each codespace is the container `loom-<codespace>`:
 - It has no profiles. Its root disk is on `incus.pool`, and its network interface is on `incus.network`.
 - The keys `user.loom.oracle` and `user.loom.codespace` name its oracle and its codespace. `loom-host` changes only the containers with the key of its oracle.
 - Before the start, `loom-host` puts in the `loom-agent` binary, the systemd unit of the agent, and the bootstrap file.
+
+## Persistent volumes
+
+The first codespace that uses a custom volume on a host creates `loom-<volume>` in `incus.pool`.
+The new volume belongs to `dev`, and it stays after all codespaces close.
+Codespaces on the same host share the data, but Loom does not copy it to another host.
+Use a dedicated Incus project with `features.storage.volumes=true`.
+If you specify a size limit, `loom-host check` reports pool support and checks for project quota mount options on a local `dir` pool when it can read the backing filesystem.
+
+### Host directories
+
+To mount an existing directory, use the local Incus socket. Do not use the HTTPS API for this setup.
+List only directories that the host administrator intends to share. Use canonical paths. Keep the directories and their ancestors under administrator control.
+
+```yaml
+rules:
+  directories: [/srv/codespace-data]
+  host_user:
+    uid: 12000
+    gid: 12000
+```
+
+1. Set the UID and GID to those of a dedicated host user and group with access to the shared data.
+2. As an administrator, make sure that `/etc/subuid` and `/etc/subgid` allow `root` to map these IDs. For this example, add `root:12000:1` to each file if its ranges do not already include the ID. Restart Incus after you change the ranges.
+3. Run `loom-host setup` to apply the disk path and ID mapping rules to the Incus project. Then run `loom-host check`.
+
+The mapping applies to all new codespaces on the host. A read-only mount cannot be used to write to the directory.
+The process driver uses symlinks and permits mount paths only below `/workspaces/`. It does not apply quotas, read-only marks, or UID/GID mappings.
+
+See [Workspace volumes](oracle.md#workspace-volumes) for commands to create, mount, and delete volumes.
 
 ## Make a codespace
 

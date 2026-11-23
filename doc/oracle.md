@@ -1,15 +1,16 @@
 # Oracle (Loom-Next)
 
-The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 2.
+The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 3.
 
-In phase 2, the oracle does these things:
+The oracle does these things:
 
 - It is a relay. Current agents and clients use it as they use `loom-relay`.
-- It has a control service. Paired devices use the control service to manage devices, pairing links, relay hosts, hosts, workspaces, and codespaces.
+- It has a control service. Paired devices manage hosts, Git providers and credentials, presets, workspaces, and volumes through this service.
 - It starts codespaces on hosts. See [Hosts and codespaces](host.md).
 - It keeps its data in a SQLite store. It encrypts the secrets in the store with a master key.
 
-The releases do not contain the oracle yet. Build it from the branch `loom-next`:
+The releases do not contain the oracle yet. Get `loom-oracle` from the `loom-next` CI archives or build it from the branch.
+Build the test client from source:
 
 ```sh
 cargo build --release --bin loom-oracle --bin loom-oracle-cli
@@ -49,7 +50,7 @@ These keys are the same as in `relay.yaml`: `listen`, `metrics_listen`, `tls`, `
 
 ## Master key
 
-The master key encrypts the secrets in the store. In phase 1, these are the pairing secrets. Later phases add Git tokens, model credentials, and other secrets.
+The master key encrypts the pairing secrets and Git tokens in the store.
 
 - At the first start, the oracle makes the key file with mode `0600`.
 - Keep a copy of the key in a safe place, apart from the store.
@@ -103,7 +104,7 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `remove-relay-host <host_id>` | Removes a relay host. Its agents disconnect at once. |
 | `pair-host [--ttl <duration>] [--no-qr]` | Makes a one-time link for `loom-host join`. |
 | `hosts` | Lists the hosts with their status and their report. |
-| `remove-host <name>` | Removes a host. The oracle refuses this while a workspace uses the host. |
+| `remove-host <name>` | Removes a host. The oracle refuses this while it has workspaces, open codespaces, or tracked volumes. |
 | `set-environment <host> [--base-image <image>] [--setup-script <path>] [--env <name>=<value>]… [--ca-certificate <path>]… [--registry-mirror <url>]…` | Replaces the environment configuration of a host. The host builds a new image for the next codespace. |
 | `providers` | Lists the Git providers. |
 | `set-provider <name> --url <url> [--api-url <url>] [--git-name <name>] [--git-email <email>] [--route direct\|hosts]` | Adds or changes a Git provider. The default API URL is `https://api.github.com` for `https://github.com`, and `<url>/api/v3` for other servers. |
@@ -118,9 +119,12 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `search <provider> [<query>]` | Searches the repositories of a provider. |
 | `branches <provider> <owner>/<repository>` | Lists the branches of a repository. |
 | `workspaces` | Lists the workspaces. |
-| `create-workspace <name> --host <host> --repository <repository>…` | Makes a workspace. Give each repository as `<url>[,directory=<name>][,branch=<branch>]`. `<url>` can also be `<provider>:<owner>/<repository>`. |
-| `update-workspace <name> [--host <host>] [--repository <repository>…]` | Changes the host or replaces the repositories of a workspace. Open codespaces do not change. |
+| `create-workspace <name> --host <host> --repository <repository>… [--volume <mount>]…` | Makes a workspace. Give each repository as `<url>[,directory=<name>][,branch=<branch>]`. `<url>` can also be `<provider>:<owner>/<repository>`. |
+| `update-workspace <name> [--host <host>] [--repository <repository>…] [--volume <mount>… \| --no-volumes]` | Changes the host or replaces the repositories or mounts. Open codespaces do not change. |
 | `delete-workspace <name>` | Deletes a workspace. The oracle refuses this while a codespace of the workspace is open. |
+| `volumes` | Lists the volumes and the hosts that may hold each custom volume. |
+| `create-volume <name> [--size <size> \| --path <host-directory>]` | Defines a volume. Without `--path`, it defines a custom Incus volume. |
+| `delete-volume <name>` | Deletes the definition and its custom volume on each tracked host. It does not delete the contents of a host directory. |
 | `codespaces [--all]` | Lists the codespaces. `--all` also shows the closed codespaces. |
 | `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. |
 | `close-codespace <id> [--push <directory>]… [--discard <directory>]… [--message <message>] [--force] [--no-wait]` | Closes a codespace. The host deletes its instance. First, the close guard asks the agent for the unsaved work of each repository. See [the host document](host.md#git-in-a-codespace). |
@@ -199,6 +203,27 @@ The codespace configures Git for each provider:
 
 When a provider, a credential, or a preset changes, the oracle sends `git_changed` to the codespaces. They read the new setup.
 
+## Workspace volumes
+
+A volume keeps data after a codespace closes. Define the volume first, then give it a mount path in each workspace that uses it:
+
+```sh
+loom-oracle-cli create-volume build-cache --size 4GiB
+loom-oracle-cli create-volume reference-data --path /srv/codespace-data/reference
+loom-oracle-cli create-workspace acme --host build-host --repository github:acme/app \
+  --volume build-cache:/cache/build --volume reference-data:/data:ro
+```
+
+Use `VOLUME:PATH` for a writable mount or `VOLUME:PATH:ro` for a read-only mount.
+Mount paths must be absolute and cannot overlap each other, the repository clones, the agent data directories, or system directories.
+Host directory volumes must use paths permitted by the host. See [host setup](host.md#host-directories).
+The oracle checks volume support and directory paths when it saves a workspace with a connected host. It checks again before it starts each codespace.
+
+Updating a workspace replaces its mount list for new codespaces only. Use `--no-volumes` to remove all mounts from the workspace.
+Before you delete a volume, remove its mounts from all workspaces and close the codespaces that still use it.
+The oracle must reach each host where it requested the custom volume. If deletion is pending, fix the host error and run `delete-volume` again.
+Hosts that already confirmed deletion are skipped on retry. A volume whose deletion is pending cannot be mounted again.
+
 ## Control service
 
 The control service is an agent with the instance name `oracle` on the relay of the oracle. Clients connect to it as they connect to an agent: through the relay, with the Noise handshake, and with Cloudflare Access if it is set. A pairing link to the oracle has the instance name `oracle`.
@@ -251,14 +276,19 @@ Commands of devices:
 | `search_repositories` | `provider`, `query` | `repositories`, `more`, `errors` |
 | `list_branches` | `provider`, `owner`, `repository` | `branches`, `default_branch`, `more` |
 | `list_workspaces` | | `workspaces` |
-| `create_workspace` | `name`, `host`, `repositories` (each with `url`, optional `provider`, `directory`, and `base_branch`) | `workspace` |
-| `update_workspace` | `name`, optional `host` and `repositories` | `workspace` |
+| `create_workspace` | `name`, `host`, `repositories` (each with `url`, optional `provider`, `directory`, and `base_branch`), optional `volumes` | `workspace` |
+| `update_workspace` | `name`, optional `host`, `repositories`, and `volumes` | `workspace` |
 | `delete_workspace` | `name` | |
+| `list_volumes` | | `volumes` |
+| `create_volume` | `name`, `kind` (`incus` or `directory`), optional `size_mib` or `path` | `volume` |
+| `delete_volume` | `name` | |
 | `list_codespaces` | | `codespaces` |
 | `create_codespace` | `workspace`, optional `preset`, `cpus`, `memory_mib`, `base_branch`, `base_branches` (directory to branch), `client_version` | `codespace`, `warnings` |
 | `close_codespace` | `id` | `codespace` |
 
 The environment of a host has `base_image`, `setup_script`, `variables`, `ca_certificates`, and `docker.registry_mirrors`. All are optional.
+
+Each workspace mount has `volume`, `path`, and optional `read_only`. The volume list includes `hosts` and `deleting`.
 
 Commands of hosts:
 
@@ -268,7 +298,13 @@ Commands of hosts:
 | `host_instances` | `instances`: codespace, instance, oracle, running | The oracle deletes the instances that have no open codespace. It marks a codespace `lost` when its instance is missing. |
 | `instance_progress` | `codespace`, `step` | A step of `create_instance`, for example the image build. |
 
-Calls to hosts are `create_instance` (codespace, instance name, limits, environment, bootstrap file, and agent version), `delete_instance`, `list_instances`, `check_workspace` (the API URLs of providers to test), and `provider_request` (one API call to a provider).
+Calls to hosts:
+
+- `create_instance` sends the codespace, instance name, limits, environment, bootstrap file, agent version, and optional `volumes`. Each mount has `name`, `kind`, `path`, `read_only`, and optional `size_mib` or `source`.
+- `delete_instance` and `list_instances` operate on instances.
+- `check_workspace` sends `providers` and `directories`. The reply has a result for each item and `volumes: true` if the host supports volume calls.
+- `provider_request` sends one API call to a provider.
+- `delete_volume` sends `volume`, the name of the custom volume to remove.
 
 Commands of codespace agents:
 
@@ -285,6 +321,8 @@ Commands of codespace agents:
 A codespace has one of these states: `provisioning`, `starting`, `ready`, `closing`, `closed`, `failed`, and `lost`.
 
 The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_removed`, `relay_host_changed`, `relay_host_removed`, `host_changed`, `host_removed`, `workspace_changed`, `workspace_removed`, `codespace_changed`, `codespace_progress`, `codespace_removed`, `git_provider_changed`, `git_provider_removed`, `git_credential_changed`, `git_credential_removed`, `preset_changed`, and `preset_removed`. A closed codespace is removed with its workspace or its host. If a client reads the events too slowly, the oracle sends `events_lost`. Then the client reads the lists again.
+
+Volume changes send `volume_changed` and `volume_removed` to devices.
 
 The error codes are `bad_request`, `unknown_command`, `not_found`, `forbidden`, `conflict`, `unavailable`, and `internal`.
 
