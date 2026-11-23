@@ -258,6 +258,11 @@ pub enum Command {
         full: bool,
     },
     TakeFirstMessage,
+    CodespaceWarnings {
+        workspace: String,
+        #[serde(default)]
+        preset: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
