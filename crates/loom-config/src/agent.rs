@@ -175,6 +175,8 @@ pub struct LlmConfig {
     /// The reasoning effort of new sessions.
     pub default_reasoning_effort: ReasoningEffort,
     pub providers: ProvidersConfig,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -434,6 +436,8 @@ pub struct EnvironmentConfig {
     /// `null` reads none.
     pub env_file: Option<PathBuf>,
     pub redaction: RedactionConfig,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, String>,
 }
 
 impl Default for EnvironmentConfig {
@@ -446,6 +450,7 @@ impl Default for EnvironmentConfig {
             set: BTreeMap::new(),
             env_file: Some(PathBuf::from(".env")),
             redaction: RedactionConfig::default(),
+            secrets: BTreeMap::new(),
         }
     }
 }
@@ -908,6 +913,20 @@ impl AgentConfig {
                 ));
             }
         }
+        for (provider, account) in &self.llm.accounts {
+            if provider.is_empty() || provider.contains('/') {
+                return Err(invalid(
+                    "llm.accounts",
+                    format!("{provider:?} is not a valid provider ID"),
+                ));
+            }
+            if account.trim().is_empty() {
+                return Err(invalid(
+                    &format!("llm.accounts.{provider}"),
+                    "must name a model account".into(),
+                ));
+            }
+        }
 
         if self.tools.read.max_lines == 0 {
             return Err(invalid(
@@ -1048,6 +1067,20 @@ impl EnvironmentConfig {
                 return Err(invalid(
                     format!("redaction.allow[{index}]"),
                     format!("{name:?} is not a valid variable name"),
+                ));
+            }
+        }
+        for (name, secret) in &self.secrets {
+            if !valid_variable_name(name) {
+                return Err(invalid(
+                    format!("secrets.{name}"),
+                    format!("{name:?} is not a valid variable name"),
+                ));
+            }
+            if secret.trim().is_empty() {
+                return Err(invalid(
+                    format!("secrets.{name}"),
+                    "must name a secret".into(),
                 ));
             }
         }

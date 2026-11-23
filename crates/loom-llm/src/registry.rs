@@ -48,6 +48,14 @@ pub fn known_providers() -> Vec<ProviderId> {
     crate::providers::builtin().iter().map(|k| k.id()).collect()
 }
 
+pub fn limit_to_accounts(config: &mut LlmConfig) {
+    for id in known_providers() {
+        if !config.accounts.contains_key(id.as_str()) {
+            config.providers.0.insert(id.to_string(), None);
+        }
+    }
+}
+
 fn config_error(id: &str, message: String) -> LlmError {
     LlmError::Config {
         field: format!("llm.providers.{id}"),
@@ -215,6 +223,23 @@ mod tests {
         let config = llm(&[(first.as_str(), None)], Some(&format!("{first}/model")));
         let err = validate_config(&config).unwrap_err();
         assert!(err.to_string().contains("llm.default_model"));
+    }
+
+    #[test]
+    fn only_providers_with_an_account_stay() {
+        let mut config = llm(&[("anthropic", Some(json!({})))], Some("anthropic/m"));
+        config.accounts.insert("openai-codex".into(), "work".into());
+        limit_to_accounts(&mut config);
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Auth::new(CredentialStore::in_dir(dir.path()), HttpClient::new());
+        let set = ProviderSet::from_config(&config, &auth).unwrap();
+        assert_eq!(set.ids(), vec![ProviderId::new("openai-codex")]);
+        assert!(
+            validate_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("llm.default_model")
+        );
     }
 
     #[test]

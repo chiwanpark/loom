@@ -18,11 +18,11 @@ loom-agent config schema   # show the JSON Schema
 | Section | Contents |
 | --- | --- |
 | `allowed_roots` | The directories that an agent can serve as a workspace. The default is `~`. |
-| `llm` | The default model and the provider settings. See [Model providers](#model-providers). |
+| `llm` | The default model and the provider settings. See [Model providers](#model-providers). In a preset of a Loom-Next oracle, `accounts` gives the model account of each provider. See [Presets](oracle.md#presets). |
 | `tools` | The settings of the tools. See [Tools](#tools). |
 | `tools.comment_guard` | Stops the model when it adds comments to code. See [Comment guard](comment-guard.md). |
 | `policy` | Tells if the agent runs a tool call, refuses it, or asks for your approval. See [Policy and harmful tool calls](policy.md). |
-| `environment` | The environment variables of shell commands and terminals, and the env file with secrets. See [Environment variables and secrets](environment.md). |
+| `environment` | The environment variables of shell commands and terminals, and the env file with secrets. See [Environment variables and secrets](environment.md). In a preset of a Loom-Next oracle, `secrets` gives the secret of the oracle for each variable. |
 | `worktrees` | `dir` is the directory of the git worktrees of sessions. The default is `~/.config/loom/worktrees`. See [Sessions in a worktree](sessions.md#sessions-in-a-worktree). |
 | `git` | `credentials` names the Git credentials of the oracle that a codespace can use. Only presets of a Loom-Next oracle use it. See [Presets](oracle.md#presets). |
 | `sandbox` | Confines shell commands with `landlock` or `bubblewrap`. It is off by default. It can also block the network and add writable paths. Changes in the writable paths are not [harmful](policy.md#harmful-tool-calls), also when the sandbox is off. |

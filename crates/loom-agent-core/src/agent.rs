@@ -63,7 +63,16 @@ pub struct AgentOptions {
     pub env_vars: Option<Vec<(std::ffi::OsString, std::ffi::OsString)>>,
     /// The GitHub CLI program that opens pull requests.
     pub gh: String,
+    pub credentials: Option<CredentialStore>,
+    pub config_loader: Option<ConfigLoader>,
+    pub repository_dirs: Vec<PathBuf>,
 }
+
+pub type ConfigLoader = Arc<
+    dyn Fn(&Path, &Dirs) -> std::result::Result<AgentConfig, loom_config::ConfigError>
+        + Send
+        + Sync,
+>;
 
 /// Reports the state of the agent's OpenTelemetry export on request.
 pub type TelemetryReport = Arc<dyn Fn() -> loom_proto::TelemetryStatus + Send + Sync>;
@@ -83,6 +92,9 @@ impl AgentOptions {
             config_path: None,
             env_vars: None,
             gh: "gh".into(),
+            credentials: None,
+            config_loader: None,
+            repository_dirs: Vec::new(),
         }
     }
 }
@@ -91,6 +103,8 @@ struct Inner {
     workspace: Arc<Workspace>,
     dirs: Dirs,
     config_path: Option<PathBuf>,
+    config_loader: Option<ConfigLoader>,
+    repository_dirs: Arc<Vec<PathBuf>>,
     auth: Auth,
     overrides: Vec<Arc<dyn LlmProvider>>,
     sandbox_exe: Option<PathBuf>,
@@ -176,7 +190,9 @@ impl Agent {
     pub fn new(options: AgentOptions) -> Result<Self> {
         let workspace = Arc::new(Workspace::new(&options.workspace)?);
         let http = options.http.unwrap_or_else(http_client);
-        let store = CredentialStore::in_dir(&data_dir(&options.config, &options.dirs));
+        let store = options
+            .credentials
+            .unwrap_or_else(|| CredentialStore::in_dir(&data_dir(&options.config, &options.dirs)));
         let auth = Auth::new(store, http);
         let data = data_dir(&options.config, &options.dirs);
         let runtime = Runtime::build(
@@ -235,6 +251,8 @@ impl Agent {
                 workspace,
                 dirs: options.dirs,
                 config_path: options.config_path,
+                config_loader: options.config_loader,
+                repository_dirs: Arc::new(options.repository_dirs),
                 auth,
                 overrides: options.providers,
                 sandbox_exe: options.sandbox_exe,
@@ -270,6 +288,7 @@ impl Agent {
             runtime: self.inner.runtime.clone(),
             workspace: self.inner.workspace.clone(),
             system_agents_md: self.inner.dirs.system_agents_md(),
+            repository_dirs: self.inner.repository_dirs.clone(),
             model,
             store: self.inner.store.clone(),
             notes: self.inner.notes.clone(),
@@ -367,12 +386,16 @@ impl Agent {
     /// keeps the configuration it has.
     pub async fn reload_config_from(&self, path: &Path, dirs: &Dirs) -> Result<ConfigReload> {
         let (load_path, load_dirs) = (path.to_path_buf(), dirs.clone());
-        let loaded = tokio::task::spawn_blocking(move || AgentConfig::load(&load_path, &load_dirs))
-            .await
-            .map_err(|err| {
-                tracing::warn!(error = %err, "configuration reload failed");
-                CoreError::ConfigRejected(format!("could not read the configuration: {err}"))
-            })?;
+        let loader = self.inner.config_loader.clone();
+        let loaded = tokio::task::spawn_blocking(move || match loader {
+            Some(loader) => loader(&load_path, &load_dirs),
+            None => AgentConfig::load(&load_path, &load_dirs),
+        })
+        .await
+        .map_err(|err| {
+            tracing::warn!(error = %err, "configuration reload failed");
+            CoreError::ConfigRejected(format!("could not read the configuration: {err}"))
+        })?;
         let applied = match loaded {
             Ok(config) if *self.config() == config => return Ok(ConfigReload::Unchanged),
             Ok(config) => self.apply_config(config).map_err(|err| err.to_string()),

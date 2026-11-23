@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -133,6 +134,14 @@ pub struct Preset {
     pub yaml: String,
     #[serde(default)]
     pub git_credentials: Vec<String>,
+    #[serde(default)]
+    pub agents_md: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_accounts: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, String>,
     pub created_at: u64,
     pub updated_at: u64,
 }

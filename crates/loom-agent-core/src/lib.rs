@@ -30,7 +30,7 @@ pub mod watcher;
 pub mod web_search;
 pub mod worktree;
 
-pub use agent::{Agent, AgentNotice, AgentOptions, TelemetryReport, data_dir};
+pub use agent::{Agent, AgentNotice, AgentOptions, ConfigLoader, TelemetryReport, data_dir};
 pub use connection::{Connection, Flow};
 pub use error::{CoreError, Result};
 pub use events::{EventHub, Subscription};

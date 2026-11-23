@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::auth::{
-    AccountIdentity, AccountInfo, AccountStatus, LoginInput, LoginMethod, LoginMethodInfo,
-    LoginPrompt, ProviderStatus, RedirectSpec,
+    AccountIdentity, AccountInfo, AccountStatus, LentCredential, LoginInput, LoginMethod,
+    LoginMethodInfo, LoginPrompt, ProviderStatus, RedirectSpec,
 };
 use crate::error::{LlmError, Result};
 use crate::kind::{
@@ -23,6 +23,7 @@ use crate::provider::{LlmProvider, ProviderId};
 use auth::{Client, Credential};
 
 pub(crate) const ID: ProviderId = ProviderId::from_static("anthropic");
+const REFRESH_MARGIN_SECS: u64 = 300;
 
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,26 +64,38 @@ fn not_signed_in() -> LlmError {
     }
 }
 
-async fn access_token(shared: &Shared) -> Result<String> {
+async fn fresh_credential(shared: &Shared, margin_secs: u64) -> Result<Credential> {
     let credential = shared
         .store
         .load_section::<Credential>(ID.as_str())
         .await?
         .ok_or_else(not_signed_in)?;
-    if credential.is_fresh() {
-        return Ok(credential.access_token);
+    if credential.is_fresh(margin_secs) {
+        return Ok(credential);
     }
     let guard = shared.store.lock().await?;
     let credential = guard
         .load_section::<Credential>(ID.as_str())
         .await?
         .ok_or_else(not_signed_in)?;
-    if credential.is_fresh() {
-        return Ok(credential.access_token);
+    if credential.is_fresh(margin_secs) {
+        return Ok(credential);
+    }
+    if credential.refresh_token.is_empty() {
+        return Err(LlmError::NotAuthenticated {
+            provider: ID.to_string(),
+            message: "missing refresh token; sign in again".into(),
+        });
     }
     let refreshed = client(shared).refresh(&credential).await?;
     guard.save_section(ID.as_str(), Some(&refreshed)).await?;
-    Ok(refreshed.access_token)
+    Ok(refreshed)
+}
+
+async fn access_token(shared: &Shared) -> Result<String> {
+    Ok(fresh_credential(shared, REFRESH_MARGIN_SECS)
+        .await?
+        .access_token)
 }
 
 struct BrowserLogin {
@@ -207,5 +220,22 @@ impl ProviderKind for Kind {
                 account_uuid: c.account_id,
                 organization_uuid: c.organization_id,
             }))
+    }
+
+    async fn lend(&self, shared: &Shared, margin_secs: u64) -> Result<Option<LentCredential>> {
+        if shared
+            .store
+            .load_section::<Credential>(ID.as_str())
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let mut credential = fresh_credential(shared, margin_secs).await?;
+        credential.refresh_token = String::new();
+        Ok(Some(LentCredential::new(
+            &credential,
+            Some(credential.expires_at),
+        )?))
     }
 }
