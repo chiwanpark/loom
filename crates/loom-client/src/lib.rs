@@ -22,6 +22,8 @@ pub use loom_proto as proto;
 pub use loom_transport::{
     AccessToken, AgentEntry, FrameStream, Registry, RelayError, SshTarget, memory_pair,
 };
-pub use oracle::{OracleClient, OracleEndpoint, OracleEvents, pair_oracle};
+pub use oracle::{
+    NewCodespace, OracleCalls, OracleClient, OracleEndpoint, OracleEvents, pair_oracle,
+};
 pub use relay::{RelayHost, client_identity_path, load_client_identity, pair_with_uri};
 pub use update::{agent_protocol, can_update_agent, update_agent_of_protocol, update_agent_with};
