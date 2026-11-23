@@ -4,6 +4,7 @@ mod incus;
 mod link;
 mod process;
 mod providers;
+mod volumes;
 
 use std::sync::Arc;
 
@@ -16,7 +17,7 @@ pub use driver::{
 };
 pub use incus::{
     AGENT_UNIT, BASE_SCRIPT, DEFAULT_BASE_IMAGE, IMAGE_PREFIX, IncusDriver, KEY_CODESPACE,
-    KEY_ORACLE, environment_file, environment_hash, image_source,
+    KEY_ORACLE, SetupResult, environment_file, environment_hash, image_source,
 };
 pub use link::{
     CLIENT_NAME, Host, IDENTITY_FILE, JoinOptions, JoinedOracle, ORACLE_FILE, identity, join,
@@ -57,12 +58,16 @@ pub fn incus_driver(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<IncusDri
         connect_incus(config, dirs)?,
         config.incus.pool.clone(),
         config.incus.network.clone(),
+        config.rules.clone(),
     ))
 }
 
 pub fn driver(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<Arc<dyn Driver>> {
     match config.driver {
-        HostDriver::Process => Ok(Arc::new(ProcessDriver::new(config.process_root(dirs)))),
+        HostDriver::Process => Ok(Arc::new(ProcessDriver::new(
+            config.process_root(dirs),
+            config.rules.clone(),
+        ))),
         HostDriver::Incus => Ok(Arc::new(incus_driver(config, dirs)?)),
     }
 }

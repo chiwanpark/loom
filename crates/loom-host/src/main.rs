@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use loom_config::{Dirs, HOST_CONFIG_ENV, HostConfig, HostDriver, LogLevel, host_config_schema};
-use loom_host::{CheckStatus, JoinOptions, JoinedOracle, join};
+use loom_host::{CheckStatus, JoinOptions, JoinedOracle, SetupResult, join};
 use loom_incus::TrustToken;
 use tokio_util::sync::CancellationToken;
 
@@ -341,10 +341,14 @@ async fn setup(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<()> {
         );
     }
     let project = &config.incus.project;
-    if driver.setup_project().await? {
-        println!("made the restricted Incus project {project}");
-    } else {
-        println!("the Incus project {project} exists already");
+    match driver.setup_project().await? {
+        SetupResult::Created => println!("made the restricted Incus project {project}"),
+        SetupResult::Updated(keys) => {
+            println!("set {} on the Incus project {project}", keys.join(", "))
+        }
+        SetupResult::Unchanged => {
+            println!("the Incus project {project} exists already")
+        }
     }
     Ok(())
 }

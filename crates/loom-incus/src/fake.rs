@@ -36,6 +36,7 @@ pub struct FakeState {
     pub images: Vec<Image>,
     pub projects: BTreeMap<String, Project>,
     pub pools: BTreeMap<String, String>,
+    pub volumes: BTreeMap<String, Value>,
     pub networks: Vec<String>,
     pub requests: Vec<String>,
     pub certificates: Vec<String>,
@@ -53,6 +54,7 @@ impl Default for FakeState {
             images: Vec::new(),
             projects: BTreeMap::new(),
             pools: BTreeMap::from([("default".to_owned(), "dir".to_owned())]),
+            volumes: BTreeMap::new(),
             networks: vec!["incusbr0".to_owned()],
             requests: Vec::new(),
             certificates: Vec::new(),
@@ -286,6 +288,52 @@ impl FakeState {
                     return error(StatusCode::NOT_FOUND, "Image not found");
                 }
                 self.operation(Ok(Value::Null))
+            }
+            (Method::PATCH, ["1.0", "projects", name]) => {
+                let request = json_body();
+                let Some(project) = self.projects.get_mut(*name) else {
+                    return error(StatusCode::NOT_FOUND, "Project not found");
+                };
+                if let Some(config) = request["config"].as_object() {
+                    for (key, value) in config {
+                        project
+                            .config
+                            .insert(key.clone(), value.as_str().unwrap_or_default().to_owned());
+                    }
+                }
+                sync(Value::Null)
+            }
+            (Method::GET, ["1.0", "storage-pools", _, "volumes", "custom", name]) => {
+                match self.volumes.get(*name) {
+                    Some(volume) => sync(volume.clone()),
+                    None => error(StatusCode::NOT_FOUND, "Storage volume not found"),
+                }
+            }
+            (Method::POST, ["1.0", "storage-pools", _, "volumes", "custom"]) => {
+                let request = json_body();
+                let name = request["name"].as_str().unwrap_or_default().to_owned();
+                if self.volumes.contains_key(&name) {
+                    return error(StatusCode::CONFLICT, "Volume by that name already exists");
+                }
+                let volume = json!({"name": name, "type": "custom", "config": request["config"], "used_by": []});
+                self.volumes.insert(name, volume);
+                sync(Value::Null)
+            }
+            (Method::DELETE, ["1.0", "storage-pools", _, "volumes", "custom", name]) => {
+                let used = self.instances.values().any(|instance| {
+                    instance
+                        .instance
+                        .devices
+                        .values()
+                        .any(|device| device.get("source").map(String::as_str) == Some(*name))
+                });
+                if used {
+                    return self.operation(Err("The storage volume is still in use".into()));
+                }
+                match self.volumes.remove(*name) {
+                    Some(_) => self.operation(Ok(Value::Null)),
+                    None => error(StatusCode::NOT_FOUND, "Storage volume not found"),
+                }
             }
             (Method::GET, ["1.0", "operations", id, "wait"]) => match self.operations.get(*id) {
                 Some(operation) => sync(operation.clone()),

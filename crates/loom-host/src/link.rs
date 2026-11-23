@@ -248,12 +248,34 @@ impl Host {
                     .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
             }
             HostCall::CheckWorkspace(check) => {
-                let result = crate::providers::check(&self.http, &check).await;
+                let mut result = crate::providers::check(&self.http, &check).await;
+                result.volumes = true;
+                result.directories = crate::volumes::check_directories(
+                    &self.config.rules,
+                    self.driver.local(),
+                    &check.directories,
+                );
                 serde_json::to_value(result)
                     .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
             }
             HostCall::ProviderRequest(request) => {
                 crate::providers::request(&self.http, &request).await
+            }
+            HostCall::DeleteVolume { volume } => {
+                self.driver
+                    .delete_volume(&self.oracle.host_id, &volume)
+                    .await
+                    .map_err(|err| {
+                        let message = format!("{err:#}");
+                        let code = if message.contains("in use") {
+                            ErrorCode::Conflict
+                        } else {
+                            ErrorCode::Internal
+                        };
+                        OracleError::new(code, message)
+                    })?;
+                tracing::info!(%volume, "deleted a volume");
+                Ok(Value::Object(Default::default()))
             }
             HostCall::Unknown => Err(OracleError::new(
                 ErrorCode::UnknownCommand,

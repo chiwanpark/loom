@@ -2,11 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loom_client::oracle_proto::{
-    CheckResult, ErrorCode, Event, GitCredentialInput, GitProviderInput, HostCall, HostReport,
-    ProviderRoute, Repository, Role, Secret, WorkspaceCheckResult,
+    CheckResult, CodespaceState, ErrorCode, Event, GitCredentialInput, GitProviderInput, HostCall,
+    HostReport, OracleError, ProviderRoute, Repository, Role, Secret, VolumeInput, VolumeKind,
+    WorkspaceCheckResult, WorkspaceVolume,
 };
 use loom_client::{
-    ClientError, ClientIdentity, NewCodespace, OracleClient, OracleEvents, pair_oracle,
+    ClientError, ClientIdentity, NewCodespace, OracleCalls, OracleClient, OracleEvents, pair_oracle,
 };
 use loom_config::{Dirs, OracleConfig};
 use loom_github::{ApiRequest, Http, Method};
@@ -103,15 +104,15 @@ async fn next_event(events: &mut OracleEvents, check: impl Fn(&Event) -> bool) -
     }
 }
 
-async fn start_host(oracle: &TestOracle) -> (OracleClient, mpsc::UnboundedReceiver<HostCall>) {
+async fn connect_host(oracle: &TestOracle, label: &str) -> (OracleClient, OracleCalls) {
     let link = oracle
         .oracle
         .create_pairing(Role::Host, Duration::from_secs(60), None)
         .unwrap()
         .link;
     let identity = ClientIdentity::generate().unwrap();
-    let endpoint = pair_oracle(&link, &identity, "box", None).await.unwrap();
-    let (host, _events, mut calls) =
+    let endpoint = pair_oracle(&link, &identity, label, None).await.unwrap();
+    let (host, _events, calls) =
         OracleClient::connect_with_calls(&endpoint, &identity, "test-host")
             .await
             .unwrap();
@@ -124,6 +125,11 @@ async fn start_host(oracle: &TestOracle) -> (OracleClient, mpsc::UnboundedReceiv
     })
     .await
     .unwrap();
+    (host, calls)
+}
+
+async fn start_host(oracle: &TestOracle) -> (OracleClient, mpsc::UnboundedReceiver<HostCall>) {
+    let (host, mut calls) = connect_host(oracle, "box").await;
     let (tx, rx) = mpsc::unbounded_channel();
     let client = host.clone();
     tokio::spawn(async move {
@@ -448,7 +454,8 @@ async fn providers_credentials_and_presets_set_up_the_git_of_a_codespace() {
                     Some(vec![
                         repository("github:acme/server"),
                         repository("github:acme/server")
-                    ])
+                    ]),
+                    None
                 )
                 .await
                 .unwrap_err()
@@ -492,7 +499,12 @@ async fn providers_credentials_and_presets_set_up_the_git_of_a_codespace() {
         Some("release")
     );
     laptop
-        .update_workspace("acme", None, Some(vec![repository("github:acme/server")]))
+        .update_workspace(
+            "acme",
+            None,
+            Some(vec![repository("github:acme/server")]),
+            None,
+        )
         .await
         .unwrap();
     let bundle = agent.bundle().await.unwrap();
@@ -565,4 +577,182 @@ async fn providers_credentials_and_presets_set_up_the_git_of_a_codespace() {
         code(laptop.delete_git_provider("far").await.unwrap_err()),
         ErrorCode::NotFound
     );
+}
+
+async fn host_call(calls: &mut OracleCalls) -> (u64, HostCall) {
+    tokio::time::timeout(WAIT, calls.recv())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn volumes_require_host_confirmation_and_stay_reserved_until_close() {
+    let oracle = start_oracle().await;
+    let (laptop, mut events) = oracle.connect(Role::Device, "laptop").await;
+    laptop.subscribe().await.unwrap();
+    let (host, mut calls) = connect_host(&oracle, "box").await;
+    let (other, mut other_calls) = connect_host(&oracle, "other").await;
+    let cache = VolumeInput {
+        name: "cache".into(),
+        kind: VolumeKind::Incus,
+        size_mib: Some(128),
+        path: None,
+    };
+    let directory = VolumeInput {
+        name: "data".into(),
+        kind: VolumeKind::Directory,
+        size_mib: None,
+        path: Some("/srv/data".into()),
+    };
+    laptop.create_volume(directory.clone()).await.unwrap();
+    laptop.create_volume(cache.clone()).await.unwrap();
+    assert_eq!(
+        code(laptop.create_volume(cache).await.unwrap_err()),
+        ErrorCode::Conflict
+    );
+    let repos = vec![repository("https://example.com/team/app.git")];
+    let mounts = vec![
+        WorkspaceVolume {
+            volume: "cache".into(),
+            path: "/workspaces/cache".into(),
+            read_only: false,
+        },
+        WorkspaceVolume {
+            volume: "data".into(),
+            path: "/workspaces/data".into(),
+            read_only: true,
+        },
+    ];
+    let mut invalid = mounts.clone();
+    invalid[0].path = "/workspaces/app/target".into();
+    assert_eq!(
+        code(
+            laptop
+                .create_workspace_with_volumes("acme", "box", repos.clone(), invalid)
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::BadRequest
+    );
+    let confirmed = json!({"volumes": true, "directories": [{"name": "/srv/data"}]});
+    for response in [json!({}), json!({"volumes": true}), confirmed.clone()] {
+        let expected = response == confirmed;
+        let create =
+            laptop.create_workspace_with_volumes("acme", "box", repos.clone(), mounts.clone());
+        let answer = async {
+            let (id, call) = host_call(&mut calls).await;
+            assert!(
+                matches!(call, HostCall::CheckWorkspace(check) if check.directories == ["/srv/data"])
+            );
+            host.reply(id, Ok(response)).await.unwrap();
+        };
+        let (result, ()) = tokio::join!(create, answer);
+        if expected {
+            assert_eq!(result.unwrap().volumes, mounts);
+        } else {
+            assert_eq!(code(result.unwrap_err()), ErrorCode::Unavailable);
+            assert!(laptop.workspaces().await.unwrap().is_empty());
+        }
+    }
+    let err = laptop.delete_volume("cache").await.unwrap_err();
+    assert!(message(err).contains("workspaces acme"));
+    for (name, client, calls) in [
+        ("box", &host, &mut calls),
+        ("other", &other, &mut other_calls),
+    ] {
+        if name == "other" {
+            let update = laptop.update_workspace("acme", Some(name), None, None);
+            let answer = async {
+                let (id, call) = host_call(calls).await;
+                assert!(matches!(call, HostCall::CheckWorkspace(_)));
+                client.reply(id, Ok(confirmed.clone())).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(update, answer);
+            assert_eq!(result.unwrap().host, name);
+        }
+        let create = laptop.create_codespace_with_warnings(NewCodespace {
+            workspace: "acme".into(),
+            ..Default::default()
+        });
+        let answer = async {
+            let (id, call) = host_call(calls).await;
+            assert!(matches!(call, HostCall::CheckWorkspace(_)));
+            client.reply(id, Ok(confirmed.clone())).await.unwrap();
+            let (id, call) = host_call(calls).await;
+            let HostCall::CreateInstance(request) = call else {
+                panic!("unexpected {call:?}")
+            };
+            assert_eq!(request.volumes[0].size_mib, Some(128));
+            assert_eq!(request.volumes[1].source.as_deref(), Some("/srv/data"));
+            assert!(request.volumes[1].read_only);
+            client.reply(id, Ok(json!({}))).await.unwrap();
+        };
+        let (result, ()) = tokio::join!(create, answer);
+        let codespace = result.unwrap().codespace;
+        if name == "other" {
+            laptop
+                .update_workspace("acme", None, None, Some(vec![]))
+                .await
+                .unwrap();
+            for name in ["cache", "data"] {
+                let err = laptop.delete_volume(name).await.unwrap_err();
+                assert!(message(err).contains(&codespace.id));
+            }
+        }
+        laptop.close_codespace(&codespace.id).await.unwrap();
+        let (id, call) = host_call(calls).await;
+        assert!(
+            matches!(call, HostCall::DeleteInstance { codespace: closed, .. } if closed == codespace.id)
+        );
+        client.reply(id, Ok(json!({}))).await.unwrap();
+        next_event(&mut events, |e| {
+            matches!(e, Event::CodespaceChanged { codespace: c }
+            if c.id == codespace.id && c.state == CodespaceState::Closed)
+        })
+        .await;
+    }
+    let volumes = laptop.volumes().await.unwrap();
+    assert_eq!(volumes[0].hosts, vec!["box", "other"]);
+    assert!(!volumes[0].deleting);
+    assert!(volumes[1].hosts.is_empty());
+    laptop.delete_volume("data").await.unwrap();
+
+    let delete = laptop.delete_volume("cache");
+    let answer = async {
+        let (id, call) = host_call(&mut calls).await;
+        assert!(matches!(call, HostCall::DeleteVolume { volume } if volume == "cache"));
+        host.reply(id, Ok(json!({}))).await.unwrap();
+        let (id, call) = host_call(&mut other_calls).await;
+        assert!(matches!(call, HostCall::DeleteVolume { volume } if volume == "cache"));
+        let err = laptop
+            .update_workspace("acme", None, None, Some(vec![mounts[0].clone()]))
+            .await
+            .unwrap_err();
+        assert!(message(err).contains("being deleted"));
+        other
+            .reply(
+                id,
+                Err(OracleError::new(
+                    ErrorCode::Conflict,
+                    "the volume is in use",
+                )),
+            )
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(delete, answer);
+    assert_eq!(code(result.unwrap_err()), ErrorCode::Conflict);
+    let volumes = laptop.volumes().await.unwrap();
+    assert_eq!(volumes[0].hosts, vec!["other"]);
+    assert!(volumes[0].deleting);
+    let retry = laptop.delete_volume("cache");
+    let answer = async {
+        let (id, call) = host_call(&mut other_calls).await;
+        assert!(matches!(call, HostCall::DeleteVolume { volume } if volume == "cache"));
+        other.reply(id, Ok(json!({}))).await.unwrap();
+    };
+    let (result, ()) = tokio::join!(retry, answer);
+    result.unwrap();
+    assert!(laptop.volumes().await.unwrap().is_empty());
 }

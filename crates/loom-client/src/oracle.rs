@@ -12,8 +12,9 @@ use loom_oracle_proto::{
     GitProviderResult, GitProviders, GitTokenResult, Host, HostCall, HostReport, HostResult, Hosts,
     InstanceReport, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing,
     PairingLink, Pairings, Preset, PresetResult, Presets, RelayHost, RelayHostResult, RelayHosts,
-    Reply, Repository, RepositorySearch, Request, ServerHello, ServerMessage, Workspace,
-    WorkspaceResult, Workspaces, encode, parse_server_message,
+    Reply, Repository, RepositorySearch, Request, ServerHello, ServerMessage, Volume, VolumeInput,
+    VolumeResult, Volumes, Workspace, WorkspaceResult, WorkspaceVolume, Workspaces, encode,
+    parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -462,12 +463,24 @@ impl OracleClient {
         host: &str,
         repositories: Vec<Repository>,
     ) -> Result<Workspace> {
+        self.create_workspace_with_volumes(name, host, repositories, Vec::new())
+            .await
+    }
+
+    pub async fn create_workspace_with_volumes(
+        &self,
+        name: &str,
+        host: &str,
+        repositories: Vec<Repository>,
+        volumes: Vec<WorkspaceVolume>,
+    ) -> Result<Workspace> {
         let (name, host) = (name.to_owned(), host.to_owned());
         Ok(self
             .call::<WorkspaceResult>(Command::CreateWorkspace {
                 name,
                 host,
                 repositories,
+                volumes,
             })
             .await?
             .workspace)
@@ -478,12 +491,14 @@ impl OracleClient {
         name: &str,
         host: Option<&str>,
         repositories: Option<Vec<Repository>>,
+        volumes: Option<Vec<WorkspaceVolume>>,
     ) -> Result<Workspace> {
         Ok(self
             .call::<WorkspaceResult>(Command::UpdateWorkspace {
                 name: name.to_owned(),
                 host: host.map(str::to_owned),
                 repositories,
+                volumes,
             })
             .await?
             .workspace)
@@ -619,6 +634,22 @@ impl OracleClient {
     pub async fn git_credential(&self, url: &str) -> Result<GitTokenResult> {
         let url = url.to_owned();
         self.call(Command::GitCredential { url }).await
+    }
+
+    pub async fn volumes(&self) -> Result<Vec<Volume>> {
+        Ok(self.call::<Volumes>(Command::ListVolumes).await?.volumes)
+    }
+
+    pub async fn create_volume(&self, input: VolumeInput) -> Result<Volume> {
+        Ok(self
+            .call::<VolumeResult>(Command::CreateVolume(input))
+            .await?
+            .volume)
+    }
+
+    pub async fn delete_volume(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeleteVolume { name }).await)
     }
 
     pub async fn host_report(&self, report: HostReport) -> Result<()> {

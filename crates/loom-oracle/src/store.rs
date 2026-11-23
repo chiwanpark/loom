@@ -12,9 +12,11 @@ use crate::seal::{MasterKey, SealError, Sealer};
 
 mod codespaces;
 mod git;
+mod volumes;
 
 pub use codespaces::{CodespaceRow, HostRow, WorkspaceRow};
 pub use git::{CredentialCheck, CredentialRow, PresetRow, ProviderRow};
+pub use volumes::VolumeRow;
 
 const MIGRATIONS: &[&str] = &[
     "
@@ -137,6 +139,35 @@ CREATE TABLE preset_git_credentials (
     credential INTEGER NOT NULL REFERENCES git_credentials (id),
     PRIMARY KEY (preset, position)
 );
+CREATE TABLE volumes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    size_mib INTEGER,
+    path TEXT,
+    deleting INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE volume_hosts (
+    volume INTEGER NOT NULL REFERENCES volumes (id) ON DELETE CASCADE,
+    host INTEGER NOT NULL REFERENCES peers (id) ON DELETE CASCADE,
+    PRIMARY KEY (volume, host)
+);
+CREATE TABLE workspace_volumes (
+    workspace INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    volume INTEGER NOT NULL REFERENCES volumes (id),
+    path TEXT NOT NULL,
+    read_only INTEGER NOT NULL,
+    PRIMARY KEY (workspace, position)
+);
+CREATE INDEX workspace_volumes_volume ON workspace_volumes (volume);
+CREATE TABLE codespace_volumes (
+    codespace TEXT NOT NULL REFERENCES codespaces (id) ON DELETE CASCADE,
+    volume INTEGER NOT NULL REFERENCES volumes (id) ON DELETE CASCADE,
+    PRIMARY KEY (codespace, volume)
+);
+CREATE INDEX codespace_volumes_volume ON codespace_volumes (volume);
 ALTER TABLE workspace_repositories ADD COLUMN provider INTEGER REFERENCES providers (id);
 ALTER TABLE codespaces ADD COLUMN preset INTEGER REFERENCES presets (id) ON DELETE SET NULL;
 ALTER TABLE codespaces ADD COLUMN repositories TEXT NOT NULL DEFAULT '[]';

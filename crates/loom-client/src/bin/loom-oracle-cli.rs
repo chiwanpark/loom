@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand};
 use loom_client::oracle_proto::{
     Codespace, CodespaceState, Device, DockerSettings, Environment, Event, GitCredential,
     GitCredentialInput, GitProvider, GitProviderInput, Host, Pairing, PairingLink, Preset,
-    ProviderRoute, RelayHost, Repository, Secret, Workspace,
+    ProviderRoute, RelayHost, Repository, Secret, Volume, VolumeInput, VolumeKind, Workspace,
+    WorkspaceVolume,
 };
 use loom_client::{
     AccessToken, Client, ClientIdentity, CloseGuardError, NewCodespace, OracleClient,
@@ -116,6 +117,8 @@ enum Command {
         host: String,
         #[arg(long = "repository", value_name = "URL[,directory=DIR][,branch=BRANCH]", value_parser = parse_repository, required = true)]
         repositories: Vec<Repository>,
+        #[arg(long = "volume", value_name = "VOLUME:PATH[:ro]", value_parser = parse_volume)]
+        volumes: Vec<WorkspaceVolume>,
     },
     UpdateWorkspace {
         name: String,
@@ -123,8 +126,31 @@ enum Command {
         host: Option<String>,
         #[arg(long = "repository", value_name = "URL[,directory=DIR][,branch=BRANCH]", value_parser = parse_repository)]
         repositories: Vec<Repository>,
+        #[arg(long = "volume", value_name = "VOLUME:PATH[:ro]", value_parser = parse_volume)]
+        volumes: Vec<WorkspaceVolume>,
+        #[arg(
+            long,
+            conflicts_with = "volumes",
+            help = "Remove all volumes from the workspace"
+        )]
+        no_volumes: bool,
     },
     DeleteWorkspace {
+        name: String,
+    },
+    Volumes,
+    CreateVolume {
+        name: String,
+        #[arg(long, value_parser = parse_memory, value_name = "SIZE", conflicts_with = "path")]
+        size: Option<u64>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Use this directory of the host instead of an Incus volume"
+        )]
+        path: Option<String>,
+    },
+    DeleteVolume {
         name: String,
     },
     Codespaces {
@@ -339,6 +365,26 @@ fn parse_repository(text: &str) -> Result<Repository, String> {
         }
     }
     Ok(repository)
+}
+
+fn parse_volume(text: &str) -> Result<WorkspaceVolume, String> {
+    let mut parts = text.split(':');
+    let (Some(volume), Some(path)) = (parts.next(), parts.next()) else {
+        return Err(format!("{text:?} is not VOLUME:PATH or VOLUME:PATH:ro"));
+    };
+    let read_only = match parts.next() {
+        None => false,
+        Some("ro") => true,
+        Some(other) => return Err(format!("{other:?} is not ro")),
+    };
+    if parts.next().is_some() || volume.is_empty() || path.is_empty() {
+        return Err(format!("{text:?} is not VOLUME:PATH or VOLUME:PATH:ro"));
+    }
+    Ok(WorkspaceVolume {
+        volume: volume.to_owned(),
+        path: path.to_owned(),
+        read_only,
+    })
 }
 
 fn read_token(path: &Path) -> anyhow::Result<Secret> {
@@ -639,12 +685,42 @@ fn print_workspace(workspace: &Workspace) {
             }
         })
         .collect();
+    let volumes: Vec<String> = workspace
+        .volumes
+        .iter()
+        .map(|mount| {
+            let mode = if mount.read_only { ":ro" } else { "" };
+            format!("{}:{}{mode}", mount.volume, mount.path)
+        })
+        .collect();
+    let volumes = if volumes.is_empty() {
+        String::new()
+    } else {
+        format!("\tvolumes {}", volumes.join(", "))
+    };
     println!(
-        "{}\t{}\t{}",
+        "{}\t{}\t{}{volumes}",
         workspace.name,
         workspace.host,
         repositories.join(", ")
     );
+}
+
+fn print_volume(volume: &Volume) {
+    let mut marks = vec![volume.kind.to_string()];
+    if let Some(size) = volume.size_mib {
+        marks.push(ByteSize::mib(size).to_string());
+    }
+    if let Some(path) = &volume.path {
+        marks.push(format!("host path {path}"));
+    }
+    if !volume.hosts.is_empty() {
+        marks.push(format!("on {}", volume.hosts.join(", ")));
+    }
+    if volume.deleting {
+        marks.push("deletion pending".to_owned());
+    }
+    println!("{}\t{}", volume.name, marks.join(", "));
 }
 
 fn print_codespace(codespace: &Codespace) {
@@ -770,6 +846,11 @@ fn print_event(event: &Event) {
             print_preset(preset);
         }
         Event::PresetRemoved { name } => println!("preset {name} removed"),
+        Event::VolumeChanged { volume } => {
+            print!("volume ");
+            print_volume(volume);
+        }
+        Event::VolumeRemoved { name } => println!("volume {name} removed"),
         Event::DeviceKeysChanged => println!("the device keys changed"),
         Event::GitChanged => println!("the Git setup changed"),
         Event::EventsLost => println!("some events were lost"),
@@ -1039,8 +1120,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             name,
             host,
             repositories,
+            volumes,
         } => {
-            let workspace = client.create_workspace(&name, &host, repositories).await?;
+            let workspace = client
+                .create_workspace_with_volumes(&name, &host, repositories, volumes)
+                .await?;
             if json {
                 return print_json(&workspace);
             }
@@ -1050,10 +1134,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             name,
             host,
             repositories,
+            volumes,
+            no_volumes,
         } => {
             let repositories = (!repositories.is_empty()).then_some(repositories);
+            let volumes = (no_volumes || !volumes.is_empty()).then_some(volumes);
             let workspace = client
-                .update_workspace(&name, host.as_deref(), repositories)
+                .update_workspace(&name, host.as_deref(), repositories, volumes)
                 .await?;
             if json {
                 return print_json(&workspace);
@@ -1064,6 +1151,38 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             client.delete_workspace(&name).await?;
             if !json {
                 println!("deleted workspace {name}");
+            }
+        }
+        Command::Volumes => {
+            let volumes = client.volumes().await?;
+            if json {
+                return print_json(&volumes);
+            }
+            volumes.iter().for_each(print_volume);
+        }
+        Command::CreateVolume { name, size, path } => {
+            let kind = if path.is_some() {
+                VolumeKind::Directory
+            } else {
+                VolumeKind::Incus
+            };
+            let volume = client
+                .create_volume(VolumeInput {
+                    name,
+                    kind,
+                    size_mib: size,
+                    path,
+                })
+                .await?;
+            if json {
+                return print_json(&volume);
+            }
+            print_volume(&volume);
+        }
+        Command::DeleteVolume { name } => {
+            client.delete_volume(&name).await?;
+            if !json {
+                println!("deleted volume {name}");
             }
         }
         Command::Codespaces { all } => {

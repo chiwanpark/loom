@@ -8,8 +8,8 @@ use loom_oracle_proto::{
     ClientMessage, CodespaceResult, Codespaces, Command, DeviceResult, Devices, Empty, ErrorCode,
     Event, GitCredentialResult, GitCredentials, GitProviderResult, GitProviders, HostResult, Hosts,
     InvalidMessage, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets,
-    RelayHostResult, RelayHosts, Request, Response, Role, ServerHello, ServerMessage,
-    WorkspaceResult, Workspaces, encode, parse_client_message,
+    RelayHostResult, RelayHosts, Request, Response, Role, ServerHello, ServerMessage, VolumeResult,
+    Volumes, WorkspaceResult, Workspaces, encode, parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
 use serde::Serialize;
@@ -266,10 +266,11 @@ impl Session {
                 name,
                 host,
                 repositories,
+                volumes,
             } => Box::pin(async move {
                 ok(WorkspaceResult {
                     workspace: oracle
-                        .create_workspace(&name, &host, &repositories, me)
+                        .create_workspace(&name, &host, &repositories, &volumes, me)
                         .await?,
                 })
             }),
@@ -277,12 +278,23 @@ impl Session {
                 name,
                 host,
                 repositories,
+                volumes,
             } => Box::pin(async move {
                 ok(WorkspaceResult {
                     workspace: oracle
-                        .update_workspace(&name, host.as_deref(), repositories.as_deref(), me)
+                        .update_workspace(
+                            &name,
+                            host.as_deref(),
+                            repositories.as_deref(),
+                            volumes.as_deref(),
+                            me,
+                        )
                         .await?,
                 })
+            }),
+            Command::DeleteWorkspace { name } => Box::pin(async move {
+                oracle.delete_workspace(&name, me).await?;
+                ok(Empty {})
             }),
             Command::CreateCodespace {
                 workspace,
@@ -330,6 +342,10 @@ impl Session {
                     async move { ok(oracle.list_branches(&provider, &owner, &repository).await?) },
                 )
             }
+            Command::DeleteVolume { name } => Box::pin(async move {
+                oracle.delete_volume(&name, me).await?;
+                ok(Empty {})
+            }),
             other => return Err(Box::new(other)),
         })
     }
@@ -447,10 +463,6 @@ impl Session {
             Command::ListWorkspaces => ok(Workspaces {
                 workspaces: oracle.workspaces()?,
             }),
-            Command::DeleteWorkspace { name } => {
-                oracle.delete_workspace(&name, me)?;
-                ok(Empty {})
-            }
             Command::ListCodespaces => ok(Codespaces {
                 codespaces: oracle.codespaces()?,
             }),
@@ -485,6 +497,12 @@ impl Session {
                 oracle.delete_preset(&name, me)?;
                 ok(Empty {})
             }
+            Command::ListVolumes => ok(Volumes {
+                volumes: oracle.volumes()?,
+            }),
+            Command::CreateVolume(input) => ok(VolumeResult {
+                volume: oracle.create_volume(&input, me)?,
+            }),
             Command::HostReport { .. }
             | Command::HostInstances { .. }
             | Command::InstanceProgress { .. } => Err(forbidden(self.peer.role, "hosts")),

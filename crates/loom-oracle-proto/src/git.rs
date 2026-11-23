@@ -237,6 +237,8 @@ pub struct WorkspaceCheckResult {
     pub providers: Vec<CheckResult>,
     #[serde(default)]
     pub directories: Vec<CheckResult>,
+    #[serde(default)]
+    pub volumes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

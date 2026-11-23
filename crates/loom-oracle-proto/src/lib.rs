@@ -6,9 +6,11 @@ use serde_json::Value;
 
 mod codespace;
 mod git;
+mod volume;
 
 pub use codespace::*;
 pub use git::*;
+pub use volume::*;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const ORACLE_INSTANCE: &str = "oracle";
@@ -95,6 +97,8 @@ pub enum Command {
         name: String,
         host: String,
         repositories: Vec<Repository>,
+        #[serde(default)]
+        volumes: Vec<WorkspaceVolume>,
     },
     DeleteWorkspace {
         name: String,
@@ -105,6 +109,8 @@ pub enum Command {
         host: Option<String>,
         #[serde(default)]
         repositories: Option<Vec<Repository>>,
+        #[serde(default)]
+        volumes: Option<Vec<WorkspaceVolume>>,
     },
     ListCodespaces,
     CreateCodespace {
@@ -155,6 +161,11 @@ pub enum Command {
         provider: String,
         owner: String,
         repository: String,
+    },
+    ListVolumes,
+    CreateVolume(VolumeInput),
+    DeleteVolume {
+        name: String,
     },
     HostReport {
         report: HostReport,
@@ -408,6 +419,12 @@ pub enum Event {
     PresetRemoved {
         name: String,
     },
+    VolumeChanged {
+        volume: Volume,
+    },
+    VolumeRemoved {
+        name: String,
+    },
     DeviceKeysChanged,
     GitChanged,
     EventsLost,
@@ -606,7 +623,7 @@ mod tests {
             parse_server_message(br#"{"type":"news","text":"hi"}"#).unwrap(),
             None
         );
-        let event = br#"{"type":"event","event":{"type":"volume_changed","id":1}}"#;
+        let event = br#"{"type":"event","event":{"type":"backup_changed","id":1}}"#;
         assert_eq!(
             parse_server_message(event).unwrap(),
             Some(ServerMessage::Event {

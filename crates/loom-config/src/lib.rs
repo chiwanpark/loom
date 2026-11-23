@@ -25,7 +25,7 @@ pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_h
 pub use error::ConfigError;
 pub use host::{
     DEFAULT_INCUS_NETWORK, DEFAULT_INCUS_POOL, DEFAULT_INCUS_PROJECT, HOST_CONFIG_ENV,
-    HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver, HostRules,
+    HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver, HostRules, HostUser,
     IncusCertificates, IncusDriverConfig, ProcessDriverConfig, host_config_schema,
 };
 pub use oracle::{

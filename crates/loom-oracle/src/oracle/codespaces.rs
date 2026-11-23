@@ -7,7 +7,7 @@ use loom_oracle_proto::{
     AgentAddress, Bootstrap, Bundle, CONNECTION_RELAY, Codespace, CodespaceState, CreateInstance,
     DEFAULT_CPUS, DEFAULT_MEMORY_MIB, DeviceKey, Environment, ErrorCode, Event, Host, HostCall,
     HostReport, InstanceReport, OracleError, Reply, Repository, Role, ServerMessage, Workspace,
-    valid_name,
+    WorkspaceVolume, valid_name,
 };
 use loom_proto::relay::HostId;
 use serde_json::Value;
@@ -159,6 +159,7 @@ fn workspace(row: &WorkspaceRow) -> Workspace {
         name: row.name.clone(),
         host: row.host_name.clone(),
         repositories: row.repositories.clone(),
+        volumes: row.volumes.clone(),
         created_at: row.created_at,
     }
 }
@@ -351,13 +352,27 @@ impl Oracle {
         Ok(self.store.workspaces()?.iter().map(workspace).collect())
     }
 
+    async fn check_host(
+        &self,
+        host: &HostRow,
+        repositories: &[Repository],
+        volumes: &[WorkspaceVolume],
+        required: bool,
+    ) -> Result<(), OracleError> {
+        let (id, name) = (host.peer.id, &host.peer.label);
+        self.check_reach(id, name, repositories, required).await?;
+        self.check_volumes(id, name, volumes, required).await
+    }
+
     pub async fn create_workspace(
         &self,
         name: &str,
         host: &str,
         repositories: &[Repository],
+        volumes: &[WorkspaceVolume],
         by: Option<u64>,
     ) -> Result<Workspace, OracleError> {
+        let _workspace_guard = self.workspace_lock.lock().await;
         if !valid_name(name) {
             return Err(bad_request(format!(
                 "{name:?} is not a workspace name: use 1 to 40 lowercase letters, digits, and '-', and start with a letter"
@@ -367,12 +382,13 @@ impl Oracle {
             return Err(conflict(format!("a workspace has the name {name} already")));
         }
         let repositories = self.resolve_repositories(repositories)?;
+        let volumes = self.resolve_volumes(name, &repositories, volumes)?;
         let host = self.host_by_name(host)?;
-        self.check_reach(host.peer.id, &host.peer.label, &repositories, false)
+        self.check_host(&host, &repositories, &volumes, false)
             .await?;
         let row = self
             .store
-            .create_workspace(name, host.peer.id, &repositories)?;
+            .create_workspace(name, host.peer.id, &repositories, &volumes)?;
         self.audit(by, "workspace_created", &format!("workspace {name}"));
         let workspace = workspace(&row);
         self.emit(Event::WorkspaceChanged {
@@ -386,8 +402,10 @@ impl Oracle {
         name: &str,
         host: Option<&str>,
         repositories: Option<&[Repository]>,
+        volumes: Option<&[WorkspaceVolume]>,
         by: Option<u64>,
     ) -> Result<Workspace, OracleError> {
+        let _workspace_guard = self.workspace_lock.lock().await;
         let current = self
             .store
             .workspace_by_name(name)?
@@ -396,6 +414,9 @@ impl Oracle {
             Some(repositories) => Some(self.resolve_repositories(repositories)?),
             None => None,
         };
+        let checked = repositories.as_ref().unwrap_or(&current.repositories);
+        let mounts = volumes.unwrap_or(&current.volumes);
+        let mounts = self.resolve_volumes(name, checked, mounts)?;
         let host = match host {
             Some(host) => self.host_by_name(host)?,
             None => self
@@ -403,12 +424,15 @@ impl Oracle {
                 .host(current.host)?
                 .ok_or_else(|| not_found("the host of the workspace is gone"))?,
         };
-        let checked = repositories.as_ref().unwrap_or(&current.repositories);
-        self.check_reach(host.peer.id, &host.peer.label, checked, false)
-            .await?;
+        self.check_host(&host, checked, &mounts, false).await?;
         let row = self
             .store
-            .update_workspace(name, Some(host.peer.id), repositories.as_deref())?
+            .update_workspace(
+                name,
+                Some(host.peer.id),
+                repositories.as_deref(),
+                volumes.is_some().then_some(mounts.as_slice()),
+            )?
             .ok_or_else(|| not_found(format!("no workspace has the name {name}")))?;
         self.audit(by, "workspace_changed", &format!("workspace {name}"));
         let workspace = workspace(&row);
@@ -418,7 +442,8 @@ impl Oracle {
         Ok(workspace)
     }
 
-    pub fn delete_workspace(&self, name: &str, by: Option<u64>) -> Result<(), OracleError> {
+    pub async fn delete_workspace(&self, name: &str, by: Option<u64>) -> Result<(), OracleError> {
+        let _workspace_guard = self.workspace_lock.lock().await;
         let closed = self.closed_codespaces(|c| c.workspace_name == name)?;
         if !self.store.delete_workspace(name)? {
             return Err(not_found(format!("no workspace has the name {name}")));
@@ -494,6 +519,7 @@ impl Oracle {
             base_branches,
             client_version,
         } = args;
+        let _workspace_guard = self.workspace_lock.lock().await;
         let workspace = self
             .store
             .workspace_by_name(&workspace)?
@@ -539,8 +565,9 @@ impl Oracle {
                 report.memory_mib
             )));
         }
-        self.check_reach(host.peer.id, name, &repositories, true)
+        self.check_host(&host, &repositories, &workspace.volumes, true)
             .await?;
+        let volumes = self.instance_volumes(&workspace.volumes)?;
         let warnings = self.credential_warnings(&repositories, preset.as_ref())?;
         let guard = self
             .codespace_lock
@@ -581,11 +608,14 @@ impl Oracle {
             created_at: now,
             updated_at: now,
         };
-        self.store.insert_codespace(&row)?;
-        drop(guard);
         let (_, secret) =
             self.store
                 .create_pairing_for(Role::Codespace, BOOTSTRAP_TTL, by, Some(&id))?;
+        if let Err(err) = self.store.insert_codespace(&row, &volumes) {
+            let _ = self.store.cancel_pairings_for(&id);
+            return Err(err.into());
+        }
+        drop(guard);
         let link = pairing_link(&self.url, &self.identity, &secret);
         self.audit(
             by,
@@ -613,7 +643,9 @@ impl Oracle {
                 workspaces_root: None,
             },
             agent_version: row.client_version.clone(),
+            volumes,
         };
+        self.volume_hosts_changed(&call.volumes);
         tokio::spawn(self.clone().provision(row, call));
         Ok((created, warnings))
     }

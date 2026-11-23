@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CheckResult, GitSetup, ProviderRequest, WorkspaceCheck};
+use crate::{
+    CheckResult, GitSetup, InstanceVolume, ProviderRequest, WorkspaceCheck, WorkspaceVolume,
+};
 
 pub const DEFAULT_CPUS: u32 = 2;
 pub const DEFAULT_MEMORY_MIB: u64 = 4096;
@@ -83,6 +85,8 @@ pub struct Workspace {
     pub name: String,
     pub host: String,
     pub repositories: Vec<Repository>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<WorkspaceVolume>,
     pub created_at: u64,
 }
 
@@ -215,6 +219,8 @@ pub struct CreateInstance {
     pub bootstrap: Bootstrap,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<InstanceVolume>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +243,9 @@ pub enum HostCall {
     ListInstances,
     CheckWorkspace(WorkspaceCheck),
     ProviderRequest(Box<ProviderRequest>),
+    DeleteVolume {
+        volume: String,
+    },
     #[serde(other)]
     Unknown,
 }

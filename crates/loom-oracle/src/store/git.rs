@@ -635,7 +635,7 @@ mod tests {
             base_branch: None,
         };
         let workspace = store
-            .create_workspace("acme", host.id, std::slice::from_ref(&repository))
+            .create_workspace("acme", host.id, std::slice::from_ref(&repository), &[])
             .unwrap();
         assert_eq!(workspace.repositories, vec![repository]);
         assert!(store.delete_preset("dev").unwrap());

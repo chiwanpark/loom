@@ -393,7 +393,7 @@ async fn start(root: &Path) -> Env {
         config: HostConfig::default(),
         oracle: joined,
         identity: Arc::new(loom_host::identity(&host_dir).unwrap()),
-        driver: Arc::new(ProcessDriver::new(codespaces.clone())),
+        driver: Arc::new(ProcessDriver::new(codespaces.clone(), Default::default())),
         agents: Arc::new(AgentCache::new(
             Some(PathBuf::from(BIN)),
             root.join("agents"),
