@@ -63,12 +63,23 @@ pub enum HostEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cloudflare_access: Option<CloudflareAccessConfig>,
     },
+    Oracle {
+        name: String,
+        url: String,
+        host_id: String,
+        host_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cloudflare_access: Option<CloudflareAccessConfig>,
+    },
 }
 
 impl HostEntry {
     pub fn name(&self) -> &str {
         match self {
-            Self::Local { name } | Self::Ssh { name, .. } | Self::Relay { name, .. } => name,
+            Self::Local { name }
+            | Self::Ssh { name, .. }
+            | Self::Relay { name, .. }
+            | Self::Oracle { name, .. } => name,
         }
     }
 }
@@ -175,6 +186,12 @@ impl ClientConfig {
                     host_id,
                     host_key,
                     ..
+                }
+                | HostEntry::Oracle {
+                    url,
+                    host_id,
+                    host_key,
+                    ..
                 } => {
                     if !(url.starts_with("wss://") || url.starts_with("ws://")) {
                         return Err(invalid(field("url"), "must start with wss:// or ws://"));
@@ -244,13 +261,17 @@ mod tests {
     #[test]
     fn parses_and_round_trips_hosts() {
         let text = format!(
-            "hosts:\n- kind: local\n  name: here\n- kind: ssh\n  name: box\n  destination: me@box\n- kind: relay\n  name: home\n  url: wss://relay.example.com\n  host_id: {}\n  host_key: {}\n  cloudflare_access:\n    client_id_env: ID\n    client_secret_env: SECRET\nappearance:\n  theme: light\n  theme_name: Gruvbox Light\n",
+            "hosts:\n- kind: local\n  name: here\n- kind: ssh\n  name: box\n  destination: me@box\n- kind: relay\n  name: home\n  url: wss://relay.example.com\n  host_id: {}\n  host_key: {}\n  cloudflare_access:\n    client_id_env: ID\n    client_secret_env: SECRET\n- kind: oracle\n  name: next\n  url: wss://oracle.example.com\n  host_id: {}\n  host_key: {}\nappearance:\n  theme: light\n  theme_name: Gruvbox Light\n",
             "a".repeat(64),
-            "b".repeat(43)
+            "b".repeat(43),
+            "c".repeat(64),
+            "d".repeat(43)
         );
         let config = ClientConfig::parse(&text, "client.yaml").unwrap();
-        assert_eq!(config.hosts.len(), 3);
+        assert_eq!(config.hosts.len(), 4);
         assert_eq!(config.hosts[1].name(), "box");
+        assert_eq!(config.hosts[3].name(), "next");
+        assert!(matches!(config.hosts[3], HostEntry::Oracle { .. }));
         assert_eq!(config.appearance.theme, Theme::Light);
         assert_eq!(
             config.appearance.theme_name.as_deref(),
@@ -329,6 +350,7 @@ mod tests {
             "hosts:\n- kind: local\n  name: a\n- kind: local\n  name: a\n",
             "hosts:\n- kind: ssh\n  name: a\n  destination: -oProxyCommand=x\n",
             "hosts:\n- kind: relay\n  name: a\n  url: https://x\n  host_id: x\n  host_key: y\n",
+            "hosts:\n- kind: oracle\n  name: a\n  url: wss://x\n  host_id: x\n  host_key: y\n",
             "hosts:\n- kind: telnet\n  name: a\n",
             "appearance:\n  ui_font_size: 2\n",
             "appearance:\n  mono_font_fallbacks: [\" \"]\n",

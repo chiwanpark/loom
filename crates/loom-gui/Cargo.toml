@@ -39,5 +39,7 @@ workspace = true
 [dev-dependencies]
 loom-agent = { path = "../loom-agent" }
 loom-agent-core = { path = "../loom-agent-core" }
+loom-oracle = { path = "../loom-oracle" }
 tempfile = "3.27.0"
+tokio-util = "0.7.20"
 gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false, features = ["font-kit", "wayland", "test-support"] }

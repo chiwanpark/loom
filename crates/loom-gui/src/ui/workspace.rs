@@ -1,3 +1,5 @@
+mod codespaces;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -31,6 +33,7 @@ use crate::changes::{FileChange, display_path, session_changes};
 use crate::connection::{self, AgentSummary, Env, Target};
 use crate::conversation::{Activity, short_id, state_label};
 use crate::layout::{self, GroupKey, SavedGroup, SavedLayout, SavedPane, SavedTab};
+use crate::oracle::OracleLink;
 use crate::state::{AgentConnection, Attached, ConnectionEvent, LinkStatus, RemoteTerminal};
 use crate::telemetry::Health;
 use crate::term::{TakeOver, TerminalIo, TerminalView, mono_font};
@@ -59,6 +62,7 @@ actions!(
         ToggleSessions,
         NewSession,
         NewTerminal,
+        NewCodespace,
         CloseTab,
         /// Closes the active session's tabs; the session stays on the agent.
         CloseSession,
@@ -153,6 +157,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("ctrl-alt-o", FindAgent, Some(CONTEXT)),
         KeyBinding::new("ctrl-k ctrl-t", SelectTheme, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-n", NewSession, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-alt-n", NewCodespace, Some(CONTEXT)),
         KeyBinding::new("ctrl-w", CloseTab, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-`", NewTerminal, Some(CONTEXT)),
         KeyBinding::new("ctrl-pagedown", NextTab, Some(CONTEXT)),
@@ -228,6 +233,7 @@ struct HostNode {
     agents: Vec<AgentSummary>,
     loading: bool,
     error: Option<String>,
+    oracle: Option<Entity<OracleLink>>,
 }
 
 #[derive(Clone)]
@@ -388,6 +394,7 @@ fn spinner(color: gpui::Hsla) -> AnyElement {
 fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
     vec![
         ("workspace: new session", Box::new(NewSession)),
+        ("codespace: new codespace", Box::new(NewCodespace)),
         ("workspace: new terminal", Box::new(NewTerminal)),
         ("workspace: close tab", Box::new(CloseTab)),
         ("workspace: next tab", Box::new(NextTab)),
@@ -671,6 +678,7 @@ impl Workspace {
                 agents: Vec::new(),
                 loading: false,
                 error: None,
+                oracle: None,
             })
             .collect();
         let layout_path = layout::path(&env.dirs.state_dir());
@@ -1019,6 +1027,7 @@ impl Workspace {
     }
 
     fn refresh_host(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_oracle(ix, window, cx);
         self.list_host(ix, true, window, cx);
     }
 
@@ -1035,6 +1044,14 @@ impl Workspace {
         let Some(host) = self.hosts.get_mut(ix) else {
             return;
         };
+        if codespaces::is_oracle(&host.entry) {
+            let name = host.entry.name().to_owned();
+            if retry_failed {
+                self.connect_errors.retain(|(host, _), _| *host != name);
+            }
+            self.sync_oracle(ix, window, cx);
+            return;
+        }
         host.loading = true;
         host.error = None;
         let entry = host.entry.clone();
@@ -2970,7 +2987,7 @@ impl Workspace {
         let this = cx.entity();
         open_form(
             "Pair through a relay",
-            Some("Run `loom-agent pair` on the agent host and paste the pairing link here.".into()),
+            Some("Run `loom-agent pair` on the agent host, or `loom-oracle-cli pair-device` for an oracle, and paste the pairing link here.".into()),
             vec![
                 FormField::new("Name", "home"),
                 FormField::new("Pairing link", "loom://relay.example.com/…"),
@@ -3024,6 +3041,7 @@ impl Workspace {
             agents: Vec::new(),
             loading: false,
             error: None,
+            oracle: None,
         });
         self.save_config(window, cx);
         self.refresh_host(self.hosts.len() - 1, window, cx);
@@ -3033,6 +3051,7 @@ impl Workspace {
         if ix < self.hosts.len() {
             let host = self.hosts.remove(ix);
             self.config.appearance.host_colors.remove(host.entry.name());
+            self.env.codespaces.set(host.entry.name(), Vec::new());
             self.save_config(window, cx);
             cx.notify();
         }
@@ -3625,10 +3644,28 @@ impl Workspace {
             DiffKind::Uncommitted
         };
         let open = self.open_diff_path(kind, cx);
-        files
-            .iter()
-            .enumerate()
-            .map(|(ix, change)| {
+        let directories = self.codespace_directories(conn, cx);
+        let mut last_repository = None;
+        let mut rows = Vec::new();
+        for (ix, change) in files.iter().enumerate() {
+            let repository = loom_view_model::codespaces::repository_of(&change.path, &directories);
+            if repository.is_some() && repository != last_repository {
+                rows.push(
+                    h_flex()
+                        .id(SharedString::from(format!(
+                            "changes-repository-{committed}-{ix}"
+                        )))
+                        .px_3()
+                        .pt_1()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(Icon::new(gpui_kit_assets::IconName::FolderGit2).xsmall())
+                        .child(repository.unwrap_or_default().to_owned()),
+                );
+                last_repository = repository;
+            }
+            rows.push({
                 let absolute = workspace.join(&change.path);
                 let (icon, color) = match change.status {
                     ChangeStatus::Added | ChangeStatus::Untracked => {
@@ -3664,8 +3701,9 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_git_diff(conn.clone(), change.clone(), committed, window, cx)
                     }))
-            })
-            .collect()
+            });
+        }
+        rows
     }
 
     fn open_diff_path(&self, kind: DiffKind, cx: &App) -> Option<PathBuf> {
@@ -3753,6 +3791,9 @@ impl Workspace {
     fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_connection.clone() {
             Some(conn) => self.new_session(conn, window, cx),
+            None if self.hosts.iter().any(|h| codespaces::is_oracle(&h.entry)) => {
+                self.workspace_picker(window, cx)
+            }
             None => notify::info(window, cx, "Connect to an agent first."),
         }
     }
@@ -4143,15 +4184,20 @@ impl Workspace {
                     .as_ref()
                     .map(|w| w.display().to_string())
                     .unwrap_or_else(|| format!("agent {}", short_id(&agent.instance)));
+                let link = link_of(conn.as_ref(), &key);
+                let sessions = match &conn {
+                    Some(c) if link == Link::Connected || !codespaces::is_oracle(&host.entry) => {
+                        c.read(cx).sessions.clone()
+                    }
+                    None if !codespaces::is_oracle(&host.entry) => Vec::new(),
+                    _ => self.codespace_sessions(&host.entry, &agent.instance, cx),
+                };
                 agents.push(PanelAgent {
                     entry: AgentEntry {
                         remote: host.entry.name().to_owned(),
                         workspace: workspace_label(&host.entry, path),
-                        link: link_of(conn.as_ref(), &key),
-                        sessions: conn
-                            .as_ref()
-                            .map(|c| c.read(cx).sessions.clone())
-                            .unwrap_or_default(),
+                        link,
+                        sessions,
                     },
                     host_ix: Some(hix),
                     instance: agent.instance.clone(),
@@ -4199,7 +4245,7 @@ impl Workspace {
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .whitespace_normal()
-                    .child("No sessions. To start one, click + next to a host under Remotes."),
+                    .child("No sessions. To start one, click + next to a workspace under Workspaces or a host under Remotes."),
             );
         }
         for (group, rows) in groups {
@@ -4218,7 +4264,12 @@ impl Workspace {
                 ));
             }
         }
-        list = list.child(self.render_remotes(&agents, cx));
+        if self.hosts.iter().any(|h| codespaces::is_oracle(&h.entry)) {
+            list = list.child(self.render_oracles(cx));
+        }
+        if self.hosts.iter().any(|h| !codespaces::is_oracle(&h.entry)) || self.hosts.is_empty() {
+            list = list.child(self.render_remotes(&agents, cx));
+        }
         div()
             .id("sessions-scroll")
             .flex_1()
@@ -4350,6 +4401,7 @@ impl Workspace {
         };
         let click_conn = conn.clone();
         let click_session = info.clone();
+        let click_agent = (agent.host_ix, agent.instance.clone());
         h_flex()
             .id(SharedString::from(format!("session-row-{group:?}-{ix}")))
             .w_full()
@@ -4364,6 +4416,22 @@ impl Workspace {
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 let (Some(conn), info) = (&click_conn, &click_session) else {
+                    if let (Some(host_ix), instance) = &click_agent {
+                        let id = click_session.id.clone();
+                        this.connect_then(
+                            *host_ix,
+                            Target::Instance(instance.clone()),
+                            Box::new(move |ws, conn, window, cx| {
+                                let info =
+                                    conn.read(cx).sessions.iter().find(|s| s.id == id).cloned();
+                                if let Some(info) = info {
+                                    ws.open_session(conn, info, window, cx);
+                                }
+                            }),
+                            window,
+                            cx,
+                        );
+                    }
                     return;
                 };
                 if event.click_count() >= 2 {
@@ -4785,10 +4853,14 @@ impl Workspace {
                 .child("Remotes"),
         );
         for (hix, host) in self.hosts.iter().enumerate() {
+            if codespaces::is_oracle(&host.entry) {
+                continue;
+            }
             let kind = match &host.entry {
                 HostEntry::Local { .. } => "local".to_owned(),
                 HostEntry::Ssh { destination, .. } => format!("ssh {destination}"),
                 HostEntry::Relay { .. } => "relay".to_owned(),
+                HostEntry::Oracle { .. } => "oracle".to_owned(),
             };
             let count = host.agents.len();
             let color = self.host_color(host.entry.name());
@@ -5189,6 +5261,9 @@ impl Workspace {
                 HostEntry::Local { .. } => ("local socket", IconName::HardDrive),
                 HostEntry::Ssh { .. } => ("ssh", IconName::Network),
                 HostEntry::Relay { .. } => ("relay (end-to-end encrypted)", IconName::Globe),
+                HostEntry::Oracle { .. } => {
+                    ("oracle relay (end-to-end encrypted)", IconName::Globe)
+                }
             };
             let agent_tooltip: SharedString =
                 format!("Agent {} over {transport}", conn.title()).into();
@@ -5317,7 +5392,9 @@ fn telemetry_item(
 
 fn reconnect_target(conn: &AgentConnection) -> Target {
     match conn.host {
-        HostEntry::Relay { .. } => Target::Instance(conn.info.instance.0.clone()),
+        HostEntry::Relay { .. } | HostEntry::Oracle { .. } => {
+            Target::Instance(conn.info.instance.0.clone())
+        }
         _ => Target::Attach(conn.info.workspace.clone()),
     }
 }
@@ -5361,6 +5438,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_select_theme))
             .on_action(cx.listener(Self::on_new_session))
+            .on_action(cx.listener(Self::on_new_codespace))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_close_session))
@@ -5646,6 +5724,7 @@ mod tests {
                 runtime_dir: None,
             },
             agent_bin: "/nonexistent/loom-agent".into(),
+            codespaces: Default::default(),
         };
         let backend = agent.backend.clone();
         let slot = Rc::new(RefCell::new(None));
