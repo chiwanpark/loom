@@ -4267,9 +4267,7 @@ impl Workspace {
         if self.hosts.iter().any(|h| codespaces::is_oracle(&h.entry)) {
             list = list.child(self.render_oracles(cx));
         }
-        if self.hosts.iter().any(|h| !codespaces::is_oracle(&h.entry)) || self.hosts.is_empty() {
-            list = list.child(self.render_remotes(&agents, cx));
-        }
+        list = list.child(self.render_remotes(&agents, cx));
         div()
             .id("sessions-scroll")
             .flex_1()
