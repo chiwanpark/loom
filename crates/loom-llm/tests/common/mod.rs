@@ -14,6 +14,7 @@ pub const TEST_KEY: &[u8] = include_bytes!("../fixtures/test_rsa.pem");
 pub const TEST_JWKS: &str = include_str!("../fixtures/test_jwks.json");
 pub const OPENAI: &str = "openai";
 pub const CODEX: &str = "openai-codex";
+pub const COPILOT: &str = "github-copilot";
 const ACCOUNT_CLAIM: &str = "https://api.openai.com/auth";
 
 pub struct Harness {
@@ -30,7 +31,8 @@ impl Harness {
         let store = CredentialStore::in_dir(dir.path());
         let auth = Auth::new(store.clone(), HttpClient::new())
             .with_auth_base_url(OPENAI, server.uri())
-            .with_auth_base_url(CODEX, server.uri());
+            .with_auth_base_url(CODEX, server.uri())
+            .with_auth_base_url(COPILOT, server.uri());
         Self {
             server,
             auth,
