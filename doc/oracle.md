@@ -1,11 +1,12 @@
 # Oracle (Loom-Next)
 
-The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 1.
+The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 2.
 
-In phase 1, the oracle does these things:
+In phase 2, the oracle does these things:
 
 - It is a relay. Current agents and clients use it as they use `loom-relay`.
-- It has a control service. Paired devices use the control service to manage devices, pairing links, and relay hosts.
+- It has a control service. Paired devices use the control service to manage devices, pairing links, relay hosts, hosts, workspaces, and codespaces.
+- It starts codespaces on hosts. See [Hosts and codespaces](host.md).
 - It keeps its data in a SQLite store. It encrypts the secrets in the store with a master key.
 
 The releases do not contain the oracle yet. Build it from the branch `loom-next`:

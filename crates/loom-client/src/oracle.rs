@@ -330,10 +330,6 @@ impl OracleClient {
             .map_err(|_| ClientError::Closed)
     }
 
-    pub async fn closed(&self) {
-        self.writer.closed().await;
-    }
-
     pub async fn call<T: DeserializeOwned>(&self, command: Command) -> Result<T> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();

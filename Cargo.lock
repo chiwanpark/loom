@@ -4650,7 +4650,9 @@ dependencies = [
  "loom-client",
  "loom-config",
  "loom-crypto",
+ "loom-host",
  "loom-llm",
+ "loom-oracle",
  "loom-proto",
  "loom-relay",
  "loom-telemetry",
@@ -4789,6 +4791,28 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+]
+
+[[package]]
+name = "loom-host"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "loom-client",
+ "loom-config",
+ "loom-crypto",
+ "loom-transport",
+ "loom-version",
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

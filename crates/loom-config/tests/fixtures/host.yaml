@@ -1,0 +1,9 @@
+driver: process
+data_dir: /var/lib/loom-host
+agent:
+  path: ~/bin/loom-agent
+rules:
+  max_codespaces: 8
+report_interval: 2m
+logging:
+  level: info
