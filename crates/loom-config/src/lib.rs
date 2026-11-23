@@ -24,8 +24,9 @@ pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, 
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;
 pub use host::{
-    HOST_CONFIG_ENV, HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver,
-    HostRules, ProcessDriverConfig, host_config_schema,
+    DEFAULT_INCUS_NETWORK, DEFAULT_INCUS_POOL, DEFAULT_INCUS_PROJECT, HOST_CONFIG_ENV,
+    HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver, HostRules,
+    IncusCertificates, IncusDriverConfig, ProcessDriverConfig, host_config_schema,
 };
 pub use oracle::{
     ORACLE_CONFIG_ENV, ORACLE_CONFIG_FILE, ORACLE_DATA_DIR, ORACLE_MASTER_KEY_FILE, OracleConfig,

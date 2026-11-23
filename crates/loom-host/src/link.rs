@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +17,8 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::driver::{Agent, Driver, Progress};
+use crate::agents::AgentSource;
+use crate::driver::{Driver, Progress};
 
 pub const ORACLE_FILE: &str = "oracle.json";
 pub const IDENTITY_FILE: &str = "identity.json";
@@ -123,40 +124,6 @@ pub async fn join(data_dir: &Path, options: JoinOptions) -> anyhow::Result<Joine
     Ok(joined)
 }
 
-pub trait AgentSource: Send + Sync {
-    fn agent(&self, version: Option<&str>) -> anyhow::Result<Agent>;
-}
-
-pub struct LocalAgent {
-    path: Option<PathBuf>,
-}
-
-impl LocalAgent {
-    pub fn new(path: Option<PathBuf>) -> Self {
-        Self { path }
-    }
-}
-
-impl AgentSource for LocalAgent {
-    fn agent(&self, _version: Option<&str>) -> anyhow::Result<Agent> {
-        let path = match &self.path {
-            Some(path) => path.clone(),
-            None => std::env::current_exe()
-                .ok()
-                .and_then(|exe| Some(exe.parent()?.join("loom-agent")))
-                .filter(|path| path.exists())
-                .context("set agent.path in host.yaml; there is no loom-agent next to loom-host")?,
-        };
-        if !path.is_file() {
-            bail!("the agent binary {} is not there", path.display());
-        }
-        Ok(Agent {
-            path,
-            version: None,
-        })
-    }
-}
-
 #[derive(Clone)]
 pub struct Host {
     pub config: HostConfig,
@@ -216,9 +183,14 @@ impl Host {
                 ));
             }
         }
+        let architecture = match self.driver.report().await {
+            Ok(report) => report.architecture,
+            Err(err) => return Err(internal(err)),
+        };
         let agent = self
             .agents
-            .agent(request.agent_version.as_deref())
+            .agent(request.agent_version.as_deref(), architecture.as_deref())
+            .await
             .map_err(internal)?;
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let progress_client = client.clone();

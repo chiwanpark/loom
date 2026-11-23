@@ -224,7 +224,7 @@ impl Driver for ProcessDriver {
         Ok(instances)
     }
 
-    async fn check(&self) -> Vec<CheckItem> {
+    async fn check(&self, _deep: bool) -> Vec<CheckItem> {
         let mut items = Vec::new();
         match std::fs::create_dir_all(&self.root) {
             Ok(()) => items.push(CheckItem::new(

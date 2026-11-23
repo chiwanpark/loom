@@ -1,5 +1,10 @@
-driver: process
+driver: incus
 data_dir: /var/lib/loom-host
+incus:
+  url: https://incus.example.com:8443
+  project: loom
+  pool: ssd
+  network: incusbr0
 agent:
   path: ~/bin/loom-agent
 rules:

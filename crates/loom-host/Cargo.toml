@@ -17,11 +17,15 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 loom-client = { path = "../loom-client", default-features = false }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
+loom-incus = { path = "../loom-incus" }
 loom-transport = { path = "../loom-transport" }
+loom-update = { path = "../loom-update" }
 loom-version = { path = "../loom-version" }
 nix = { version = "0.31.3", features = ["signal"] }
+rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
@@ -31,4 +35,5 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 workspace = true
 
 [dev-dependencies]
+loom-incus = { path = "../loom-incus", features = ["fake"] }
 tempfile = "3.27.0"

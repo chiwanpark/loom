@@ -80,7 +80,7 @@ pub trait Driver: Send + Sync {
 
     async fn list(&self, oracle: &str) -> anyhow::Result<Vec<InstanceReport>>;
 
-    async fn check(&self) -> Vec<CheckItem>;
+    async fn check(&self, deep: bool) -> Vec<CheckItem>;
 }
 
 pub fn valid_instance(name: &str) -> bool {

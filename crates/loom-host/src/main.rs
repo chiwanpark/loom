@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use loom_config::{Dirs, HOST_CONFIG_ENV, HostConfig, LogLevel, host_config_schema};
+use loom_config::{Dirs, HOST_CONFIG_ENV, HostConfig, HostDriver, LogLevel, host_config_schema};
 use loom_host::{CheckStatus, JoinOptions, JoinedOracle, join};
+use loom_incus::TrustToken;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
@@ -30,7 +31,23 @@ enum Command {
         force: bool,
     },
     Serve,
-    Check,
+    Check {
+        #[arg(long, help = "Also test Docker in a test instance")]
+        docker: bool,
+    },
+    Trust {
+        token: String,
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+        #[arg(
+            long,
+            help = "Use the system CA, and do not pin the server certificate"
+        )]
+        no_pin: bool,
+        #[arg(long)]
+        force: bool,
+    },
+    Setup,
     #[command(subcommand)]
     Config(ConfigCommand),
 }
@@ -133,10 +150,25 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             );
             println!("Now run `loom-host serve`, for example as a systemd service.");
         }
-        Command::Check => {
+        Command::Check { docker } => {
             let config = HostConfig::load(&path, &dirs)?;
             init_logging(LogLevel::Warn);
-            return runtime()?.block_on(check(config, dirs));
+            return runtime()?.block_on(check(config, dirs, docker));
+        }
+        Command::Trust {
+            token,
+            url,
+            no_pin,
+            force,
+        } => {
+            let config = HostConfig::load(&path, &dirs)?;
+            init_logging(LogLevel::Warn);
+            runtime()?.block_on(trust(&config, &dirs, &token, url, no_pin, force))?;
+        }
+        Command::Setup => {
+            let config = HostConfig::load(&path, &dirs)?;
+            init_logging(LogLevel::Warn);
+            runtime()?.block_on(setup(&config, &dirs))?;
         }
         Command::Serve => {
             let config = HostConfig::load(&path, &dirs)?;
@@ -147,7 +179,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn check(config: HostConfig, dirs: Dirs) -> anyhow::Result<ExitCode> {
+async fn check(config: HostConfig, dirs: Dirs, docker: bool) -> anyhow::Result<ExitCode> {
     let data_dir = config.data_dir(&dirs);
     let mut failed = false;
     match JoinedOracle::load(&data_dir) {
@@ -157,12 +189,17 @@ async fn check(config: HostConfig, dirs: Dirs) -> anyhow::Result<ExitCode> {
             println!("failed\toracle\t{err:#}");
         }
     }
-    match loom_host::agents(&config).agent(None) {
-        Ok(agent) => println!("ok\tagent\t{}", agent.path.display()),
-        Err(err) => {
+    let agents = loom_host::agents(&config, &dirs);
+    match agents.fixed() {
+        Some(path) if path.is_file() => println!("ok\tagent\t{}", path.display()),
+        Some(path) => {
             failed = true;
-            println!("failed\tagent\t{err:#}");
+            println!("failed\tagent\t{} is not there", path.display());
         }
+        None => println!(
+            "ok\tagent\tthe releases, by the version of each client, in {}",
+            agents.dir().display()
+        ),
     }
     let driver = loom_host::driver(&config, &dirs)?;
     match driver.report().await {
@@ -175,7 +212,7 @@ async fn check(config: HostConfig, dirs: Dirs) -> anyhow::Result<ExitCode> {
             println!("failed\treport\t{err:#}");
         }
     }
-    for item in driver.check().await {
+    for item in driver.check(docker).await {
         let status = match item.status {
             CheckStatus::Ok => "ok",
             CheckStatus::Warning => "warning",
@@ -191,6 +228,125 @@ async fn check(config: HostConfig, dirs: Dirs) -> anyhow::Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn write_file(path: &Path, content: &[u8], mode: u32) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(mode)
+        .open(path)
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    file.write_all(content)?;
+    Ok(())
+}
+
+async fn trust(
+    config: &HostConfig,
+    dirs: &Dirs,
+    token: &str,
+    url: Option<String>,
+    no_pin: bool,
+    force: bool,
+) -> anyhow::Result<()> {
+    let parsed = TrustToken::parse(token)?;
+    let url = match url.or_else(|| config.incus.url.clone()) {
+        Some(url) => url,
+        None => format!(
+            "https://{}",
+            parsed
+                .addresses
+                .first()
+                .context("the token has no address; pass --url")?
+        ),
+    };
+    let certificates = config.incus_certificates(dirs);
+    if certificates.client_certificate.exists() && !force {
+        bail!(
+            "{} exists; pass --force to make a new certificate",
+            certificates.client_certificate.display()
+        );
+    }
+    let server = loom_incus::server_certificate(&url).await?;
+    let seen = loom_incus::fingerprint(&server);
+    if !seen.eq_ignore_ascii_case(&parsed.fingerprint) {
+        bail!(
+            "the server certificate of {url} is {seen}, but the token names {}",
+            parsed.fingerprint
+        );
+    }
+    for path in [
+        &certificates.client_certificate,
+        &certificates.client_key,
+        &certificates.server_certificate,
+    ] {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("cannot make {}", parent.display()))?;
+        }
+    }
+    let name = if parsed.client_name.is_empty() {
+        "loom-host".to_owned()
+    } else {
+        parsed.client_name.clone()
+    };
+    let generated = loom_incus::generate_certificate(&name)?;
+    write_file(&certificates.client_key, generated.key.as_bytes(), 0o600)?;
+    write_file(
+        &certificates.client_certificate,
+        generated.certificate.as_bytes(),
+        0o644,
+    )?;
+    let pinned = (!no_pin).then_some(certificates.server_certificate.as_path());
+    if pinned.is_some() {
+        write_file(
+            &certificates.server_certificate,
+            loom_incus::certificate_pem(&server).as_bytes(),
+            0o644,
+        )?;
+    } else if certificates.server_certificate.exists() {
+        std::fs::remove_file(&certificates.server_certificate)?;
+    }
+    let incus = loom_incus::load_https(
+        &url,
+        &certificates.client_certificate,
+        &certificates.client_key,
+        pinned,
+    )?;
+    incus.add_certificate(token).await?;
+    let server = incus.server().await?;
+    if server.auth != "trusted" {
+        bail!("Incus took the token, but it does not trust the new certificate yet");
+    }
+    println!(
+        "Incus {} at {url} trusts this host now.",
+        server.environment.server_version
+    );
+    if config.incus.url.as_deref() != Some(url.as_str()) || config.driver != HostDriver::Incus {
+        println!(
+            "Set these keys in host.yaml:\n\ndriver: incus\nincus:\n  url: {url}\n  project: <project>\n  pool: <pool>\n  network: <bridge>"
+        );
+    }
+    Ok(())
+}
+
+async fn setup(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<()> {
+    let driver = loom_host::incus_driver(config, dirs)?;
+    if !driver.incus().is_local() {
+        bail!(
+            "`loom-host setup` needs the local Incus socket; with a certificate, make the project with the incus CLI"
+        );
+    }
+    let project = &config.incus.project;
+    if driver.setup_project().await? {
+        println!("made the restricted Incus project {project}");
+    } else {
+        println!("the Incus project {project} exists already");
+    }
+    Ok(())
 }
 
 async fn serve(config: HostConfig, dirs: Dirs) -> anyhow::Result<()> {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use loom_client::oracle_proto::{Codespace, CodespaceState, Repository, Role};
 use loom_client::{Client, ClientIdentity, NewCodespace, OracleClient, RelayHost, pair_oracle};
 use loom_config::{Dirs, HostConfig, OracleConfig};
-use loom_host::{Host, JoinOptions, LocalAgent, ProcessDriver, join};
+use loom_host::{AgentCache, Host, JoinOptions, ProcessDriver, join};
 use loom_oracle::Oracle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -223,7 +223,10 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
         oracle: joined,
         identity: Arc::new(loom_host::identity(&host_dir).unwrap()),
         driver: Arc::new(ProcessDriver::new(codespaces.clone())),
-        agents: Arc::new(LocalAgent::new(Some(PathBuf::from(BIN)))),
+        agents: Arc::new(AgentCache::new(
+            Some(PathBuf::from(BIN)),
+            root.join("agents"),
+        )),
     };
     tokio::spawn(host.run(shutdown.clone()));
     for _ in 0..200 {
