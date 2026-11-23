@@ -19,6 +19,7 @@ The client reads `~/.config/loom/client.yaml`. It has these sections:
 | --- | --- |
 | `ctrl-shift-p` | Command palette |
 | `ctrl-n` | New session |
+| `ctrl-alt-n` | New codespace |
 | `ctrl-p` | Find a session |
 | `ctrl-alt-o` | Find an agent |
 | `ctrl-shift-m` | Select the model |
@@ -40,7 +41,7 @@ The tab and panel keys also work in terminals. Thus, a terminal program does not
 
 ## Sessions panel
 
-The Sessions panel puts the sessions of the connected agents into groups by [state](sessions.md#session-states):
+The Sessions panel puts the sessions of the connected agents and of the codespaces into groups by [state](sessions.md#session-states):
 
 - **Needs approval**: waiting for approval.
 - **Working**: thinking, responding, or running a tool.
@@ -52,6 +53,8 @@ Under **Remotes**, the panel shows each host and its agents. For each agent, it 
 
 - To connect to an agent, click it.
 - The menu of an agent has the actions for the agent, such as **Stop agent**.
+
+Under **Workspaces**, the panel shows each oracle with its workspaces and their codespaces. See [Codespaces](#codespaces).
 
 ### Host colors
 
@@ -85,6 +88,53 @@ The conversation tab of a session stays while the session is open. To close a se
 When you open a session, the client loads its latest 50 messages and tool calls. When you scroll to the top, it loads earlier items. The **Changes** panel loads the full session, to show all files that the session changed.
 
 Each code block in an answer has a copy button. It copies the code without the fences. Each table has a copy button below it. It copies the table as Markdown. The Android app has the same buttons.
+
+## Codespaces
+
+Loom-Next is in development. An oracle keeps workspaces, presets, and codespaces. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
+
+### Add an oracle
+
+1. On a device that is paired with the oracle, run `loom-oracle-cli pair-device`. It shows a pairing link.
+2. In the desktop client, use **Pair through a relay**.
+3. Type a name and paste the link.
+
+The client keeps the oracle in `client.yaml` as a host of the kind `oracle`:
+
+```yaml
+hosts:
+- kind: oracle
+  name: next
+  url: wss://oracle.example.com
+  host_id: 3b1f…
+  host_key: Qm9i…
+```
+
+The client then shows the oracle under **Workspaces**. For each workspace, it shows the repositories and the codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The lists come from the oracle. The client connects to the agent of a codespace only when you open a session.
+
+### New codespace
+
+1. Click **+** next to a workspace. Or press `ctrl-alt-n` and select a workspace. If no agent is connected, `ctrl-n` also opens the list of workspaces.
+2. Select the preset. The dialog starts with the preset and the limits of the last codespace of the workspace. It shows the host of the workspace and the model accounts of the preset. It shows a warning for each repository that has no Git credential in the preset.
+3. Set the CPU limit and the memory limit, for example `4 GiB`.
+4. Optional: type a base branch for each repository. An empty field uses the base branch of the workspace, or the default branch of the repository.
+5. Optional: type the first message and select its model. The agent starts a session with this message when the codespace is ready.
+6. Click **Create**.
+
+A progress view shows the steps of the start. When the codespace is ready, click **Open**. The client opens the newest session of the codespace, or a new session.
+
+### Codespace menu
+
+The **…** button of a codespace opens its menu:
+
+- **New session** adds a session in the codespace.
+- **Open pull request…** asks for a title, a body, and the draft mark. For each repository with commits, the agent pushes the branch and opens a pull request to the base branch. The client opens the first pull request in the browser.
+- **Show start progress** opens the progress view of a codespace that starts or that failed.
+- **Close codespace…** shows the close guard. For each repository with unsaved work, select **Push** or **Discard**. A push of changed files needs a commit message. The client pushes the selected repositories and then tells the oracle to close the codespace. If a push fails, the codespace stays open.
+
+In a codespace with more than one repository, the **Changes** panel shows the changes of each repository under its directory name.
+
+The model picker shows the account name of each model provider.
 
 ## Terminals
 

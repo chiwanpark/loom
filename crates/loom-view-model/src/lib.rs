@@ -7,6 +7,7 @@
 
 pub mod agent_list;
 pub mod changes;
+pub mod codespaces;
 pub mod conversation;
 pub mod host_colors;
 pub mod labels;

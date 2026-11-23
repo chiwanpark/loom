@@ -4850,6 +4850,7 @@ dependencies = [
  "loom-agent-core",
  "loom-client",
  "loom-config",
+ "loom-oracle",
  "loom-update",
  "loom-version",
  "loom-view-model",
@@ -4859,6 +4860,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "unicode-width",
@@ -5142,6 +5144,7 @@ version = "0.5.0"
 name = "loom-view-model"
 version = "0.5.0"
 dependencies = [
+ "loom-oracle-proto",
  "loom-proto",
  "serde_json",
 ]

@@ -1,20 +1,46 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use loom_client::oracle_proto::{AgentAddress, ORACLE_INSTANCE};
 use loom_client::proto::{AgentInfo, AgentUpdate, InstanceId, PROTOCOL_VERSION};
 use loom_client::{
     AccessToken, AgentTarget, Client, ClientError, ClientIdentity, FrameStream, Notifications,
-    RelayHost, SshTarget, can_update_agent, connect_local, connect_ssh, list_local_agents,
-    list_remote_agents, load_client_identity, local_registry, pair_with_uri,
-    update_agent_of_protocol,
+    OracleClient, OracleEndpoint, OracleEvents, RelayHost, SshTarget, can_update_agent,
+    connect_local, connect_ssh, list_local_agents, list_remote_agents, load_client_identity,
+    local_registry, pair_oracle, pair_with_uri, update_agent_of_protocol,
 };
 use loom_config::{AgentConfig, CloudflareAccessConfig, Dirs, HostEntry};
 
 pub const CLIENT_NAME: &str = "loom-gui";
 
+#[derive(Debug, Clone, Default)]
+pub struct CodespaceBook {
+    agents: Arc<Mutex<HashMap<(String, String), AgentAddress>>>,
+}
+
+impl CodespaceBook {
+    pub fn set(&self, host: &str, addresses: Vec<AgentAddress>) {
+        let mut agents = self.agents.lock().unwrap_or_else(|e| e.into_inner());
+        agents.retain(|(name, _), _| name != host);
+        for address in addresses {
+            if let Some(instance) = address.instance.clone() {
+                agents.insert((host.to_owned(), instance), address);
+            }
+        }
+    }
+
+    pub fn get(&self, host: &str, instance: &str) -> Option<AgentAddress> {
+        let agents = self.agents.lock().unwrap_or_else(|e| e.into_inner());
+        agents.get(&(host.to_owned(), instance.to_owned())).cloned()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Env {
     pub dirs: Dirs,
     pub agent_bin: PathBuf,
+    pub codespaces: CodespaceBook,
 }
 
 impl Env {
@@ -24,7 +50,11 @@ impl Env {
             .map(PathBuf::from)
             .or_else(sibling_agent_bin)
             .unwrap_or_else(|| PathBuf::from("loom-agent"));
-        Ok(Self { dirs, agent_bin })
+        Ok(Self {
+            dirs,
+            agent_bin,
+            codespaces: CodespaceBook::default(),
+        })
     }
 
     fn agent_config(&self) -> Result<AgentConfig, String> {
@@ -94,6 +124,36 @@ fn relay_host(entry: &HostEntry) -> Result<Option<RelayHost>, String> {
     }
 }
 
+pub fn oracle_endpoint(entry: &HostEntry) -> Result<OracleEndpoint, String> {
+    match entry {
+        HostEntry::Oracle {
+            url,
+            host_id,
+            host_key,
+            cloudflare_access,
+            ..
+        } => OracleEndpoint::from_parts(url, host_id, host_key, access_token(cloudflare_access)?)
+            .map_err(|e| e.to_string()),
+        _ => Err(format!("{} is not an oracle", entry.name())),
+    }
+}
+
+pub async fn connect_oracle(
+    env: &Env,
+    entry: &HostEntry,
+) -> Result<(OracleClient, OracleEvents), String> {
+    let endpoint = oracle_endpoint(entry)?;
+    let identity = env.identity()?;
+    let (client, events) = OracleClient::connect(&endpoint, &identity, CLIENT_NAME)
+        .await
+        .map_err(|e| match e {
+            ClientError::Oracle(err) => err.message,
+            e => e.to_string(),
+        })?;
+    client.subscribe().await.map_err(err)?;
+    Ok((client, events))
+}
+
 fn err(e: ClientError) -> String {
     e.to_string()
 }
@@ -142,6 +202,7 @@ pub async fn list_agents(env: &Env, entry: &HostEntry) -> Result<Vec<AgentSummar
                 })
                 .collect())
         }
+        HostEntry::Oracle { .. } => Ok(Vec::new()),
     }
 }
 
@@ -189,6 +250,19 @@ async fn open(env: &Env, entry: &HostEntry, target: &Target) -> Result<FrameStre
                         .map_err(err)?
                 }
             }
+        }
+        HostEntry::Oracle { .. } => {
+            let Target::Instance(instance) = target else {
+                return Err("a codespace of the oracle starts only from a workspace".into());
+            };
+            let address = env
+                .codespaces
+                .get(entry.name(), instance)
+                .ok_or("the oracle does not list this codespace agent")?;
+            oracle_endpoint(entry)?
+                .connect_codespace(&address, &env.identity()?)
+                .await
+                .map_err(err)?
         }
     })
 }
@@ -250,7 +324,23 @@ fn agent_target(target: &Target) -> AgentTarget {
 
 pub async fn pair(env: &Env, uri: &str, label: &str, name: &str) -> Result<HostEntry, String> {
     let identity = env.identity()?;
-    let (host, instance) = pair_with_uri(uri.trim(), &identity, label, None)
+    let uri = uri.trim();
+    let oracle = uri
+        .parse::<loom_client::PairingUri>()
+        .is_ok_and(|parsed| parsed.instance.0 == ORACLE_INSTANCE);
+    if oracle {
+        let endpoint = pair_oracle(uri, &identity, label, None)
+            .await
+            .map_err(err)?;
+        return Ok(HostEntry::Oracle {
+            name: name.to_owned(),
+            url: endpoint.url.clone(),
+            host_id: endpoint.host.to_string(),
+            host_key: endpoint.host_key_text(),
+            cloudflare_access: None,
+        });
+    }
+    let (host, instance) = pair_with_uri(uri, &identity, label, None)
         .await
         .map_err(err)?;
     Ok(HostEntry::Relay {
