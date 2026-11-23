@@ -48,6 +48,7 @@ loom-agent = { path = "../loom-agent" }
 loom-agent-core = { path = "../loom-agent-core" }
 loom-config = { path = "../loom-config" }
 loom-llm = { path = "../loom-llm" }
+loom-oracle = { path = "../loom-oracle" }
 loom-relay = { path = "../loom-relay" }
 tempfile = "3.27.0"
 tokio-util = "0.7.20"
