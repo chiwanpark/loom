@@ -43,6 +43,11 @@ loom-agent config schema   # show the JSON Schema
 
 To sign in, use **Providers and sign-in…** in the menu of the agent.
 
+The `anthropic` provider uses message threads by default on Anthropic's API. When the history and request settings still match, Loom sends only the new messages and the billing block.
+If the thread expires, Loom sends the full history again.
+To turn off threads, set `llm.providers.anthropic.message_threads: false`.
+Threads are off by default for custom base URLs. Set `message_threads: true` only if the endpoint supports the Anthropic message-threads beta.
+
 The agent keeps the credentials in `credentials.json` in its data directory. The data directory is `storage.data_dir`. The default is `~/.local/share/loom`.
 
 This example adds an OpenAI-compatible server, such as a local model:

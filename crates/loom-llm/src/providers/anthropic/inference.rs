@@ -1,20 +1,32 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use futures::StreamExt;
 use reqwest::StatusCode;
 use serde_json::{Map, Value};
 
-use super::{CLAUDE_CODE_VERSION, ID, Settings, access_token, request, stream};
+use super::threads::{self, Mode, Prefix, Threads};
+use super::version::{self, CLAUDE_CODE_VERSION, Floor, Version};
+use super::{ID, Settings, access_token, request, stream};
 use crate::error::{LlmError, Result};
 use crate::kind::Shared;
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
 use crate::responses::http::{api_error, send_with_retry};
-use crate::types::{CompletionRequest, ModelCapabilities, ModelInfo, ReasoningEffort};
+use crate::types::{
+    CompletionChunk, CompletionRequest, ModelCapabilities, ModelInfo, ReasoningEffort,
+};
 use crate::usage::{USAGE_TIMEOUT, UsageLimits, parse_anthropic};
+
+const API_ROOT: &str = "https://api.anthropic.com";
+const BETAS: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
 
 pub(super) struct AnthropicProvider {
     shared: Shared,
     base: String,
     usage_url: String,
     settings_url: String,
+    threads: Option<Arc<Threads>>,
+    billing_floor: Floor,
 }
 
 impl AnthropicProvider {
@@ -22,10 +34,11 @@ impl AnthropicProvider {
         let base = settings
             .base_url
             .as_deref()
-            .unwrap_or("https://api.anthropic.com")
+            .unwrap_or(API_ROOT)
             .trim_end_matches('/');
         let base = base.strip_suffix("/messages").unwrap_or(base);
         let root = base.strip_suffix("/v1").unwrap_or(base);
+        let threads = settings.message_threads.unwrap_or(root == API_ROOT);
         let usage_url = format!("{root}/api/oauth/usage");
         let settings_url = format!("{root}/api/claude_code/settings");
         let base = format!("{root}/v1");
@@ -34,16 +47,41 @@ impl AnthropicProvider {
             base,
             usage_url,
             settings_url,
+            threads: threads.then(Arc::default),
+            billing_floor: Floor::default(),
         }
     }
 
     fn headers(&self, builder: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
-        builder.bearer_auth(token)
+        builder
+            .bearer_auth(token)
             .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
             .header("anthropic-dangerous-direct-browser-access", "true")
             .header("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}"))
             .header("x-app", "cli")
+    }
+
+    async fn send_messages(
+        &self,
+        body: &Value,
+        token: &str,
+        mode: &Mode,
+    ) -> Result<reqwest::Response> {
+        let betas = if mode.threaded() {
+            format!("{BETAS},{}", threads::BETA)
+        } else {
+            BETAS.to_owned()
+        };
+        send_with_retry(ID.as_str(), self.shared.retry, || {
+            self.headers(
+                self.shared.http.post(format!("{}/messages", self.base)),
+                token,
+            )
+            .header("anthropic-beta", &betas)
+            .header("accept", "text/event-stream")
+            .json(body)
+        })
+        .await
     }
 }
 
@@ -54,25 +92,79 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<ChunkStream> {
-        let body = request::build_body(&request)?;
+        let full = request::build_body(&request)?;
+        let first_text = request::first_user_text(&full);
         let token = access_token(&self.shared).await?;
-        let response = send_with_retry(ID.as_str(), self.shared.retry, || {
-            self.headers(
-                self.shared.http.post(format!("{}/messages", self.base)),
-                &token,
-            )
-            .header("accept", "text/event-stream")
-            .json(&body)
-        })
-        .await?;
+        let session = self.threads.as_ref().zip(request.session_id.as_ref());
+        let mut mode = session.map_or(Mode::Plain, |(threads, id)| {
+            threads.prepare(id, &token, &full, &request)
+        });
+        let mut version = self.billing_floor.get();
+        let mut retried_version = false;
+        let response = loop {
+            let body = mode.body(&full, first_text, &version.to_string());
+            let mut error = match self.send_messages(&body, &token, &mode).await {
+                Ok(response) => break response,
+                Err(error) => error,
+            };
+            if let LlmError::Api {
+                status: 400,
+                message,
+                ..
+            } = &error
+                && error.code() == Some(version::REJECTION)
+            {
+                if first_text.is_some()
+                    && let Some(required) = Version::required(message)
+                {
+                    let floor = self.billing_floor.learn(required);
+                    if !retried_version && required > version {
+                        retried_version = true;
+                        version = floor;
+                        continue;
+                    }
+                }
+                version::add_hint(&mut error, first_text.is_some(), version);
+                return Err(error);
+            }
+            let Some(next) = mode.fallback(&error) else {
+                return Err(error);
+            };
+            tracing::debug!(error = %error, "falling back from an Anthropic message thread");
+            mode = next;
+            if !mode.threaded()
+                && let Some((threads, id)) = session
+            {
+                threads.disable(id);
+            }
+        };
         let tools = request.tools.iter().map(|t| t.name.clone()).collect();
-        Ok(stream::chunk_stream(&request.model, tools, response))
+        let stream = stream::chunk_stream(&request.model, tools, response);
+        if mode.threaded()
+            && let Some((threads, id)) = session
+            && let Some(prefix) = Prefix::for_request(&token, &full)
+        {
+            let (threads, id) = (threads.clone(), id.clone());
+            let mut prefix = Some(prefix);
+            return Ok(stream
+                .map(move |chunk| {
+                    if let Ok(CompletionChunk::Done(reply)) = &chunk
+                        && let Some(prefix) = prefix.take()
+                    {
+                        threads.record(id.clone(), prefix, reply);
+                    }
+                    chunk
+                })
+                .boxed());
+        }
+        Ok(stream)
     }
 
     async fn usage_limits(&self) -> Result<Option<UsageLimits>> {
         let token = access_token(&self.shared).await?;
         let response = self
             .headers(self.shared.http.get(&self.usage_url), &token)
+            .header("anthropic-beta", BETAS)
             .header("accept", "application/json")
             .timeout(USAGE_TIMEOUT)
             .send()
@@ -130,6 +222,7 @@ impl LlmProvider for AnthropicProvider {
             }
             let response = send_with_retry(ID.as_str(), self.shared.retry, || {
                 self.headers(self.shared.http.get(url.clone()), &token)
+                    .header("anthropic-beta", BETAS)
             })
             .await?;
             let body: Value = response.json().await?;

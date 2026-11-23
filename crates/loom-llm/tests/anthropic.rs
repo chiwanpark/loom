@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 use wiremock::matchers::{body_json, header, method, path, query_param};
-use wiremock::{Mock, ResponseTemplate};
+use wiremock::{Mock, Request, ResponseTemplate};
 
 const ID: &str = "anthropic";
 const MODEL: &str = "claude-sonnet-4-5";
@@ -329,17 +329,9 @@ async fn text_stream_has_chunks_usage_and_oauth_shaping() {
     assert_eq!(message.usage.total, 19);
     let requests = h.server.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert!(
-        body["system"][0]["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("x-anthropic-billing-header: cc_version=2.1.322.")
-    );
-    assert!(
-        body["system"][0]["text"]
-            .as_str()
-            .unwrap()
-            .ends_with("cch=64ec8;")
+    assert_eq!(
+        body["system"][0]["text"],
+        "x-anthropic-billing-header: cc_version=2.1.323.7c0; cc_entrypoint=sdk-cli; cch=64ec8;"
     );
     assert_eq!(
         body["system"][1]["text"],
@@ -351,8 +343,262 @@ async fn text_stream_has_chunks_usage_and_oauth_shaping() {
             .unwrap()
             .contains("oauth-2025-04-20")
     );
-    assert_eq!(requests[0].headers["user-agent"], "claude-cli/2.1.322");
+    assert_eq!(requests[0].headers["user-agent"], "claude-cli/2.1.323");
     assert!(!requests[0].headers.contains_key("x-api-key"));
+}
+
+fn thread_request() -> CompletionRequest {
+    CompletionRequest {
+        session_id: Some("session".into()),
+        system: Some("Keep my project instructions.".into()),
+        tools: vec![ToolDefinition {
+            name: "bash".into(),
+            description: "Run a command".into(),
+            parameters: json!({"type": "object"}),
+        }],
+        ..request()
+    }
+}
+
+fn payload(req: &Request) -> Value {
+    serde_json::from_slice(&req.body).unwrap()
+}
+
+fn rejection(code: &str, message: &str) -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(json!({"type": "error", "error": {
+        "type": "invalid_request_error", "message": message, "details": {"error_code": code},
+    }}))
+}
+
+#[tokio::test]
+async fn continuation_sends_only_new_messages_and_the_original_billing_block() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    serve_stream(&h, &text_events()).await;
+    let provider = h.provider(
+        ID,
+        json!({"base_url": h.server.uri(), "message_threads": true}),
+    );
+    let mut req = thread_request();
+    let reply = collect(provider.stream(req.clone()).await.unwrap())
+        .await
+        .unwrap();
+    req.messages.push(Message::Assistant(reply));
+    req.messages.push(Message::user_text("And now?"));
+    let reply = collect(provider.stream(req.clone()).await.unwrap())
+        .await
+        .unwrap();
+    req.messages.push(Message::Assistant(reply));
+    req.messages.push(Message::user_text("One more question."));
+    req.system = Some("New project instructions.".into());
+    collect(provider.stream(req).await.unwrap()).await.unwrap();
+
+    let sent = h.server.received_requests().await.unwrap();
+    let [create, continued, changed] = sent.as_slice() else {
+        panic!("expected three requests")
+    };
+    assert!(
+        create.headers["anthropic-beta"]
+            .to_str()
+            .unwrap()
+            .split(',')
+            .any(|beta| beta == "message-threads-2026-08-12")
+    );
+    let (create, continued, changed) = (payload(create), payload(continued), payload(changed));
+    assert_eq!(create["thread"], json!({"type": "create"}));
+    assert_eq!(create["system"][2]["text"], "Keep my project instructions.");
+    assert_eq!(create["tools"][0]["name"], "Bash");
+    assert_eq!(
+        continued["thread"],
+        json!({"type": "continue", "previous_message_id": "msg-1"})
+    );
+    assert_eq!(continued["system"], json!([create["system"][0]]));
+    assert!(continued.get("tools").is_none());
+    assert_eq!(
+        continued["messages"],
+        json!([{"role": "user", "content": [
+            {"type": "text", "text": "And now?", "cache_control": {"type": "ephemeral"}}
+        ]}])
+    );
+    assert_eq!(changed["thread"], json!({"type": "create"}));
+    assert_eq!(changed["system"][2]["text"], "New project instructions.");
+    assert_eq!(changed["messages"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn expired_thread_restarts_with_full_history() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/v1/messages"))
+        .and(|req: &Request| payload(req)["thread"]["type"] == "continue")
+        .respond_with(rejection("thread_not_found", "The thread expired."))
+        .with_priority(1)
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    serve_stream(&h, &text_events()).await;
+    let provider = h.provider(
+        ID,
+        json!({"base_url": h.server.uri(), "message_threads": true}),
+    );
+    let mut req = thread_request();
+    let reply = collect(provider.stream(req.clone()).await.unwrap())
+        .await
+        .unwrap();
+    req.messages.push(Message::Assistant(reply));
+    req.messages.push(Message::user_text("And now?"));
+    collect(provider.stream(req).await.unwrap()).await.unwrap();
+    let sent = h.server.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 3);
+    let restarted = payload(&sent[2]);
+    assert_eq!(restarted["thread"], json!({"type": "create"}));
+    assert_eq!(restarted["system"], payload(&sent[0])["system"]);
+    assert_eq!(restarted["tools"], payload(&sent[0])["tools"]);
+    assert_eq!(restarted["messages"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn unsupported_endpoint_falls_back_without_thread_fields() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/v1/messages"))
+        .and(|req: &Request| payload(req).get("thread").is_some())
+        .respond_with(rejection(
+            "thread_unsupported_request",
+            "Threads are not supported.",
+        ))
+        .with_priority(1)
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    serve_stream(&h, &text_events()).await;
+    let provider = h.provider(
+        ID,
+        json!({"base_url": h.server.uri(), "message_threads": true}),
+    );
+    for _ in 0..2 {
+        collect(provider.stream(thread_request()).await.unwrap())
+            .await
+            .unwrap();
+    }
+    let plain = h.provider(ID, json!({"base_url": h.server.uri()}));
+    collect(plain.stream(thread_request()).await.unwrap())
+        .await
+        .unwrap();
+    let sent = h.server.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 4);
+    assert_eq!(payload(&sent[0])["thread"]["type"], "create");
+    for req in &sent[1..] {
+        assert!(payload(req).get("thread").is_none());
+        assert!(
+            !req.headers["anthropic-beta"]
+                .to_str()
+                .unwrap()
+                .contains("message-threads")
+        );
+        assert_eq!(payload(req)["system"], payload(&sent[0])["system"]);
+    }
+}
+
+#[tokio::test]
+async fn retries_a_continuation_at_the_required_billing_version_and_remembers_it() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/v1/messages"))
+        .and(|req: &Request| {
+            let body = payload(req);
+            body["thread"]["type"] == "continue"
+                && body["system"][0]["text"].as_str().is_some_and(|t| t.contains("cc_version=2.1.323."))
+        })
+        .respond_with(rejection("claude_code_version_too_old", "Claude Code 2.1.323 does not support this model; version 2.1.410 or newer is required."))
+        .with_priority(1)
+        .expect(1)
+        .mount(&h.server).await;
+    serve_stream(&h, &text_events()).await;
+    let provider = h.provider(
+        ID,
+        json!({"base_url": h.server.uri(), "message_threads": true}),
+    );
+    let mut req = thread_request();
+    let reply = collect(provider.stream(req.clone()).await.unwrap())
+        .await
+        .unwrap();
+    req.messages.push(Message::Assistant(reply));
+    req.messages.push(Message::user_text("And now?"));
+    collect(provider.stream(req).await.unwrap()).await.unwrap();
+    collect(provider.stream(request()).await.unwrap())
+        .await
+        .unwrap();
+    let sent = h.server.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 4);
+    let mut expected = payload(&sent[1]);
+    expected["system"][0]["text"] =
+        "x-anthropic-billing-header: cc_version=2.1.410.74e; cc_entrypoint=sdk-cli; cch=64ec8;"
+            .into();
+    assert_eq!(payload(&sent[2]), expected);
+    assert_eq!(payload(&sent[3])["system"][0], expected["system"][0]);
+}
+
+#[tokio::test]
+async fn version_recovery_retries_only_once() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/v1/messages"))
+        .respond_with(|req: &Request| {
+            let body = payload(req);
+            let billing = body["system"][0]["text"].as_str().unwrap();
+            let required = if billing.contains("cc_version=2.1.323.") {
+                "2.1.410"
+            } else {
+                "2.1.411"
+            };
+            rejection(
+                "claude_code_version_too_old",
+                &format!("Claude Code version {required} or newer is required."),
+            )
+        })
+        .expect(2)
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(ID, json!({"base_url": h.server.uri()}));
+    let Err(LlmError::Api { message, .. }) = provider.stream(request()).await else {
+        panic!("expected the second API rejection");
+    };
+    assert!(message.contains("version 2.1.411 or newer is required"));
+    assert!(message.contains("Loom sent billing version 2.1.410"));
+}
+
+#[tokio::test]
+async fn version_rejection_without_a_billing_block_explains_the_missing_text() {
+    let h = harness().await;
+    credential(&h, now() + 3600).await;
+    Mock::given(path("/v1/messages"))
+        .respond_with(rejection(
+            "claude_code_version_too_old",
+            "A newer version is required; version 2.1.410 or newer is required.",
+        ))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    let provider = h.provider(ID, json!({"base_url": h.server.uri()}));
+    let req = CompletionRequest {
+        messages: vec![Message::User {
+            content: vec![InputContent::Image {
+                mime_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+        }],
+        ..request()
+    };
+    let Err(LlmError::Api {
+        message,
+        status: 400,
+        ..
+    }) = provider.stream(req).await
+    else {
+        panic!("expected the API rejection");
+    };
+    assert!(message.contains("first user message has no text"));
 }
 
 #[tokio::test]

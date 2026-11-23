@@ -58,6 +58,8 @@ The prebuilt binaries are on the [releases page](https://github.com/chiwanpark/l
 
 The client finds running agents automatically. For the local host, it starts the `loom-agent` in the directory of `loom`, or the `loom-agent` on `PATH`. To use a different binary, set `LOOM_AGENT_BIN`.
 
+When you sign in with Claude Pro or Max, Loom uses message threads to avoid uploading the full conversation on every request. See [Model providers](doc/configuration.md#model-providers) for the settings.
+
 To connect to agents on other machines, see [Remote hosts and relays](doc/remote-hosts.md).
 
 ## Documentation
