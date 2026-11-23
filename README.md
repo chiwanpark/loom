@@ -52,7 +52,7 @@ The prebuilt binaries are on the [releases page](https://github.com/chiwanpark/l
    loom-agent serve --workspace ~/src/my-project
    ```
 
-4. In the menu of the agent, choose **Providers and sign-in…** and sign in to a model provider.
+4. In the menu of the agent, choose **Providers and sign-in…** and sign in to a [model provider](doc/configuration.md#model-providers), such as OpenCode Go.
 
 5. Press `ctrl-n` or click **+** next to the host to start a session.
 

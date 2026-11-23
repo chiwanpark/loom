@@ -1,4 +1,4 @@
-mod chat;
+pub(super) mod chat;
 
 use std::sync::Arc;
 

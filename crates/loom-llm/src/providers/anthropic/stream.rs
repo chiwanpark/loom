@@ -3,9 +3,8 @@ use std::collections::{BTreeMap, VecDeque};
 use futures::StreamExt;
 use serde_json::Value;
 
-use super::ID;
 use crate::error::{LlmError, Result};
-use crate::provider::ChunkStream;
+use crate::provider::{ChunkStream, ProviderId};
 use crate::sse::decode_sse;
 use crate::types::{
     AssistantContent, AssistantMessage, CompletionChunk, StopReason, ToolCall, Usage,
@@ -18,6 +17,7 @@ struct Block {
 }
 
 struct State {
+    provider: ProviderId,
     model: String,
     response_id: Option<String>,
     blocks: BTreeMap<usize, Block>,
@@ -28,30 +28,29 @@ struct State {
     finished: bool,
 }
 
-fn protocol(message: &str) -> LlmError {
-    LlmError::protocol(ID.as_str(), message)
-}
-
-fn string(value: &Value, key: &str) -> Result<String> {
+fn string(provider: &ProviderId, value: &Value, key: &str) -> Result<String> {
     value[key]
         .as_str()
         .map(str::to_owned)
-        .ok_or_else(|| protocol("missing string in stream event"))
+        .ok_or_else(|| LlmError::protocol(provider.as_str(), "missing string in stream event"))
 }
 
-fn append_string(value: &mut Value, delta: &str) -> Result<()> {
-    match value {
-        Value::String(text) => {
-            text.push_str(delta);
-            Ok(())
-        }
-        _ => Err(protocol("expected string content")),
+fn append_string(provider: &ProviderId, value: &mut Value, delta: &str) -> Result<()> {
+    if let Value::String(text) = value {
+        text.push_str(delta);
+        Ok(())
+    } else {
+        Err(LlmError::protocol(
+            provider.as_str(),
+            "expected string content",
+        ))
     }
 }
 
 impl State {
-    fn new(model: String, tools: Vec<String>) -> Self {
+    fn new(provider: ProviderId, model: String, tools: Vec<String>) -> Self {
         Self {
+            provider,
             model,
             response_id: None,
             blocks: BTreeMap::new(),
@@ -79,12 +78,17 @@ impl State {
     }
 
     fn handle(&mut self, event: Value) -> Result<Vec<CompletionChunk>> {
+        let provider = &self.provider;
+        let protocol = |message| LlmError::protocol(provider.as_str(), message);
+        let string = |value: &Value, key| string(provider, value, key);
+        let append_string = |value: &mut Value, delta: &str| append_string(provider, value, delta);
+        let tool_call = |data: &Value| tool_call(provider, data);
         let mut chunks = Vec::new();
         match event["type"].as_str() {
             Some("ping") => {}
             Some("error") => {
                 return Err(LlmError::Stream {
-                    provider: ID.to_string(),
+                    provider: provider.to_string(),
                     code: event["error"]["type"].as_str().map(str::to_owned),
                     message: event["error"]["message"]
                         .as_str()
@@ -241,7 +245,6 @@ impl State {
                 if !self.started {
                     return Err(protocol("message_delta before message_start"));
                 }
-                self.usage(&event["usage"]);
                 if let Some(reason) = event["delta"]["stop_reason"].as_str() {
                     self.stop = Some(match reason {
                         "end_turn" | "stop_sequence" | "pause_turn" | "refusal" => StopReason::Stop,
@@ -250,6 +253,7 @@ impl State {
                         _ => return Err(protocol("unknown stop reason")),
                     });
                 }
+                self.usage(&event["usage"]);
             }
             Some("message_stop") => {
                 let stop_reason = self
@@ -277,7 +281,7 @@ impl State {
                     .collect::<Result<Vec<_>>>()?;
                 self.finished = true;
                 chunks.push(CompletionChunk::Done(AssistantMessage {
-                    provider: ID,
+                    provider: provider.clone(),
                     model: self.model.clone(),
                     content,
                     usage: self.usage,
@@ -292,22 +296,23 @@ impl State {
     }
 }
 
-fn tool_call(data: &Value) -> Result<ToolCall> {
+fn tool_call(provider: &ProviderId, data: &Value) -> Result<ToolCall> {
     Ok(ToolCall {
-        call_id: string(data, "id")?,
-        name: string(data, "name")?,
+        call_id: string(provider, data, "id")?,
+        name: string(provider, data, "name")?,
         arguments: data["input"].clone(),
         provider_data: None,
     })
 }
 
-pub(super) fn chunk_stream(
+pub(crate) fn chunk_stream(
+    provider: ProviderId,
     model: &str,
     tools: Vec<String>,
     response: reqwest::Response,
 ) -> ChunkStream {
     let events = decode_sse(response.bytes_stream().boxed()).boxed();
-    let state = State::new(model.into(), tools);
+    let state = State::new(provider, model.into(), tools);
     futures::stream::unfold(
         (events, state, VecDeque::new(), false),
         |(mut events, mut state, mut queue, mut done)| async move {
@@ -318,6 +323,7 @@ pub(super) fn chunk_stream(
                 if done || state.finished {
                     return None;
                 }
+                let protocol = |message| LlmError::protocol(state.provider.as_str(), message);
                 let result = match events.next().await {
                     Some(Ok(event)) => serde_json::from_str(&event.data)
                         .map_err(|_| protocol("invalid SSE JSON"))
@@ -340,12 +346,13 @@ pub(super) fn chunk_stream(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ID;
     use super::*;
     use serde_json::json;
 
     #[test]
     fn usage_counts_cached_prompt_tokens_in_the_context() {
-        let mut state = State::new("m".into(), vec![]);
+        let mut state = State::new(ID, "m".into(), vec![]);
         let usage = json!({
             "input_tokens": 3,
             "cache_read_input_tokens": 50_000,
@@ -378,7 +385,7 @@ mod tests {
     /// with the raw text as the arguments, so the call can be answered.
     #[test]
     fn tool_input_that_is_not_json_keeps_the_raw_text() {
-        let mut state = State::new("m".into(), vec!["shell".into()]);
+        let mut state = State::new(ID, "m".into(), vec!["shell".into()]);
         state
             .handle(json!({"type": "message_start", "message": {"id": "m"}}))
             .unwrap();
@@ -407,7 +414,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_event_sequences() {
-        let mut state = State::new("m".into(), vec![]);
+        let mut state = State::new(ID, "m".into(), vec![]);
         assert!(
             state
                 .handle(json!({"type": "content_block_delta", "index": 0}))

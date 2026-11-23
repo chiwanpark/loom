@@ -1,7 +1,7 @@
 mod auth;
 mod inference;
-mod request;
-mod stream;
+pub(super) mod request;
+pub(super) mod stream;
 mod threads;
 mod version;
 

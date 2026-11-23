@@ -2,6 +2,7 @@ mod anthropic;
 pub(crate) mod codex;
 pub(crate) mod compatible;
 mod openai;
+mod opencode_go;
 
 use std::sync::Arc;
 
@@ -12,5 +13,6 @@ pub(crate) fn builtin() -> Vec<Arc<dyn ProviderKind>> {
         Arc::new(anthropic::Kind),
         Arc::new(openai::Kind),
         Arc::new(codex::Kind),
+        Arc::new(opencode_go::Kind),
     ]
 }
