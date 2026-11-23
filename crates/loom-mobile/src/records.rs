@@ -28,6 +28,8 @@ pub struct Host {
     /// The color that marks the host's sessions, as `#rrggbb`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub oracle: bool,
 }
 
 /// A color that the app offers for hosts.
@@ -178,6 +180,7 @@ pub struct PushNotice {
     pub host: String,
     pub instance: String,
     pub workspace: String,
+    pub codespace: Option<String>,
     pub session: String,
     pub title: Option<String>,
     pub kind: PushKind,
@@ -193,6 +196,7 @@ impl PushNotice {
             host: host.to_owned(),
             instance: notice.instance.0,
             workspace: notice.workspace,
+            codespace: None,
             session: notice.session.0,
             title: notice.title,
             kind: notice.kind.into(),

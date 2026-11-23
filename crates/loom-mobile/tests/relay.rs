@@ -936,6 +936,7 @@ async fn a_phone_is_told_about_approvals_and_ended_turns() {
             host: "lab".into(),
             instance: "phone-test".into(),
             workspace: host.root.join("ws").to_string_lossy().into_owned(),
+            codespace: None,
             session: session.id.clone(),
             title: notice.title.clone(),
             kind: PushKind::Approval,
