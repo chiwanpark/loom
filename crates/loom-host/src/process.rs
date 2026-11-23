@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
-use loom_client::oracle_proto::{Bootstrap, CreateInstance, InstanceReport};
+use loom_client::oracle_proto::{
+    Bootstrap, CreateInstance, InstanceReport, InstanceVolume, VolumeKind, WORKSPACES_ROOT,
+};
+use loom_config::HostRules;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -13,9 +16,11 @@ use serde::{Deserialize, Serialize};
 use crate::driver::{
     Agent, CheckItem, CheckStatus, Driver, DriverReport, Progress, cpus, memory_mib, valid_instance,
 };
+use crate::volumes::prepare_mounts;
 
 const INSTANCE_FILE: &str = "instance.json";
 const LOG_FILE: &str = "agent.log";
+const VOLUMES_DIR: &str = "volumes";
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const PASSED_ENV: &[&str] = &["PATH", "LANG", "LC_ALL", "TZ", "LOOM_LOG", "SSL_CERT_FILE"];
 
@@ -25,10 +30,13 @@ struct InstanceFile {
     instance: String,
     oracle: String,
     pid: i32,
+    #[serde(default)]
+    volumes: Vec<String>,
 }
 
 pub struct ProcessDriver {
     root: PathBuf,
+    rules: HostRules,
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -43,8 +51,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 impl ProcessDriver {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: PathBuf, rules: HostRules) -> Self {
+        Self { root, rules }
     }
 
     pub fn root(&self) -> &Path {
@@ -53,6 +61,57 @@ impl ProcessDriver {
 
     fn dir(&self, instance: &str) -> PathBuf {
         self.root.join(instance)
+    }
+
+    fn volume_dir(&self, oracle: &str, volume: &str) -> anyhow::Result<PathBuf> {
+        let name = crate::volumes::incus_volume(volume)?;
+        if oracle.is_empty()
+            || !oracle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            bail!("{oracle:?} is not an oracle ID");
+        }
+        Ok(self.root.join(VOLUMES_DIR).join(oracle).join(name))
+    }
+
+    fn link_volumes(
+        &self,
+        dir: &Path,
+        oracle: &str,
+        volumes: &[InstanceVolume],
+    ) -> anyhow::Result<()> {
+        for volume in volumes {
+            let relative = volume
+                .path
+                .strip_prefix(WORKSPACES_ROOT)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .filter(|rest| !rest.is_empty())
+                .with_context(|| {
+                    format!(
+                        "the process driver mounts volumes only below {WORKSPACES_ROOT}, not at {}",
+                        volume.path
+                    )
+                })?;
+            let target = match (volume.kind, &volume.source) {
+                (VolumeKind::Directory, Some(source)) => PathBuf::from(source),
+                (VolumeKind::Incus, None) => {
+                    let target = self.volume_dir(oracle, &volume.name)?;
+                    std::fs::create_dir_all(&target)
+                        .with_context(|| format!("cannot make {}", target.display()))?;
+                    target.canonicalize()?
+                }
+                _ => bail!("the volume {} has an unknown kind", volume.name),
+            };
+            let link = dir.join("workspaces").join(relative);
+            if let Some(parent) = link.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("cannot make {}", parent.display()))?;
+            }
+            std::os::unix::fs::symlink(&target, &link)
+                .with_context(|| format!("cannot link {}", link.display()))?;
+        }
+        Ok(())
     }
 
     fn read(&self, instance: &str) -> Option<InstanceFile> {
@@ -114,6 +173,7 @@ impl Driver for ProcessDriver {
         if dir.exists() {
             bail!("the instance {} exists already", request.instance);
         }
+        let mounts = prepare_mounts(&self.rules, true, &request.volumes)?;
         progress.step("instance");
         let home = dir.join("home");
         let config = home.join(".config/loom");
@@ -123,6 +183,7 @@ impl Driver for ProcessDriver {
             std::fs::create_dir_all(path)
                 .with_context(|| format!("cannot make {}", path.display()))?;
         }
+        self.link_volumes(&dir, oracle, &mounts)?;
         let bootstrap = Bootstrap {
             workspaces_root: Some(workspaces),
             ..request.bootstrap.clone()
@@ -164,6 +225,11 @@ impl Driver for ProcessDriver {
             instance: request.instance.clone(),
             oracle: oracle.to_owned(),
             pid: i32::try_from(pid)?,
+            volumes: mounts
+                .into_iter()
+                .filter(|mount| mount.kind == VolumeKind::Incus)
+                .map(|mount| mount.name)
+                .collect(),
         };
         write_private(&dir.join(INSTANCE_FILE), &serde_json::to_vec_pretty(&file)?)?;
         let instance = request.instance.clone();
@@ -224,6 +290,23 @@ impl Driver for ProcessDriver {
         Ok(instances)
     }
 
+    async fn delete_volume(&self, oracle: &str, volume: &str) -> anyhow::Result<()> {
+        let target = self.volume_dir(oracle, volume)?;
+        for instance in self.list(oracle).await? {
+            if self
+                .read(&instance.instance)
+                .is_some_and(|file| file.volumes.iter().any(|name| name == volume))
+            {
+                bail!("the volume {volume} is in use by {}", instance.instance);
+            }
+        }
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| format!("cannot remove {}", target.display())),
+        }
+    }
+
     async fn check(&self, _deep: bool) -> Vec<CheckItem> {
         let mut items = Vec::new();
         match std::fs::create_dir_all(&self.root) {
@@ -250,6 +333,7 @@ impl Driver for ProcessDriver {
 #[cfg(test)]
 mod tests {
     use loom_client::oracle_proto::Environment;
+    use loom_config::HostUser;
 
     use super::*;
 
@@ -266,13 +350,28 @@ mod tests {
                 workspaces_root: None,
             },
             agent_version: None,
+            volumes: Vec::new(),
         }
     }
 
     #[tokio::test]
     async fn processes_are_instances_of_one_oracle() {
         let dir = tempfile::tempdir().unwrap();
-        let driver = ProcessDriver::new(dir.path().join("codespaces"));
+        let data = dir.path().canonicalize().unwrap().join("data");
+        std::fs::create_dir_all(data.join("dataset")).unwrap();
+        std::fs::write(data.join("dataset/file"), "test data").unwrap();
+        std::os::unix::fs::symlink(data.join("dataset"), data.join("alias")).unwrap();
+        let driver = ProcessDriver::new(
+            dir.path().join("codespaces"),
+            HostRules {
+                directories: vec![data.clone()],
+                host_user: Some(HostUser {
+                    uid: 1001,
+                    gid: 1002,
+                }),
+                ..Default::default()
+            },
+        );
         assert!(driver.list("o1").await.unwrap().is_empty());
         let script = dir.path().join("agent.sh");
         std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
@@ -282,10 +381,51 @@ mod tests {
             path: script,
             version: None,
         };
+        let mounts = vec![
+            InstanceVolume {
+                name: "cache".into(),
+                kind: VolumeKind::Incus,
+                size_mib: None,
+                source: None,
+                path: "/workspaces/cache".into(),
+                read_only: false,
+            },
+            InstanceVolume {
+                name: "data".into(),
+                kind: VolumeKind::Directory,
+                size_mib: None,
+                source: Some(data.join("alias").to_str().unwrap().to_owned()),
+                path: "/workspaces/data".into(),
+                read_only: true,
+            },
+        ];
+        let mut req = request("c1");
+        req.volumes = mounts.clone();
+        req.volumes[0].path = "/workspaces/../escaped".into();
+        assert!(
+            driver
+                .create(&req, "o1", &agent, &Progress::none())
+                .await
+                .is_err()
+        );
+        assert!(!driver.dir("loom-c1").exists());
+        req.volumes = mounts.clone();
         driver
-            .create(&request("c1"), "o1", &agent, &Progress::none())
+            .create(&req, "o1", &agent, &Progress::none())
             .await
             .unwrap();
+        let workspace = driver.dir("loom-c1").join("workspaces");
+        assert_eq!(
+            std::fs::read_link(workspace.join("data")).unwrap(),
+            data.join("dataset")
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("data/file")).unwrap(),
+            "test data"
+        );
+        std::fs::write(workspace.join("cache/marker"), "saved").unwrap();
+        let err = driver.delete_volume("o1", "cache").await.unwrap_err();
+        assert!(err.to_string().contains("in use"));
         assert!(
             driver
                 .create(&request("c1"), "o1", &agent, &Progress::none())
@@ -316,5 +456,20 @@ mod tests {
         assert!(!dir.path().join("codespaces/loom-c1").exists());
         assert!(driver.list("o1").await.unwrap().is_empty());
         driver.delete("o1", "loom-c1").await.unwrap();
+        let mut req = request("c2");
+        req.volumes = mounts;
+        driver
+            .create(&req, "o1", &agent, &Progress::none())
+            .await
+            .unwrap();
+        let workspace = driver.dir("loom-c2").join("workspaces");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("cache/marker")).unwrap(),
+            "saved"
+        );
+        driver.delete("o1", "loom-c2").await.unwrap();
+        driver.delete_volume("o1", "cache").await.unwrap();
+        assert!(!driver.volume_dir("o1", "cache").unwrap().exists());
+        assert!(data.join("dataset/file").is_file());
     }
 }

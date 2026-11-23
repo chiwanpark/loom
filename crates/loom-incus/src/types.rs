@@ -137,6 +137,18 @@ pub struct StoragePool {
     pub driver: String,
     #[serde(default)]
     pub status: String,
+    pub config: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct StorageVolume {
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub config: BTreeMap<String, String>,
+    #[serde(default)]
+    pub used_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

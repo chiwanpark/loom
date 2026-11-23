@@ -16,6 +16,7 @@ use crate::agent::{Agent, AgentNotice};
 use crate::convert;
 use crate::events::Subscription;
 use crate::host_keys::HostKeys;
+use crate::repositories::Repositories;
 use crate::session::Session;
 use crate::supervisor::Supervisor;
 use crate::terminals::{ConnectionId, Viewer, interactive_shell};
@@ -40,6 +41,7 @@ pub struct Connection {
     tasks: Vec<JoinHandle<()>>,
     supervisor: Option<Arc<dyn Supervisor>>,
     host_keys: Option<Arc<dyn HostKeys>>,
+    repositories: Option<Arc<dyn Repositories>>,
     connection_id: ConnectionId,
     relayed: bool,
     /// The key of a client that comes through a relay, which its push token belongs to.
@@ -72,6 +74,7 @@ impl Connection {
             tasks: Vec::new(),
             supervisor: None,
             host_keys: None,
+            repositories: None,
             connection_id,
             relayed: false,
             client_key: None,
@@ -104,6 +107,11 @@ impl Connection {
 
     pub fn with_host_keys(mut self, host_keys: Option<Arc<dyn HostKeys>>) -> Self {
         self.host_keys = host_keys;
+        self
+    }
+
+    pub fn with_repositories(mut self, repositories: Option<Arc<dyn Repositories>>) -> Self {
+        self.repositories = repositories;
         self
     }
 
@@ -279,6 +287,16 @@ impl Connection {
                 let out = self.out.clone();
                 self.tasks.push(tokio::spawn(async move {
                     let result = manage_keys(host_keys.as_deref(), command).await;
+                    let _ = out.send(ServerMessage::Response { id, result }).await;
+                }));
+            }
+            Command::ListRepositories
+            | Command::PushRepositories(_)
+            | Command::OpenPullRequests { .. } => {
+                let repositories = self.repositories.clone();
+                let out = self.out.clone();
+                self.tasks.push(tokio::spawn(async move {
+                    let result = manage_repositories(repositories.as_deref(), command).await;
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
@@ -871,6 +889,9 @@ impl Connection {
             | Command::ListClients
             | Command::RevokeClient { .. }
             | Command::SetPushToken { .. }
+            | Command::ListRepositories
+            | Command::PushRepositories(_)
+            | Command::OpenPullRequests { .. }
             | Command::DeleteSession { .. }
             | Command::CreateSession {
                 worktree: Some(_), ..
@@ -932,6 +953,29 @@ impl Drop for Connection {
         {
             token.cancel();
         }
+    }
+}
+
+async fn manage_repositories(repositories: Option<&dyn Repositories>, command: Command) -> Reply {
+    let Some(repositories) = repositories else {
+        return Err(ApiError::new(
+            ErrorCode::Unsupported,
+            "this agent does not manage the repositories of a codespace",
+        ));
+    };
+    match command {
+        Command::ListRepositories => repositories.list().await.map(Payload::Repositories),
+        Command::PushRepositories(request) => {
+            repositories.push(request).await.map(Payload::Repositories)
+        }
+        Command::OpenPullRequests { title, body, draft } => repositories
+            .open_pull_requests(title, body, draft)
+            .await
+            .map(Payload::PullRequests),
+        _ => Err(ApiError::new(
+            ErrorCode::Internal,
+            "command routed to the wrong handler",
+        )),
     }
 }
 

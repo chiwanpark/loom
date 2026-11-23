@@ -682,6 +682,71 @@ impl Incus {
             .await?;
         Ok(())
     }
+
+    pub async fn update_project(
+        &self,
+        name: &str,
+        config: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let body = json!({ "config": config });
+        self.call_with(
+            Method::PATCH,
+            &format!("/1.0/projects/{}", encode(name)),
+            Some(&body),
+            false,
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn volume_path(pool: &str, name: &str) -> String {
+        format!(
+            "/1.0/storage-pools/{}/volumes/custom/{}",
+            encode(pool),
+            encode(name)
+        )
+    }
+
+    pub async fn storage_volume(&self, pool: &str, name: &str) -> Result<Option<StorageVolume>> {
+        match self.get(&Self::volume_path(pool, name)).await {
+            Ok(volume) => Ok(Some(volume)),
+            Err(err) if err.is_not_found() => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn create_storage_volume(
+        &self,
+        pool: &str,
+        name: &str,
+        config: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let body = json!({
+            "name": name,
+            "type": "custom",
+            "content_type": "filesystem",
+            "config": config,
+        });
+        self.run(
+            Method::POST,
+            &format!("/1.0/storage-pools/{}/volumes/custom", encode(pool)),
+            Some(&body),
+            Duration::from_secs(300),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_storage_volume(&self, pool: &str, name: &str) -> Result<()> {
+        self.run(
+            Method::DELETE,
+            &Self::volume_path(pool, name),
+            None,
+            Duration::from_secs(300),
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 pub async fn server_certificate(url: &str) -> Result<Vec<u8>> {

@@ -1,4 +1,5 @@
 mod client;
+mod close_guard;
 mod connect;
 mod download;
 mod error;
@@ -10,6 +11,7 @@ mod update;
 mod upload;
 
 pub use client::{Client, Notification, Notifications, terminal_owner};
+pub use close_guard::{CloseChoice, CloseGuardError, choices_from_lists, close_plan, needs_choice};
 pub use connect::{
     AgentTarget, connect_local, connect_ssh, list_local_agents, list_remote_agents, local_registry,
 };
