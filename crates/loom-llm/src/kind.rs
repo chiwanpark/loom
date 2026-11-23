@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::HttpClient;
 use crate::auth::{
-    AccountIdentity, AccountInfo, LoginInput, LoginMethod, LoginMethodInfo, LoginPrompt,
-    ProviderStatus,
+    AccountIdentity, AccountInfo, LentCredential, LoginInput, LoginMethod, LoginMethodInfo,
+    LoginPrompt, ProviderStatus,
 };
 use crate::error::{LlmError, Result};
 use crate::provider::{LlmProvider, ProviderId};
@@ -110,6 +110,15 @@ pub(crate) trait ProviderKind: Send + Sync {
             "{} has a single account",
             self.id()
         )))
+    }
+
+    async fn lend(&self, shared: &Shared, _margin_secs: u64) -> Result<Option<LentCredential>> {
+        let credentials = shared.store.load().await?;
+        Ok(credentials
+            .section(self.id().as_str())
+            .cloned()
+            .filter(|section| !section.is_null())
+            .map(|section| LentCredential::from_section(section, None)))
     }
 }
 

@@ -90,6 +90,7 @@ struct Core {
     main_workspace: Arc<Workspace>,
     files: Arc<FileTracker>,
     system_agents_md: PathBuf,
+    repository_dirs: Arc<Vec<PathBuf>>,
     /// The directories of the skills that the last system prompt listed,
     /// which the read tool may read.
     skill_dirs: Mutex<Arc<Vec<PathBuf>>>,
@@ -108,6 +109,7 @@ pub(crate) struct SessionParams {
     pub runtime: RuntimeCell,
     pub workspace: Arc<Workspace>,
     pub system_agents_md: PathBuf,
+    pub repository_dirs: Arc<Vec<PathBuf>>,
     pub model: Option<ModelRef>,
     pub store: Option<EventStore>,
     pub notes: Arc<AgentNotes>,
@@ -399,6 +401,7 @@ impl Session {
                 main_workspace: params.workspace,
                 files: Arc::new(FileTracker::default()),
                 system_agents_md: params.system_agents_md,
+                repository_dirs: params.repository_dirs,
                 skill_dirs: Mutex::default(),
                 removed: CancellationToken::new(),
                 notices: params.notices,
@@ -915,9 +918,12 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
     let catalog = if runtime.skills.enabled() {
         let sources = runtime.skills.clone();
         let workspace = workspace.root().to_path_buf();
-        tokio::task::spawn_blocking(move || sources.discover(&workspace))
-            .await
-            .unwrap_or_default()
+        let repositories = core.repository_dirs.clone();
+        tokio::task::spawn_blocking(move || {
+            sources.discover_with(&workspace, repositories.as_slice())
+        })
+        .await
+        .unwrap_or_default()
     } else {
         Catalog::default()
     };
@@ -938,6 +944,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,
         workspace_root: workspace.root(),
+        repository_dirs: core.repository_dirs.as_slice(),
         max_bytes: runtime.config.instructions.max_bytes.as_usize(),
         tools: &specs,
         skills: Some(&catalog),

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CheckResult, GitSetup, InstanceVolume, ProviderRequest, WorkspaceCheck, WorkspaceVolume,
+    CheckResult, GitSetup, InstanceVolume, PresetBundle, ProviderRequest, WorkspaceCheck,
+    WorkspaceVolume,
 };
 
 pub const DEFAULT_CPUS: u32 = 2;
@@ -176,6 +177,8 @@ pub struct Codespace {
     pub step: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default)]
+    pub first_message: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -198,6 +201,10 @@ pub struct Bundle {
     pub preset: Option<String>,
     #[serde(default)]
     pub git: GitSetup,
+    #[serde(default)]
+    pub agent: PresetBundle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

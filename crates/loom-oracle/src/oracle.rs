@@ -25,6 +25,8 @@ use crate::store::{PairingRow, PeerRow, RelayHostRow, Store, StoreError};
 
 mod codespaces;
 mod git;
+mod models;
+mod presets;
 mod volumes;
 
 pub use codespaces::{NewCodespaceArgs, valid_branch, validate_environment};
@@ -196,6 +198,7 @@ pub struct Oracle {
     codespace_lock: Mutex<()>,
     http: loom_github::Http,
     reach: Mutex<git::ReachCache>,
+    models: models::ModelState,
 }
 
 impl Oracle {
@@ -240,6 +243,7 @@ impl Oracle {
             codespace_lock: Mutex::new(()),
             http: loom_github::Http::new()?,
             reach: Mutex::new(HashMap::new()),
+            models: models::ModelState::new(),
         }))
     }
 

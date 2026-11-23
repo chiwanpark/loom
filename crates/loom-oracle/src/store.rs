@@ -12,10 +12,12 @@ use crate::seal::{MasterKey, SealError, Sealer};
 
 mod codespaces;
 mod git;
+mod models;
 mod volumes;
 
 pub use codespaces::{CodespaceRow, HostRow, WorkspaceRow};
-pub use git::{CredentialCheck, CredentialRow, PresetRow, ProviderRow};
+pub use git::{CredentialCheck, CredentialRow, PresetInput, PresetRow, ProviderRow};
+pub use models::{ModelAccountRow, NewModelAccount, SecretRow, SessionRow};
 pub use volumes::VolumeRow;
 
 const MIGRATIONS: &[&str] = &[
@@ -171,6 +173,66 @@ CREATE INDEX codespace_volumes_volume ON codespace_volumes (volume);
 ALTER TABLE workspace_repositories ADD COLUMN provider INTEGER REFERENCES providers (id);
 ALTER TABLE codespaces ADD COLUMN preset INTEGER REFERENCES presets (id) ON DELETE SET NULL;
 ALTER TABLE codespaces ADD COLUMN repositories TEXT NOT NULL DEFAULT '[]';
+",
+    "
+CREATE TABLE model_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    credentials BLOB NOT NULL,
+    email TEXT,
+    organization TEXT,
+    account_id TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE secrets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    value BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+ALTER TABLE presets ADD COLUMN agents_md TEXT NOT NULL DEFAULT '';
+CREATE TABLE preset_files (
+    preset INTEGER NOT NULL REFERENCES presets (id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (preset, path)
+);
+CREATE TABLE preset_model_accounts (
+    preset INTEGER NOT NULL REFERENCES presets (id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    account INTEGER NOT NULL REFERENCES model_accounts (id),
+    PRIMARY KEY (preset, provider)
+);
+CREATE INDEX preset_model_accounts_account ON preset_model_accounts (account);
+CREATE TABLE preset_secrets (
+    preset INTEGER NOT NULL REFERENCES presets (id) ON DELETE CASCADE,
+    variable TEXT NOT NULL,
+    secret INTEGER NOT NULL REFERENCES secrets (id),
+    PRIMARY KEY (preset, variable)
+);
+CREATE INDEX preset_secrets_secret ON preset_secrets (secret);
+CREATE TABLE notes (
+    workspace INTEGER PRIMARY KEY REFERENCES workspaces (id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE sessions (
+    codespace TEXT NOT NULL REFERENCES codespaces (id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    title TEXT,
+    state TEXT NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (codespace, id)
+);
+ALTER TABLE codespaces ADD COLUMN first_message TEXT;
 ",
 ];
 

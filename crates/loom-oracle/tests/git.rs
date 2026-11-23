@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loom_client::oracle_proto::{
-    CheckResult, CodespaceState, ErrorCode, Event, GitCredentialInput, GitProviderInput, HostCall,
-    HostReport, OracleError, ProviderRoute, Repository, Role, Secret, VolumeInput, VolumeKind,
+    AccountKind, CheckResult, CodespaceState, ErrorCode, Event, FirstMessage, GitCredentialInput,
+    GitProviderInput, HostCall, HostReport, ModelLoginMethod, OracleError, PresetFile,
+    ProviderRoute, Repository, Role, Secret, SessionSummary, VolumeInput, VolumeKind,
     WorkspaceCheckResult, WorkspaceVolume,
 };
 use loom_client::{
@@ -755,4 +756,253 @@ async fn volumes_require_host_confirmation_and_stay_reserved_until_close() {
     let (result, ()) = tokio::join!(retry, answer);
     result.unwrap();
     assert!(laptop.volumes().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn model_accounts_secrets_and_presets_reach_the_codespace() {
+    let oracle = start_oracle().await;
+    let (laptop, mut events) = oracle.connect(Role::Device, "laptop").await;
+    laptop.subscribe().await.unwrap();
+    let (_host, mut calls) = start_host(&oracle).await;
+    let files = MockServer::start().await;
+
+    let key = laptop
+        .set_model_api_key("key", "openai", "sk-test")
+        .await
+        .unwrap();
+    assert_eq!(key.kind, AccountKind::ApiKey);
+    assert_eq!(key.provider, "openai");
+    next_event(
+        &mut events,
+        |e| matches!(e, Event::ModelAccountChanged { account } if account.name == "key"),
+    )
+    .await;
+    laptop
+        .set_model_api_key("mine", "my-llm", "sk-mine")
+        .await
+        .unwrap();
+    let err = laptop
+        .set_model_api_key("key", "anthropic", "sk-other")
+        .await
+        .unwrap_err();
+    assert!(message(err).contains("is for openai"));
+    let err = laptop
+        .start_model_login(
+            "mine",
+            "my-llm",
+            ModelLoginMethod::Browser { redirect_uri: None },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), ErrorCode::BadRequest);
+    assert_eq!(
+        code(laptop.set_secret("npm", "a\nb").await.unwrap_err()),
+        ErrorCode::BadRequest
+    );
+    assert_eq!(
+        code(laptop.set_secret("Npm", "x").await.unwrap_err()),
+        ErrorCode::BadRequest
+    );
+    laptop.set_secret("npm", "npm-1").await.unwrap();
+
+    for (yaml, expected) in [
+        (
+            "llm:\n  accounts:\n    openai: nobody\n",
+            "no such model account",
+        ),
+        (
+            "llm:\n  accounts:\n    anthropic: key\n",
+            "which is an account of openai",
+        ),
+        (
+            "llm:\n  default_model: anthropic/claude\n",
+            "needs an account",
+        ),
+        (
+            "environment:\n  secrets:\n    NPM_TOKEN: missing\n",
+            "no such secret",
+        ),
+        ("storage:\n  data_dir: /tmp\n", "storage"),
+    ] {
+        let err = laptop.set_preset("dev", yaml).await.unwrap_err();
+        assert!(message(err).contains(expected), "{yaml}");
+    }
+    let bad_file = PresetFile {
+        path: "AGENTS.md".into(),
+        content: "x".into(),
+    };
+    assert_eq!(
+        code(
+            laptop
+                .set_full_preset("dev", "", None, Some(vec![bad_file]))
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::BadRequest
+    );
+
+    let yaml = "llm:\n  default_model: openai/gpt-test\n  accounts:\n    openai: key\n    my-llm: mine\n  providers:\n    my-llm:\n      type: openai-compatible\n      base_url: http://127.0.0.1:1\nenvironment:\n  secrets:\n    NPM_TOKEN: npm\n    NODE_AUTH_TOKEN: npm\n";
+    let skill = PresetFile {
+        path: "skills/review/SKILL.md".into(),
+        content: "---\nname: review\ndescription: Review.\n---\n".into(),
+    };
+    let preset = laptop
+        .set_full_preset("dev", yaml, Some("RULES"), Some(vec![skill.clone()]))
+        .await
+        .unwrap();
+    assert_eq!(preset.model_accounts["openai"], "key");
+    assert_eq!(preset.secrets["NODE_AUTH_TOKEN"], "npm");
+    assert_eq!(preset.files, vec!["skills/review/SKILL.md".to_owned()]);
+    let detail = laptop.preset("dev").await.unwrap();
+    assert_eq!(detail.preset.agents_md, "RULES");
+    assert_eq!(detail.files, vec![skill.clone()]);
+    let kept = laptop.set_preset("dev", yaml).await.unwrap();
+    assert_eq!(kept.agents_md, "RULES");
+    assert_eq!(kept.files.len(), 1);
+    let accounts = laptop.model_accounts().await.unwrap();
+    assert_eq!(accounts[0].presets, vec!["dev".to_owned()]);
+    let secrets = laptop.secrets().await.unwrap();
+    assert_eq!(secrets[0].presets, vec!["dev".to_owned()]);
+    assert_eq!(
+        code(laptop.delete_secret("npm").await.unwrap_err()),
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        code(laptop.delete_model_account("key").await.unwrap_err()),
+        ErrorCode::Conflict
+    );
+
+    laptop
+        .create_workspace(
+            "acme",
+            "box",
+            vec![repository(&format!("{}/app.git", files.uri()))],
+        )
+        .await
+        .unwrap();
+    laptop.set_workspace_notes("acme", "NOTES").await.unwrap();
+    let empty = FirstMessage {
+        text: " ".into(),
+        model: None,
+    };
+    let err = laptop
+        .create_codespace(NewCodespace {
+            workspace: "acme".into(),
+            first_message: Some(empty),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), ErrorCode::BadRequest);
+    let created = laptop
+        .create_codespace(NewCodespace {
+            workspace: "acme".into(),
+            preset: Some("dev".into()),
+            first_message: Some(FirstMessage {
+                text: "Start".into(),
+                model: Some("openai/gpt-test".into()),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(created.first_message);
+    let create = loop {
+        match tokio::time::timeout(WAIT, calls.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            HostCall::CreateInstance(create) => break create,
+            _ => continue,
+        }
+    };
+    let agent_key = ClientIdentity::generate().unwrap();
+    let endpoint = pair_oracle(&create.bootstrap.link, &agent_key, "agent", None)
+        .await
+        .unwrap();
+    let (agent, mut agent_events) = OracleClient::connect(&endpoint, &agent_key, "agent")
+        .await
+        .unwrap();
+    agent.subscribe().await.unwrap();
+
+    let bundle = agent.bundle().await.unwrap();
+    assert_eq!(bundle.notes.as_deref(), Some("NOTES"));
+    assert_eq!(bundle.agent.name, "dev");
+    assert_eq!(bundle.agent.agents_md, "RULES");
+    assert_eq!(bundle.agent.files, vec![skill]);
+    assert_eq!(bundle.agent.secrets["NPM_TOKEN"].expose(), "npm-1");
+    assert_eq!(bundle.agent.secrets["NODE_AUTH_TOKEN"].expose(), "npm-1");
+    assert_eq!(bundle.agent.accounts["my-llm"], "mine");
+
+    let lent = agent.model_credentials().await.unwrap();
+    assert!(lent.errors.is_empty(), "{:?}", lent.errors);
+    assert_eq!(lent.sections["openai"]["api_key"], "sk-test");
+    assert_eq!(lent.sections["my-llm"], json!({"api_key": "sk-mine"}));
+    assert_eq!(lent.accounts["openai"], "key");
+    assert_eq!(lent.valid_secs, None);
+    assert_eq!(
+        code(laptop.model_credentials().await.unwrap_err()),
+        ErrorCode::Forbidden
+    );
+
+    let first = agent.take_first_message().await.unwrap().unwrap();
+    assert_eq!(first.text, "Start");
+    assert_eq!(first.model.as_deref(), Some("openai/gpt-test"));
+    assert!(agent.take_first_message().await.unwrap().is_none());
+
+    laptop.set_secret("npm", "npm-2").await.unwrap();
+    let changed = next_event(&mut agent_events, |e| {
+        matches!(e, Event::ConfigChanged { .. })
+    })
+    .await;
+    assert_eq!(
+        changed,
+        Event::ConfigChanged {
+            presets: vec!["dev".into()]
+        }
+    );
+    let bundle = agent.bundle().await.unwrap();
+    assert_eq!(bundle.agent.secrets["NPM_TOKEN"].expose(), "npm-2");
+
+    agent.codespace_notes("CHANGED").await.unwrap();
+    assert_eq!(
+        laptop.workspace_notes("acme").await.unwrap().text,
+        "CHANGED"
+    );
+    let summary = |id: &str, state: &str| SessionSummary {
+        id: id.into(),
+        title: Some(format!("Session {id}")),
+        state: state.into(),
+        archived: false,
+        model: None,
+        created_at: 1,
+        updated_at: 2,
+    };
+    agent
+        .session_summaries(
+            vec![summary("a", "thinking"), summary("b", "idle")],
+            Vec::new(),
+            true,
+        )
+        .await
+        .unwrap();
+    next_event(
+        &mut events,
+        |e| matches!(e, Event::SessionChanged { session } if session.session.id == "b"),
+    )
+    .await;
+    agent
+        .session_summaries(vec![summary("a", "completed")], Vec::new(), true)
+        .await
+        .unwrap();
+    next_event(
+        &mut events,
+        |e| matches!(e, Event::SessionRemoved { id, .. } if id == "b"),
+    )
+    .await;
+    let sessions = laptop.sessions(Some(&created.id)).await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session.state, "completed");
+    assert_eq!(sessions[0].workspace, "acme");
 }
