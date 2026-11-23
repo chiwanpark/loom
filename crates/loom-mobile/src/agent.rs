@@ -931,8 +931,16 @@ impl AgentConnection {
             let providers = client.list_providers().await?;
             let mut models = Vec::new();
             for provider in providers.iter().filter(|p| p.enabled) {
+                let account = provider
+                    .accounts
+                    .iter()
+                    .find(|a| a.active)
+                    .map(|a| a.label.clone().unwrap_or_else(|| a.id.clone()));
                 match client.list_models(provider.provider.as_str()).await {
-                    Ok(list) => models.extend(list.iter().map(Model::from)),
+                    Ok(list) => models.extend(list.iter().map(|info| Model {
+                        account: account.clone(),
+                        ..Model::from(info)
+                    })),
                     Err(err) if provider.signed_in() => return Err(err.into()),
                     Err(_) => {}
                 }

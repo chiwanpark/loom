@@ -66,7 +66,7 @@ Loom-Next is in development. An oracle keeps workspaces, presets, and codespaces
 
 To pair with an oracle, run `loom-oracle-cli pair-device` on a device that is paired with the oracle. Then use **Pair with a host** in the app, and scan the QR code or paste the link. The app keeps the oracle as a host with the mark **Oracle**.
 
-Under **Workspaces**, the start screen shows each oracle with its workspaces and their codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The sessions of the codespaces come from the oracle, and the start screen puts them into groups with the other sessions. The app connects to the agent of a codespace only when you open a session.
+Under **Workspaces**, the start screen shows each oracle with its workspaces and their codespaces. For each workspace, it shows the host and the repositories. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The sessions of the codespaces come from the oracle, and the start screen puts them into groups with the other sessions. The app connects to the agent of a codespace only when you open a session.
 
 ### New codespace
 
@@ -87,6 +87,8 @@ A progress screen shows the steps of the start. When the codespace is ready, pre
 - **Close codespace** shows the close guard. For each repository with unsaved work, select **Push** or **Discard**. A push of changed files needs a commit message. If a push fails, the codespace stays open.
 
 In a codespace with more than one repository, **Changes** shows the files under the name of their repository.
+
+The model picker shows the account name of each model provider.
 
 The app tells the oracle where to send notifications. The oracle gives this to the agents of the codespaces, so they can send notifications to the app.
 

@@ -1146,7 +1146,11 @@ private fun ModelDialog(link: AgentLink, current: String?, onPick: (String) -> U
                 models == null -> CircularProgressIndicator()
                 else -> LazyColumn(Modifier.heightIn(max = 420.dp)) {
                     items(models!!, key = { it.modelRef }) { model ->
-                        ChoiceRow(model.displayName, model.modelRef, selected = current == model.modelRef) {
+                        ChoiceRow(
+                            model.displayName,
+                            model.account?.let { "${model.modelRef} · $it" } ?: model.modelRef,
+                            selected = current == model.modelRef,
+                        ) {
                             onDismiss()
                             onPick(model.modelRef)
                         }
