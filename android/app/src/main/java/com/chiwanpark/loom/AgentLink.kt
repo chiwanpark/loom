@@ -308,6 +308,16 @@ class AgentLink(
     /** The connection, or an error the screens can show. */
     fun connection(): AgentConnection = connection ?: throw LoomException.Closed("Not connected to the agent yet.")
 
+    suspend fun awaitConnection(timeoutMs: Long = 30_000L): AgentConnection {
+        val reached = withTimeoutOrNull(timeoutMs) {
+            snapshotFlow { state }.first { it == LinkState.Connected || (it is LinkState.Down && it.fatal) }
+        }
+        val current = state
+        if (current is LinkState.Down) throw LoomException.Offline(current.message)
+        if (reached == null) throw LoomException.Offline("The agent did not answer in time.")
+        return connection()
+    }
+
     /**
      * Forwards a local port to `host:port` on the agent's host, or gives the
      * forward there is already. Throws when the phone cannot listen.
@@ -586,6 +596,13 @@ class AgentLinks(private val app: LoomApplication) {
         moved.keys.removeAll { it.first !in hosts }
     }
 
+    fun retainInstances(host: String, instances: Set<String>) {
+        for ((key, _) in links.filter { it.key.first == host && it.key.second !in instances }) {
+            if (inUse(key)) continue
+            links.remove(key)?.stop()
+        }
+    }
+
     /** The instance an agent runs as now, following its restarts. */
     private fun resolve(key: Pair<String, String>): Pair<String, String> {
         var current = key
@@ -627,6 +644,7 @@ class Directory(private val app: LoomApplication) {
 
     fun refresh(loom: Loom) {
         hosts = loom.hosts()
+        app.oracles.retainHosts(hosts.filter { it.oracle }.map { it.name })
         val names = hosts.map { it.name }
         agents.keys.retainAll(names.toSet())
         app.links.retainHosts(names)
@@ -634,7 +652,15 @@ class Directory(private val app: LoomApplication) {
         job = app.scope.launch {
             refreshing = true
             try {
-                coroutineScope { names.forEach { host -> launch { load(loom, host) } } }
+                coroutineScope {
+                    hosts.forEach { host ->
+                        if (host.oracle) {
+                            app.oracles.get(loom, host.name).retryNow()
+                        } else {
+                            launch { load(loom, host.name) }
+                        }
+                    }
+                }
             } finally {
                 refreshing = false
             }
@@ -643,7 +669,11 @@ class Directory(private val app: LoomApplication) {
 
     /** Asks one host's relay for its agents again, as when one went offline. */
     fun refreshHost(loom: Loom, host: String) {
-        if (hosts.none { it.name == host }) return
+        val known = hosts.firstOrNull { it.name == host } ?: return
+        if (known.oracle) {
+            app.oracles.find(host)?.retryNow()
+            return
+        }
         app.scope.launch { load(loom, host) }
     }
 

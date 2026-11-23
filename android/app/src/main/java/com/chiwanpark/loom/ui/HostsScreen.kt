@@ -205,7 +205,10 @@ private fun HostRow(
         modifier = Modifier.clickable { menu = true },
         leadingContent = { ColorDot(hostColor(host.color)) },
         headlineContent = { Text(host.name, color = hostColor(host.color) ?: Color.Unspecified) },
-        supportingContent = { Text(host.relayUrl.substringAfter("://")) },
+        supportingContent = {
+            val address = host.relayUrl.substringAfter("://")
+            Text(if (host.oracle) "Oracle · $address" else address)
+        },
         trailingContent = {
             Box {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
@@ -213,7 +216,7 @@ private fun HostRow(
                     val close = { menu = false }
                     MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
                     MenuEntry("Color…", LoomIcons.Palette, close, onColor)
-                    MenuEntry("Update agents…", LoomIcons.Download, close, onUpdate)
+                    if (!host.oracle) MenuEntry("Update agents…", LoomIcons.Download, close, onUpdate)
                     MenuEntry("Remove", LoomIcons.Trash, close, onRemove)
                 }
             }
@@ -377,8 +380,8 @@ fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                "On the host, run `loom-agent pair`. Scan the QR code it prints, or paste its " +
-                    "loom:// link. The link works once, for 10 minutes.",
+                "On the host, run `loom-agent pair`. For an oracle, run `loom-oracle-cli pair-device`. " +
+                    "Scan the QR code it prints, or paste its loom:// link. The link works once, for 10 minutes.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

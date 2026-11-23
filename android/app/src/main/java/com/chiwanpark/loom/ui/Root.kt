@@ -76,6 +76,10 @@ fun LoomRoot(app: LoomApplication) {
             )
             is Screen.Terminal -> TerminalScreen(app, app.links.get(loom, screen.host, screen.instance), screen.number)
             is Screen.Ports -> PortsScreen(app, app.links.get(loom, screen.host, screen.instance))
+            is Screen.NewCodespace -> NewCodespaceScreen(app, app.oracles.get(loom, screen.host), screen.workspace)
+            is Screen.CodespaceProgress -> CodespaceProgressScreen(
+                app, loom, app.oracles.get(loom, screen.host), screen.codespace,
+            )
         }
     }
 }
