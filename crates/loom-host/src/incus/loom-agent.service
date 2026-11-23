@@ -1,0 +1,22 @@
+[Unit]
+Description=Loom codespace agent
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/loom-agent
+
+[Service]
+Type=simple
+User=dev
+Group=dev
+WorkingDirectory=/home/dev
+EnvironmentFile=-/etc/loom/environment
+ExecStart=/usr/local/bin/loom-agent serve --managed
+KillMode=control-group
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=3
+SuccessExitStatus=3
+
+[Install]
+WantedBy=multi-user.target

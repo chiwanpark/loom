@@ -6,9 +6,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
-    ClientHello, ClientMessage, Command, Device, DeviceResult, Devices, Empty, Event,
-    ORACLE_INSTANCE, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings, RelayHost,
-    RelayHostResult, RelayHosts, Request, ServerHello, ServerMessage, encode, parse_server_message,
+    AgentAddress, Bundle, ClientHello, ClientMessage, Codespace, CodespaceResult, Codespaces,
+    Command, Device, DeviceResult, Devices, Empty, Environment, Event, Host, HostCall, HostReport,
+    HostResult, Hosts, InstanceReport, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION,
+    Pairing, PairingLink, Pairings, RelayHost, RelayHostResult, RelayHosts, Reply, Repository,
+    Request, ServerHello, ServerMessage, Workspace, WorkspaceResult, Workspaces, encode,
+    parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -122,6 +125,29 @@ impl OracleEvents {
     }
 }
 
+pub struct OracleCalls {
+    rx: mpsc::UnboundedReceiver<(u64, HostCall)>,
+}
+
+impl OracleCalls {
+    pub async fn recv(&mut self) -> Option<(u64, HostCall)> {
+        self.rx.recv().await
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewCodespace {
+    pub workspace: String,
+    pub cpus: Option<u32>,
+    pub memory_mib: Option<u64>,
+    pub base_branch: Option<String>,
+    pub client_version: Option<String>,
+}
+
+fn done(result: Result<Empty>) -> Result<()> {
+    result.map(|_| ())
+}
+
 fn protocol(err: serde_json::Error) -> ClientError {
     ClientError::Protocol(err.to_string())
 }
@@ -155,6 +181,33 @@ impl OracleClient {
     }
 
     pub async fn over(stream: FrameStream, client_name: &str) -> Result<(Self, OracleEvents)> {
+        let (client, events, _) = Self::open(stream, client_name, false).await?;
+        Ok((client, events))
+    }
+
+    pub async fn connect_with_calls(
+        endpoint: &OracleEndpoint,
+        identity: &ClientIdentity,
+        client_name: &str,
+    ) -> Result<(Self, OracleEvents, OracleCalls)> {
+        let stream = endpoint.connect_stream(identity).await?;
+        Self::over_with_calls(stream, client_name).await
+    }
+
+    pub async fn over_with_calls(
+        stream: FrameStream,
+        client_name: &str,
+    ) -> Result<(Self, OracleEvents, OracleCalls)> {
+        let (client, events, calls) = Self::open(stream, client_name, true).await?;
+        let calls = calls.ok_or(ClientError::Closed)?;
+        Ok((client, events, calls))
+    }
+
+    async fn open(
+        stream: FrameStream,
+        client_name: &str,
+        with_calls: bool,
+    ) -> Result<(Self, OracleEvents, Option<OracleCalls>)> {
         let (mut sender, mut receiver, _) = stream.split();
         let handshake = async {
             send_message(
@@ -189,6 +242,12 @@ impl OracleClient {
         });
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         let (events, rx) = mpsc::unbounded_channel();
+        let (calls, calls_rx) = if with_calls {
+            let (tx, rx) = mpsc::unbounded_channel();
+            (Some(tx), Some(OracleCalls { rx }))
+        } else {
+            (None, None)
+        };
         let reader_pending = pending.clone();
         tokio::spawn(async move {
             loop {
@@ -210,7 +269,12 @@ impl OracleClient {
                         }
                     }
                     Ok(Some(ServerMessage::Event { event })) => {
-                        let _ = events.send(event);
+                        let _ = events.send(*event);
+                    }
+                    Ok(Some(ServerMessage::Call { id, call })) => {
+                        if let Some(calls) = &calls {
+                            let _ = calls.send((id, call));
+                        }
                     }
                     Ok(Some(_)) => {}
                     Ok(None) => break,
@@ -233,6 +297,7 @@ impl OracleClient {
                 next_id: Arc::new(AtomicU64::new(1)),
             },
             OracleEvents { rx },
+            calls_rx,
         ))
     }
 
@@ -247,6 +312,22 @@ impl OracleClient {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .is_none()
+    }
+
+    pub async fn reply(
+        &self,
+        id: u64,
+        result: std::result::Result<Value, OracleError>,
+    ) -> Result<()> {
+        let (result, error) = match result {
+            Ok(value) => (Some(value), None),
+            Err(error) => (None, Some(error)),
+        };
+        let bytes = encode(&ClientMessage::Reply(Reply { id, result, error })).map_err(protocol)?;
+        self.writer
+            .send(bytes)
+            .await
+            .map_err(|_| ClientError::Closed)
     }
 
     pub async fn call<T: DeserializeOwned>(&self, command: Command) -> Result<T> {
@@ -340,5 +421,122 @@ impl OracleClient {
         self.call::<Empty>(Command::RemoveRelayHost { host_id })
             .await
             .map(|_| ())
+    }
+
+    pub async fn create_host_pairing(&self, ttl: Option<Duration>) -> Result<PairingLink> {
+        let ttl_secs = ttl.map(|ttl| ttl.as_secs());
+        self.call(Command::CreateHostPairing { ttl_secs }).await
+    }
+
+    pub async fn hosts(&self) -> Result<Vec<Host>> {
+        Ok(self.call::<Hosts>(Command::ListHosts).await?.hosts)
+    }
+
+    pub async fn remove_host(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::RemoveHost { name }).await)
+    }
+
+    pub async fn set_host_environment(&self, name: &str, environment: Environment) -> Result<Host> {
+        let name = name.to_owned();
+        Ok(self
+            .call::<HostResult>(Command::SetHostEnvironment { name, environment })
+            .await?
+            .host)
+    }
+
+    pub async fn workspaces(&self) -> Result<Vec<Workspace>> {
+        Ok(self
+            .call::<Workspaces>(Command::ListWorkspaces)
+            .await?
+            .workspaces)
+    }
+
+    pub async fn create_workspace(
+        &self,
+        name: &str,
+        host: &str,
+        repositories: Vec<Repository>,
+    ) -> Result<Workspace> {
+        let (name, host) = (name.to_owned(), host.to_owned());
+        Ok(self
+            .call::<WorkspaceResult>(Command::CreateWorkspace {
+                name,
+                host,
+                repositories,
+            })
+            .await?
+            .workspace)
+    }
+
+    pub async fn delete_workspace(&self, name: &str) -> Result<()> {
+        let name = name.to_owned();
+        done(self.call(Command::DeleteWorkspace { name }).await)
+    }
+
+    pub async fn codespaces(&self) -> Result<Vec<Codespace>> {
+        Ok(self
+            .call::<Codespaces>(Command::ListCodespaces)
+            .await?
+            .codespaces)
+    }
+
+    pub async fn create_codespace(&self, new: NewCodespace) -> Result<Codespace> {
+        Ok(self
+            .call::<CodespaceResult>(Command::CreateCodespace {
+                workspace: new.workspace,
+                cpus: new.cpus,
+                memory_mib: new.memory_mib,
+                base_branch: new.base_branch,
+                client_version: new.client_version,
+            })
+            .await?
+            .codespace)
+    }
+
+    pub async fn close_codespace(&self, id: &str) -> Result<Codespace> {
+        let id = id.to_owned();
+        Ok(self
+            .call::<CodespaceResult>(Command::CloseCodespace { id })
+            .await?
+            .codespace)
+    }
+
+    pub async fn host_report(&self, report: HostReport) -> Result<()> {
+        done(self.call(Command::HostReport { report }).await)
+    }
+
+    pub async fn host_instances(&self, instances: Vec<InstanceReport>) -> Result<()> {
+        done(self.call(Command::HostInstances { instances }).await)
+    }
+
+    pub async fn instance_progress(&self, codespace: &str, step: &str) -> Result<()> {
+        let (codespace, step) = (codespace.to_owned(), step.to_owned());
+        done(
+            self.call(Command::InstanceProgress { codespace, step })
+                .await,
+        )
+    }
+
+    pub async fn bundle(&self) -> Result<Bundle> {
+        self.call(Command::CodespaceBundle).await
+    }
+
+    pub async fn codespace_agent(&self, address: AgentAddress) -> Result<()> {
+        done(self.call(Command::CodespaceAgent { address }).await)
+    }
+
+    pub async fn codespace_progress(&self, step: &str) -> Result<()> {
+        let step = step.to_owned();
+        done(self.call(Command::CodespaceProgress { step }).await)
+    }
+
+    pub async fn codespace_ready(&self) -> Result<()> {
+        done(self.call(Command::CodespaceReady).await)
+    }
+
+    pub async fn codespace_failed(&self, error: &str) -> Result<()> {
+        let error = error.to_owned();
+        done(self.call(Command::CodespaceFailed { error }).await)
     }
 }

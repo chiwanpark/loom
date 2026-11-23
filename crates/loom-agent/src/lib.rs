@@ -1,4 +1,5 @@
 pub mod logging;
+pub mod managed;
 pub mod push;
 pub mod relay;
 pub mod serve;

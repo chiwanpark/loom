@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use loom_agent::logging::{init as init_logging, level_name};
+use loom_agent::managed::{ManagedOptions, serve_managed};
 use loom_agent::serve::{ServeOptions, Served, serve};
 use loom_agent::stdio::{StdioTarget, bridge, find_target};
 use loom_agent::workspace::canonical_workspace;
@@ -110,10 +111,14 @@ enum ClientsCommand {
 
 #[derive(Args)]
 struct ServeArgs {
-    #[arg(long, conflicts_with = "default")]
+    #[arg(long, conflicts_with_all = ["default", "managed"])]
     workspace: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "managed")]
     default: bool,
+    #[arg(long, help = "Run as the agent of a codespace that the oracle manages")]
+    managed: bool,
+    #[arg(long, requires = "managed", value_name = "PATH")]
+    bootstrap: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -246,6 +251,19 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         CliCommand::Serve(args) => {
             let config = ctx.load()?;
             init_logging(level_name(config.logging.level));
+            if args.managed {
+                let served = serve_managed(ManagedOptions {
+                    bootstrap: args.bootstrap,
+                    config_path: ctx.config_path,
+                    config,
+                    dirs: ctx.dirs,
+                })
+                .await?;
+                return match served {
+                    Served::Exit(code) => Ok(code),
+                    Served::Restart(exe) => Err(restart(&exe)),
+                };
+            }
             let workspace = if args.default { None } else { args.workspace };
             if workspace.is_none() && !args.default {
                 bail!("pass --workspace <path> or --default");
@@ -255,6 +273,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                 config_path: ctx.config_path,
                 config,
                 dirs: ctx.dirs,
+                ready: None,
             })
             .await?;
             match served {

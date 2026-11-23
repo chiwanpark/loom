@@ -13,7 +13,6 @@
 
 [Unit]
 Description=Loom agent (default workspace)
-Documentation=https://github.com/chiwanpark/loom#readme
 After=network-online.target
 Wants=network-online.target
 

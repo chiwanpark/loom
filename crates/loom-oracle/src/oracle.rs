@@ -23,6 +23,10 @@ use crate::seal::MasterKey;
 use crate::session::Session;
 use crate::store::{PairingRow, PeerRow, RelayHostRow, Store, StoreError};
 
+mod codespaces;
+
+pub use codespaces::{valid_branch, validate_environment};
+
 pub const STORE_FILE: &str = "oracle.db";
 pub const CREDENTIALS_ENV: &str = "CREDENTIALS_DIRECTORY";
 const EVENT_QUEUE: usize = 256;
@@ -88,39 +92,55 @@ pub fn pairing_ttl(ttl_secs: Option<u64>) -> Result<Duration, OracleError> {
     }
 }
 
-pub struct RelayHosts(RwLock<HashSet<HostId>>);
+pub struct RelayHosts {
+    classic: RwLock<HashSet<HostId>>,
+    codespaces: RwLock<HashSet<HostId>>,
+}
+
+fn write(set: &RwLock<HashSet<HostId>>) -> std::sync::RwLockWriteGuard<'_, HashSet<HostId>> {
+    set.write().unwrap_or_else(|e| e.into_inner())
+}
+
+fn read(set: &RwLock<HashSet<HostId>>) -> std::sync::RwLockReadGuard<'_, HashSet<HostId>> {
+    set.read().unwrap_or_else(|e| e.into_inner())
+}
 
 impl RelayHosts {
-    fn new(hosts: impl IntoIterator<Item = HostId>) -> Self {
-        Self(RwLock::new(hosts.into_iter().collect()))
+    fn new(
+        classic: impl IntoIterator<Item = HostId>,
+        codespaces: impl IntoIterator<Item = HostId>,
+    ) -> Self {
+        Self {
+            classic: RwLock::new(classic.into_iter().collect()),
+            codespaces: RwLock::new(codespaces.into_iter().collect()),
+        }
     }
 
     fn insert(&self, host: HostId) {
-        self.0
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(host);
+        write(&self.classic).insert(host);
     }
 
     fn remove(&self, host: &HostId) {
-        self.0
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(host);
+        write(&self.classic).remove(host);
+    }
+
+    fn insert_codespace(&self, host: HostId) {
+        write(&self.codespaces).insert(host);
+    }
+
+    fn remove_codespace(&self, host: &HostId) {
+        write(&self.codespaces).remove(host);
     }
 }
 
 impl HostCheck for RelayHosts {
     fn check(&self, host: &HostId) -> Result<(), String> {
-        if self
-            .0
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(host)
-        {
+        if read(&self.classic).contains(host) || read(&self.codespaces).contains(host) {
             Ok(())
         } else {
-            Err(format!("host {host} is not a relay host of the oracle"))
+            Err(format!(
+                "host {host} is not a relay host or a codespace of the oracle"
+            ))
         }
     }
 }
@@ -165,6 +185,10 @@ pub struct Oracle {
     sessions: Mutex<HashMap<u64, HashMap<u64, CancellationToken>>>,
     next_session: AtomicU64,
     grants: Mutex<HashMap<String, (Instant, PairingRow)>>,
+    links: Mutex<HashMap<u64, codespaces::HostLink>>,
+    calls: Mutex<HashMap<u64, codespaces::PendingCall>>,
+    next_call: AtomicU64,
+    codespace_lock: Mutex<()>,
 }
 
 impl Oracle {
@@ -183,6 +207,11 @@ impl Oracle {
     ) -> anyhow::Result<Arc<Self>> {
         let hosts = Arc::new(RelayHosts::new(
             store.relay_hosts()?.into_iter().map(|row| row.host),
+            store
+                .codespaces()?
+                .iter()
+                .filter_map(codespaces::admitted_agent)
+                .collect::<Vec<_>>(),
         ));
         let relay = Relay::with_host_check(config.relay_config(), hosts.clone());
         let (events, _) = broadcast::channel(EVENT_QUEUE);
@@ -196,6 +225,10 @@ impl Oracle {
             sessions: Mutex::new(HashMap::new()),
             next_session: AtomicU64::new(1),
             grants: Mutex::new(HashMap::new()),
+            links: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+            next_call: AtomicU64::new(1),
+            codespace_lock: Mutex::new(()),
         }))
     }
 
@@ -374,6 +407,7 @@ impl Oracle {
         );
         tracing::info!(device = %row.label, "revoked a device");
         self.emit(Event::DeviceRemoved { id });
+        self.emit(Event::DeviceKeysChanged);
         Ok(())
     }
 
@@ -516,7 +550,14 @@ impl Oracle {
         tracing::debug!(peer = %row.label, role = %row.role, "control connection opened");
         self.device_changed(row.id);
         let peer_id = row.id;
-        Session::new(self.clone(), row, kill).run(stream).await;
+        let role = row.role;
+        let calls = (role == Role::Host).then(|| self.attach_host(peer_id, session));
+        Session::new(self.clone(), row, kill, calls)
+            .run(stream)
+            .await;
+        if role == Role::Host {
+            self.detach_host(peer_id, session);
+        }
         self.remove_session(peer_id, session);
         self.device_changed(peer_id);
     }
@@ -568,7 +609,14 @@ impl Responder for Oracle {
         let Some((_, grant)) = grant else {
             return Err("the pairing code is unknown or expired".into());
         };
-        validate_label(label).map_err(|e| e.to_string())?;
+        let label = match grant.role {
+            Role::Codespace => self.check_codespace_pairing(grant.target.as_deref())?,
+            _ => {
+                validate_label(label).map_err(|e| e.to_string())?;
+                label.to_owned()
+            }
+        };
+        let label = label.as_str();
         let (peer, replaced) = self
             .store
             .add_peer(grant.role, label, &client, Some(pairing_id))
@@ -576,10 +624,14 @@ impl Responder for Oracle {
                 tracing::error!(error = %err, "cannot save a pairing");
                 "the oracle cannot save the pairing".to_owned()
             })?;
+        let mut keys_changed = grant.role == Role::Device;
         for old in replaced {
             self.close_sessions(old.id);
             if old.role == Role::Device {
-                self.emit(Event::DeviceRemoved { id: old.id });
+                keys_changed = true;
+                if old.id != peer.id {
+                    self.emit(Event::DeviceRemoved { id: old.id });
+                }
             }
         }
         self.audit(
@@ -588,7 +640,14 @@ impl Responder for Oracle {
             &format!("{} {label} with pairing {pairing_id}", peer.role),
         );
         tracing::info!(role = %peer.role, %label, "paired a peer");
-        self.device_changed(peer.id);
+        match peer.role {
+            Role::Codespace => self.codespace_paired(label, peer.id),
+            Role::Host => self.host_changed(peer.id),
+            _ => self.device_changed(peer.id),
+        }
+        if keys_changed {
+            self.emit(Event::DeviceKeysChanged);
+        }
         Ok(())
     }
 }
