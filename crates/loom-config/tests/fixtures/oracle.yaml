@@ -1,0 +1,33 @@
+version: 1
+
+url: wss://oracle.example.com/
+
+listen: 127.0.0.1:8090
+metrics_listen: 127.0.0.1:9091
+
+tls: null
+
+cloudflare_access:
+  team_domain: myteam.cloudflareaccess.com
+  audience: 0123456789abcdef
+
+push:
+  fcm:
+    service_account: ~/firebase-service-account.json
+
+data_dir: /var/lib/loom-oracle
+master_key: /run/credentials/loom-oracle.service/master.key
+
+limits:
+  max_frame: 256KiB
+  max_channels_per_agent: 64
+  max_agents_per_host: 32
+  max_connections_per_ip: 64
+  messages_per_second: 500
+  burst: 2000
+  idle_timeout: 90s
+  handshake_timeout: 10s
+  queue_frames: 256
+
+logging:
+  level: info

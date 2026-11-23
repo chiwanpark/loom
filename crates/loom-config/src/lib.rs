@@ -4,6 +4,7 @@ mod client;
 mod dirs;
 mod error;
 mod load;
+mod oracle;
 mod relay_server;
 mod units;
 
@@ -21,6 +22,10 @@ pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;
+pub use oracle::{
+    ORACLE_CONFIG_ENV, ORACLE_CONFIG_FILE, ORACLE_DATA_DIR, ORACLE_MASTER_KEY_FILE, OracleConfig,
+    oracle_config_schema,
+};
 pub use relay_server::{
     AccessVerifyConfig, FCM_API_URL, FcmConfig, PushConfig, RELAY_CONFIG_ENV, RELAY_CONFIG_FILE,
     RelayLimits, RelayServerConfig, TlsConfig, relay_config_schema,

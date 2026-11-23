@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::access::{AccessVerifier, JWT_HEADER};
 use crate::fcm::{FcmSender, Outcome};
-use crate::limits::IpLimits;
+use crate::limits::{LimitKey, Limits};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const CONNECTING_IP: &str = "cf-connecting-ip";
@@ -34,8 +34,39 @@ const PUSH_CONCURRENCY: usize = 16;
 const MAX_PUSH_PAYLOAD: usize = 2560;
 /// The longest push token taken from an agent.
 const MAX_PUSH_TOKEN: usize = 4096;
+const LOCAL_QUEUE: usize = 4096;
 
 type ConnId = u64;
+
+pub trait HostCheck: Send + Sync {
+    fn check(&self, host: &HostId) -> Result<(), String>;
+}
+
+pub struct AllowedHosts(HashSet<HostId>);
+
+impl AllowedHosts {
+    pub fn new(hosts: impl IntoIterator<Item = HostId>) -> Self {
+        Self(hosts.into_iter().collect())
+    }
+
+    pub fn from_config(config: &RelayServerConfig) -> Self {
+        Self::new(config.allowed_hosts.iter().filter_map(|h| h.parse().ok()))
+    }
+}
+
+impl HostCheck for AllowedHosts {
+    fn check(&self, host: &HostId) -> Result<(), String> {
+        if self.0.contains(host) {
+            Ok(())
+        } else {
+            Err(format!("host {host} is not in allowed_hosts"))
+        }
+    }
+}
+
+fn lock_key(key: &Mutex<LimitKey>) -> MutexGuard<'_, LimitKey> {
+    key.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Clone)]
 struct Peer {
@@ -43,6 +74,8 @@ struct Peer {
     tx: mpsc::Sender<RelayFrame>,
     kill: CancellationToken,
     stats: Arc<Stats>,
+    limit: Arc<Mutex<LimitKey>>,
+    local: bool,
 }
 
 impl Peer {
@@ -97,11 +130,11 @@ fn bump(counter: &AtomicU64, value: u64) {
 
 pub struct Relay {
     config: RelayServerConfig,
-    allowed: HashSet<HostId>,
+    hosts: Arc<dyn HostCheck>,
     access: Option<AccessVerifier>,
     push: Option<Arc<FcmSender>>,
     push_slots: Arc<Semaphore>,
-    limits: IpLimits,
+    limits: Limits,
     routes: Mutex<Routes>,
     next_id: AtomicU64,
     shutdown: CancellationToken,
@@ -114,13 +147,18 @@ enum Role {
     Client,
 }
 
+pub struct LocalAgent {
+    pub tx: mpsc::Sender<RelayFrame>,
+    pub rx: mpsc::Receiver<RelayFrame>,
+}
+
 impl Relay {
     pub fn new(config: RelayServerConfig) -> Arc<Self> {
-        let allowed = config
-            .allowed_hosts
-            .iter()
-            .filter_map(|h| h.parse().ok())
-            .collect();
+        let hosts = Arc::new(AllowedHosts::from_config(&config));
+        Self::with_host_check(config, hosts)
+    }
+
+    pub fn with_host_check(config: RelayServerConfig, hosts: Arc<dyn HostCheck>) -> Arc<Self> {
         let access = config.cloudflare_access.clone().map(AccessVerifier::new);
         let push =
             config.push.as_ref().and_then(|p| p.fcm.as_ref()).and_then(
@@ -138,14 +176,14 @@ impl Relay {
                     }
                 },
             );
-        let limits = IpLimits::new(
+        let limits = Limits::new(
             config.limits.messages_per_second,
             config.limits.burst,
             config.limits.max_connections_per_ip,
         );
         Arc::new(Self {
             config,
-            allowed,
+            hosts,
             access,
             push,
             push_slots: Arc::new(Semaphore::new(PUSH_CONCURRENCY)),
@@ -306,6 +344,102 @@ impl Relay {
         self.routes().channels.len()
     }
 
+    pub fn instances(&self, host: &HostId) -> Vec<InstanceId> {
+        let mut instances: Vec<InstanceId> = self
+            .routes()
+            .agents
+            .get(host)
+            .map(|slots| slots.keys().cloned().collect())
+            .unwrap_or_default();
+        instances.sort();
+        instances
+    }
+
+    pub fn attach_local(
+        self: &Arc<Self>,
+        agent: AgentId,
+    ) -> Result<LocalAgent, (RelayErrorCode, String)> {
+        let (to_agent, rx) = mpsc::channel(LOCAL_QUEUE);
+        let (tx, mut from_agent) = mpsc::channel(LOCAL_QUEUE);
+        let kill = self.shutdown.child_token();
+        let mut conn = Conn {
+            relay: self.clone(),
+            peer: Peer {
+                conn: self.next_id(),
+                tx: to_agent,
+                kill: kill.clone(),
+                stats: self.stats.clone(),
+                limit: Arc::new(Mutex::new(LimitKey::agent(&agent))),
+                local: true,
+            },
+            registered: None,
+            watching: HashSet::new(),
+        };
+        conn.register(agent.clone())?;
+        bump(&self.stats.agents_registered_total, 1);
+        tracing::info!(host = %agent.host, instance = %agent.instance, "local agent registered");
+        tokio::spawn(async move {
+            loop {
+                let frame = tokio::select! {
+                    _ = kill.cancelled() => break,
+                    frame = from_agent.recv() => frame,
+                };
+                match frame {
+                    Some(RelayFrame::Data { channel, payload }) => {
+                        conn.forward(channel, payload, Role::Agent)
+                    }
+                    Some(RelayFrame::Close { channel }) => conn.close_channel(channel, Role::Agent),
+                    Some(other) => tracing::debug!(?other, "ignored a frame from a local agent"),
+                    None => break,
+                }
+            }
+            conn.cleanup();
+        });
+        Ok(LocalAgent { tx, rx })
+    }
+
+    pub fn vouch(&self, channel: ChannelId, pubkey: &[u8; 32]) -> bool {
+        let client = {
+            let routes = self.routes();
+            match routes.channels.get(&channel) {
+                Some(c) if c.agent_peer.local => c.client.clone(),
+                _ => return false,
+            }
+        };
+        let peer = LimitKey::client(pubkey);
+        let mut key = lock_key(&client.limit);
+        match *key {
+            current if current == peer => true,
+            LimitKey::Peer(_) => false,
+            current => {
+                let moved = self.limits.rekey(current, peer);
+                if moved {
+                    *key = peer;
+                }
+                moved
+            }
+        }
+    }
+
+    pub fn disconnect_host(&self, host: &HostId) -> usize {
+        let peers: Vec<Peer> = self
+            .routes()
+            .agents
+            .get(host)
+            .map(|slots| {
+                slots
+                    .values()
+                    .filter(|slot| !slot.peer.local)
+                    .map(|slot| slot.peer.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for peer in &peers {
+            peer.kill.cancel();
+        }
+        peers.len()
+    }
+
     /// Sends an agent's notification through the push service, and tells
     /// the agent when the service rejects the token.
     fn push(&self, host: HostId, token: String, payload: Vec<u8>, agent: Peer) {
@@ -402,28 +536,35 @@ async fn upgrade(
         }
     }
     let ip = relay.client_ip(&headers, addr);
-    if !relay.limits.connect(ip) {
+    if !relay.limits.connect(LimitKey::Ip(ip)) {
         bump(&relay.stats.rate_limited, 1);
         return (StatusCode::TOO_MANY_REQUESTS, "too many connections").into_response();
     }
+    let limit = Arc::new(Mutex::new(LimitKey::Ip(ip)));
     let max = relay.config.limits.max_frame.as_usize();
     ws.max_message_size(max)
         .max_frame_size(max)
         .on_upgrade(move |socket| async move {
-            run_connection(relay.clone(), socket, ip, role).await;
-            relay.limits.disconnect(ip);
+            run_connection(relay.clone(), socket, ip, limit.clone(), role).await;
+            let key = lock_key(&limit);
+            relay.limits.disconnect(*key);
         })
 }
 
 struct Conn {
     relay: Arc<Relay>,
     peer: Peer,
-    ip: IpAddr,
     registered: Option<AgentId>,
     watching: HashSet<HostId>,
 }
 
-async fn run_connection(relay: Arc<Relay>, socket: WebSocket, ip: IpAddr, role: Role) {
+async fn run_connection(
+    relay: Arc<Relay>,
+    socket: WebSocket,
+    ip: IpAddr,
+    limit: Arc<Mutex<LimitKey>>,
+    role: Role,
+) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<RelayFrame>(relay.config.limits.queue_frames);
     let kill = relay.shutdown.child_token();
@@ -470,8 +611,9 @@ async fn run_connection(relay: Arc<Relay>, socket: WebSocket, ip: IpAddr, role: 
             tx,
             kill: kill.clone(),
             stats: relay.stats.clone(),
+            limit,
+            local: false,
         },
-        ip,
         registered: None,
         watching: HashSet::new(),
     };
@@ -530,7 +672,8 @@ impl Conn {
             };
             // Waiting before the next read slows the sender down through
             // the connection's flow control.
-            let delay = self.relay.limits.delay_message(self.ip);
+            let key = *lock_key(&self.peer.limit);
+            let delay = self.relay.limits.delay_message(key);
             if !delay.is_zero() {
                 bump(&self.relay.stats.rate_limited, 1);
                 tokio::select! {
@@ -571,13 +714,10 @@ impl Conn {
             return Err(bad("invalid instance ID"));
         }
         let host = host_id_for(&host_pubkey);
-        if !self.relay.allowed.contains(&host) {
+        if let Err(message) = self.relay.hosts.check(&host) {
             bump(&self.relay.stats.rejected_hosts, 1);
             tracing::info!(%host, "rejected an agent whose host is not allowed");
-            return Err((
-                RelayErrorCode::Unauthorized,
-                format!("host {host} is not in allowed_hosts"),
-            ));
+            return Err((RelayErrorCode::Unauthorized, message));
         }
         let mut nonce = [0u8; 32];
         rand::fill(&mut nonce);
@@ -596,6 +736,13 @@ impl Conn {
         let agent = AgentId { host, instance };
         self.register(agent.clone())?;
         bump(&self.relay.stats.agents_registered_total, 1);
+        {
+            let mut key = lock_key(&self.peer.limit);
+            let peer = LimitKey::agent(&agent);
+            if self.relay.limits.rekey(*key, peer) {
+                *key = peer;
+            }
+        }
         self.peer.send(RelayFrame::Registered { host });
         tracing::info!(%host, instance = %agent.instance, "agent registered");
         while let Some(frame) = self.read(stream, idle).await? {
@@ -618,6 +765,12 @@ impl Conn {
         let (replaced, watchers) = {
             let mut routes = self.relay.routes();
             let slots = routes.agents.entry(agent.host).or_default();
+            if slots
+                .get(&agent.instance)
+                .is_some_and(|slot| slot.peer.local && !self.peer.local)
+            {
+                return Err((RelayErrorCode::Unauthorized, "the agent is local".into()));
+            }
             if !slots.contains_key(&agent.instance) && slots.len() >= max {
                 return Err((
                     RelayErrorCode::LimitExceeded,

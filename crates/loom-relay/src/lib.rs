@@ -18,7 +18,7 @@ use tokio_rustls::server::TlsStream;
 use tokio_util::sync::CancellationToken;
 
 pub use access::AccessVerifier;
-pub use server::{PeerAddr, Relay};
+pub use server::{AllowedHosts, HostCheck, LocalAgent, PeerAddr, Relay};
 
 impl Connected<IncomingStream<'_, TcpListener>> for PeerAddr {
     fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
