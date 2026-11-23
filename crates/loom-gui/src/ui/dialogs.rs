@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -239,6 +240,7 @@ pub struct ModelPicker {
     session: Option<SessionId>,
     filter: Entity<InputState>,
     models: Vec<ModelInfo>,
+    accounts: HashMap<String, String>,
     errors: Vec<String>,
     loading: bool,
     _subscriptions: Vec<Subscription>,
@@ -252,7 +254,16 @@ impl ModelPicker {
             let providers = client.list_providers().await?;
             let mut models = Vec::new();
             let mut errors = Vec::new();
+            let mut accounts = HashMap::new();
             for provider in providers.iter().filter(|p| p.enabled) {
+                if let Some(account) = provider
+                    .accounts
+                    .iter()
+                    .find(|a| a.active)
+                    .map(|a| a.label.clone().unwrap_or_else(|| a.id.clone()))
+                {
+                    accounts.insert(provider.provider.as_str().to_owned(), account);
+                }
                 match client.list_models(provider.provider.as_str()).await {
                     Ok(list) => models.extend(list),
                     Err(err) if provider.signed_in() => {
@@ -261,7 +272,7 @@ impl ModelPicker {
                     Err(_) => {}
                 }
             }
-            Ok::<_, loom_client::ClientError>((models, errors))
+            Ok::<_, loom_client::ClientError>((models, errors, accounts))
         });
         self.loading = true;
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
@@ -269,9 +280,10 @@ impl ModelPicker {
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Some(Ok((models, errors))) => {
+                    Some(Ok((models, errors, accounts))) => {
                         this.models = models;
                         this.errors = errors;
+                        this.accounts = accounts;
                     }
                     Some(Err(err)) => this.errors = vec![err.to_string()],
                     None => {}
@@ -354,6 +366,10 @@ impl Render for ModelPicker {
                     .children(models.into_iter().enumerate().map(|(ix, model)| {
                         let model_ref = model.model_ref();
                         let chosen = model_ref.clone();
+                        let detail = match self.accounts.get(model.provider.as_str()) {
+                            Some(account) => format!("{model_ref} · {account}"),
+                            None => model_ref,
+                        };
                         h_flex()
                             .id(("model", ix))
                             .w_full()
@@ -371,7 +387,7 @@ impl Render for ModelPicker {
                                 div()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
-                                    .child(model_ref),
+                                    .child(detail),
                             )
                     })),
             )
@@ -396,6 +412,7 @@ pub fn open_model_picker(
             session,
             filter,
             models: Vec::new(),
+            accounts: HashMap::new(),
             errors: Vec::new(),
             loading: false,
             _subscriptions: subscriptions,

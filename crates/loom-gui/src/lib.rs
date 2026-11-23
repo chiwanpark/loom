@@ -8,6 +8,7 @@ pub mod connection;
 pub mod conversation;
 pub mod fuzzy;
 pub mod layout;
+pub mod oracle;
 pub mod state;
 pub mod telemetry;
 pub mod term;
