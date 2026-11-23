@@ -35,6 +35,7 @@ pub fn directory(repository: &Repository) -> String {
     repository
         .directory
         .clone()
+        .filter(|directory| !directory.is_empty())
         .or_else(|| repository_directory(&repository.url))
         .unwrap_or_else(|| repository.url.clone())
 }
