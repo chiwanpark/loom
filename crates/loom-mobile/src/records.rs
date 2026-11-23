@@ -288,6 +288,7 @@ pub struct Model {
     pub model_ref: String,
     pub display_name: String,
     pub provider: String,
+    pub account: Option<String>,
 }
 
 impl From<&ModelInfo> for Model {
@@ -296,6 +297,7 @@ impl From<&ModelInfo> for Model {
             model_ref: model.model_ref(),
             display_name: model.display_name.clone(),
             provider: model.provider.to_string(),
+            account: None,
         }
     }
 }
