@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -24,7 +23,6 @@ pub struct ManagedSettings {
     pub allowed_roots: Vec<PathBuf>,
     pub workspace: PathBuf,
     pub env_file: PathBuf,
-    pub variables: BTreeMap<String, String>,
 }
 
 fn has_key(document: &Value, key: &str) -> bool {
@@ -180,16 +178,6 @@ impl AgentConfig {
         self.allowed_roots = settings.allowed_roots.clone();
         self.lifecycle.default_workspace = Some(settings.workspace.clone());
         self.environment.env_file = Some(settings.env_file.clone());
-        for (name, value) in &settings.variables {
-            if self.environment.set.contains_key(name) {
-                continue;
-            }
-            self.environment.set.insert(name.clone(), value.clone());
-            let allow = &mut self.environment.redaction.allow;
-            if !allow.contains(name) {
-                allow.push(name.clone());
-            }
-        }
     }
 
     pub fn load_preset(
@@ -583,10 +571,6 @@ mod tests {
             allowed_roots: vec![PathBuf::from("/workspaces")],
             workspace: PathBuf::from("/workspaces/app"),
             env_file: PathBuf::from("/home/u/.local/share/loom/secrets.env"),
-            variables: BTreeMap::from([
-                ("NODE_ENV".to_owned(), "development".to_owned()),
-                ("KEEP".to_owned(), "devcontainer".to_owned()),
-            ]),
         };
         let config = AgentConfig::load_preset(&path, &dirs(), &settings).unwrap();
         assert!(config.relay.enabled);
@@ -598,12 +582,6 @@ mod tests {
         );
         assert_eq!(config.environment.env_file, Some(settings.env_file.clone()));
         assert_eq!(config.policy.default, PolicyAction::Allow);
-        assert_eq!(config.environment.set["NODE_ENV"], "development");
-        assert_eq!(config.environment.redaction.allow, vec!["KEEP", "NODE_ENV"]);
-        std::fs::write(&path, "environment:\n  set:\n    KEEP: preset\n").unwrap();
-        let config = AgentConfig::load_preset(&path, &dirs(), &settings).unwrap();
-        assert_eq!(config.environment.set["KEEP"], "preset");
-        assert_eq!(config.environment.redaction.allow, vec!["NODE_ENV"]);
         let missing =
             AgentConfig::load_preset(&dir.path().join("none.yaml"), &dirs(), &settings).unwrap();
         assert!(missing.relay.enabled);
