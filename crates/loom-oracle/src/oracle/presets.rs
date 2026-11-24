@@ -395,7 +395,7 @@ impl Oracle {
         let message = serde_json::from_str(&text).ok();
         if let Ok(Some(row)) = self.store.codespace(&row.id) {
             self.emit(Event::CodespaceChanged {
-                codespace: super::codespaces::codespace(&row),
+                codespace: self.view(&row),
             });
         }
         Ok(message)

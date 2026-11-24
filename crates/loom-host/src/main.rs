@@ -48,6 +48,13 @@ enum Command {
         force: bool,
     },
     Setup,
+    #[command(
+        about = "Connect stdin and stdout to the agent of a codespace, for the SSH connection type"
+    )]
+    Stdio {
+        #[arg(long)]
+        codespace: String,
+    },
     #[command(subcommand)]
     Config(ConfigCommand),
 }
@@ -174,6 +181,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let config = HostConfig::load(&path, &dirs)?;
             init_logging(config.logging.level);
             runtime()?.block_on(serve(config, dirs))?;
+        }
+        Command::Stdio { codespace } => {
+            let config = HostConfig::load(&path, &dirs)?;
+            init_logging(LogLevel::Warn);
+            return runtime()?.block_on(stdio(config, dirs, &codespace));
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -351,6 +363,21 @@ async fn setup(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn stdio(config: HostConfig, dirs: Dirs, codespace: &str) -> anyhow::Result<ExitCode> {
+    let oracle = JoinedOracle::load(&config.data_dir(&dirs))?;
+    let driver = loom_host::driver(&config, &dirs)?;
+    let code = loom_host::stdio(
+        driver.as_ref(),
+        &oracle.host_id,
+        codespace,
+        Box::new(tokio::io::stdin()),
+        Box::new(tokio::io::stdout()),
+        Box::new(tokio::io::stderr()),
+    )
+    .await?;
+    Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
 }
 
 async fn serve(config: HostConfig, dirs: Dirs) -> anyhow::Result<()> {

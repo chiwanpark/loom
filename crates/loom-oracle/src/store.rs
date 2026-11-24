@@ -239,6 +239,14 @@ ALTER TABLE hosts ADD COLUMN ssh TEXT;
 ALTER TABLE hosts ADD COLUMN checks TEXT;
 ALTER TABLE hosts ADD COLUMN checked_at INTEGER;
 ",
+    "
+ALTER TABLE hosts ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE codespaces ADD COLUMN stopped_at INTEGER;
+ALTER TABLE codespaces ADD COLUMN active INTEGER;
+ALTER TABLE codespaces ADD COLUMN active_at INTEGER;
+ALTER TABLE codespaces ADD COLUMN metrics TEXT;
+CREATE INDEX codespaces_state ON codespaces (state);
+",
 ];
 
 const KEY_CHECK: &str = "master_key_check";
@@ -299,8 +307,10 @@ pub struct RelayHostRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditRow {
+    pub id: u64,
     pub at: u64,
     pub peer: Option<u64>,
+    pub peer_label: Option<String>,
     pub action: String,
     pub detail: String,
 }
@@ -778,15 +788,26 @@ impl Store {
     }
 
     pub fn audit_log(&self, limit: usize) -> StoreResult<Vec<AuditRow>> {
+        self.audit_page(limit, None)
+    }
+
+    pub fn audit_page(&self, limit: usize, before: Option<u64>) -> StoreResult<Vec<AuditRow>> {
         let conn = self.conn();
         let rows = conn
-            .prepare("SELECT at, peer, action, detail FROM audit ORDER BY id DESC LIMIT ?1")?
-            .query_map([to_i64(limit as u64)], |row| {
+            .prepare(
+                "SELECT a.id, a.at, a.peer, p.label, a.action, a.detail
+                 FROM audit a LEFT JOIN peers p ON p.id = a.peer
+                 WHERE ?2 IS NULL OR a.id < ?2
+                 ORDER BY a.id DESC LIMIT ?1",
+            )?
+            .query_map(params![to_i64(limit as u64), before.map(to_i64)], |row| {
                 Ok(AuditRow {
-                    at: to_u64(row.get(0)?),
-                    peer: row.get::<_, Option<i64>>(1)?.map(to_u64),
-                    action: row.get(2)?,
-                    detail: row.get(3)?,
+                    id: to_u64(row.get(0)?),
+                    at: to_u64(row.get(1)?),
+                    peer: row.get::<_, Option<i64>>(2)?.map(to_u64),
+                    peer_label: row.get(3)?,
+                    action: row.get(4)?,
+                    detail: row.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

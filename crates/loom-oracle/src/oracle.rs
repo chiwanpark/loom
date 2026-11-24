@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use loom_config::{Dirs, ORACLE_MASTER_KEY_FILE, OracleConfig};
+use loom_config::{CodespaceLifecycle, Dirs, ORACLE_MASTER_KEY_FILE, OracleConfig};
 use loom_crypto::{HostIdentity, PairingUri, Responder, Zeroizing, validate_label};
 use loom_oracle_proto::{
     DEFAULT_PAIRING_TTL_SECS, Device, ErrorCode, Event, MAX_PAIRING_TTL_SECS, ORACLE_INSTANCE,
@@ -25,6 +25,7 @@ use crate::store::{PairingRow, PeerRow, RelayHostRow, Store, StoreError};
 
 mod codespaces;
 mod git;
+mod lifecycle;
 mod models;
 mod presets;
 mod volumes;
@@ -199,6 +200,8 @@ pub struct Oracle {
     http: loom_github::Http,
     reach: Mutex<git::ReachCache>,
     models: models::ModelState,
+    lifecycle: CodespaceLifecycle,
+    transitions: Mutex<HashSet<String>>,
 }
 
 impl Oracle {
@@ -244,6 +247,8 @@ impl Oracle {
             http: loom_github::Http::new()?,
             reach: Mutex::new(HashMap::new()),
             models: models::ModelState::new(),
+            lifecycle: config.codespaces,
+            transitions: Mutex::new(HashSet::new()),
         }))
     }
 
@@ -285,6 +290,7 @@ impl Oracle {
     }
 
     pub fn start(self: &Arc<Self>, shutdown: CancellationToken) -> JoinHandle<()> {
+        tokio::spawn(lifecycle::run(self.clone(), shutdown.clone()));
         tokio::spawn(run_control_agent(self.clone(), shutdown))
     }
 

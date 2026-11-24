@@ -276,7 +276,36 @@ pub enum Command {
     HostVolumes {
         name: String,
     },
+    StopCodespace {
+        id: String,
+    },
+    ResumeCodespace {
+        id: String,
+    },
+    SetHostLimits {
+        name: String,
+        limits: HostLimits,
+    },
+    CodespaceConnections {
+        id: String,
+        #[serde(default)]
+        types: Vec<String>,
+    },
+    ListAudit {
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        before: Option<u64>,
+    },
+    CodespaceActivity {
+        active: bool,
+        #[serde(default)]
+        metrics: Option<CodespaceMetrics>,
+    },
 }
+
+pub const DEFAULT_AUDIT_LIMIT: u32 = 100;
+pub const MAX_AUDIT_LIMIT: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -440,6 +469,25 @@ pub struct RelayHosts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayHostResult {
     pub relay_host: RelayHost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub id: u64,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_label: Option<String>,
+    pub action: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditLog {
+    #[serde(default)]
+    pub entries: Vec<AuditEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
