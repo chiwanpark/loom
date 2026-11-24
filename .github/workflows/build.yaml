@@ -103,7 +103,7 @@ jobs:
         retention-days: ${{ inputs.retention-days }}
 
   image:
-    name: OCI image of loom-host
+    name: Incus image of loom-host
     needs: build
     runs-on: ubuntu-24.04
     steps:
@@ -113,26 +113,23 @@ jobs:
         pattern: dist-*-linux-musl
         path: dist
         merge-multiple: true
-    - name: Unpack the binaries
+    - name: Build the images
       run: |
+        version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
         for pair in amd64=x86_64-unknown-linux-musl arm64=aarch64-unknown-linux-musl; do
           arch=${pair%%=*}
           target=${pair#*=}
-          mkdir -p "image/$arch"
+          mkdir -p "bin/$arch"
           for name in loom-host loom-agent; do
-            tar -xzf dist/"$name"-*-"$target".tar.gz -C "image/$arch" \
+            tar -xzf dist/"$name"-*-"$target".tar.gz -C "bin/$arch" \
               --strip-components=1 --wildcards "*/$name"
           done
+          python3 contrib/incus/build-image.py --arch "$arch" --bin-dir "bin/$arch" \
+            --output image --version "$version-${GITHUB_SHA::12}"
         done
-    - name: Build the image
-      run: |
-        docker buildx create --use --driver docker-container
-        docker buildx build --platform linux/amd64,linux/arm64 \
-          -f contrib/oci/Containerfile \
-          --output type=oci,dest=loom-host-oci.tar image
     - uses: actions/upload-artifact@v7
       with:
-        name: oci-loom-host
-        path: loom-host-oci.tar
+        name: incus-loom-host
+        path: image/*.tar.xz
         if-no-files-found: error
         retention-days: ${{ inputs.retention-days }}
