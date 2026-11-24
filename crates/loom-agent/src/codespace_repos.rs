@@ -1,17 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use loom_agent_core::Repositories;
 use loom_client::OracleClient;
-use loom_client::oracle_proto::{CodespaceApiRequest, GitSetup};
-use loom_github::{
-    ApiRequest, ApiResponse, GitHub, GitHubError, Http, NewPullRequest, PullRequest, Transport,
-    repository_of,
-};
+use loom_client::oracle_proto::GitSetup;
+use loom_github::{GitHub, Http, NewPullRequest, PullRequest, repository_of};
 use loom_proto::{ApiError, ErrorCode, PullRequestResult, PushRepositories, RepositoryStatus};
 use tokio::sync::{Mutex, watch};
 
@@ -23,31 +19,6 @@ const PULL_REQUESTS_FILE: &str = "pull-requests.json";
 const RELATED: &str = "\n\n---\nRelated pull requests from the same codespace:\n";
 const MAX_TITLE: usize = 256;
 const MAX_BODY: usize = 60_000;
-
-struct OracleTransport {
-    client: OracleClient,
-    url: String,
-}
-
-#[async_trait]
-impl Transport for OracleTransport {
-    async fn send(&self, request: &ApiRequest) -> Result<ApiResponse, GitHubError> {
-        let value = self
-            .client
-            .codespace_api_request(CodespaceApiRequest {
-                url: self.url.clone(),
-                method: request.method.as_str().to_owned(),
-                path: request.path.clone(),
-                query: request.query.clone(),
-                body: request.body.clone(),
-            })
-            .await
-            .map_err(|err| {
-                GitHubError::Route(format!("the oracle did not send the request: {err}"))
-            })?;
-        serde_json::from_value(value).map_err(|err| GitHubError::Decode(err.to_string()))
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryClone {
@@ -363,24 +334,17 @@ impl CodespaceRepositories {
             )
             .await?;
         }
-        let github = if provider.proxy_url.is_some() {
-            GitHub::new(Arc::new(OracleTransport {
-                client: client.clone(),
-                url: clone.url.clone(),
-            }))
-        } else {
-            let token = client
-                .git_credential(&clone.url)
-                .await
-                .context("cannot get a token from the oracle")?
-                .token
-                .context("the preset has no Git credential for this repository")?;
-            GitHub::direct(
-                self.http.clone(),
-                &provider.api_url,
-                Some(token.password.expose().to_owned()),
-            )
-        };
+        let token = client
+            .git_credential(&clone.url)
+            .await
+            .context("cannot get a token from the oracle")?
+            .token
+            .context("the preset has no Git credential for this repository")?;
+        let github = GitHub::direct(
+            self.http.clone(),
+            &provider.api_url,
+            Some(token.password.expose().to_owned()),
+        );
         let head = format!("{owner}:{}", status.branch);
         let (pull_request, created) = match github.find_pull_request(&owner, &name, &head).await? {
             Some(found) => (found, false),

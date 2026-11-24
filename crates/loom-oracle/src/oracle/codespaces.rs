@@ -1076,8 +1076,7 @@ impl Oracle {
         } else {
             row.repositories.clone()
         };
-        let proxy = self.git_proxy_of(row.host)?;
-        let git = self.git_setup(row.preset, &repositories, proxy.as_deref())?;
+        let git = self.git_setup(row.preset, &repositories)?;
         let agent = self.preset_bundle(row.preset)?;
         let notes = self.store.notes(workspace.id)?.map(|(text, _)| text);
         let workspace_name = workspace.name.clone();

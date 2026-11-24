@@ -156,8 +156,6 @@ The test on an IncusOS host used the Incus API, not the `incus` client: import, 
 | `rules.network.acls` | The names of Incus network ACLs for the network interface of each codespace. The default is no ACL. |
 | `rules.network.default_egress` | The action for outgoing traffic that no ACL rule matches: `allow`, `reject`, or `drop`. The default is `allow`. It needs `rules.network.acls`. |
 | `rules.network.default_ingress` | The action for incoming traffic that no ACL rule matches. The default is `allow`. It needs `rules.network.acls`. |
-| `git_proxy.listen` | The IP address and port of the Git proxy, for example `10.0.0.1:7440`. Without `git_proxy`, there is no proxy. Only the `incus` driver can have a Git proxy. See [Git proxy](#git-proxy). |
-| `git_proxy.url` | The URL that codespaces use for the proxy, without a path. The default is `http://` and `git_proxy.listen`. |
 | `report_interval` | How often the host sends its instances to the oracle. The default is `60s`. |
 | `logging.level` | The log level. |
 
@@ -360,7 +358,7 @@ A client asks the agent of a codespace for these Git actions:
 | Push | `push <id>` | Pushes the branch of each clone that has commits that are not pushed. With `--message`, it first commits all changes. |
 | Pull request | `pull-request <id> --title <title>` | For each clone of a provider with commits after the base, pushes the branch and opens a pull request into the base. If the branch has an open pull request, the agent uses it. When it opens more than one, it adds links to the others to each body. |
 
-The agent sends the API calls for pull requests to the provider with the token that the oracle selects for the repository. It does not use `gh`. On a host with a [Git proxy](#git-proxy), the oracle sends these calls for the agent, and the agent does not get the token. A repository without a provider gets no pull request.
+The agent sends the API calls for pull requests to the provider with the token that the oracle selects for the repository. It does not use `gh`. A repository without a provider gets no pull request.
 
 In a codespace with more than one repository, the **Changes** panel shows the changes of all clones. The path of each file starts with the directory of its clone.
 
@@ -372,41 +370,6 @@ The close guard runs before a codespace closes. It asks the agent for the state 
 `*` selects all repositories. The close stops if a repository with work has no choice.
 
 If the agent does not answer, the close stops. `--force` closes the codespace without the check. A lost codespace also needs `--force`.
-
-## Git proxy
-
-Without a Git proxy, the Git credential helper of a codespace gets the token of each repository from the oracle. Thus, a program in the codespace can get the token too. With a Git proxy, the tokens stay out of the codespaces:
-
-- `loom-host` runs an HTTP proxy for Git. Git in a codespace sends its requests for the repositories of the providers to the proxy. A `url.<proxy>.insteadOf` setting in the Git configuration does this, so the remotes keep their usual URLs.
-- The credential helper gets a proxy secret for the codespace from the oracle. The secret is useless out of the proxy.
-- The proxy accepts only the Git requests of a repository (`info/refs`, `git-upload-pack`, and `git-receive-pack`). It accepts a request only from the address of the codespace, and only with the secret of the codespace.
-- The oracle checks the secret and gives the proxy the URL of the repository and the token. The proxy adds the token and sends the request to the provider. It keeps the answer of the oracle in memory for up to 5 minutes.
-- The oracle sends the API calls for pull requests for the agent. It permits only the calls that read, open, and change the pull requests of the repository.
-- The codespace gets no token for `gh`.
-
-To use the proxy, add `git_proxy` to `host.yaml` and start `loom-host serve` again:
-
-```yaml
-git_proxy:
-  listen: 10.0.0.1:7440
-```
-
-Use an address that the containers reach:
-
-- If `loom-host` runs on the Incus host, use the address of the host on the bridge `incus.network`.
-- If `loom-host` runs in an instance, for example on IncusOS, use the address of that instance on the bridge. With `0.0.0.0:7440`, set `git_proxy.url` to the address that the containers use.
-
-Codespaces use the proxy after the next start of their agent. The oracle gives each codespace the proxy when the host reports it.
-
-Requirements and limits:
-
-- Keep `rules.network.isolate: true`. The proxy then knows that a request comes from the codespace, because a codespace cannot use the address of a different instance. See [Network rules](#network-rules).
-- The traffic between the codespace and the proxy is HTTP on the bridge. With isolation, the other codespaces cannot see it.
-- The host must reach the Git providers.
-- If the network ACLs reject traffic by default, permit TCP from the codespaces to the address and port of the proxy.
-- The proxy does not forward Git LFS. Git over SSH does not use the proxy.
-- If the proxy cannot listen on the address, it tries again every 10 seconds. Until then, Git in the codespaces fails.
-- The tests used a local Git server. There is no test with a real Incus host and a real provider yet.
 
 ## Codespace states
 

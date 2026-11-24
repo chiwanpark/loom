@@ -1,6 +1,5 @@
 mod agents;
 mod driver;
-pub mod git_proxy;
 mod incus;
 mod link;
 mod process;

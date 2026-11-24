@@ -175,11 +175,6 @@ impl Host {
             max_codespaces: self.config.rules.max_codespaces,
             connection_types: vec![CONNECTION_RELAY.to_owned()],
             checks: checks(self.driver.as_ref(), false).await,
-            git_proxy: self
-                .config
-                .git_proxy
-                .as_ref()
-                .map(|proxy| proxy.public_url()),
         })
     }
 
@@ -382,29 +377,13 @@ impl Host {
 
     pub async fn run(self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let endpoint = self.oracle.endpoint()?;
-        let (current, client_watch) = tokio::sync::watch::channel(None);
-        if let Some(config) = &self.config.git_proxy {
-            let listen = config
-                .listen
-                .parse()
-                .with_context(|| format!("{:?} is not an address", config.listen))?;
-            let backend = crate::git_proxy::HostBackend {
-                driver: self.driver.clone(),
-                oracle: self.oracle.host_id.clone(),
-                client: client_watch,
-            };
-            let proxy = Arc::new(crate::git_proxy::GitProxy::new(Arc::new(backend))?);
-            tokio::spawn(crate::git_proxy::run(proxy, listen, shutdown.clone()));
-        }
         let mut backoff = Duration::from_secs(1);
         while !shutdown.is_cancelled() {
             match OracleClient::connect_with_calls(&endpoint, &self.identity, CLIENT_NAME).await {
                 Ok((client, _events, calls)) => {
                     tracing::info!(oracle = %endpoint.url, "connected to the oracle");
                     backoff = Duration::from_secs(1);
-                    current.send_replace(Some(client.clone()));
                     self.session(client, calls, &shutdown).await;
-                    current.send_replace(None);
                     if shutdown.is_cancelled() {
                         break;
                     }
