@@ -25,21 +25,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        # Static binaries, so the agent and relay run on any Linux host.
+        # Static binaries, so the agent, the oracle, and loom-host run on any Linux host.
         - name: Linux services
           arch: x86-64
           runner: ubuntu-24.04
           target: x86_64-unknown-linux-musl
           packages: musl-tools
-          binaries: loom-agent loom-relay loom-oracle loom-host
-          archives: loom-agent=loom-agent loom-relay=loom-relay loom-oracle=loom-oracle loom-host=loom-host
+          binaries: loom-agent loom-oracle loom-host
+          archives: loom-agent=loom-agent loom-oracle=loom-oracle loom-host=loom-host
         - name: Linux services
           arch: arm64
           runner: ubuntu-24.04-arm
           target: aarch64-unknown-linux-musl
           packages: musl-tools
-          binaries: loom-agent loom-relay loom-oracle loom-host
-          archives: loom-agent=loom-agent loom-relay=loom-relay loom-oracle=loom-oracle loom-host=loom-host
+          binaries: loom-agent loom-oracle loom-host
+          archives: loom-agent=loom-agent loom-oracle=loom-oracle loom-host=loom-host
         # The GUI loads Wayland and Vulkan from the system. Its archive also
         # holds loom-agent, which it starts for the local host.
         - name: loom

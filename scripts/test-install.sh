@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests scripts/install.sh against fake releases on disk, with stub
-# binaries, a stub systemctl, and a stub cargo, in throwaway home and system
-# directories. It needs no network and starts nothing.
+# binaries and a stub cargo, in throwaway home directories. It needs no
+# network and starts nothing.
 #
 # Usage: scripts/test-install.sh
 set -euo pipefail
@@ -14,15 +14,12 @@ gui_target=x86_64-unknown-linux-gnu
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 releases=$root/releases
-sysroot=$root/sys
 failures=0
 
-# A loom-agent, loom-relay, or loom ($1) of version $2 that answers the
-# commands the installer runs. ps lists one agent on the version in
-# $STUB_RUNNING, if it is set.
+# A loom-agent or loom ($1) of version $2 that answers the commands the
+# installer runs.
 stub() {
     local name=$1 version=$2 file=agent.yaml
-    [ "$name" != loom-relay ] || file=relay.yaml
     cat <<EOF
 #!/bin/sh
 config=\${LOOM_CONFIG:-\$HOME/.config/loom/$file}
@@ -35,12 +32,6 @@ case "\$1 \${2:-}" in
     "config path") echo "\$config" ;;
     "config init") mkdir -p "\$(dirname "\$config")"; echo "version: 1" >"\$config"; echo "wrote \$config" ;;
     "config check") ! grep -q broken "\$config" ;;
-    "ps --json")
-        if [ -n "\${STUB_RUNNING:-}" ]; then
-            printf '[\n  {\n    "pid": 1,\n    "version": "%s"\n  }\n]\n' "\$STUB_RUNNING"
-        else
-            echo "[]"
-        fi ;;
     *) echo "stub $name: unexpected \$*" >&2; exit 2 ;;
 esac
 EOF
@@ -55,7 +46,6 @@ pack() {
     mkdir -p "$stage/$stem" "$dir"
     stub "$name" "$binary" >"$stage/$stem/$name"
     chmod 755 "$stage/$stem/$name"
-    cp "contrib/systemd/$name.service" "$stage/$stem/"
     tar -C "$stage" -czf "$dir/$stem.tar.gz" "$stem"
 }
 
@@ -85,10 +75,8 @@ release() {
     local version=$1 latest=${2:-}
     local dir=$releases/download/v$version
     pack loom-agent "$version" "$dir"
-    pack loom-relay "$version" "$dir"
     # Listed before the x86-64 archives, as sha256sum sorts them so.
     pack loom-agent "$version" "$dir" "$version-arm64" "$arm_target"
-    pack loom-relay "$version" "$dir" "$version-arm64" "$arm_target"
     # The GUI archive is listed first.
     pack_desktop "$version" "$dir" "${3:-yes}"
     (cd "$dir" && sha256sum -- *.tar.gz >SHA256SUMS)
@@ -100,16 +88,13 @@ release() {
 }
 
 # Runs the installer with dash, as `curl ... | sh` does on Debian, in a
-# fresh home directory unless $home is set, as root if $STUB_ROOT is set,
-# on the system that $STUB_OS and $STUB_ARCH name (Linux x86_64 if unset).
+# fresh home directory unless $home is set, on the system that $STUB_OS and $STUB_ARCH name (Linux x86_64 if unset).
 # Output goes to $out.
 run() {
     home=${home:-$(mktemp -d -p "$root" home.XXXX)}
     out=$root/out
     env -i HOME="$home" PATH="$root/fake-bin:/usr/bin:/bin" \
         LOOM_RELEASES_URL="file://$releases" LOOM_RAW_URL="file://$root/raw" \
-        LOOM_INSTALL_SYSROOT="$sysroot" \
-        STUB_RUNNING="${STUB_RUNNING:-}" STUB_ROOT="${STUB_ROOT:-}" \
         STUB_OS="${STUB_OS:-}" STUB_ARCH="${STUB_ARCH:-}" \
         dash "$installer" "$@" >"$out" 2>&1
 }
@@ -134,25 +119,11 @@ lacks() {
     ! has "$1"
 }
 
-called() {
-    grep -sqx -- "$1" "$root/systemctl.log"
-}
-
-not_called() {
-    ! grep -sq -- "$1" "$root/systemctl.log"
-}
-
 agent_version() {
     "$home/.local/bin/loom-agent" --version
 }
 
 mkdir -p "$root/fake-bin"
-# id says root when $STUB_ROOT is set.
-cat >"$root/fake-bin/id" <<'EOF'
-#!/bin/sh
-if [ -n "$STUB_ROOT" ] && [ "$*" = -u ]; then echo 0; else exec /usr/bin/id "$@"; fi
-EOF
-chmod 755 "$root/fake-bin/id"
 # uname names the system in $STUB_OS and $STUB_ARCH.
 cat >"$root/fake-bin/uname" <<'EOF'
 #!/bin/sh
@@ -170,12 +141,12 @@ release 0.2.0 latest
 unset home
 if run; then status=0; else status=$?; fi
 check "needs a component" [ $status -ne 0 ]
-check "says to name a component" has "say what to install: install.sh agent|relay|desktop"
+check "says to name a component" has "say what to install: install.sh agent|desktop"
 if run client; then status=0; else status=$?; fi
 check "rejects an unknown component" [ $status -ne 0 ]
 check "names the unknown component" has "unknown component: client"
 run --help || true
-check "shows help without a component" has "Usage: install.sh agent|relay|desktop"
+check "shows help without a component" has "Usage: install.sh agent|desktop"
 check "installs nothing without a component" [ ! -e "$home/.local" ]
 
 # The latest release, into a new home.
@@ -186,7 +157,6 @@ check "the latest is 0.2.0" [ "$(agent_version)" = "loom-agent 0.2.0 (stub)" ]
 check "says which build it downloads" has "Downloading loom-agent 0.2.0 for $target"
 check "writes a configuration" [ -f "$home/.config/loom/agent.yaml" ]
 check "says the bin directory is not on PATH" has "is not on your PATH"
-check "names the binary for SSH clients" has "remote_bin: $home/.local/bin/loom-agent"
 check "leaves no temporary file" [ "$(ls -A "$home/.local/bin")" = loom-agent ]
 
 # Another version over it keeps the configuration.
@@ -202,13 +172,6 @@ run agent || true
 check "warns about a configuration that fails its check" \
     has "Warning: $home/.config/loom/agent.yaml does not pass 'loom-agent config check'"
 echo "version: 1" >"$home/.config/loom/agent.yaml"
-
-# Agents still on another version are pointed out.
-if STUB_RUNNING="0.1.0 (stub)" run agent; then status=0; else status=$?; fi
-check "upgrades with an agent running" [ $status -eq 0 ]
-check "asks to restart agents on another version" has "1 running agent(s) have another version"
-STUB_RUNNING="0.2.0 (stub)" run agent || true
-check "does not ask when agents run this version" lacks "running agent(s)"
 
 # A missing release fails and keeps the installed binary.
 if run agent --version 9.9.9; then status=0; else status=$?; fi
@@ -248,18 +211,6 @@ check "installs on arm64" [ $status -eq 0 ]
 check "installs the arm64 build on arm64" [ "$(agent_version)" = "loom-agent 0.3.0-arm64 (stub)" ]
 check "says it downloads the arm64 build" has "Downloading loom-agent 0.3.0 for $arm_target"
 arm_home=$home
-unset home
-STUB_ARCH=arm64 run relay || true
-check "takes arm64 for aarch64" \
-    [ "$("$home/.local/bin/loom-relay" --version)" = "loom-relay 0.3.0-arm64 (stub)" ]
-mkdir -p "$releases/download/v0.2.7"
-cp "$releases/download/v0.2.0/"* "$releases/download/v0.2.7/"
-grep -v "$arm_target" "$releases/download/v0.2.0/SHA256SUMS" >"$releases/download/v0.2.7/SHA256SUMS"
-home=$arm_home
-if STUB_ARCH=aarch64 run agent --version 0.2.7; then status=0; else status=$?; fi
-check "fails for a release without an arm64 build" [ $status -ne 0 ]
-check "says the release has no arm64 build" has "has no loom-agent archive for $arm_target"
-check "keeps the binary when there is no build" [ "$(agent_version)" = "loom-agent 0.3.0-arm64 (stub)" ]
 for system in Linux/riscv64 Darwin/arm64; do
     unset home
     if STUB_OS=${system%/*} STUB_ARCH=${system#*/} run agent; then status=0; else status=$?; fi
@@ -277,84 +228,6 @@ if run agent --frobnicate; then status=0; else status=$?; fi
 check "rejects an unknown option" [ $status -ne 0 ]
 check "names the unknown option" has "unknown option: --frobnicate"
 
-# The systemd service, with a systemctl that records its calls and says a
-# unit is active when $root/active.<unit> exists.
-cat >"$root/fake-bin/systemctl" <<EOF
-#!/bin/sh
-echo "\$*" >>"$root/systemctl.log"
-for arg; do [ -n "\$arg" ] || { echo "systemctl: empty argument" >&2; exit 64; }; done
-case "\$*" in
-    *is-active*) for unit; do :; done; [ -f "$root/active.\$unit" ] ;;
-esac
-EOF
-chmod 755 "$root/fake-bin/systemctl"
-unset home
-run agent --systemd || true
-unit=$home/.config/systemd/user/loom-agent.service
-check "installs the unit" [ -f "$unit" ]
-check "points the unit at the installed binary" \
-    grep -sqx "ExecStart=$home/.local/bin/loom-agent serve --default" "$unit"
-check "does not start the service without a default workspace" not_called enable
-check "says to set the default workspace" has "lifecycle.default_workspace"
-
-rm -f "$root/systemctl.log"
-printf 'version: 1\nlifecycle:\n  default_workspace: ~/src\n' >"$home/.config/loom/agent.yaml"
-run agent --systemd || true
-check "starts the service" called "--user enable --now loom-agent.service"
-touch "$root/active.loom-agent.service"
-run agent --systemd || true
-check "restarts a running service" called "--user restart loom-agent.service"
-
-# The relay, for the current user.
-rm -f "$root/systemctl.log"
-unset home
-if run relay; then status=0; else status=$?; fi
-check "installs the relay" [ $status -eq 0 ]
-check "installs the relay into ~/.local/bin" \
-    [ "$("$home/.local/bin/loom-relay" --version)" = "loom-relay 0.3.0 (stub)" ]
-check "writes the relay's configuration" [ -f "$home/.config/loom/relay.yaml" ]
-check "says what to set in the new configuration" has "allowed_hosts: the ID of each agent's host"
-check "does not mention remote_bin for the relay" lacks "remote_bin"
-check "installs only the relay" [ "$(ls -A "$home/.local/bin")" = loom-relay ]
-run relay || true
-check "says nothing about a configuration it did not write" lacks "allowed_hosts"
-if run relay --systemd; then status=0; else status=$?; fi
-check "needs root for the relay's service" [ $status -ne 0 ]
-check "says the relay's service needs root" has "run this as root"
-
-# The relay as root, under $sysroot.
-rm -f "$root/systemctl.log"
-unset home
-export STUB_ROOT=1
-if run relay --systemd --version 0.2.0; then status=0; else status=$?; fi
-relay=$sysroot/usr/local/bin/loom-relay
-config=$sysroot/etc/loom/relay.yaml
-unit=$sysroot/etc/systemd/system/loom-relay.service
-check "installs the relay for the system" [ $status -eq 0 ]
-check "installs the relay into /usr/local/bin" [ "$("$relay" --version)" = "loom-relay 0.2.0 (stub)" ]
-check "writes /etc/loom/relay.yaml" [ -f "$config" ]
-check "writes nothing into the home directory" [ -z "$(ls -A "$home")" ]
-check "installs the system unit" [ -f "$unit" ]
-check "points the system unit at the binary and configuration" \
-    grep -sqx "ExecStart=$relay --config $config serve" "$unit"
-check "keeps the rest of the unit" grep -sqx "DynamicUser=yes" "$unit"
-check "reloads systemd" called "daemon-reload"
-check "starts the relay's service" called "enable --now loom-relay.service"
-check "says to restart it after editing the configuration" has "Then restart it: systemctl restart loom-relay.service"
-
-touch "$root/active.loom-relay.service"
-echo "version: 1 # mine" >"$config"
-run relay --systemd || true
-check "upgrades the relay" has "Replaced loom-relay 0.2.0 (stub) at $relay with 0.3.0 (stub)"
-check "restarts the relay's service" called "restart loom-relay.service"
-check "keeps the relay's configuration" grep -q mine "$config"
-
-run relay --version 0.2.0 || true
-check "says the running relay needs a restart" has "loom-relay.service still runs the old version"
-run relay --version 0.2.0 || true
-check "does not ask for a restart when nothing changed" lacks "still runs the old version"
-unset STUB_ROOT
-
 # The desktop client, with its agent and desktop entry.
 unset home
 if run desktop; then status=0; else status=$?; fi
@@ -370,12 +243,10 @@ check "keeps the rest of the desktop entry" grep -sqx "Icon=dev.loom.Loom" "$ent
 check "installs the icons" [ -f "$home/.local/share/icons/hicolor/64x64/apps/dev.loom.Loom.png" ]
 check "leaves no temporary desktop entry" \
     [ "$(ls -A "$home/.local/share/applications")" = dev.loom.Loom.desktop ]
-check "does not mention remote_bin for the desktop client" lacks "remote_bin"
-if STUB_RUNNING="0.2.0 (stub)" run desktop --version 0.2.0; then status=0; else status=$?; fi
+if run desktop --version 0.2.0; then status=0; else status=$?; fi
 check "installs another version of the desktop client" [ $status -eq 0 ]
 check "says which loom it replaced" has "Replaced loom 0.3.0 (stub) at $home/.local/bin/loom with 0.2.0 (stub)"
 check "says which agent it replaced" has "Replaced loom-agent 0.3.0 (stub)"
-check "does not ask when agents run the new version" lacks "running agent(s)"
 unset home
 run desktop --bin-dir "$root/gui bin" || true
 check "quotes a bin directory with spaces in the desktop entry" \
@@ -384,10 +255,6 @@ unset home
 if run desktop --bin-dir "$root/gui\$bin"; then status=0; else status=$?; fi
 check "rejects a bin directory the desktop entry cannot name" [ $status -ne 0 ]
 check "installs nothing for that bin directory" [ ! -e "$root/gui\$bin" ]
-unset home
-if run desktop --systemd; then status=0; else status=$?; fi
-check "has no service for the desktop client" [ $status -ne 0 ]
-check "points at the agent's service" has "install.sh agent --systemd"
 unset home
 if STUB_ARCH=aarch64 run desktop; then status=0; else status=$?; fi
 check "refuses to download the desktop client for arm64" [ $status -ne 0 ]
@@ -400,7 +267,7 @@ check "says the release has no desktop entry" has "The release has no desktop en
 check "writes no desktop entry without one" [ ! -e "$home/.local/share/applications" ]
 
 # Building with Cargo, with a cargo that records its arguments and installs
-# a stub, and the unit from the repository at the tag.
+# a stub.
 # shellcheck disable=SC2016 # the stub expands these itself
 {
     echo '#!/bin/sh'
@@ -411,31 +278,21 @@ check "writes no desktop entry without one" [ ! -e "$home/.local/share/applicati
     echo "cp \"$root/built-\$name\" \"\$dir/bin/\$name\""
 } >"$root/fake-bin/cargo"
 chmod 755 "$root/fake-bin/cargo"
-for name in loom-agent loom-relay loom; do
+for name in loom-agent loom; do
     stub "$name" built >"$root/built-$name"
     chmod 755 "$root/built-$name"
 done
-mkdir -p "$root/raw/v0.2.0/contrib/systemd"
-cp contrib/systemd/loom-agent.service "$root/raw/v0.2.0/contrib/systemd/"
 unset home
-run agent --source --version 0.2.0 --systemd || true
+run agent --source --version 0.2.0 || true
 check "builds the tag with Cargo" grep -sqx -- \
     "install --locked --git https://github.com/chiwanpark/loom --tag v0.2.0 --root .*/root loom-agent" \
     "$root/cargo.log"
 check "installs what Cargo built" [ "$(agent_version)" = "loom-agent built (stub)" ]
-check "fetches the unit from the tag" [ -f "$home/.config/systemd/user/loom-agent.service" ]
 check "does not take the build for a loom-agent on PATH" lacks "Warning: loom-agent on your PATH"
 unset home
 rm -f "$root/cargo.log"
 run agent --source || true
 check "builds the main branch by default" grep -sq -- "--branch main" "$root/cargo.log"
-check "needs no unit without --systemd" [ ! -e "$home/.config/systemd" ]
-unset home
-rm -f "$root/cargo.log"
-run relay --source || true
-check "builds the relay with Cargo" grep -sq -- "--branch main --root .*/root loom-relay\$" "$root/cargo.log"
-check "installs the relay Cargo built" \
-    [ "$("$home/.local/bin/loom-relay" --version)" = "loom-relay built (stub)" ]
 unset home
 if STUB_ARCH=riscv64 run agent --source; then status=0; else status=$?; fi
 check "builds with Cargo where there is no prebuilt binary" [ $status -eq 0 ]

@@ -1,17 +1,12 @@
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::LoggingConfig;
-use crate::dirs::{Dirs, expand_home};
 use crate::error::ConfigError;
-use crate::load::parse_yaml;
 use crate::units::{ByteSize, HumanDuration};
-
-pub const RELAY_CONFIG_FILE: &str = "relay.yaml";
-pub const RELAY_CONFIG_ENV: &str = "LOOM_RELAY_CONFIG";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -126,48 +121,6 @@ impl Default for RelayLimits {
 }
 
 impl RelayServerConfig {
-    pub fn default_path(dirs: &Dirs) -> PathBuf {
-        dirs.config_dir().join(RELAY_CONFIG_FILE)
-    }
-
-    pub fn load(path: &Path, dirs: &Dirs) -> Result<Self, ConfigError> {
-        let origin = path.display().to_string();
-        let mut config: Self = match std::fs::read_to_string(path) {
-            Ok(text) => parse_yaml(&text, &origin)?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::default(),
-            Err(source) => {
-                return Err(ConfigError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                });
-            }
-        };
-        config.expand_paths(&dirs.home);
-        config.validate(&origin)?;
-        Ok(config)
-    }
-
-    pub fn parse(text: &str, origin: &str, dirs: &Dirs) -> Result<Self, ConfigError> {
-        let mut config: Self = parse_yaml(text, origin)?;
-        config.expand_paths(&dirs.home);
-        config.validate(origin)?;
-        Ok(config)
-    }
-
-    pub fn to_yaml(&self) -> String {
-        serde_saphyr::to_string(self).unwrap_or_default()
-    }
-
-    fn expand_paths(&mut self, home: &Path) {
-        if let Some(tls) = &mut self.tls {
-            tls.cert = expand_home(&tls.cert, home);
-            tls.key = expand_home(&tls.key, home);
-        }
-        if let Some(fcm) = self.push.as_mut().and_then(|p| p.fcm.as_mut()) {
-            fcm.service_account = expand_home(&fcm.service_account, home);
-        }
-    }
-
     pub fn listen_addr(&self) -> Result<SocketAddr, ConfigError> {
         self.listen
             .parse()
@@ -252,65 +205,35 @@ impl RelayServerConfig {
     }
 }
 
-pub fn relay_config_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(RelayServerConfig)).unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn dirs() -> Dirs {
-        Dirs {
-            home: PathBuf::from("/home/u"),
-            config_home: PathBuf::from("/home/u/.config"),
-            data_home: PathBuf::from("/home/u/.local/share"),
-            state_home: PathBuf::from("/home/u/.local/state"),
-            runtime_dir: None,
-        }
-    }
-
-    #[test]
-    fn parses_the_example() {
-        let config = RelayServerConfig::parse(
-            include_str!("../tests/fixtures/relay.yaml"),
-            "relay.yaml",
-            &dirs(),
-        )
-        .unwrap();
-        assert_eq!(config.allowed_hosts.len(), 1);
-        assert_eq!(
-            config.cloudflare_access.unwrap().certs_url(),
-            "https://myteam.cloudflareaccess.com/cdn-cgi/access/certs"
-        );
-        assert_eq!(config.limits.max_frame, ByteSize::kib(256));
-        assert_eq!(
-            config.push.and_then(|p| p.fcm).unwrap().service_account,
-            PathBuf::from("/home/u/firebase-service-account.json")
-        );
-        let empty = RelayServerConfig::parse("", "relay.yaml", &dirs()).unwrap();
-        assert_eq!(empty, RelayServerConfig::default());
-        let yaml = RelayServerConfig::default().to_yaml();
-        assert_eq!(
-            RelayServerConfig::parse(&yaml, "relay.yaml", &dirs()).unwrap(),
-            RelayServerConfig::default()
-        );
-    }
+    type Change = fn(&mut RelayServerConfig);
 
     #[test]
     fn rejects_invalid_values() {
-        for (text, field) in [
-            ("listen: nope\n", "listen"),
-            ("allowed_hosts:\n- abc\n", "allowed_hosts[0]"),
+        let cases: [(Change, &str); 4] = [
+            (|c| c.listen = "nope".into(), "listen"),
+            (|c| c.allowed_hosts = vec!["abc".into()], "allowed_hosts[0]"),
             (
-                "cloudflare_access:\n  team_domain: https://x\n  audience: a\n",
+                |c| {
+                    c.cloudflare_access = Some(AccessVerifyConfig {
+                        team_domain: "https://x".into(),
+                        audience: "a".into(),
+                        certs_url: None,
+                    })
+                },
                 "cloudflare_access.team_domain",
             ),
-            ("limits:\n  queue_frames: 0\n", "limits.queue_frames"),
-        ] {
-            match RelayServerConfig::parse(text, "relay.yaml", &dirs()) {
+            (|c| c.limits.queue_frames = 0, "limits.queue_frames"),
+        ];
+        for (change, field) in cases {
+            let mut config = RelayServerConfig::default();
+            change(&mut config);
+            match config.validate("oracle.yaml") {
                 Err(ConfigError::Invalid { field: actual, .. }) => assert_eq!(actual, field),
-                other => panic!("expected {field} for {text:?}, got {other:?}"),
+                other => panic!("expected {field}, got {other:?}"),
             }
         }
     }

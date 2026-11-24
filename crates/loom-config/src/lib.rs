@@ -34,8 +34,8 @@ pub use oracle::{
     ORACLE_MASTER_KEY_FILE, OracleConfig, oracle_config_schema,
 };
 pub use relay_server::{
-    AccessVerifyConfig, FCM_API_URL, FcmConfig, PushConfig, RELAY_CONFIG_ENV, RELAY_CONFIG_FILE,
-    RelayLimits, RelayServerConfig, TlsConfig, relay_config_schema,
+    AccessVerifyConfig, FCM_API_URL, FcmConfig, PushConfig, RelayLimits, RelayServerConfig,
+    TlsConfig,
 };
 pub use units::{ByteSize, HumanDuration};
 

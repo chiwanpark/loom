@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Packs release binaries built with `cargo build --release --target <target>`
 # into dist/<name>-<version>-<target>.tar.gz, together with the README, the
-# doc directory, license, and notice (and the systemd unit of loom-agent and loom-relay
-# when they are included, and the desktop entry and icons of loom under
-# share/ when it is).
+# doc directory, license, and notice (and the systemd unit of a binary that
+# has one in contrib/systemd, and the desktop entry and icons of loom under
+# share/ when it is included).
 #
 # Usage: scripts/package-release.sh <target> <name> <binary>...
 # Example: scripts/package-release.sh x86_64-unknown-linux-musl loom-agent loom-agent
