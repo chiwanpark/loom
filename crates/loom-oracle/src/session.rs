@@ -269,11 +269,6 @@ impl Session {
                 Command::ModelCredentials => Ok(Box::pin(async move {
                     ok(oracle.model_credentials(peer).await?)
                 })),
-                Command::GitCredential { url } => {
-                    Ok(Box::pin(
-                        async move { ok(oracle.git_token(peer, &url).await?) },
-                    ))
-                }
                 Command::CodespaceApiRequest(request) => Ok(Box::pin(async move {
                     oracle.codespace_api_request(peer, &request).await
                 })),
@@ -470,6 +465,7 @@ impl Session {
                 self.oracle.codespace_failed(me, &error)?;
                 ok(Empty {})
             }
+            Command::GitCredential { url } => ok(self.oracle.git_token(me, &url)?),
             Command::CodespaceNotes { text } => {
                 self.oracle.codespace_notes(me, &text)?;
                 ok(Empty {})

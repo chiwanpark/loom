@@ -247,10 +247,6 @@ ALTER TABLE codespaces ADD COLUMN active_at INTEGER;
 ALTER TABLE codespaces ADD COLUMN metrics TEXT;
 CREATE INDEX codespaces_state ON codespaces (state);
 ",
-    "
-ALTER TABLE git_credentials ADD COLUMN app_id INTEGER;
-ALTER TABLE git_credentials ADD COLUMN installation_id INTEGER;
-",
 ];
 
 const KEY_CHECK: &str = "master_key_check";

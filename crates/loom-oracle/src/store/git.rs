@@ -29,8 +29,6 @@ pub struct CredentialRow {
     pub expires_at: Option<u64>,
     pub checked_at: Option<u64>,
     pub check_error: Option<String>,
-    pub app_id: Option<u64>,
-    pub installation_id: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -40,7 +38,6 @@ pub struct CredentialCheck {
     pub login: Option<String>,
     pub user_id: Option<u64>,
     pub expires_at: Option<u64>,
-    pub installation_id: Option<u64>,
     pub error: Option<String>,
 }
 
@@ -86,8 +83,7 @@ fn provider_row(row: &Row<'_>) -> rusqlite::Result<ProviderRow> {
 }
 
 const CREDENTIAL_SELECT: &str = "SELECT c.id, c.name, c.provider, p.name, c.owner, c.repository, \
-     c.login, c.user_id, c.expires_at, c.checked_at, c.check_error, c.created_at, c.updated_at, \
-     c.app_id, c.installation_id \
+     c.login, c.user_id, c.expires_at, c.checked_at, c.check_error, c.created_at, c.updated_at \
      FROM git_credentials c JOIN providers p ON p.id = c.provider";
 
 fn credential_row(row: &Row<'_>) -> rusqlite::Result<CredentialRow> {
@@ -105,8 +101,6 @@ fn credential_row(row: &Row<'_>) -> rusqlite::Result<CredentialRow> {
         check_error: row.get(10)?,
         created_at: to_u64(row.get(11)?),
         updated_at: to_u64(row.get(12)?),
-        app_id: row.get::<_, Option<i64>>(13)?.map(to_u64),
-        installation_id: row.get::<_, Option<i64>>(14)?.map(to_u64),
     })
 }
 
@@ -252,7 +246,6 @@ impl Store {
         owner: Option<&str>,
         repository: Option<&str>,
         token: Option<&str>,
-        app_id: Option<u64>,
     ) -> StoreResult<CredentialRow> {
         let sealed = match token {
             Some(token) => Some(
@@ -265,24 +258,20 @@ impl Store {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
             let now = to_i64(now_unix());
-            let app = app_id.map(to_i64);
-            let existing: Option<(i64, i64, Option<i64>, Option<String>)> = tx
+            let existing: Option<(i64, i64)> = tx
                 .query_row(
-                    "SELECT id, provider, app_id, owner FROM git_credentials WHERE name = ?1",
+                    "SELECT id, provider FROM git_credentials WHERE name = ?1",
                     [name],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
             match (existing, sealed) {
-                (Some((id, old_provider, old_app, old_owner)), sealed) => {
-                    let reset = sealed.is_some()
-                        || old_provider != to_i64(provider)
-                        || old_app != app
-                        || (app.is_some() && old_owner.as_deref() != owner);
+                (Some((id, old_provider)), sealed) => {
+                    let reset = sealed.is_some() || old_provider != to_i64(provider);
                     tx.execute(
                         "UPDATE git_credentials SET provider = ?1, owner = ?2, repository = ?3,
-                             app_id = ?4, updated_at = ?5 WHERE id = ?6",
-                        params![to_i64(provider), owner, repository, app, now, id],
+                             updated_at = ?4 WHERE id = ?5",
+                        params![to_i64(provider), owner, repository, now, id],
                     )?;
                     if let Some(sealed) = sealed {
                         tx.execute(
@@ -293,8 +282,7 @@ impl Store {
                     if reset {
                         tx.execute(
                             "UPDATE git_credentials SET login = NULL, user_id = NULL,
-                                 expires_at = NULL, checked_at = NULL, check_error = NULL,
-                                 installation_id = NULL
+                                 expires_at = NULL, checked_at = NULL, check_error = NULL
                              WHERE id = ?1",
                             [id],
                         )?;
@@ -303,9 +291,9 @@ impl Store {
                 (None, Some(sealed)) => {
                     tx.execute(
                         "INSERT INTO git_credentials
-                             (name, provider, owner, repository, token, app_id, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                        params![name, to_i64(provider), owner, repository, sealed, app, now],
+                             (name, provider, owner, repository, token, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                        params![name, to_i64(provider), owner, repository, sealed, now],
                     )?;
                 }
                 (None, None) => {
@@ -335,14 +323,13 @@ impl Store {
     pub fn set_credential_check(&self, id: u64, check: &CredentialCheck) -> StoreResult<()> {
         self.conn().execute(
             "UPDATE git_credentials SET login = ?1, user_id = ?2, expires_at = ?3,
-                 checked_at = ?4, check_error = ?5, installation_id = ?6 WHERE id = ?7",
+                 checked_at = ?4, check_error = ?5 WHERE id = ?6",
             params![
                 check.login,
                 check.user_id.map(to_i64),
                 check.expires_at.map(to_i64),
                 to_i64(now_unix()),
                 check.error,
-                check.installation_id.map(to_i64),
                 to_i64(id)
             ],
         )?;
@@ -631,11 +618,11 @@ mod tests {
             .put_provider(&provider("ghe", "https://ghe.example.com"))
             .unwrap();
         assert!(matches!(
-            store.put_credential("work", ghe.id, None, None, None, None),
+            store.put_credential("work", ghe.id, None, None, None),
             Err(StoreError::Conflict(_))
         ));
         let work = store
-            .put_credential("work", ghe.id, Some("acme"), None, Some("ghp_first"), None)
+            .put_credential("work", ghe.id, Some("acme"), None, Some("ghp_first"))
             .unwrap();
         assert_eq!(work.provider_name, "ghe");
         assert_eq!(work.owner.as_deref(), Some("acme"));
@@ -656,7 +643,6 @@ mod tests {
                     login: Some("me".into()),
                     user_id: Some(7),
                     expires_at: Some(99),
-                    installation_id: None,
                     error: None,
                 },
             )
@@ -665,7 +651,7 @@ mod tests {
         assert_eq!(checked.login.as_deref(), Some("me"));
         assert!(checked.checked_at.is_some());
         let renamed = store
-            .put_credential("work", ghe.id, Some("acme"), Some("server"), None, None)
+            .put_credential("work", ghe.id, Some("acme"), Some("server"), None)
             .unwrap();
         assert_eq!(renamed.login.as_deref(), Some("me"));
         assert_eq!(
@@ -673,7 +659,7 @@ mod tests {
             "ghp_first"
         );
         let replaced = store
-            .put_credential("work", ghe.id, Some("acme"), None, Some("ghp_second"), None)
+            .put_credential("work", ghe.id, Some("acme"), None, Some("ghp_second"))
             .unwrap();
         assert_eq!(replaced.login, None);
         assert_eq!(
@@ -681,34 +667,8 @@ mod tests {
             "ghp_second"
         );
 
-        let app = store
-            .put_credential("app", ghe.id, Some("acme"), None, Some("PEM"), Some(42))
-            .unwrap();
-        assert_eq!(app.app_id, Some(42));
-        store
-            .set_credential_check(
-                app.id,
-                &CredentialCheck {
-                    login: Some("loom[bot]".into()),
-                    installation_id: Some(8),
-                    ..CredentialCheck::default()
-                },
-            )
-            .unwrap();
-        let checked = store.credential_by_name("app").unwrap().unwrap();
-        assert_eq!(checked.installation_id, Some(8));
-        let same = store
-            .put_credential("app", ghe.id, Some("acme"), Some("server"), None, Some(42))
-            .unwrap();
-        assert_eq!(same.installation_id, Some(8));
-        let moved = store
-            .put_credential("app", ghe.id, Some("other"), None, None, Some(42))
-            .unwrap();
-        assert_eq!((moved.installation_id, moved.login), (None, None));
-        assert!(store.delete_credential("app").unwrap());
-
         let all = store
-            .put_credential("all", ghe.id, None, None, Some("ghp_all"), None)
+            .put_credential("all", ghe.id, None, None, Some("ghp_all"))
             .unwrap();
         let account = store
             .put_model_account(&super::super::NewModelAccount {
