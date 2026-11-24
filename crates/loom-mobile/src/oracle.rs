@@ -11,7 +11,7 @@ use loom_client::{
     RelayHost,
 };
 use loom_view_model::codespaces::{
-    self, directories, format_memory, new_codespace_defaults, parse_memory, session_info,
+    self, can_stop, directories, format_memory, new_codespace_defaults, parse_memory, session_info,
     state_label, work_text,
 };
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ pub enum CodespaceStatus {
     Closed,
     Failed,
     Lost,
+    Stopped,
     Unknown,
 }
 
@@ -47,6 +48,7 @@ impl From<CodespaceState> for CodespaceStatus {
             CodespaceState::Closed => Self::Closed,
             CodespaceState::Failed => Self::Failed,
             CodespaceState::Lost => Self::Lost,
+            CodespaceState::Stopped => Self::Stopped,
             CodespaceState::Unknown => Self::Unknown,
         }
     }
@@ -93,6 +95,9 @@ pub struct Codespace {
     pub instance: Option<String>,
     pub repositories: Vec<String>,
     pub created_at: u64,
+    pub stoppable: bool,
+    pub stop_at: Option<u64>,
+    pub delete_at: Option<u64>,
 }
 
 impl Codespace {
@@ -113,6 +118,9 @@ impl Codespace {
             instance: codespace.agent.as_ref().and_then(|a| a.instance.clone()),
             repositories: directories(&codespace.repositories),
             created_at: codespace.created_at,
+            stoppable: can_stop(codespace),
+            stop_at: codespace.stop_at,
+            delete_at: codespace.delete_at,
         }
     }
 }
@@ -873,6 +881,24 @@ impl OracleConnection {
         .await
     }
 
+    pub async fn stop_codespace(self: Arc<Self>, id: String) -> Result<Codespace> {
+        let client = self.shared.client()?;
+        run(async move {
+            let codespace = client.stop_codespace(&id).await.map_err(oracle_error)?;
+            Ok(Codespace::of(&codespace, 0))
+        })
+        .await
+    }
+
+    pub async fn resume_codespace(self: Arc<Self>, id: String) -> Result<Codespace> {
+        let client = self.shared.client()?;
+        run(async move {
+            let codespace = client.resume_codespace(&id).await.map_err(oracle_error)?;
+            Ok(Codespace::of(&codespace, 0))
+        })
+        .await
+    }
+
     pub async fn connect_codespace(self: Arc<Self>, id: String) -> Result<Arc<AgentConnection>> {
         let (codespace, address) = self.shared.address(&id)?;
         let relay = RelayHost::from_parts(
@@ -964,6 +990,11 @@ impl AgentConnection {
         })
         .await
     }
+}
+
+#[uniffi::export]
+pub fn in_time(now: u64, then: u64) -> String {
+    loom_view_model::settings::in_time(now, then)
 }
 
 #[uniffi::export]
