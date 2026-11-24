@@ -54,7 +54,7 @@ The oracle also needs a key of the same Firebase project. See [Notifications for
 
 ## Pair with an oracle
 
-1. Get a pairing link. Run `loom-oracle-cli pair-device` on a device that is paired with the oracle, or click **Add device…** on the **Devices** page of the oracle settings in the desktop client. For the first device, run `loom-oracle pair` on the oracle machine.
+1. Get a pairing link. Click **Add device…** on the **Devices** page of the oracle settings in the desktop client. For the first device, run `loom-oracle pair` on the oracle machine.
 2. In the app, use **Pair with an oracle**. Scan the QR code or paste the link.
 
 To scan the QR code, the phone needs Google Play services. To paste the link, it does not.

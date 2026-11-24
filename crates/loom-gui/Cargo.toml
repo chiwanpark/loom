@@ -19,7 +19,7 @@ gpui-component = { version = "=0.9.1", default-features = false, features = ["tr
 gpui-kit-assets = "=0.9.1"
 hayro = "0.9.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
-loom-client = { path = "../loom-client", default-features = false }
+loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-update = { path = "../loom-update" }
 loom-version = { path = "../loom-version" }

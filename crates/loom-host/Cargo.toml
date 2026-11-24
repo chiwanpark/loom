@@ -15,7 +15,7 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
-loom-client = { path = "../loom-client", default-features = false }
+loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
 loom-github = { path = "../loom-github" }

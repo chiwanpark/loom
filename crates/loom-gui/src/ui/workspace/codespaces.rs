@@ -927,7 +927,7 @@ impl Workspace {
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .whitespace_normal()
-                        .child("No workspaces. Add one with loom-oracle-cli workspace add."),
+                        .child("No workspaces. Add one in the oracle settings."),
                 );
             }
             for (wix, (workspace, repositories, codespaces)) in workspaces.into_iter().enumerate() {

@@ -58,10 +58,9 @@ impl Loom {
         self.lock().clone()
     }
 
-    /// Pairs with an oracle using the `loom://` link that
-    /// `loom-oracle-cli pair-device` prints, and keeps it as `name`. `label`
-    /// names this device on the oracle. Pairing again with a known oracle
-    /// updates it under its old name.
+    /// Pairs with an oracle using a `loom://` pairing link, and keeps it as
+    /// `name`. `label` names this device on the oracle. Pairing again with a
+    /// known oracle updates it under its old name.
     pub async fn pair(self: Arc<Self>, link: String, label: String, name: String) -> Result<Host> {
         let identity = self.identity.clone();
         let crypto = |err: loom_client::ClientError| match err {
@@ -137,7 +136,7 @@ impl Loom {
     }
 
     /// Forgets an oracle. The oracle still lists this device until someone
-    /// revokes it on the Devices page or with `loom-oracle-cli revoke-device`.
+    /// revokes it on the Devices page of the oracle settings.
     pub fn remove_host(&self, name: String) -> Result<()> {
         let mut hosts = self.lock();
         let before = hosts.len();

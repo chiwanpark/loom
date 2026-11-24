@@ -45,7 +45,7 @@ The agent of a codespace sets `allowed_roots`, `socket`, `storage`, `lifecycle`,
 | `opencode-go` | [OpenCode Go](https://opencode.ai/docs/console/go/) API key (`OPENCODE_API_KEY`) |
 | Any OpenAI-compatible server | API key. Configure it in `llm.providers`. |
 
-Add and sign in to model accounts on the **Models** page of the oracle settings in the desktop client, or with `loom-oracle-cli sign-in` and `loom-oracle-cli set-api-key`. Select the account for each provider in `llm.accounts` of the preset. See [Model accounts](oracle.md#model-accounts).
+Add and sign in to model accounts on the **Models** page of the oracle settings in the desktop client. Select the account for each provider in `llm.accounts` of the preset. See [Model accounts](oracle.md#model-accounts).
 
 The `anthropic` provider uses message threads by default on Anthropic's API. When the history and request settings still match, Loom sends only the new messages and the billing block.
 If the thread expires, Loom sends the full history again.
@@ -57,7 +57,7 @@ After sign-in, select a Copilot model in the model picker.
 To make it the default, set `llm.default_model` to `github-copilot/<model-id>` with a model ID from the picker.
 Loom does not change which models your account or organization enables.
 
-For OpenCode Go, add an API key account from a Go workspace on the **Models** page of the oracle settings (or with `loom-oracle-cli set-api-key`), or set `OPENCODE_API_KEY` in the environment. The environment variable takes precedence over the stored key. Select an OpenCode Go model in the model picker, or set `llm.default_model` to a model such as `opencode-go/deepseek-v4.1-flash`.
+For OpenCode Go, add an API key account from a Go workspace on the **Models** page of the oracle settings, or set `OPENCODE_API_KEY` in the environment. The environment variable takes precedence over the stored key. Select an OpenCode Go model in the model picker, or set `llm.default_model` to a model such as `opencode-go/deepseek-v4.1-flash`.
 
 This example adds an OpenAI-compatible server, such as a local model:
 

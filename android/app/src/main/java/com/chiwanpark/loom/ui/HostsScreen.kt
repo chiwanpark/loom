@@ -92,8 +92,8 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
         if (hosts.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding).padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "No oracles yet. Run `loom-oracle-cli pair-device` on an oracle, " +
-                        "then pair with the QR code or link it prints.",
+                    "No oracles yet. Make a pairing link on the Devices page of the desktop client " +
+                        "(or run `loom-oracle pair` on the oracle for the first device), then pair with the QR code or link.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -279,7 +279,7 @@ private fun DeviceKeyDialog(key: String, onDismiss: () -> Unit) {
     )
 }
 
-/** Pairing with an oracle by the link `loom-oracle-cli pair-device` prints, scanned or pasted. */
+/** Pairing with an oracle by a pairing link, scanned or pasted. */
 @Composable
 fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
     val context = LocalContext.current
@@ -301,8 +301,8 @@ fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                "On the oracle, run `loom-oracle-cli pair-device`, or make a link on the Devices page of the desktop client. " +
-                    "Scan the QR code it prints, or paste its loom:// link. The link works once, for 10 minutes.",
+                "Make a pairing link on the Devices page of the desktop client, or run `loom-oracle pair` on the oracle for the first device. " +
+                    "Scan the QR code, or paste its loom:// link. The link works once, for 10 minutes.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

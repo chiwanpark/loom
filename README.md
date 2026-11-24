@@ -18,7 +18,6 @@ Loom is early software. The configuration formats and the protocol can change be
 | Binary | Purpose |
 | --- | --- |
 | `loom-oracle` | The oracle. See [Oracle](doc/oracle.md). |
-| `loom-oracle-cli` | A command-line client of the oracle. |
 | `loom-host` | Runs the codespaces of a host. See [Hosts and codespaces](doc/host.md). |
 | `loom-agent` | The agent of a codespace. |
 | `loom` | The desktop client. Linux and Wayland only. |
@@ -49,7 +48,7 @@ Loom no longer has local agents, agents over SSH, `loom-relay`, or sessions in a
 | Document | Contents |
 | --- | --- |
 | [Installation and updates](doc/install.md) | Release archives, the install script, updates, and builds from source. |
-| [Oracle](doc/oracle.md) | The oracle, its relay and control service, presets, model accounts, secrets, notifications, and the test client. |
+| [Oracle](doc/oracle.md) | The oracle, its relay and control service, presets, model accounts, secrets, and notifications. |
 | [Hosts and codespaces](doc/host.md) | `loom-host`, its Incus image, network rules, Git workspaces, repository setup, and persistent volumes. |
 | [Agent configuration](doc/configuration.md) | `agent.yaml`, model providers, reload, and agent commands. |
 | [Policy and harmful tool calls](doc/policy.md) | Tool approval rules and the harmful check. |

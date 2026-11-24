@@ -16,7 +16,7 @@
 | `loom-tools` | The tools and the sandbox. |
 | `loom-proto` | The wire protocol. |
 | `loom-transport` | The transports. |
-| `loom-client` | The client library. Its default feature `cli` adds the test client `loom-oracle-cli` for the control service of the oracle. The desktop and Android clients do not use this feature. |
+| `loom-client` | The client library for agents and the oracle control service. |
 | `loom-view-model` | The view model that the clients share. |
 | `loom-mobile` | The Rust core of the Android client and its Kotlin bindings. |
 | `loom-config` | The configuration. |
