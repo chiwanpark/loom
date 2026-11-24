@@ -234,6 +234,11 @@ CREATE TABLE sessions (
 );
 ALTER TABLE codespaces ADD COLUMN first_message TEXT;
 ",
+    "
+ALTER TABLE hosts ADD COLUMN ssh TEXT;
+ALTER TABLE hosts ADD COLUMN checks TEXT;
+ALTER TABLE hosts ADD COLUMN checked_at INTEGER;
+",
 ];
 
 const KEY_CHECK: &str = "master_key_check";

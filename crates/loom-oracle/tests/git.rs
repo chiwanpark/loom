@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use loom_client::oracle_proto::{
     AccountKind, CheckResult, CodespaceState, ErrorCode, Event, FirstMessage, GitCredentialInput,
-    GitProviderInput, HostCall, HostReport, ModelLoginMethod, OracleError, PresetFile,
-    ProviderRoute, Repository, Role, Secret, SessionSummary, VolumeInput, VolumeKind,
-    WorkspaceCheckResult, WorkspaceVolume,
+    GitProviderInput, HostCall, HostCheck, HostCheckStatus, HostReport, ModelLoginMethod,
+    OracleError, PresetFile, ProviderRoute, Repository, Role, Secret, SessionSummary, VolumeInput,
+    VolumeKind, WorkspaceCheckResult, WorkspaceVolume,
 };
 use loom_client::{
     ClientError, ClientIdentity, NewCodespace, OracleCalls, OracleClient, OracleEvents, pair_oracle,
@@ -734,6 +734,24 @@ async fn volumes_require_host_confirmation_and_stay_reserved_until_close() {
     assert_eq!(volumes[0].hosts, vec!["box", "other"]);
     assert!(!volumes[0].deleting);
     assert!(volumes[1].hosts.is_empty());
+    let sizes = laptop.host_volumes("box");
+    let answer = async {
+        let (id, call) = host_call(&mut calls).await;
+        assert!(matches!(&call, HostCall::VolumeUsage { volumes } if volumes == &["cache"]));
+        host.reply(
+            id,
+            Ok(json!({"volumes": [{"name": "cache", "used_bytes": 4096}]})),
+        )
+        .await
+        .unwrap();
+    };
+    let (sizes, ()) = tokio::join!(sizes, answer);
+    let sizes = sizes.unwrap();
+    assert_eq!(sizes.len(), 1);
+    assert_eq!(
+        (sizes[0].name.as_str(), sizes[0].used_bytes),
+        ("cache", Some(4096))
+    );
     laptop.delete_volume("data").await.unwrap();
 
     let delete = laptop.delete_volume("cache");
@@ -773,6 +791,73 @@ async fn volumes_require_host_confirmation_and_stay_reserved_until_close() {
     let (result, ()) = tokio::join!(retry, answer);
     result.unwrap();
     assert!(laptop.volumes().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hosts_keep_their_checks_and_ssh_destination() {
+    let oracle = start_oracle().await;
+    let (laptop, mut events) = oracle.connect(Role::Device, "laptop").await;
+    laptop.subscribe().await.unwrap();
+    let (host, mut calls) = connect_host(&oracle, "box").await;
+    let check = |name: &str, status| HostCheck {
+        name: name.into(),
+        status,
+        detail: format!("{name} detail"),
+    };
+    host.host_report(HostReport {
+        version: "test".into(),
+        driver: "incus".into(),
+        cpus: 4,
+        memory_mib: 8192,
+        checks: vec![check("incus", HostCheckStatus::Ok)],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let hosts = laptop.hosts().await.unwrap();
+    assert_eq!(hosts[0].checks, vec![check("incus", HostCheckStatus::Ok)]);
+    assert!(hosts[0].checked_at.is_some());
+    assert!(hosts[0].report.as_ref().unwrap().checks.is_empty());
+
+    let run = laptop.check_host("box", true);
+    let answer = async {
+        let (id, call) = host_call(&mut calls).await;
+        assert!(matches!(call, HostCall::Check { docker: true }));
+        host.reply(
+            id,
+            Ok(json!({"checks": [
+                {"name": "incus", "status": "ok", "detail": "incus detail"},
+                {"name": "docker", "status": "failed", "detail": "docker detail"},
+            ]})),
+        )
+        .await
+        .unwrap();
+    };
+    let (checked, ()) = tokio::join!(run, answer);
+    let checked = checked.unwrap();
+    assert_eq!(checked.checks[1], check("docker", HostCheckStatus::Failed));
+    next_event(
+        &mut events,
+        |e| matches!(e, Event::HostChanged { host } if host.checks.len() == 2),
+    )
+    .await;
+    assert!(laptop.host_volumes("box").await.unwrap().is_empty());
+
+    let set = laptop.set_host_ssh("box", Some("dev@box.example")).await;
+    assert_eq!(set.unwrap().ssh.as_deref(), Some("dev@box.example"));
+    for bad in ["-oProxyCommand=x", "dev@box example", "a'b"] {
+        let err = laptop.set_host_ssh("box", Some(bad)).await.unwrap_err();
+        assert_eq!(code(err), ErrorCode::BadRequest, "{bad}");
+    }
+    assert_eq!(
+        laptop.hosts().await.unwrap()[0].ssh.as_deref(),
+        Some("dev@box.example")
+    );
+    assert_eq!(laptop.set_host_ssh("box", None).await.unwrap().ssh, None);
+    assert_eq!(
+        code(laptop.set_host_ssh("nobody", None).await.unwrap_err()),
+        ErrorCode::NotFound
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

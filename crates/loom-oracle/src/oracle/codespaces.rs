@@ -6,8 +6,9 @@ use loom_crypto::decode_key;
 use loom_oracle_proto::{
     AgentAddress, Bootstrap, Bundle, CONNECTION_RELAY, Codespace, CodespaceState, CreateInstance,
     DEFAULT_CPUS, DEFAULT_MEMORY_MIB, DeviceKey, Environment, ErrorCode, Event, FirstMessage, Host,
-    HostCall, HostReport, InstanceReport, OracleError, Reply, Repository, Role, ServerMessage,
-    Workspace, WorkspaceVolume, valid_name,
+    HostCall, HostChecks, HostReport, InstanceReport, OracleError, Reply, Repository, Role,
+    ServerMessage, VolumeKind, VolumeUsage, VolumeUsages, Workspace, WorkspaceVolume, valid_name,
+    valid_ssh_destination,
 };
 use loom_proto::relay::HostId;
 use serde_json::Value;
@@ -31,6 +32,9 @@ pub struct NewCodespaceArgs {
 const BOOTSTRAP_TTL: Duration = Duration::from_secs(6 * 3600);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const DOCKER_CHECK_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 const CALL_QUEUE: usize = 32;
 const LOST_GRACE_SECS: u64 = 60;
 const MIN_MEMORY_MIB: u64 = 256;
@@ -290,6 +294,9 @@ impl Oracle {
             environment: row.environment.clone(),
             codespaces: self.store.count_open_codespaces(row.peer.id).unwrap_or(0),
             reach: self.host_reach(row.peer.id),
+            ssh: row.ssh.clone(),
+            checks: row.checks.clone(),
+            checked_at: row.checked_at,
         }
     }
 
@@ -348,6 +355,92 @@ impl Oracle {
         let host = self.host(&row);
         self.emit(Event::HostChanged { host: host.clone() });
         Ok(host)
+    }
+
+    pub fn set_host_ssh(
+        &self,
+        name: &str,
+        destination: Option<&str>,
+        by: Option<u64>,
+    ) -> Result<Host, OracleError> {
+        let destination = destination.map(str::trim).filter(|d| !d.is_empty());
+        if let Some(destination) = destination
+            && !valid_ssh_destination(destination)
+        {
+            return Err(bad_request(format!(
+                "{destination:?} is not an SSH destination, such as user@host or ssh://user@host:2222"
+            )));
+        }
+        let row = self.host_by_name(name)?;
+        self.store.set_host_ssh(row.peer.id, destination)?;
+        self.audit(by, "host_ssh_set", &format!("host {name}"));
+        let host = self.host(&self.host_by_name(name)?);
+        self.emit(Event::HostChanged { host: host.clone() });
+        Ok(host)
+    }
+
+    pub async fn run_host_check(
+        &self,
+        name: &str,
+        docker: bool,
+        by: Option<u64>,
+    ) -> Result<Host, OracleError> {
+        let row = self.host_by_name(name)?;
+        let timeout = if docker {
+            DOCKER_CHECK_TIMEOUT
+        } else {
+            CHECK_TIMEOUT
+        };
+        let value = self
+            .call_host(row.peer.id, HostCall::Check { docker }, timeout)
+            .await?;
+        let checks: HostChecks = serde_json::from_value(value)
+            .map_err(|err| unavailable(format!("the host sent malformed checks: {err}")))?;
+        self.store.set_host_checks(row.peer.id, &checks.checks)?;
+        self.audit(by, "host_checked", &format!("host {name}"));
+        let host = self.host(&self.host_by_name(name)?);
+        self.emit(Event::HostChanged { host: host.clone() });
+        Ok(host)
+    }
+
+    pub async fn host_volumes(&self, name: &str) -> Result<VolumeUsages, OracleError> {
+        let row = self.host_by_name(name)?;
+        let volumes: Vec<String> = self
+            .store
+            .volumes()?
+            .into_iter()
+            .filter(|v| {
+                v.kind == VolumeKind::Incus && v.hosts.iter().any(|(h, _)| *h == row.peer.id)
+            })
+            .map(|v| v.name)
+            .collect();
+        if volumes.is_empty() {
+            return Ok(VolumeUsages::default());
+        }
+        let value = self
+            .call_host(
+                row.peer.id,
+                HostCall::VolumeUsage {
+                    volumes: volumes.clone(),
+                },
+                USAGE_TIMEOUT,
+            )
+            .await?;
+        let reported: VolumeUsages = serde_json::from_value(value)
+            .map_err(|err| unavailable(format!("the host sent malformed sizes: {err}")))?;
+        let mut usages = Vec::with_capacity(volumes.len());
+        for name in volumes {
+            usages.push(match reported.volumes.iter().find(|u| u.name == name) {
+                Some(usage) => usage.clone(),
+                None => VolumeUsage {
+                    name,
+                    used_bytes: None,
+                    total_bytes: None,
+                    error: Some("the host did not report this volume".into()),
+                },
+            });
+        }
+        Ok(VolumeUsages { volumes: usages })
     }
 
     pub fn workspaces(&self) -> Result<Vec<Workspace>, OracleError> {

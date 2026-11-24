@@ -715,6 +715,21 @@ impl Incus {
         }
     }
 
+    pub async fn storage_volume_state(
+        &self,
+        pool: &str,
+        name: &str,
+    ) -> Result<Option<StorageVolumeState>> {
+        match self
+            .get(&format!("{}/state", Self::volume_path(pool, name)))
+            .await
+        {
+            Ok(state) => Ok(Some(state)),
+            Err(err) if err.is_not_found() => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
     pub async fn create_storage_volume(
         &self,
         pool: &str,
