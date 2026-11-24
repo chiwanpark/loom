@@ -6,6 +6,7 @@ mod error;
 mod forward;
 mod login;
 mod oracle;
+mod preset_import;
 mod relay;
 mod update;
 mod upload;
@@ -27,5 +28,6 @@ pub use loom_transport::{
 pub use oracle::{
     NewCodespace, OracleCalls, OracleClient, OracleEndpoint, OracleEvents, pair_oracle,
 };
+pub use preset_import::{ImportedPreset, import_local_preset, read_skills};
 pub use relay::{RelayHost, client_identity_path, load_client_identity, pair_with_uri};
 pub use update::{agent_protocol, can_update_agent, update_agent_of_protocol, update_agent_with};
