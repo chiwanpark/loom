@@ -10,8 +10,8 @@ use loom_client::oracle_proto::{
     AuditEntry, Codespace, CodespaceConnection, CodespaceState, Device, DockerSettings,
     Environment, Event, FirstMessage, GitCredential, GitCredentialInput, GitProvider,
     GitProviderInput, Host, HostLimits, ModelAccount, ModelLoginInput, ModelLoginMethod,
-    ModelLoginPrompt, Pairing, PairingLink, Preset, PresetFile, ProviderRoute, RelayHost,
-    Repository, Secret, SecretInfo, Volume, VolumeInput, VolumeKind, Workspace, WorkspaceVolume,
+    ModelLoginPrompt, Pairing, PairingLink, Preset, PresetFile, ProviderRoute, Repository, Secret,
+    SecretInfo, Volume, VolumeInput, VolumeKind, Workspace, WorkspaceVolume,
 };
 use loom_client::{
     AccessToken, Client, ClientIdentity, CloseGuardError, NewCodespace, OracleClient,
@@ -79,14 +79,6 @@ enum Command {
     Pairings,
     CancelPairing {
         id: String,
-    },
-    RelayHosts,
-    AddRelayHost {
-        host_id: String,
-        label: String,
-    },
-    RemoveRelayHost {
-        host_id: String,
     },
     PairHost {
         #[arg(long, value_parser = parse_duration)]
@@ -850,15 +842,6 @@ fn print_pairing(pairing: &Pairing) {
     );
 }
 
-fn print_relay_host(host: &RelayHost) {
-    let agents = if host.agents.is_empty() {
-        "offline".to_owned()
-    } else {
-        host.agents.join(", ")
-    };
-    println!("{}\t{}\t{}", host.host_id, host.label, agents);
-}
-
 fn print_link(link: &PairingLink, qr: bool, what: &str) {
     if qr && let Ok(code) = qrcode::QrCode::new(link.link.as_bytes()) {
         let image = code
@@ -1195,10 +1178,6 @@ fn print_event(event: &Event) {
         Event::PairingChanged { pairing } => println!("pairing {} created", pairing.id),
         Event::PairingRemoved { id, used: true } => println!("pairing {id} used"),
         Event::PairingRemoved { id, used: false } => println!("pairing {id} removed"),
-        Event::RelayHostChanged { relay_host } => {
-            println!("relay host {} {}", relay_host.host_id, relay_host.label)
-        }
-        Event::RelayHostRemoved { host_id } => println!("relay host {host_id} removed"),
         Event::HostChanged { host } => {
             print!("host ");
             print_host(host);
@@ -1470,26 +1449,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             client.cancel_pairing(&id).await?;
             if !json {
                 println!("cancelled pairing {id}");
-            }
-        }
-        Command::RelayHosts => {
-            let hosts = client.relay_hosts().await?;
-            if json {
-                return print_json(&hosts);
-            }
-            hosts.iter().for_each(print_relay_host);
-        }
-        Command::AddRelayHost { host_id, label } => {
-            let host = client.add_relay_host(&host_id, &label).await?;
-            if json {
-                return print_json(&host);
-            }
-            print_relay_host(&host);
-        }
-        Command::RemoveRelayHost { host_id } => {
-            client.remove_relay_host(&host_id).await?;
-            if !json {
-                println!("removed relay host {host_id}");
             }
         }
         Command::PairHost { ttl, no_qr } => {

@@ -9,7 +9,7 @@ use loom_config::{CodespaceLifecycle, Dirs, ORACLE_MASTER_KEY_FILE, OracleConfig
 use loom_crypto::{HostIdentity, PairingUri, Responder, Zeroizing, validate_label};
 use loom_oracle_proto::{
     DEFAULT_PAIRING_TTL_SECS, Device, ErrorCode, Event, MAX_PAIRING_TTL_SECS, ORACLE_INSTANCE,
-    OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, RelayHost, Role,
+    OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Role,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::seal::MasterKey;
 use crate::session::Session;
-use crate::store::{PairingRow, PeerRow, RelayHostRow, Store, StoreError};
+use crate::store::{PairingRow, PeerRow, Store, StoreError};
 
 mod archive;
 mod codespaces;
@@ -101,7 +101,6 @@ pub fn pairing_ttl(ttl_secs: Option<u64>) -> Result<Duration, OracleError> {
 }
 
 pub struct RelayHosts {
-    classic: RwLock<HashSet<HostId>>,
     codespaces: RwLock<HashSet<HostId>>,
 }
 
@@ -114,22 +113,10 @@ fn read(set: &RwLock<HashSet<HostId>>) -> std::sync::RwLockReadGuard<'_, HashSet
 }
 
 impl RelayHosts {
-    fn new(
-        classic: impl IntoIterator<Item = HostId>,
-        codespaces: impl IntoIterator<Item = HostId>,
-    ) -> Self {
+    fn new(codespaces: impl IntoIterator<Item = HostId>) -> Self {
         Self {
-            classic: RwLock::new(classic.into_iter().collect()),
             codespaces: RwLock::new(codespaces.into_iter().collect()),
         }
-    }
-
-    fn insert(&self, host: HostId) {
-        write(&self.classic).insert(host);
-    }
-
-    fn remove(&self, host: &HostId) {
-        write(&self.classic).remove(host);
     }
 
     fn insert_codespace(&self, host: HostId) {
@@ -143,12 +130,10 @@ impl RelayHosts {
 
 impl HostCheck for RelayHosts {
     fn check(&self, host: &HostId) -> Result<(), String> {
-        if read(&self.classic).contains(host) || read(&self.codespaces).contains(host) {
+        if read(&self.codespaces).contains(host) {
             Ok(())
         } else {
-            Err(format!(
-                "host {host} is not a relay host or a codespace of the oracle"
-            ))
+            Err(format!("host {host} is not a codespace of the oracle"))
         }
     }
 }
@@ -229,7 +214,6 @@ impl Oracle {
         archive_root: Option<PathBuf>,
     ) -> anyhow::Result<Arc<Self>> {
         let hosts = Arc::new(RelayHosts::new(
-            store.relay_hosts()?.into_iter().map(|row| row.host),
             store
                 .codespaces()?
                 .iter()
@@ -363,20 +347,6 @@ impl Oracle {
         }
     }
 
-    fn relay_host(&self, row: &RelayHostRow) -> RelayHost {
-        RelayHost {
-            host_id: row.host.to_string(),
-            label: row.label.clone(),
-            added_at: row.added_at,
-            agents: self
-                .relay
-                .instances(&row.host)
-                .into_iter()
-                .map(|i| i.0)
-                .collect(),
-        }
-    }
-
     pub fn info(&self) -> OracleInfo {
         OracleInfo {
             version: loom_version::VERSION.to_owned(),
@@ -507,61 +477,6 @@ impl Oracle {
         self.emit(Event::PairingRemoved {
             id: id.to_owned(),
             used: false,
-        });
-        Ok(())
-    }
-
-    pub fn relay_hosts(&self) -> Result<Vec<RelayHost>, OracleError> {
-        Ok(self
-            .store
-            .relay_hosts()?
-            .iter()
-            .map(|row| self.relay_host(row))
-            .collect())
-    }
-
-    fn parse_host(host_id: &str) -> Result<HostId, OracleError> {
-        host_id
-            .parse()
-            .map_err(|_| bad_request(format!("{host_id:?} is not a host ID of 64 hex characters")))
-    }
-
-    pub fn add_relay_host(
-        &self,
-        host_id: &str,
-        label: &str,
-        by: Option<u64>,
-    ) -> Result<RelayHost, OracleError> {
-        let host = Self::parse_host(host_id)?;
-        validate_label(label).map_err(|e| bad_request(e.to_string()))?;
-        if host == self.identity.host_id() {
-            return Err(OracleError::new(
-                ErrorCode::Conflict,
-                "this is the host ID of the oracle itself",
-            ));
-        }
-        let row = self.store.put_relay_host(&host, label)?;
-        self.hosts.insert(host);
-        self.audit(by, "relay_host_added", &format!("{host} ({label})"));
-        tracing::info!(%host, %label, "added a relay host");
-        let relay_host = self.relay_host(&row);
-        self.emit(Event::RelayHostChanged {
-            relay_host: relay_host.clone(),
-        });
-        Ok(relay_host)
-    }
-
-    pub fn remove_relay_host(&self, host_id: &str, by: Option<u64>) -> Result<(), OracleError> {
-        let host = Self::parse_host(host_id)?;
-        if !self.store.remove_relay_host(&host)? {
-            return Err(not_found(format!("{host} is not a relay host")));
-        }
-        self.hosts.remove(&host);
-        let agents = self.relay.disconnect_host(&host);
-        self.audit(by, "relay_host_removed", &host.to_string());
-        tracing::info!(%host, agents, "removed a relay host");
-        self.emit(Event::RelayHostRemoved {
-            host_id: host.to_string(),
         });
         Ok(())
     }
