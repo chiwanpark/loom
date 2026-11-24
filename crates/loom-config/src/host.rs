@@ -143,6 +143,24 @@ pub struct HostUser {
     pub gid: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitProxyConfig {
+    pub listen: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl GitProxyConfig {
+    pub fn public_url(&self) -> String {
+        self.url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", self.listen))
+            .trim_end_matches('/')
+            .to_owned()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HostConfig {
@@ -154,6 +172,8 @@ pub struct HostConfig {
     pub process: ProcessDriverConfig,
     pub agent: HostAgentConfig,
     pub rules: HostRules,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_proxy: Option<GitProxyConfig>,
     pub report_interval: HumanDuration,
     pub logging: LoggingConfig,
 }
@@ -168,6 +188,7 @@ impl Default for HostConfig {
             process: ProcessDriverConfig::default(),
             agent: HostAgentConfig::default(),
             rules: HostRules::default(),
+            git_proxy: None,
             report_interval: HumanDuration::from_secs(60),
             logging: LoggingConfig::default(),
         }
@@ -350,6 +371,35 @@ impl HostConfig {
                 "the default actions apply only with network ACLs; name at least one",
             ));
         }
+        if let Some(proxy) = &self.git_proxy {
+            if self.driver != HostDriver::Incus {
+                return Err(invalid(
+                    "git_proxy",
+                    "the Git proxy is only for the incus driver",
+                ));
+            }
+            if proxy.listen.parse::<std::net::SocketAddr>().is_err() {
+                return Err(invalid(
+                    "git_proxy.listen",
+                    "expected an IP address and a port, such as 10.0.0.1:7440",
+                ));
+            }
+            let url = proxy.public_url();
+            let rest = url
+                .strip_prefix("http://")
+                .or_else(|| url.strip_prefix("https://"));
+            let valid = rest.is_some_and(|rest| {
+                !rest.is_empty()
+                    && !rest.contains(['/', '?', '#', '@', '\\'])
+                    && rest.chars().all(|c| c.is_ascii_graphic())
+            });
+            if !valid {
+                return Err(invalid(
+                    "git_proxy.url",
+                    "expected http:// or https:// and a host and port, with no path",
+                ));
+            }
+        }
         if self.report_interval.as_duration().as_secs() < 5 {
             return Err(invalid("report_interval", "must be 5s or more"));
         }
@@ -410,6 +460,10 @@ mod tests {
         );
         assert!(config.rules.network.isolate);
         assert_eq!(config.rules.network.acls, vec!["loom-codespaces"]);
+        assert_eq!(
+            config.git_proxy.as_ref().map(GitProxyConfig::public_url),
+            Some("http://10.0.0.1:7440".to_owned())
+        );
         assert_eq!(
             config.incus.url.as_deref(),
             Some("https://incus.example.com:8443")
@@ -472,6 +526,22 @@ mod tests {
             (
                 "rules:\n  network:\n    default_egress: reject\n",
                 "rules.network.acls",
+            ),
+            (
+                "driver: process\ngit_proxy:\n  listen: 10.0.0.1:7440\n",
+                "git_proxy",
+            ),
+            (
+                "driver: incus\ngit_proxy:\n  listen: 10.0.0.1\n",
+                "git_proxy.listen",
+            ),
+            (
+                "driver: incus\ngit_proxy:\n  listen: 10.0.0.1:7440\n  url: http://h/x\n",
+                "git_proxy.url",
+            ),
+            (
+                "driver: incus\ngit_proxy:\n  listen: 10.0.0.1:7440\n  url: ftp://h\n",
+                "git_proxy.url",
             ),
         ] {
             match HostConfig::parse(text, "host.yaml", &dirs()) {

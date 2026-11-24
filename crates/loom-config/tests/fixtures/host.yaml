@@ -18,6 +18,8 @@ rules:
     isolate: true
     acls: [loom-codespaces]
     default_egress: allow
+git_proxy:
+  listen: 10.0.0.1:7440
 report_interval: 2m
 logging:
   level: info

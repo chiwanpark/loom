@@ -1064,6 +1064,34 @@ impl Driver for IncusDriver {
             .collect())
     }
 
+    async fn addresses(
+        &self,
+        oracle: &str,
+        codespace: &str,
+    ) -> anyhow::Result<Vec<std::net::IpAddr>> {
+        let instance = self
+            .list(oracle)
+            .await?
+            .into_iter()
+            .find(|instance| instance.codespace == codespace);
+        let Some(instance) = instance else {
+            return Ok(Vec::new());
+        };
+        let state = self
+            .incus
+            .instance_state(&instance.instance)
+            .await
+            .map_err(incus_error)?;
+        Ok(state
+            .network
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(name, _)| name != "lo")
+            .flat_map(|(_, network)| network.addresses)
+            .filter_map(|address| address.address.parse().ok())
+            .collect())
+    }
+
     fn local(&self) -> bool {
         self.incus.is_local()
     }
