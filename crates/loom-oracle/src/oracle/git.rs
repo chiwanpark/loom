@@ -9,16 +9,15 @@ use loom_github::{
     repository_path,
 };
 use loom_oracle_proto::{
-    Branches, CheckResult, CodespaceApiRequest, CodespaceState, ErrorCode, Event, GhLogin,
-    GitCredential, GitCredentialInput, GitProvider, GitProviderInput, GitProviderSetup,
-    GitProxyAccess, GitProxyRequest, GitSetup, GitToken, GitTokenResult, HostCall, OracleError,
-    Preset, ProviderEndpoint, ProviderRequest, ProviderRoute, RemoteRepository, Repository,
-    RepositorySearch, Secret, WorkspaceCheck, WorkspaceCheckResult, repository_directory,
-    valid_directory, valid_name,
+    Branches, CheckResult, ErrorCode, Event, GhLogin, GitCredential, GitCredentialInput,
+    GitProvider, GitProviderInput, GitProviderSetup, GitSetup, GitToken, GitTokenResult, HostCall,
+    OracleError, Preset, ProviderEndpoint, ProviderRequest, ProviderRoute, RemoteRepository,
+    Repository, RepositorySearch, Secret, WorkspaceCheck, WorkspaceCheckResult,
+    repository_directory, valid_directory, valid_name,
 };
 
 use super::{Oracle, bad_request, not_found};
-use crate::store::{CodespaceRow, CredentialCheck, CredentialRow, PresetRow, ProviderRow};
+use crate::store::{CredentialCheck, CredentialRow, PresetRow, ProviderRow};
 
 pub(super) const REACH_TTL: Duration = Duration::from_secs(600);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -61,14 +60,6 @@ fn url_host(url: &str) -> &str {
 
 pub fn provider_path(web_url: &str, url: &str) -> Option<(String, String)> {
     loom_github::repository_of(web_url, url)
-}
-
-fn same_secret(a: &str, b: &str) -> bool {
-    a.len() == b.len()
-        && a.bytes()
-            .zip(b.bytes())
-            .fold(0u8, |diff, (x, y)| diff | (x ^ y))
-            == 0
 }
 
 fn valid_text(text: &str, max: usize) -> bool {
@@ -389,26 +380,18 @@ impl Oracle {
     }
 
     fn github(self: &Arc<Self>, provider: &ProviderRow, token: Option<Secret>) -> GitHub {
-        GitHub::new(self.transport(provider, token))
-    }
-
-    fn transport(
-        self: &Arc<Self>,
-        provider: &ProviderRow,
-        token: Option<Secret>,
-    ) -> Arc<dyn Transport> {
         match provider.route {
-            ProviderRoute::Hosts => Arc::new(HostTransport {
+            ProviderRoute::Hosts => GitHub::new(Arc::new(HostTransport {
                 oracle: self.clone(),
                 provider: provider.name.clone(),
                 api_url: provider.api_url.clone(),
                 token,
-            }),
-            _ => Arc::new(Direct::new(
+            })),
+            _ => GitHub::new(Arc::new(Direct::new(
                 self.http.clone(),
                 &provider.api_url,
                 token.map(|t| t.expose().to_owned()),
-            )),
+            ))),
         }
     }
 
@@ -807,7 +790,6 @@ impl Oracle {
         &self,
         preset: Option<u64>,
         repositories: &[Repository],
-        proxy: Option<&str>,
     ) -> Result<GitSetup, OracleError> {
         let all = self.store.providers()?;
         let credentials = match preset {
@@ -831,7 +813,7 @@ impl Oracle {
             };
             let chosen = main_credential(provider, repositories, &credentials);
             let (git_name, git_email) = identity(provider, chosen);
-            let gh = match chosen.filter(|_| proxy.is_none()) {
+            let gh = match chosen {
                 Some(credential) => Some(GhLogin {
                     user: credential
                         .login
@@ -849,186 +831,42 @@ impl Oracle {
                 git_email,
                 credentials: credentials.iter().any(|c| c.provider == provider.id),
                 gh,
-                proxy_url: proxy.map(|proxy| format!("{proxy}/{}", provider.name)),
             });
         }
         Ok(setup)
     }
 
-    pub(super) fn git_proxy_of(&self, host: u64) -> Result<Option<String>, OracleError> {
-        Ok(self
-            .store
-            .host(host)?
-            .and_then(|row| row.report)
-            .and_then(|report| report.git_proxy)
-            .map(|url| url.trim_end_matches('/').to_owned()))
-    }
-
-    fn proxy_secret(&self, codespace: &str) -> Secret {
-        let mut secrets = self.proxy_secrets.lock().unwrap_or_else(|e| e.into_inner());
-        secrets
-            .entry(codespace.to_owned())
-            .or_insert_with(|| {
-                let mut bytes = [0u8; 32];
-                rand::fill(&mut bytes);
-                Secret::new(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
-            })
-            .clone()
-    }
-
     pub fn git_token(&self, peer: u64, url: &str) -> Result<GitTokenResult, OracleError> {
         let row = self.codespace_of_peer(peer)?;
-        if let Some(proxy) = self.git_proxy_of(row.host)? {
-            let token = url
-                .strip_prefix(&proxy)
-                .is_some_and(|rest| rest.starts_with('/'))
-                .then(|| GitToken {
-                    username: row.id.clone(),
-                    password: self.proxy_secret(&row.id),
-                    expires_at: None,
-                });
-            return Ok(GitTokenResult { token });
-        }
-        if row.preset.is_none() {
+        let Some(preset) = row.preset else {
             return Ok(GitTokenResult { token: None });
-        }
+        };
         let Some(url) = normalize_url(url) else {
             return Err(bad_request(format!("{url:?} is not an HTTPS URL")));
-        };
-        let token = self.codespace_token(&row, &url)?;
-        Ok(GitTokenResult { token })
-    }
-
-    fn codespace_token(
-        &self,
-        row: &CodespaceRow,
-        url: &str,
-    ) -> Result<Option<GitToken>, OracleError> {
-        let Some(preset) = row.preset else {
-            return Ok(None);
         };
         let providers = self.store.providers()?;
         let found = providers
             .iter()
-            .find_map(|p| provider_path(&p.web_url, url).map(|path| (p, path)));
+            .find_map(|p| provider_path(&p.web_url, &url).map(|path| (p, path)));
         let Some((provider, (owner, repository))) = found else {
-            return Ok(None);
+            return Ok(GitTokenResult { token: None });
         };
         let credentials = self.store.preset_credentials(preset)?;
         let Some(credential) = select_credential(&credentials, provider.id, &owner, &repository)
         else {
-            return Ok(None);
+            return Ok(GitTokenResult { token: None });
         };
         tracing::debug!(codespace = %row.id, credential = %credential.name, %owner, %repository, "gave a Git token");
-        Ok(Some(GitToken {
-            username: credential
-                .login
-                .clone()
-                .unwrap_or_else(|| TOKEN_USER.to_owned()),
-            password: self.token(credential)?,
-            expires_at: credential.expires_at,
-        }))
-    }
-
-    pub async fn codespace_api_request(
-        self: &Arc<Self>,
-        peer: u64,
-        request: &CodespaceApiRequest,
-    ) -> Result<serde_json::Value, OracleError> {
-        let row = self.codespace_of_peer(peer)?;
-        let url = normalize_url(&request.url)
-            .ok_or_else(|| bad_request(format!("{:?} is not an HTTPS URL", request.url)))?;
-        let providers = self.store.providers()?;
-        let (provider, (owner, repository)) = providers
-            .iter()
-            .find_map(|p| provider_path(&p.web_url, &url).map(|path| (p, path)))
-            .ok_or_else(|| bad_request(format!("{url} is not a repository of a Git provider")))?;
-        let method = loom_github::Method::parse(&request.method)
-            .ok_or_else(|| bad_request(format!("{:?} is not a method", request.method)))?;
-        let pulls = format!("/repos/{owner}/{repository}/pulls");
-        let path = request.path.as_str();
-        let allowed = match method {
-            loom_github::Method::Get | loom_github::Method::Post => {
-                path.eq_ignore_ascii_case(&pulls)
-            }
-            loom_github::Method::Patch => {
-                path.get(..pulls.len() + 1)
-                    .is_some_and(|head| head.eq_ignore_ascii_case(&format!("{pulls}/")))
-                    && path[pulls.len() + 1..]
-                        .parse::<u64>()
-                        .is_ok_and(|number| number > 0)
-            }
-        };
-        if !allowed {
-            return Err(OracleError::new(
-                ErrorCode::Forbidden,
-                "a codespace can only read, open, and change the pull requests of its repository",
-            ));
-        }
-        let token = self
-            .codespace_token(&row, &url)?
-            .ok_or_else(|| bad_request("the preset has no Git credential for this repository"))?;
-        let api = ApiRequest {
-            method,
-            path: request.path.clone(),
-            query: request.query.clone(),
-            body: request.body.clone(),
-        };
-        let response = self
-            .transport(provider, Some(token.password))
-            .send(&api)
-            .await
-            .map_err(github_error)?;
-        tracing::debug!(codespace = %row.id, method = %request.method, path = %request.path, status = response.status, "sent a request of a codespace to a Git provider");
-        serde_json::to_value(response)
-            .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
-    }
-
-    pub async fn git_proxy_access(
-        self: &Arc<Self>,
-        host: u64,
-        request: &GitProxyRequest,
-    ) -> Result<GitProxyAccess, OracleError> {
-        let denied = || {
-            OracleError::new(
-                ErrorCode::Forbidden,
-                "the codespace or its proxy secret is not valid",
-            )
-        };
-        let row = self
-            .store
-            .codespace(&request.codespace)?
-            .filter(|row| row.host == host)
-            .filter(|row| !matches!(row.state, CodespaceState::Closing | CodespaceState::Closed))
-            .ok_or_else(denied)?;
-        let expected = self
-            .proxy_secrets
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&row.id)
-            .cloned()
-            .ok_or_else(denied)?;
-        if !same_secret(expected.expose(), request.secret.expose()) {
-            return Err(denied());
-        }
-        let provider = self
-            .store
-            .providers()?
-            .into_iter()
-            .find(|p| p.name == request.provider)
-            .ok_or_else(|| {
-                not_found(format!("no Git provider has the name {}", request.provider))
-            })?;
-        let (owner, repository) =
-            repository_path(&format!("{}/{}", request.owner, request.repository))
-                .ok_or_else(|| bad_request("the path of the repository is not valid"))?;
-        let upstream = format!(
-            "{}/{owner}/{repository}.git",
-            provider.web_url.trim_end_matches('/'),
-        );
-        let token = self.codespace_token(&row, &upstream)?;
-        tracing::debug!(codespace = %row.id, %upstream, token = token.is_some(), "gave Git access through the proxy of a host");
-        Ok(GitProxyAccess { upstream, token })
+        Ok(GitTokenResult {
+            token: Some(GitToken {
+                username: credential
+                    .login
+                    .clone()
+                    .unwrap_or_else(|| TOKEN_USER.to_owned()),
+                password: self.token(credential)?,
+                expires_at: credential.expires_at,
+            }),
+        })
     }
 
     pub async fn search_repositories(
