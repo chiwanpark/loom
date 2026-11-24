@@ -1,6 +1,6 @@
 # Hosts and codespaces (Loom-Next)
 
-A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 4.
+A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts, stops, and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 6.
 
 A workspace has one or more repositories and can have persistent volumes. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
 
@@ -192,6 +192,26 @@ The device keys of the oracle are the keys that the agent of a codespace accepts
 
 `loom-oracle-cli close-codespace <id>` deletes the container of the codespace and revokes the keys of its agent. Before that, the close guard checks the unsaved work. See [Git in a codespace](#git-in-a-codespace).
 
+## Stop and resume a codespace
+
+`loom-oracle-cli stop-codespace <id>` stops the instance of a codespace. The disk of the instance and its volumes stay. The sessions, the terminals, and the processes in the codespace end. The oracle also stops a codespace after a time without activity. See [Codespace lifecycle](oracle.md#codespace-lifecycle).
+
+`loom-oracle-cli resume-codespace <id>` starts the instance again. The agent starts with its sessions and its clones, and reports `ready` again. The oracle deletes a codespace that stays stopped for longer than its retention.
+
+With the `incus` driver, `loom-host` first asks the container to stop. If the container does not stop in time, it forces the stop. With the `process` driver, `loom-host` stops the agent process.
+
+## SSH connections
+
+When a host has an SSH destination (`loom-oracle-cli set-ssh`), a client can connect to the agent of a codespace through SSH instead of the relay of the oracle:
+
+```sh
+ssh <destination> loom-host stdio --codespace <id>
+```
+
+`loom-host stdio` finds the instance of the codespace and runs `loom-agent stdio --managed` in it. With the `incus` driver, it uses the exec API of Incus with WebSockets. The command needs the `host.yaml` and the join state of the `loom-host` service. Thus, the SSH user must be the user of the `loom-host` service, and `loom-host` must be on the `PATH` of this user.
+
+The desktop app tries SSH first when the host has an SSH destination. It uses `BatchMode=yes`, so SSH must not ask for a password. If SSH fails, the app uses the relay and does not try SSH again for 10 minutes. `loom-oracle-cli connections <id>` shows the connection types of a codespace.
+
 ## Git providers
 
 The oracle asks each connected host which Git providers it reaches. The host sends a request to the API URL of each provider. Any HTTP answer counts as a reach. `loom-oracle-cli hosts` shows the result.
@@ -254,5 +274,7 @@ If the agent does not answer, the close stops. `--force` closes the codespace wi
 The oracle compares the instances that the host reports with its codespaces:
 
 - It deletes an instance that has no open codespace.
-- A codespace whose instance is missing for more than 60 seconds becomes `lost`.
+- A codespace whose instance is missing for more than 60 seconds becomes `lost`. This also applies to a stopped codespace.
+- A ready codespace whose instance stopped outside Loom becomes `stopped`.
+- A stopped codespace whose instance runs again becomes `starting`. It becomes `ready` when its agent reports it.
 - If the host was not connected when you closed a codespace, the oracle deletes the instance after the host connects again.
