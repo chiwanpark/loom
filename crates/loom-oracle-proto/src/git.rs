@@ -102,10 +102,6 @@ pub struct GitCredential {
     pub checked_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installation_id: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -130,8 +126,6 @@ pub struct GitCredentialInput {
     pub repository: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<Secret>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,7 +336,6 @@ mod tests {
             owner: None,
             repository: None,
             token: Some(Secret::new("ghp_secret")),
-            app_id: None,
         };
         assert!(!format!("{input:?}").contains("ghp_secret"));
         assert_eq!(
@@ -374,8 +367,6 @@ mod tests {
             expires_at: None,
             checked_at: None,
             check_error: None,
-            app_id: None,
-            installation_id: None,
             created_at: 0,
             updated_at: 0,
         };

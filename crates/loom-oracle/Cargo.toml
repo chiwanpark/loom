@@ -43,6 +43,5 @@ workspace = true
 
 [dev-dependencies]
 loom-client = { path = "../loom-client" }
-rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 tempfile = "3.27.0"
 wiremock = "0.6.5"

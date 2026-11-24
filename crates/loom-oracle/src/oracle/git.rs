@@ -18,17 +18,13 @@ use loom_oracle_proto::{
 };
 
 use super::{Oracle, bad_request, not_found};
-use crate::store::{
-    CodespaceRow, CredentialCheck, CredentialRow, PresetRow, ProviderRow, now_unix,
-};
+use crate::store::{CodespaceRow, CredentialCheck, CredentialRow, PresetRow, ProviderRow};
 
 pub(super) const REACH_TTL: Duration = Duration::from_secs(600);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PRESET: usize = 256 * 1024;
 const MAX_TOKEN: usize = 1000;
-const MAX_APP_KEY: usize = 16 * 1024;
-const APP_TOKEN_MARGIN: u64 = 300;
 const MAX_REPOSITORIES: usize = 20;
 const SEARCH_LIMIT: u32 = 30;
 const MAX_FOUND: usize = 50;
@@ -38,7 +34,6 @@ const GITHUB_HOST: &str = "github.com";
 const TOKEN_USER: &str = "x-access-token";
 
 pub(super) type ReachCache = HashMap<u64, HashMap<String, (Instant, Option<String>)>>;
-pub(super) type AppTokenCache = HashMap<(u64, Option<String>), (Secret, Option<u64>)>;
 
 fn unavailable(message: impl Into<String>) -> OracleError {
     OracleError::new(ErrorCode::Unavailable, message)
@@ -136,8 +131,6 @@ pub(super) fn git_credential(row: &CredentialRow) -> GitCredential {
         expires_at: row.expires_at,
         checked_at: row.checked_at,
         check_error: row.check_error.clone(),
-        app_id: row.app_id,
-        installation_id: row.installation_id,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
@@ -175,10 +168,6 @@ fn remote(repository: loom_github::RemoteRepository) -> RemoteRepository {
         private: repository.private,
         default_branch: repository.default_branch,
     }
-}
-
-fn prefixed(err: OracleError, prefix: &str) -> OracleError {
-    OracleError::new(err.code, format!("{prefix}: {}", err.message))
 }
 
 fn github_error(err: GitHubError) -> OracleError {
@@ -424,101 +413,9 @@ impl Oracle {
     }
 
     fn token(&self, credential: &CredentialRow) -> Result<Secret, OracleError> {
-        if credential.app_id.is_some() {
-            return Err(bad_request(format!(
-                "the Git credential {} is a GitHub App; it has no token of its own",
-                credential.name
-            )));
-        }
         Ok(Secret::new(
             self.store.credential_token(credential.id)?.as_str(),
         ))
-    }
-
-    fn lock_app_tokens(&self) -> std::sync::MutexGuard<'_, AppTokenCache> {
-        self.app_tokens.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn forget_app_tokens(&self, credential: u64) {
-        self.lock_app_tokens()
-            .retain(|(id, _), _| *id != credential);
-    }
-
-    fn app_github(
-        self: &Arc<Self>,
-        provider: &ProviderRow,
-        credential: &CredentialRow,
-        app_id: u64,
-    ) -> Result<GitHub, OracleError> {
-        let key = self.store.credential_token(credential.id)?;
-        let jwt = loom_github::app_jwt(app_id, key.as_str(), now_unix())
-            .map_err(|err| bad_request(format!("Git credential {}: {err}", credential.name)))?;
-        Ok(self.github(provider, Some(Secret::new(jwt))))
-    }
-
-    async fn installation_of(
-        &self,
-        app: &GitHub,
-        credential: &CredentialRow,
-    ) -> Result<u64, OracleError> {
-        if let Some(id) = credential.installation_id {
-            return Ok(id);
-        }
-        let owner = credential.owner.as_deref().ok_or_else(|| {
-            bad_request(format!(
-                "the GitHub App credential {} needs an owner",
-                credential.name
-            ))
-        })?;
-        app.installation(owner).await.map_err(|err| {
-            prefixed(
-                github_error(err),
-                &format!(
-                    "the GitHub App of {} is not installed for {owner}",
-                    credential.name
-                ),
-            )
-        })
-    }
-
-    pub(super) async fn access_token(
-        self: &Arc<Self>,
-        credential: &CredentialRow,
-        repository: Option<&str>,
-    ) -> Result<(Secret, Option<u64>), OracleError> {
-        let Some(app_id) = credential.app_id else {
-            return Ok((self.token(credential)?, credential.expires_at));
-        };
-        let repository = credential
-            .repository
-            .clone()
-            .or_else(|| repository.map(str::to_lowercase));
-        let key = (credential.id, repository.clone());
-        let now = now_unix();
-        if let Some((token, expires_at)) = self.lock_app_tokens().get(&key)
-            && expires_at.is_none_or(|at| at > now + APP_TOKEN_MARGIN)
-        {
-            return Ok((token.clone(), *expires_at));
-        }
-        let provider = self.provider_row(&credential.provider_name)?;
-        let app = self.app_github(&provider, credential, app_id)?;
-        let installation = self.installation_of(&app, credential).await?;
-        let repositories: Vec<String> = repository.into_iter().collect();
-        let token = app
-            .installation_token(installation, &repositories)
-            .await
-            .map_err(|err| {
-                prefixed(
-                    github_error(err),
-                    &format!("the GitHub App of {} cannot make a token", credential.name),
-                )
-            })?;
-        let secret = Secret::new(token.token);
-        let expires_at = token.expires_at;
-        let mut cache = self.lock_app_tokens();
-        cache.retain(|_, (_, at)| at.is_none_or(|at| at > now));
-        cache.insert(key, (secret.clone(), expires_at));
-        Ok((secret, expires_at))
     }
 
     pub(super) fn git_changed(&self) {
@@ -640,31 +537,7 @@ impl Oracle {
             }
             (None, None) => {}
         }
-        if input.app_id == Some(0) {
-            return Err(bad_request("the ID of a GitHub App is a positive number"));
-        }
-        if input.app_id.is_some() && input.owner.is_none() {
-            return Err(bad_request(
-                "a GitHub App credential needs the owner where the app is installed",
-            ));
-        }
-        if input.token.is_none()
-            && let Some(old) = self.store.credential_by_name(name)?
-            && old.app_id.is_some() != input.app_id.is_some()
-        {
-            return Err(bad_request(
-                "a change between a token and a GitHub App needs a new token or private key",
-            ));
-        }
-        if let (Some(app_id), Some(key)) = (input.app_id, &input.token) {
-            if key.expose().len() > MAX_APP_KEY {
-                return Err(bad_request(format!(
-                    "a private key has up to {MAX_APP_KEY} bytes"
-                )));
-            }
-            loom_github::app_jwt(app_id, key.expose(), now_unix())
-                .map_err(|err| bad_request(err.to_string()))?;
-        } else if let Some(token) = &input.token {
+        if let Some(token) = &input.token {
             let token = token.expose();
             if token.is_empty()
                 || token.len() > MAX_TOKEN
@@ -681,9 +554,7 @@ impl Oracle {
             input.owner.as_deref(),
             input.repository.as_deref(),
             input.token.as_ref().map(Secret::expose),
-            input.app_id,
         )?;
-        self.forget_app_tokens(row.id);
         self.audit(
             by,
             "git_credential_set",
@@ -691,9 +562,7 @@ impl Oracle {
                 "credential {name} for {} ({}){}",
                 provider.name,
                 git_credential(&row).scope(),
-                if input.app_id.is_some() && input.token.is_some() {
-                    " with a new GitHub App key"
-                } else if input.token.is_some() {
+                if input.token.is_some() {
                     " with a new token"
                 } else {
                     ""
@@ -711,49 +580,6 @@ impl Oracle {
         Ok(credential)
     }
 
-    async fn check_app(
-        self: &Arc<Self>,
-        provider: &ProviderRow,
-        row: &CredentialRow,
-        app_id: u64,
-    ) -> CredentialCheck {
-        let checked = async {
-            let app = self.app_github(provider, row, app_id)?;
-            let found = app.app().await.map_err(github_error)?;
-            let unchecked = CredentialRow {
-                installation_id: None,
-                ..row.clone()
-            };
-            let installation = self.installation_of(&app, &unchecked).await?;
-            let checked = CredentialRow {
-                installation_id: Some(installation),
-                ..row.clone()
-            };
-            self.forget_app_tokens(row.id);
-            let (token, _) = self.access_token(&checked, None).await?;
-            let login = format!("{}[bot]", found.slug);
-            let user_id = self
-                .github(provider, Some(token))
-                .user_id(&login)
-                .await
-                .ok();
-            Ok::<_, OracleError>(CredentialCheck {
-                login: Some(login),
-                user_id,
-                expires_at: None,
-                installation_id: Some(installation),
-                error: None,
-            })
-        };
-        checked.await.unwrap_or_else(|err| CredentialCheck {
-            login: row.login.clone(),
-            user_id: row.user_id,
-            expires_at: None,
-            installation_id: row.installation_id,
-            error: Some(err.message),
-        })
-    }
-
     pub async fn check_git_credential(
         self: &Arc<Self>,
         name: &str,
@@ -763,27 +589,20 @@ impl Oracle {
             .credential_by_name(name)?
             .ok_or_else(|| not_found(format!("no Git credential has the name {name}")))?;
         let provider = self.provider_row(&row.provider_name)?;
-        let check = match row.app_id {
-            Some(app_id) => self.check_app(&provider, &row, app_id).await,
-            None => {
-                let github = self.github(&provider, Some(self.token(&row)?));
-                match github.user().await {
-                    Ok(user) => CredentialCheck {
-                        login: Some(user.login),
-                        user_id: Some(user.id),
-                        expires_at: user.expires_at,
-                        installation_id: None,
-                        error: None,
-                    },
-                    Err(err) => CredentialCheck {
-                        login: row.login.clone(),
-                        user_id: row.user_id,
-                        expires_at: row.expires_at,
-                        installation_id: None,
-                        error: Some(err.to_string()),
-                    },
-                }
-            }
+        let github = self.github(&provider, Some(self.token(&row)?));
+        let check = match github.user().await {
+            Ok(user) => CredentialCheck {
+                login: Some(user.login),
+                user_id: Some(user.id),
+                expires_at: user.expires_at,
+                error: None,
+            },
+            Err(err) => CredentialCheck {
+                login: row.login.clone(),
+                user_id: row.user_id,
+                expires_at: row.expires_at,
+                error: Some(err.to_string()),
+            },
         };
         self.store.set_credential_check(row.id, &check)?;
         let row = self
@@ -799,9 +618,6 @@ impl Oracle {
     }
 
     pub fn delete_git_credential(&self, name: &str, by: Option<u64>) -> Result<(), OracleError> {
-        if let Some(row) = self.store.credential_by_name(name)? {
-            self.forget_app_tokens(row.id);
-        }
         if !self.store.delete_credential(name)? {
             return Err(not_found(format!("no Git credential has the name {name}")));
         }
@@ -1015,8 +831,7 @@ impl Oracle {
             };
             let chosen = main_credential(provider, repositories, &credentials);
             let (git_name, git_email) = identity(provider, chosen);
-            let gh_credential = chosen.filter(|c| c.app_id.is_none() && proxy.is_none());
-            let gh = match gh_credential {
+            let gh = match chosen.filter(|_| proxy.is_none()) {
                 Some(credential) => Some(GhLogin {
                     user: credential
                         .login
@@ -1061,11 +876,7 @@ impl Oracle {
             .clone()
     }
 
-    pub async fn git_token(
-        self: &Arc<Self>,
-        peer: u64,
-        url: &str,
-    ) -> Result<GitTokenResult, OracleError> {
+    pub fn git_token(&self, peer: u64, url: &str) -> Result<GitTokenResult, OracleError> {
         let row = self.codespace_of_peer(peer)?;
         if let Some(proxy) = self.git_proxy_of(row.host)? {
             let token = url
@@ -1084,12 +895,12 @@ impl Oracle {
         let Some(url) = normalize_url(url) else {
             return Err(bad_request(format!("{url:?} is not an HTTPS URL")));
         };
-        let token = self.codespace_token(&row, &url).await?;
+        let token = self.codespace_token(&row, &url)?;
         Ok(GitTokenResult { token })
     }
 
-    async fn codespace_token(
-        self: &Arc<Self>,
+    fn codespace_token(
+        &self,
         row: &CodespaceRow,
         url: &str,
     ) -> Result<Option<GitToken>, OracleError> {
@@ -1109,19 +920,13 @@ impl Oracle {
             return Ok(None);
         };
         tracing::debug!(codespace = %row.id, credential = %credential.name, %owner, %repository, "gave a Git token");
-        let (password, expires_at) = self.access_token(credential, Some(&repository)).await?;
-        let username = if credential.app_id.is_some() {
-            TOKEN_USER.to_owned()
-        } else {
-            credential
+        Ok(Some(GitToken {
+            username: credential
                 .login
                 .clone()
-                .unwrap_or_else(|| TOKEN_USER.to_owned())
-        };
-        Ok(Some(GitToken {
-            username,
-            password,
-            expires_at,
+                .unwrap_or_else(|| TOKEN_USER.to_owned()),
+            password: self.token(credential)?,
+            expires_at: credential.expires_at,
         }))
     }
 
@@ -1161,8 +966,7 @@ impl Oracle {
             ));
         }
         let token = self
-            .codespace_token(&row, &url)
-            .await?
+            .codespace_token(&row, &url)?
             .ok_or_else(|| bad_request("the preset has no Git credential for this repository"))?;
         let api = ApiRequest {
             method,
@@ -1222,7 +1026,7 @@ impl Oracle {
             "{}/{owner}/{repository}.git",
             provider.web_url.trim_end_matches('/'),
         );
-        let token = self.codespace_token(&row, &upstream).await?;
+        let token = self.codespace_token(&row, &upstream)?;
         tracing::debug!(codespace = %row.id, %upstream, token = token.is_some(), "gave Git access through the proxy of a host");
         Ok(GitProxyAccess { upstream, token })
     }
@@ -1244,21 +1048,18 @@ impl Oracle {
             .filter(|c| c.provider == provider.id)
             .collect();
         let mut clients = Vec::new();
-        let mut errors = Vec::new();
         for credential in &credentials {
-            match self.access_token(credential, None).await {
-                Ok((token, _)) => clients.push((
-                    Some((credential.name.clone(), credential.app_id.is_some())),
-                    self.github(&provider, Some(token)),
-                )),
-                Err(err) => errors.push(format!("{}: {}", credential.name, err.message)),
-            }
+            clients.push((
+                Some(credential.name.clone()),
+                self.github(&provider, Some(self.token(credential)?)),
+            ));
         }
-        if credentials.is_empty() {
+        if clients.is_empty() {
             clients.push((None, self.github(&provider, None)));
         }
         let lower = query.to_lowercase();
         let mut found: Vec<RemoteRepository> = Vec::new();
+        let mut errors = Vec::new();
         let mut more = false;
         let mut add =
             |page: Page<loom_github::RemoteRepository>, filter: bool, more_flag: &mut bool| {
@@ -1277,16 +1078,9 @@ impl Oracle {
                 }
             };
         for (name, github) in &clients {
-            let label = name
-                .as_ref()
-                .map_or("no credential", |(name, _)| name.as_str());
-            if let Some((_, app)) = name {
-                let page = if *app {
-                    github.installation_repositories(100).await
-                } else {
-                    github.user_repositories(100).await
-                };
-                match page {
+            let label = name.as_deref().unwrap_or("no credential");
+            if name.is_some() {
+                match github.user_repositories(100).await {
                     Ok(page) => add(page, !query.is_empty(), &mut more),
                     Err(err) => errors.push(format!("{label}: {err}")),
                 }
@@ -1303,7 +1097,7 @@ impl Oracle {
                 }
             }
         }
-        if found.is_empty() && !errors.is_empty() && errors.len() >= clients.len().max(1) {
+        if found.is_empty() && !errors.is_empty() && errors.len() >= clients.len() {
             return Err(unavailable(errors.join("; ")));
         }
         more |= found.len() > MAX_FOUND;
@@ -1341,19 +1135,7 @@ impl Oracle {
         });
         let mut tokens = Vec::new();
         for credential in &credentials {
-            if credential.app_id.is_none() {
-                tokens.push(Some(self.token(credential)?));
-                continue;
-            }
-            if credential.owner.as_deref().map(str::to_lowercase) != Some(owner.to_lowercase()) {
-                continue;
-            }
-            match self.access_token(credential, Some(repository)).await {
-                Ok((token, _)) => tokens.push(Some(token)),
-                Err(err) => {
-                    tracing::debug!(credential = %credential.name, error = %err, "cannot get a token of a GitHub App")
-                }
-            }
+            tokens.push(Some(self.token(credential)?));
         }
         tokens.push(None);
         let mut last = None;
@@ -1560,8 +1342,6 @@ mod tests {
             expires_at: None,
             checked_at: None,
             check_error: None,
-            app_id: None,
-            installation_id: None,
             created_at: 0,
             updated_at: 0,
         }
