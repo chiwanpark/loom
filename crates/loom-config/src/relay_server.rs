@@ -124,7 +124,7 @@ impl RelayServerConfig {
     pub fn listen_addr(&self) -> Result<SocketAddr, ConfigError> {
         self.listen
             .parse()
-            .map_err(|_| ConfigError::invalid("relay.yaml", "listen", "expected HOST:PORT"))
+            .map_err(|_| ConfigError::invalid("oracle.yaml", "listen", "expected HOST:PORT"))
     }
 
     pub fn validate(&self, origin: &str) -> Result<(), ConfigError> {

@@ -133,7 +133,7 @@ fn update(args: Vec<String>) -> anyhow::Result<i32> {
                 item.new
             );
         }
-        println!("Restart Loom and its agents (loom-agent stop --all) to use the new version.");
+        println!("Restart Loom to use the new version.");
         Ok(0)
     })
 }

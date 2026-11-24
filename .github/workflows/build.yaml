@@ -41,7 +41,7 @@ jobs:
           binaries: loom-agent loom-oracle loom-host
           archives: loom-agent=loom-agent loom-oracle=loom-oracle loom-host=loom-host
         # The GUI loads Wayland and Vulkan from the system. Its archive also
-        # holds loom-agent, which it starts for the local host.
+        # holds loom-agent, whose config commands check presets.
         - name: loom
           arch: x86-64
           runner: ubuntu-24.04

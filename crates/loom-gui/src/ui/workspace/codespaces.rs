@@ -238,7 +238,7 @@ impl Workspace {
             [] => notify::info(
                 window,
                 cx,
-                "Add an oracle first. Click + under Remotes and paste the pairing link of the oracle.",
+                "Add an oracle first. Click the pair button of the Sessions tab and paste the pairing link of the oracle.",
             ),
             [ix] => self.open_settings(*ix, None, window, cx),
             _ => {
@@ -342,7 +342,7 @@ impl Workspace {
             notify::info(
                 window,
                 cx,
-                "Add an oracle first. Click + under Remotes and paste the pairing link of the oracle.",
+                "Add an oracle first. Click the pair button of the Sessions tab and paste the pairing link of the oracle.",
             );
             return;
         }

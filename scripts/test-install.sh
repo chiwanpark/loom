@@ -210,7 +210,6 @@ if STUB_ARCH=aarch64 run agent; then status=0; else status=$?; fi
 check "installs on arm64" [ $status -eq 0 ]
 check "installs the arm64 build on arm64" [ "$(agent_version)" = "loom-agent 0.3.0-arm64 (stub)" ]
 check "says it downloads the arm64 build" has "Downloading loom-agent 0.3.0 for $arm_target"
-arm_home=$home
 for system in Linux/riscv64 Darwin/arm64; do
     unset home
     if STUB_OS=${system%/*} STUB_ARCH=${system#*/} run agent; then status=0; else status=$?; fi
