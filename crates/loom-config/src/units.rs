@@ -23,6 +23,10 @@ impl ByteSize {
         Self(value * 1024 * 1024)
     }
 
+    pub const fn gib(value: u64) -> Self {
+        Self(value * 1024 * 1024 * 1024)
+    }
+
     pub const fn as_u64(self) -> u64 {
         self.0
     }

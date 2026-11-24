@@ -15,7 +15,7 @@ mod git;
 mod models;
 mod volumes;
 
-pub use codespaces::{CodespaceRow, HostRow, WorkspaceRow};
+pub use codespaces::{ArchiveRow, CodespaceRow, HostRow, WorkspaceRow};
 pub use git::{CredentialCheck, CredentialRow, PresetInput, PresetRow, ProviderRow};
 pub use models::{ModelAccountRow, NewModelAccount, SecretRow, SessionRow};
 pub use volumes::VolumeRow;
@@ -246,6 +246,11 @@ ALTER TABLE codespaces ADD COLUMN active INTEGER;
 ALTER TABLE codespaces ADD COLUMN active_at INTEGER;
 ALTER TABLE codespaces ADD COLUMN metrics TEXT;
 CREATE INDEX codespaces_state ON codespaces (state);
+",
+    "
+ALTER TABLE codespaces ADD COLUMN archive_size INTEGER;
+ALTER TABLE codespaces ADD COLUMN archive_at INTEGER;
+ALTER TABLE codespaces ADD COLUMN archive_error TEXT;
 ",
 ];
 

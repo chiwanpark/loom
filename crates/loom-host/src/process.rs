@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use async_trait::async_trait;
 use loom_client::oracle_proto::{
     Bootstrap, CreateInstance, InstanceReport, InstanceVolume, VolumeKind, VolumeUsage,
-    WORKSPACES_ROOT,
+    WORKSPACES_ROOT, valid_archive_file,
 };
 use loom_config::HostRules;
 use nix::sys::signal::{Signal, kill};
@@ -16,8 +16,8 @@ use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{
-    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, cpus, memory_mib,
-    valid_instance,
+    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, SESSIONS_DIR,
+    cpus, memory_mib, valid_instance,
 };
 use crate::volumes::prepare_mounts;
 
@@ -458,6 +458,40 @@ impl Driver for ProcessDriver {
                 }
             })
             .collect()
+    }
+
+    async fn copy_sessions(
+        &self,
+        oracle: &str,
+        instance: &str,
+        target: &Path,
+        max_size: u64,
+    ) -> anyhow::Result<()> {
+        self.owned(oracle, instance)?;
+        let source = self.dir(instance).join("home").join(SESSIONS_DIR);
+        let entries = match std::fs::read_dir(&source) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err).with_context(|| format!("cannot read {}", source.display()));
+            }
+        };
+        let mut total = 0;
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let metadata = entry.metadata()?;
+            if !valid_archive_file(&name) || !metadata.file_type().is_file() {
+                continue;
+            }
+            total += metadata.len();
+            if total > max_size {
+                bail!("the sessions have more than {max_size} bytes");
+            }
+            std::fs::copy(entry.path(), target.join(&name))
+                .with_context(|| format!("cannot copy {name}"))?;
+        }
+        Ok(())
     }
 
     async fn check(&self, _deep: bool) -> Vec<CheckItem> {

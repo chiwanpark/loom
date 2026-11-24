@@ -57,6 +57,9 @@ These keys are the same as in `relay.yaml`: `listen`, `metrics_listen`, `tls`, `
 | `codespaces.retention` | `30days` | The oracle deletes a codespace after it is stopped for this time. `0s` turns it off. |
 | `codespaces.closed_retention` | `7days` | The oracle removes closed codespaces from its list after this time. `0s` keeps them. |
 | `codespaces.check_interval` | `1m` | The time between two checks of the idle stop and the retention. |
+| `codespaces.archive` | `true` | The oracle keeps the sessions of a codespace when the codespace closes. See [Session archive](#session-archive). |
+| `codespaces.archive_retention` | `90days` | The oracle deletes an archive and its closed codespace after this time. `0s` keeps them. |
+| `codespaces.archive_max_size` | `1GiB` | The maximum size of the session files of one codespace. The oracle does not keep larger sessions. |
 
 A codespace is active when a client is connected to its agent, a turn runs, or a terminal is open. The agent tells the oracle when this changes. A codespace that waits to start its first message is not idle.
 
@@ -160,6 +163,8 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `close-codespace <id> [--push <directory>]… [--discard <directory>]… [--message <message>] [--force] [--no-wait]` | Closes a codespace. The host deletes its instance. First, the close guard asks the agent for the unsaved work of each repository. See [the host document](host.md#git-in-a-codespace). |
 | `stop-codespace <id> [--no-wait]` | Stops a codespace. The host stops its instance and keeps its disk. |
 | `resume-codespace <id> [--no-wait]` | Starts a stopped codespace again and waits until it is ready. |
+| `archive <id> <session>` | Shows an archived session of a closed codespace as text. With `--json`, it writes the events. `sessions --codespace <id>` lists the sessions. |
+| `delete-archive <id>` | Deletes the session archive of a closed codespace. |
 | `connections <id> [--type relay\|ssh]…` | Shows how a client can connect to a codespace. |
 | `repositories <id>` | Shows the state of each repository of a codespace. |
 | `push <id> [--message <message>] [--directory <directory>]…` | Pushes the branch of each repository of a codespace. With `--message`, the agent first commits the uncommitted changes. |
@@ -225,6 +230,19 @@ The agents send their session metrics every 5 minutes and when their activity ch
 ## Audit log
 
 The oracle records each change: pairings, devices, hosts, workspaces, presets, credentials, and codespaces. The entries show the device that made the change. Entries without a device are changes of the oracle itself, such as an idle stop (`codespace_idle_stopped`) or a deletion after the retention (`codespace_expired`). Read the log with `loom-oracle-cli audit` or in **Settings > Audit log** of the desktop app.
+
+## Session archive
+
+When a codespace closes, the oracle keeps a read-only copy of its sessions. This occurs when you close a codespace and when the oracle deletes a codespace after `codespaces.retention`.
+
+1. The oracle stops the instance, so that the session files of the agent are complete.
+2. The host copies the session files from `~/.local/share/loom/sessions` in the instance to `archive/` in its data directory.
+3. The oracle reads the copies in parts of 1 MiB and checks their size and SHA-256 checksum. It keeps them in `archive/<codespace>` in its data directory.
+4. The host deletes the instance and the copies.
+
+If the host is not connected, the archive and the delete wait for the host. If the archive fails for a different cause, for example because the sessions are larger than `codespaces.archive_max_size`, the host deletes the instance and the codespace shows the error.
+
+`codespaces --all` shows the size of each archive and when the oracle deletes it. In the desktop app, open **Archive** below a workspace. Click a closed codespace to read its last session, or select a session in its menu. A lost codespace has no archive, because its instance is not there.
 
 ## Git providers
 

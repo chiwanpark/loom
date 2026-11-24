@@ -62,6 +62,14 @@ pub struct CodespaceRow {
     pub active: Option<bool>,
     pub active_at: Option<u64>,
     pub metrics: Option<CodespaceMetrics>,
+    pub archive: Option<ArchiveRow>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveRow {
+    pub size: u64,
+    pub saved_at: Option<u64>,
+    pub error: Option<String>,
 }
 
 fn to_json<T: Serialize>(value: &T) -> String {
@@ -188,13 +196,17 @@ fn host_row(raw: RawHost) -> StoreResult<HostRow> {
 const CODESPACE_SELECT: &str = "SELECT c.id, c.workspace, w.name, c.host, p.label, c.peer, \
      c.state, c.cpus, c.memory_mib, c.instance, c.branch, c.base_branch, c.client_version, \
      c.agent, c.step, c.error, c.created_at, c.updated_at, c.preset, s.name, c.repositories, \
-     c.first_message, c.stopped_at, c.active, c.active_at, c.metrics \
+     c.first_message, c.stopped_at, c.active, c.active_at, c.metrics, \
+     c.archive_size, c.archive_at, c.archive_error \
      FROM codespaces c JOIN workspaces w ON w.id = c.workspace JOIN peers p ON p.id = c.host \
      LEFT JOIN presets s ON s.id = c.preset";
 
 type RawCodespace = (CodespaceRow, Option<String>, String, Option<String>);
 
 fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
+    let archive_size = row.get::<_, Option<i64>>(26)?.map(to_u64);
+    let saved_at = row.get::<_, Option<i64>>(27)?.map(to_u64);
+    let archive_error: Option<String> = row.get(28)?;
     Ok((
         CodespaceRow {
             id: row.get(0)?,
@@ -223,6 +235,11 @@ fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
             active: row.get::<_, Option<i64>>(23)?.map(|v| v != 0),
             active_at: row.get::<_, Option<i64>>(24)?.map(to_u64),
             metrics: None,
+            archive: (saved_at.is_some() || archive_error.is_some()).then(|| ArchiveRow {
+                size: archive_size.unwrap_or_default(),
+                saved_at,
+                error: archive_error,
+            }),
         },
         row.get(13)?,
         row.get(20)?,
@@ -667,9 +684,11 @@ impl Store {
     }
 
     pub fn save_codespace(&self, row: &CodespaceRow) -> StoreResult<()> {
+        let archive = row.archive.as_ref();
         self.conn().execute(
             "UPDATE codespaces SET peer = ?1, state = ?2, agent = ?3, step = ?4, error = ?5,
-                 updated_at = ?6, stopped_at = ?8, active = ?9, active_at = ?10, metrics = ?11
+                 updated_at = ?6, stopped_at = ?8, active = ?9, active_at = ?10, metrics = ?11,
+                 archive_size = ?12, archive_at = ?13, archive_error = ?14
              WHERE id = ?7",
             params![
                 row.peer.map(to_i64),
@@ -683,17 +702,33 @@ impl Store {
                 row.active.map(i64::from),
                 row.active_at.map(to_i64),
                 row.metrics.as_ref().map(to_json),
+                archive.map(|a| to_i64(a.size)),
+                archive.and_then(|a| a.saved_at).map(to_i64),
+                archive.and_then(|a| a.error.as_deref()),
             ],
         )?;
         Ok(())
     }
 
-    pub fn delete_closed_codespaces(&self, before: u64) -> StoreResult<Vec<String>> {
+    pub fn delete_closed_codespaces(
+        &self,
+        before: Option<u64>,
+        archived_before: Option<u64>,
+    ) -> StoreResult<Vec<String>> {
         let conn = self.conn();
         let ids = conn
-            .prepare("DELETE FROM codespaces WHERE state = ?1 AND updated_at < ?2 RETURNING id")?
+            .prepare(
+                "DELETE FROM codespaces WHERE state = ?1 AND (
+                     (archive_at IS NULL AND ?2 IS NOT NULL AND updated_at < ?2)
+                     OR (archive_at IS NOT NULL AND ?3 IS NOT NULL AND archive_at < ?3)
+                 ) RETURNING id",
+            )?
             .query_map(
-                params![CodespaceState::Closed.as_str(), to_i64(before)],
+                params![
+                    CodespaceState::Closed.as_str(),
+                    before.map(to_i64),
+                    archived_before.map(to_i64)
+                ],
                 |row| row.get(0),
             )?
             .collect::<Result<Vec<String>, _>>()?;
@@ -751,6 +786,7 @@ mod tests {
             active: None,
             active_at: None,
             metrics: None,
+            archive: None,
         }
     }
 
@@ -878,6 +914,58 @@ mod tests {
         assert!(store.codespaces().unwrap().is_empty());
         assert_eq!(store.remove_host(host.id).unwrap().unwrap().id, host.id);
         assert!(store.hosts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn closed_codespaces_with_an_archive_stay_for_the_archive_retention() {
+        let store = store();
+        let (host, _) = store.add_peer(Role::Host, "box", &[1; 32], None).unwrap();
+        let workspace = store.create_workspace("acme", host.id, &[], &[]).unwrap();
+        for (id, archive) in [
+            ("plain", None),
+            (
+                "kept",
+                Some(ArchiveRow {
+                    size: 10,
+                    saved_at: Some(100),
+                    error: None,
+                }),
+            ),
+            (
+                "failed",
+                Some(ArchiveRow {
+                    error: Some("too large".into()),
+                    ..Default::default()
+                }),
+            ),
+        ] {
+            let mut row = codespace(id, &workspace);
+            store.insert_codespace(&row, &[]).unwrap();
+            row.state = CodespaceState::Closed;
+            row.updated_at = 50;
+            row.archive = archive;
+            store.save_codespace(&row).unwrap();
+            assert_eq!(store.codespace(id).unwrap().unwrap(), row);
+        }
+        let mut removed = store.delete_closed_codespaces(Some(60), Some(60)).unwrap();
+        removed.sort();
+        assert_eq!(removed, vec!["failed".to_string(), "plain".to_string()]);
+        assert!(
+            store
+                .delete_closed_codespaces(None, Some(100))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .delete_closed_codespaces(Some(1000), None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.delete_closed_codespaces(None, Some(101)).unwrap(),
+            vec!["kept".to_string()]
+        );
     }
 
     #[test]

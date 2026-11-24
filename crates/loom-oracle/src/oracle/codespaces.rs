@@ -194,6 +194,7 @@ pub(super) fn codespace(row: &CodespaceRow) -> Codespace {
         stopped_at: row.stopped_at,
         stop_at: None,
         delete_at: None,
+        archive: None,
     }
 }
 
@@ -740,6 +741,7 @@ impl Oracle {
             active: None,
             active_at: None,
             metrics: None,
+            archive: None,
         };
         let (_, secret) =
             self.store
@@ -882,11 +884,35 @@ impl Oracle {
     }
 
     async fn delete_instance(self: Arc<Self>, row: CodespaceRow) {
+        let id = row.id.clone();
+        if !self
+            .deleting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone())
+        {
+            return;
+        }
+        self.clone().delete_instance_once(row).await;
+        self.deleting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
+
+    async fn delete_instance_once(self: Arc<Self>, row: CodespaceRow) {
+        let row = match self.store.codespace(&row.id) {
+            Ok(Some(stored)) if stored.host == row.host => stored,
+            _ => row,
+        };
         let call = HostCall::DeleteInstance {
             codespace: row.id.clone(),
             instance: row.instance.clone(),
         };
-        let result = self.call_host(row.host, call, DELETE_TIMEOUT).await;
+        let result = match self.archive_before_delete(&row).await {
+            Ok(()) => self.call_host(row.host, call, DELETE_TIMEOUT).await,
+            Err(err) => Err(err),
+        };
         let id = &row.id;
         let update = match result {
             Ok(_) => self.update_codespace(id, |row| {
@@ -980,6 +1006,7 @@ impl Oracle {
                     active: None,
                     active_at: None,
                     metrics: None,
+                    archive: None,
                 });
                 tokio::spawn(self.clone().delete_instance(row));
             }

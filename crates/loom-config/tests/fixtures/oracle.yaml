@@ -34,6 +34,9 @@ codespaces:
   retention: 30days
   closed_retention: 7days
   check_interval: 1m
+  archive: true
+  archive_retention: 90days
+  archive_max_size: 1GiB
 
 logging:
   level: info

@@ -14,7 +14,7 @@ use loom_client::{
 use loom_config::{Dirs, HostConfig, OracleConfig};
 use loom_host::{AgentCache, Host, JoinOptions, ProcessDriver, join};
 use loom_oracle::Oracle;
-use loom_proto::{LoginMethod, PolicyAction, PushRepositories};
+use loom_proto::{LoginMethod, PolicyAction, PushRepositories, SessionEvent};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -410,6 +410,7 @@ async fn start(root: &Path) -> Env {
             root.join("agents"),
         )),
         http: loom_github::Http::new().unwrap(),
+        archive_dir: host_dir.join("archive"),
     };
     tokio::spawn(host.run(shutdown.clone()));
     for _ in 0..200 {
@@ -1110,7 +1111,27 @@ async fn a_codespace_starts_its_first_turn_with_the_model_account_of_its_preset(
 
     for id in [&created.id, &other.id] {
         device.close_codespace(id).await.unwrap();
-        wait_codespace(device, id, |c| c.state == CodespaceState::Closed).await;
+        let closed = wait_codespace(device, id, |c| c.state == CodespaceState::Closed).await;
+        let archive = closed.archive.expect("a closed codespace has an archive");
+        assert_eq!(archive.error, None);
+        assert!(archive.saved_at.is_some() && archive.size > 0);
     }
+    let events = device
+        .archived_events(&created.id, &sessions[0].id.to_string())
+        .await
+        .unwrap();
+    let messages: Vec<String> = events
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::UserMessage { content } => Some(format!("{content:?}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(messages[0].contains("Hello from work"), "{messages:?}");
+    assert!(messages[1].contains("Again with personal"), "{messages:?}");
+    let summaries = device.sessions(Some(&created.id)).await.unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert!(!env.codespaces.join(&created.instance).exists());
     env.shutdown.cancel();
 }

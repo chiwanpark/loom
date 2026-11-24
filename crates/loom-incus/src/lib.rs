@@ -584,6 +584,107 @@ impl Incus {
         .await
     }
 
+    fn file_uri(&self, instance: &str, path: &str) -> String {
+        self.uri(
+            &format!(
+                "/1.0/instances/{}/files?path={}",
+                encode(instance),
+                encode(path)
+            ),
+            true,
+        )
+    }
+
+    pub async fn list_files(&self, instance: &str, path: &str) -> Result<Option<Vec<String>>> {
+        let uri = self.file_uri(instance, path);
+        let (status, answer) = self
+            .raw(Method::GET, &uri, Bytes::new(), &[], REQUEST_TIMEOUT)
+            .await?;
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let envelope = serde_json::from_slice::<Envelope>(&answer).map_err(|_| {
+            IncusError::Protocol(format!("{path} in {instance} is not a directory"))
+        })?;
+        if !status.is_success() {
+            return Err(IncusError::Api {
+                status: status.as_u16(),
+                message: format!("cannot list {path} in {instance}: {}", envelope.error),
+            });
+        }
+        serde_json::from_value(envelope.metadata)
+            .map(Some)
+            .map_err(|_| IncusError::Protocol(format!("{path} in {instance} is not a directory")))
+    }
+
+    pub async fn pull_file_to<W>(
+        &self,
+        instance: &str,
+        path: &str,
+        out: &mut W,
+        max: u64,
+        timeout: Duration,
+    ) -> Result<u64>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+        let uri = self.file_uri(instance, path);
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(&uri)
+            .header(hyper::header::HOST, self.authority())
+            .header(hyper::header::USER_AGENT, "loom-incus")
+            .body(Full::new(Bytes::new()))
+            .map_err(|err| IncusError::Http(err.to_string()))?;
+        let what = format!("GET {uri}");
+        let pull = async {
+            let http = |err: hyper::Error| IncusError::Http(err.to_string());
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(TokioIo::new(self.connect().await?))
+                    .await
+                    .map_err(http)?;
+            let task = tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let response = sender.send_request(request).await.map_err(http)?;
+            let status = response.status();
+            let mut body = response.into_body();
+            if !status.is_success() {
+                let answer = body.collect().await.map_err(http)?.to_bytes();
+                task.abort();
+                let message = serde_json::from_slice::<Envelope>(&answer)
+                    .map(|envelope| envelope.error)
+                    .unwrap_or_default();
+                return Err(IncusError::Api {
+                    status: status.as_u16(),
+                    message: format!("cannot read {path} in {instance}: {message}"),
+                });
+            }
+            let mut size = 0u64;
+            while let Some(frame) = body.frame().await {
+                let Ok(data) = frame.map_err(http)?.into_data() else {
+                    continue;
+                };
+                size += data.len() as u64;
+                if size > max {
+                    task.abort();
+                    return Err(IncusError::Protocol(format!(
+                        "{path} in {instance} has more than {max} bytes"
+                    )));
+                }
+                out.write_all(&data).await.map_err(|err| {
+                    IncusError::Http(format!("cannot write the copy of {path}: {err}"))
+                })?;
+            }
+            task.abort();
+            Ok(size)
+        };
+        tokio::time::timeout(timeout, pull)
+            .await
+            .map_err(|_| IncusError::Timeout(what))?
+    }
+
     pub async fn exec(&self, instance: &str, exec: &Exec, timeout: Duration) -> Result<ExecOutput> {
         let mut body = json!({
             "command": exec.command,

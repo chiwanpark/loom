@@ -21,6 +21,7 @@ cli = ["dep:anyhow", "dep:clap", "dep:loom-version", "dep:qrcode", "serde/derive
 
 [dependencies]
 anyhow = { version = "1.0.104", optional = true }
+base64 = "0.23.1"
 bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive", "env"], optional = true }
 loom-config = { path = "../loom-config" }

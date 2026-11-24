@@ -2,11 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use loom_client::oracle_proto::{
-    AgentAddress, Codespace, CodespaceConnection, CodespaceMetrics, CodespaceState, ErrorCode,
-    Event, HostCall, HostLimits, HostReport, InstanceReport, OracleError, Repository, Role,
-    ssh_command,
+    AgentAddress, ArchiveFile, Codespace, CodespaceConnection, CodespaceMetrics, CodespaceState,
+    ErrorCode, Event, HostCall, HostLimits, HostReport, InstanceReport, OracleError, Repository,
+    Role, ssh_command,
 };
 use loom_client::{
     ClientError, ClientIdentity, NewCodespace, OracleCalls, OracleClient, OracleEndpoint,
@@ -15,8 +17,8 @@ use loom_client::{
 use loom_config::{Dirs, OracleConfig};
 use loom_crypto::{FileResponder, HostIdentity, PairingUri, Pairings, Zeroizing};
 use loom_oracle::Oracle;
-use loom_proto::InstanceId;
 use loom_proto::relay::AgentId;
+use loom_proto::{InstanceId, SequencedEvent, SessionEvent};
 use loom_transport::{
     AgentLinkOptions, IncomingChannel, LinkState, RelayEndpoint, connect_relay, pair_relay,
     spawn_agent_link,
@@ -781,6 +783,27 @@ async fn hosts_make_codespaces_whose_agents_report_to_the_oracle() {
 
     let closing = laptop.close_codespace(&created.id).await.unwrap();
     assert_eq!(closing.state, CodespaceState::Closing);
+    reply_ok(
+        &host,
+        &mut calls,
+        HostCall::StopInstance {
+            codespace: created.id.clone(),
+            instance: created.instance.clone(),
+        },
+    )
+    .await;
+    let (call_id, call) = next_call(&mut calls).await;
+    assert_eq!(
+        call,
+        HostCall::ArchiveFiles {
+            codespace: created.id.clone(),
+            instance: created.instance.clone(),
+            max_size: Some(1 << 30),
+        }
+    );
+    host.reply(call_id, Ok(serde_json::json!({"files": []})))
+        .await
+        .unwrap();
     let (call_id, call) = next_call(&mut calls).await;
     assert_eq!(
         call,
@@ -793,7 +816,8 @@ async fn hosts_make_codespaces_whose_agents_report_to_the_oracle() {
     host.reply(call_id, Ok(serde_json::json!({})))
         .await
         .unwrap();
-    wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Closed).await;
+    let closed = wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Closed).await;
+    assert_eq!(closed.archive, None);
 
     host.host_instances(vec![InstanceReport {
         codespace: "orphan1".into(),
@@ -1033,6 +1057,42 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
     oracle
         .oracle
         .check_lifecycle(stopped.delete_at.unwrap() + 1);
+    reply_ok(&host, &mut calls, stop.clone()).await;
+    let large = "x".repeat(1_500_000);
+    let store = archive_store(
+        oracle.dir.path(),
+        "s1",
+        &["first", "second", &large, "last"],
+    );
+    assert!(store.len() > 1 << 20);
+    let (call_id, call) = next_call(&mut calls).await;
+    assert!(
+        matches!(&call, HostCall::ArchiveFiles { codespace, .. } if *codespace == created.id),
+        "{call:?}"
+    );
+    let file = ArchiveFile {
+        name: "0a1b.sqlite".into(),
+        size: store.len() as u64,
+        sha256: sha256_hex(&store),
+    };
+    host.reply(call_id, Ok(serde_json::json!({ "files": [file] })))
+        .await
+        .unwrap();
+    let (call_id, call) = next_call(&mut calls).await;
+    assert_eq!(
+        call,
+        HostCall::ArchiveChunk {
+            codespace: created.id.clone(),
+            name: "0a1b.sqlite".into(),
+            offset: 0,
+        }
+    );
+    host.reply(
+        call_id,
+        Ok(serde_json::json!({ "data": STANDARD.encode(&store) })),
+    )
+    .await
+    .unwrap();
     reply_ok(
         &host,
         &mut calls,
@@ -1043,6 +1103,64 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
     )
     .await;
     let closed = wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Closed).await;
+    let archive = closed
+        .archive
+        .clone()
+        .expect("the codespace has an archive");
+    assert_eq!(archive.error, None);
+    assert!(archive.size > 0);
+    let saved_at = archive.saved_at.unwrap();
+    assert_eq!(archive.delete_at, Some(saved_at + 90 * 24 * 3600));
+    let events = laptop.archived_events(&created.id, "s1").await.unwrap();
+    let texts: Vec<String> = events
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::AssistantDelta { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["first", "second", large.as_str(), "last"]);
+    let page = laptop
+        .archive_page(&created.id, "s1", Some(0))
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert_eq!(page.last, Some(2));
+    assert!(page.more);
+    assert_eq!(
+        code(laptop.archived_events(&created.id, "s2").await.unwrap_err()),
+        ErrorCode::NotFound
+    );
+    oracle
+        .oracle
+        .check_lifecycle(closed.updated_at + 8 * 24 * 3600);
+    assert!(
+        laptop
+            .codespaces()
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.id == created.id),
+        "an archived codespace stays after closed_retention"
+    );
+    let archive_dir = oracle
+        .dirs()
+        .data_home
+        .join("loom/oracle/archive")
+        .join(&created.id);
+    assert!(archive_dir.join("0a1b.sqlite").is_file());
+    assert_eq!(
+        code(laptop.delete_archive("nothing").await.unwrap_err()),
+        ErrorCode::NotFound
+    );
+    laptop.delete_archive(&created.id).await.unwrap();
+    assert!(!archive_dir.exists());
+    let without = wait_codespace(&laptop, &created.id, |c| c.archive.is_none()).await;
+    assert_eq!(without.updated_at, closed.updated_at);
+    assert_eq!(
+        code(laptop.archived_events(&created.id, "s1").await.unwrap_err()),
+        ErrorCode::NotFound
+    );
     oracle
         .oracle
         .check_lifecycle(closed.updated_at + 8 * 24 * 3600);
@@ -1074,6 +1192,7 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
         "codespace_resumed",
         "codespace_stopped",
         "codespace_expired",
+        "archive_deleted",
         "host_limits_set",
     ] {
         assert!(actions.contains(&action), "{action} not in {actions:?}");
@@ -1091,4 +1210,41 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
     assert_eq!(older.entries.len(), 2);
     assert!(older.entries[0].id < audit.entries[0].id);
     oracle.shutdown.cancel();
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn archive_store(dir: &std::path::Path, session: &str, texts: &[&str]) -> Vec<u8> {
+    let path = dir.join("session-store.sqlite");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL,
+             updated_at INTEGER NOT NULL, state TEXT NOT NULL);
+         CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+             event BLOB NOT NULL, PRIMARY KEY (session_id, seq));",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO sessions VALUES (?1, 1, 1, '{}')", [session])
+        .unwrap();
+    for (seq, text) in texts.iter().enumerate() {
+        let event = SequencedEvent {
+            seq: seq as u64,
+            event: SessionEvent::AssistantDelta {
+                text: (*text).to_owned(),
+            },
+        };
+        conn.execute(
+            "INSERT INTO events VALUES (?1, ?2, ?3)",
+            rusqlite::params![session, seq as i64, loom_proto::encode(&event).unwrap()],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    std::fs::read(&path).unwrap()
 }
