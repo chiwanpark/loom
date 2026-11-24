@@ -73,7 +73,7 @@ To connect to agents on other machines, see [Remote hosts and relays](doc/remote
 | [Telemetry](doc/telemetry.md) | OpenTelemetry export of metrics and events. |
 | [Sessions](doc/sessions.md) | Session states, queue and steer, rewind, worktrees, notes, and tasks. |
 | [Skills](doc/skills.md) | Instructions for special tasks in the Agent Skills format. |
-| [Desktop client](doc/desktop.md) | `client.yaml`, key bindings, panels, codespaces, terminals, files, and ports. |
+| [Desktop client](doc/desktop.md) | `client.yaml`, key bindings, panels, codespaces, oracle settings, terminals, files, and ports. |
 | [Android app](doc/android.md) | Build, pairing, codespaces, and the functions of the app. |
 | [Oracle](doc/oracle.md) | Loom-Next, in development: the oracle as a relay, its control service, presets, model accounts, secrets, and the test client. |
 | [Hosts and codespaces](doc/host.md) | Loom-Next, in development: `loom-host`, Git workspaces, and persistent volumes. |

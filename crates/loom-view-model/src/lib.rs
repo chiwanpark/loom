@@ -11,4 +11,5 @@ pub mod codespaces;
 pub mod conversation;
 pub mod host_colors;
 pub mod labels;
+pub mod settings;
 pub mod tool_details;
