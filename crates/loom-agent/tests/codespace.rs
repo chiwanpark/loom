@@ -244,11 +244,19 @@ async fn serve_git(root: PathBuf, auth: Option<(&str, &str)>) -> String {
 }
 
 async fn bare_repository(root: &Path, served: &Path, name: &str, file: &str) {
+    bare_repository_with(root, served, name, &[(file, "hello\n")]).await;
+}
+
+async fn bare_repository_with(root: &Path, served: &Path, name: &str, files: &[(&str, &str)]) {
     let origin = root.join(format!("origin-{}", name.replace('/', "-")));
     std::fs::create_dir_all(&origin).unwrap();
     git(&origin, &["init", "--quiet", "-b", "main"]).await;
-    std::fs::write(origin.join(file), "hello\n").unwrap();
-    git(&origin, &["add", file]).await;
+    for (file, content) in files {
+        let path = origin.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+        git(&origin, &["add", file]).await;
+    }
     git(&origin, &["commit", "--quiet", "-m", "first"]).await;
     let target = served.join(format!("{name}.git"));
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -436,7 +444,20 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let public = root.join("public");
-    bare_repository(&root, &public, "app", "README.md").await;
+    bare_repository_with(
+        &root,
+        &public,
+        "app",
+        &[
+            ("README.md", "hello\n"),
+            (
+                ".devcontainer/devcontainer.json",
+                r#"{"image": "base", "containerEnv": {"STAGE": "dev"},
+                    "postCreateCommand": "echo $STAGE > setup-ran"}"#,
+            ),
+        ],
+    )
+    .await;
     let files = serve_git(public, None).await;
     let env = start(&root).await;
     let (device, url, laptop) = (&env.device, &env.url, &env.laptop);
@@ -468,6 +489,10 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
     let head = std::fs::read_to_string(clone.join(".git/HEAD")).unwrap();
     assert_eq!(head.trim(), format!("ref: refs/heads/{}", created.branch));
     assert!(clone.join("README.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(clone.join("setup-ran")).unwrap(),
+        "dev\n"
+    );
 
     let phone = ClientIdentity::generate().unwrap();
     assert!(connect_agent(url, &ready, &phone).await.is_err());
