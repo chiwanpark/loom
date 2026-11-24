@@ -4702,7 +4702,6 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
- "futures-util",
  "loom-agent-core",
  "loom-client",
  "loom-config",
