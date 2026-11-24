@@ -36,6 +36,53 @@ fn has_key(document: &Value, key: &str) -> bool {
     true
 }
 
+fn remove_key(document: &mut Value, key: &str) -> bool {
+    let parts: Vec<&str> = key.split('.').collect();
+    let Some((last, parents)) = parts.split_last() else {
+        return false;
+    };
+    let mut value = &mut *document;
+    for part in parents {
+        match value.get_mut(*part) {
+            Some(next) => value = next,
+            None => return false,
+        }
+    }
+    let removed = value
+        .as_object_mut()
+        .is_some_and(|map| map.remove(*last).is_some());
+    if removed && let Some(parent) = parents.first() {
+        let empty = document
+            .get(*parent)
+            .and_then(Value::as_object)
+            .is_some_and(|map| map.is_empty());
+        if empty && let Some(map) = document.as_object_mut() {
+            map.remove(*parent);
+        }
+    }
+    removed
+}
+
+pub fn strip_managed_sections(text: &str) -> Result<(String, Vec<&'static str>), ConfigError> {
+    let mut document: Value = serde_saphyr::from_str(text).map_err(|err| ConfigError::Parse {
+        origin: "agent.yaml".to_string(),
+        message: err.to_string(),
+    })?;
+    let removed: Vec<&'static str> = MANAGED_SECTIONS
+        .iter()
+        .copied()
+        .filter(|key| remove_key(&mut document, key))
+        .collect();
+    if removed.is_empty() {
+        return Ok((text.to_owned(), removed));
+    }
+    let yaml = serde_saphyr::to_string(&document).map_err(|err| ConfigError::Parse {
+        origin: "agent.yaml".to_string(),
+        message: err.to_string(),
+    })?;
+    Ok((yaml, removed))
+}
+
 pub(crate) fn parse_yaml<T: serde::de::DeserializeOwned + Default>(
     text: &str,
     origin: &str,
@@ -172,6 +219,26 @@ mod tests {
 
     fn parse(text: &str) -> Result<AgentConfig, ConfigError> {
         AgentConfig::parse(text, "agent.yaml", &dirs())
+    }
+
+    #[test]
+    fn managed_sections_leave_an_agent_file_for_a_preset() {
+        let (yaml, removed) = strip_managed_sections(EXAMPLE).unwrap();
+        assert!(removed.contains(&"allowed_roots"), "{removed:?}");
+        AgentConfig::parse_preset(&yaml, "preset", &dirs()).unwrap();
+        let text = "relay:\n  enabled: true\n  url: wss://x\nlifecycle:\n  idle: 1h\nllm:\n  default_model: a/b\n";
+        let (yaml, removed) = strip_managed_sections(text).unwrap();
+        assert_eq!(removed, ["lifecycle", "relay.enabled", "relay.url"]);
+        let document: Value = serde_saphyr::from_str(&yaml).unwrap();
+        assert_eq!(
+            document,
+            serde_json::json!({"llm": {"default_model": "a/b"}})
+        );
+        let plain = "# mine\nllm:\n  default_model: a/b\n";
+        assert_eq!(
+            strip_managed_sections(plain).unwrap(),
+            (plain.to_owned(), vec![])
+        );
     }
 
     #[test]
