@@ -487,8 +487,14 @@ async fn session_settings_and_errors() {
     assert_eq!(err.api().unwrap().code, ErrorCode::BadRequest);
     let err = client.cancel_login("nope").await.unwrap_err();
     assert_eq!(err.api().unwrap().code, ErrorCode::NotFound);
-    let err = client.list_agents().await.unwrap_err();
-    assert_eq!(err.api().unwrap().code, ErrorCode::Unsupported);
+    for command in [
+        loom_proto::Command::ListAgents,
+        loom_proto::Command::ListClients,
+        loom_proto::Command::UpdateAgent { version: None },
+    ] {
+        let err = client.request(command).await.unwrap_err();
+        assert_eq!(err.api().unwrap().code, ErrorCode::Unsupported);
+    }
 }
 
 #[tokio::test]

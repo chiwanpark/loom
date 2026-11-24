@@ -14,10 +14,8 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{Agent, AgentNotice};
 use crate::convert;
 use crate::events::Subscription;
-use crate::host_keys::HostKeys;
 use crate::repositories::Repositories;
 use crate::session::Session;
-use crate::supervisor::Supervisor;
 use crate::terminals::{ConnectionId, Viewer, interactive_shell};
 use crate::tunnels::Tunnels;
 use crate::uploads::Uploads;
@@ -38,13 +36,8 @@ pub struct Connection {
     subscriptions: HashMap<SessionId, JoinHandle<()>>,
     logins: Arc<Mutex<HashMap<String, CancellationToken>>>,
     tasks: Vec<JoinHandle<()>>,
-    supervisor: Option<Arc<dyn Supervisor>>,
-    host_keys: Option<Arc<dyn HostKeys>>,
     repositories: Option<Arc<dyn Repositories>>,
     connection_id: ConnectionId,
-    relayed: bool,
-    /// The key of a client that comes through a relay, which its push token belongs to.
-    client_key: Option<[u8; 32]>,
     /// The label of a client that comes through a relay, to tell people where
     /// its terminals are open.
     client_label: Option<String>,
@@ -71,30 +64,12 @@ impl Connection {
             subscriptions: HashMap::new(),
             logins: Arc::default(),
             tasks: Vec::new(),
-            supervisor: None,
-            host_keys: None,
             repositories: None,
             connection_id,
-            relayed: false,
-            client_key: None,
             client_label: None,
             program: String::new(),
             uploads: Arc::default(),
         }
-    }
-
-    /// Marks a connection that comes through a relay, which may set the
-    /// client's push token.
-    pub fn relayed(mut self, relayed: bool) -> Self {
-        self.relayed = relayed;
-        self
-    }
-
-    /// The static key of a client that comes through a relay, which
-    /// [`Command::SetPushToken`] sets the token of.
-    pub fn with_client_key(mut self, key: Option<[u8; 32]>) -> Self {
-        self.client_key = key;
-        self
     }
 
     /// The label a client that comes through a relay was paired with, which
@@ -104,18 +79,8 @@ impl Connection {
         self
     }
 
-    pub fn with_host_keys(mut self, host_keys: Option<Arc<dyn HostKeys>>) -> Self {
-        self.host_keys = host_keys;
-        self
-    }
-
     pub fn with_repositories(mut self, repositories: Option<Arc<dyn Repositories>>) -> Self {
         self.repositories = repositories;
-        self
-    }
-
-    pub fn with_supervisor(mut self, supervisor: Option<Arc<dyn Supervisor>>) -> Self {
-        self.supervisor = supervisor;
         self
     }
 
@@ -245,14 +210,6 @@ impl Connection {
 
     async fn request(&mut self, id: RequestId, command: Command) {
         match command {
-            Command::ListAgents | Command::SpawnAgent { .. } | Command::StopAgent { .. } => {
-                let supervisor = self.supervisor.clone();
-                let out = self.out.clone();
-                self.tasks.push(tokio::spawn(async move {
-                    let result = supervise(supervisor.as_deref(), command).await;
-                    let _ = out.send(ServerMessage::Response { id, result }).await;
-                }));
-            }
             Command::ReloadConfig => {
                 let agent = self.agent.clone();
                 let out = self.out.clone();
@@ -265,17 +222,6 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
-            Command::GetHostKey
-            | Command::AuthorizeClient { .. }
-            | Command::ListClients
-            | Command::RevokeClient { .. } => {
-                let host_keys = self.host_keys.clone();
-                let out = self.out.clone();
-                self.tasks.push(tokio::spawn(async move {
-                    let result = manage_keys(host_keys.as_deref(), command).await;
-                    let _ = out.send(ServerMessage::Response { id, result }).await;
-                }));
-            }
             Command::ListRepositories
             | Command::PushRepositories(_)
             | Command::OpenPullRequests { .. } => {
@@ -283,27 +229,6 @@ impl Connection {
                 let out = self.out.clone();
                 self.tasks.push(tokio::spawn(async move {
                     let result = manage_repositories(repositories.as_deref(), command).await;
-                    let _ = out.send(ServerMessage::Response { id, result }).await;
-                }));
-            }
-            Command::SetPushToken { token } => {
-                let host_keys = self.host_keys.clone();
-                let client_key = self.client_key;
-                let out = self.out.clone();
-                self.tasks.push(tokio::spawn(async move {
-                    let result = match (host_keys, client_key) {
-                        (_, None) => Err(ApiError::new(
-                            ErrorCode::Unsupported,
-                            "notifications go through a relay, and this connection does not",
-                        )),
-                        (None, Some(_)) => Err(ApiError::new(
-                            ErrorCode::Unsupported,
-                            "this agent does not send notifications",
-                        )),
-                        (Some(keys), Some(key)) => {
-                            keys.set_push_token(key, token).await.map(|()| Payload::Ok)
-                        }
-                    };
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
@@ -428,29 +353,6 @@ impl Connection {
                         Err(err) => Err(convert::api_error(&err)),
                     };
                     let _ = out.send(ServerMessage::Response { id, result }).await;
-                }));
-            }
-            Command::UpdateAgent { version } => {
-                let supervisor = self.supervisor.clone();
-                let out = self.out.clone();
-                self.tasks.push(tokio::spawn(async move {
-                    let Some(supervisor) = supervisor else {
-                        let result = Err(ApiError::new(
-                            ErrorCode::Unsupported,
-                            "this agent cannot update itself",
-                        ));
-                        let _ = out.send(ServerMessage::Response { id, result }).await;
-                        return;
-                    };
-                    let result = supervisor.update(version).await;
-                    let update = result.as_ref().ok().cloned();
-                    let result = result.map(Payload::AgentUpdated);
-                    let _ = out.send(ServerMessage::Response { id, result }).await;
-                    // The restart closes this connection, so it must not
-                    // be one of its tasks.
-                    if let Some(update) = update {
-                        tokio::spawn(async move { supervisor.restart(&update).await });
-                    }
                 }));
             }
             Command::ListModels { .. }
@@ -775,6 +677,27 @@ impl Connection {
                 .set_archived(&id, archived)
                 .map(Payload::Session)
                 .map_err(|e| convert::api_error(&e)),
+            Command::ListAgents | Command::SpawnAgent { .. } | Command::StopAgent { .. } => {
+                Err(ApiError::new(
+                    ErrorCode::Unsupported,
+                    "this agent cannot manage other agents",
+                ))
+            }
+            Command::GetHostKey
+            | Command::AuthorizeClient { .. }
+            | Command::ListClients
+            | Command::RevokeClient { .. } => Err(ApiError::new(
+                ErrorCode::Unsupported,
+                "the oracle manages the clients of this agent",
+            )),
+            Command::SetPushToken { .. } => Err(ApiError::new(
+                ErrorCode::Unsupported,
+                "the oracle sets the push tokens of this agent",
+            )),
+            Command::UpdateAgent { .. } => Err(ApiError::new(
+                ErrorCode::Unsupported,
+                "this agent cannot update itself",
+            )),
             Command::ListModels { .. }
             | Command::GetUsageLimits { .. }
             | Command::StartLogin { .. }
@@ -783,9 +706,6 @@ impl Connection {
             | Command::Logout { .. }
             | Command::Subscribe { .. }
             | Command::Unsubscribe { .. }
-            | Command::ListAgents
-            | Command::SpawnAgent { .. }
-            | Command::StopAgent { .. }
             | Command::ReloadConfig
             | Command::OpenTerminal { .. }
             | Command::TerminalInput { .. }
@@ -799,11 +719,6 @@ impl Connection {
             | Command::TunnelAck { .. }
             | Command::TunnelEnd { .. }
             | Command::CloseTunnel { .. }
-            | Command::GetHostKey
-            | Command::AuthorizeClient { .. }
-            | Command::ListClients
-            | Command::RevokeClient { .. }
-            | Command::SetPushToken { .. }
             | Command::ListRepositories
             | Command::PushRepositories(_)
             | Command::OpenPullRequests { .. }
@@ -817,8 +732,7 @@ impl Connection {
             | Command::UploadChunk { .. }
             | Command::FinishUpload { .. }
             | Command::CancelUpload { .. }
-            | Command::GetSystemPrompt { .. }
-            | Command::UpdateAgent { .. } => Err(ApiError::new(
+            | Command::GetSystemPrompt { .. } => Err(ApiError::new(
                 ErrorCode::Internal,
                 "command routed to the wrong handler",
             )),
@@ -867,48 +781,6 @@ async fn manage_repositories(repositories: Option<&dyn Repositories>, command: C
             .open_pull_requests(title, body, draft)
             .await
             .map(Payload::PullRequests),
-        _ => Err(ApiError::new(
-            ErrorCode::Internal,
-            "command routed to the wrong handler",
-        )),
-    }
-}
-
-async fn manage_keys(host_keys: Option<&dyn HostKeys>, command: Command) -> Reply {
-    let Some(host_keys) = host_keys else {
-        return Err(ApiError::new(
-            ErrorCode::Unsupported,
-            "this agent does not manage relay clients",
-        ));
-    };
-    match command {
-        Command::GetHostKey => host_keys.host_key().await.map(Payload::HostKey),
-        Command::AuthorizeClient { pubkey, label } => host_keys
-            .authorize(pubkey, label)
-            .await
-            .map(Payload::HostKey),
-        Command::ListClients => host_keys.list().await.map(Payload::Clients),
-        Command::RevokeClient { label } => host_keys.revoke(label).await.map(|()| Payload::Ok),
-        _ => Err(ApiError::new(
-            ErrorCode::Internal,
-            "command routed to the wrong handler",
-        )),
-    }
-}
-
-async fn supervise(supervisor: Option<&dyn Supervisor>, command: Command) -> Reply {
-    let Some(supervisor) = supervisor else {
-        return Err(ApiError::new(
-            ErrorCode::Unsupported,
-            "this agent cannot manage other agents",
-        ));
-    };
-    match command {
-        Command::ListAgents => supervisor.list().await.map(Payload::Agents),
-        Command::SpawnAgent { workspace } => {
-            supervisor.spawn(workspace).await.map(Payload::AgentInfo)
-        }
-        Command::StopAgent { instance } => supervisor.stop(&instance).await.map(|()| Payload::Ok),
         _ => Err(ApiError::new(
             ErrorCode::Internal,
             "command routed to the wrong handler",

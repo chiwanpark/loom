@@ -587,41 +587,6 @@ impl Client {
         .await
     }
 
-    /// Sets where the host's agents send this client's notifications; none
-    /// stops them. Only through a relay.
-    pub async fn set_push_token(&self, token: Option<&str>) -> Result<()> {
-        self.ok(Command::SetPushToken {
-            token: token.map(str::to_owned),
-        })
-        .await
-    }
-
-    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>> {
-        match self.request(Command::ListAgents).await? {
-            Payload::Agents(list) => Ok(list),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    pub async fn spawn_agent(&self, workspace: impl Into<std::path::PathBuf>) -> Result<AgentInfo> {
-        match self
-            .request(Command::SpawnAgent {
-                workspace: workspace.into(),
-            })
-            .await?
-        {
-            Payload::AgentInfo(info) => Ok(info),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    pub async fn stop_agent(&self, instance: &loom_proto::InstanceId) -> Result<()> {
-        self.ok(Command::StopAgent {
-            instance: instance.clone(),
-        })
-        .await
-    }
-
     pub async fn metrics(&self) -> Result<loom_proto::AgentMetrics> {
         match self.request(Command::GetMetrics).await? {
             Payload::Metrics(metrics) => Ok(metrics),
@@ -705,44 +670,6 @@ impl Client {
             Payload::FileDiff(diff) => Ok(diff),
             other => Err(unexpected(other)),
         }
-    }
-
-    pub async fn host_key(&self) -> Result<loom_proto::HostKeyInfo> {
-        match self.request(Command::GetHostKey).await? {
-            Payload::HostKey(info) => Ok(info),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    pub async fn authorize_client(
-        &self,
-        pubkey: [u8; 32],
-        label: impl Into<String>,
-    ) -> Result<loom_proto::HostKeyInfo> {
-        match self
-            .request(Command::AuthorizeClient {
-                pubkey,
-                label: label.into(),
-            })
-            .await?
-        {
-            Payload::HostKey(info) => Ok(info),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    pub async fn list_clients(&self) -> Result<Vec<loom_proto::AuthorizedClient>> {
-        match self.request(Command::ListClients).await? {
-            Payload::Clients(list) => Ok(list),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    pub async fn revoke_client(&self, label: impl Into<String>) -> Result<()> {
-        self.ok(Command::RevokeClient {
-            label: label.into(),
-        })
-        .await
     }
 
     /// Opens a terminal attached to this connection. `owner` is the client's
@@ -916,17 +843,6 @@ impl Client {
         };
         match self.request(command).await? {
             Payload::SystemPrompt(prompt) => Ok(prompt),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    /// Has the agent install a release of `loom-agent`, `version` or the
-    /// latest, in place of its binary. Every agent of the host that runs
-    /// that binary then restarts at once, this one too, which closes this
-    /// connection.
-    pub async fn update_agent(&self, version: Option<String>) -> Result<loom_proto::AgentUpdate> {
-        match self.request(Command::UpdateAgent { version }).await? {
-            Payload::AgentUpdated(update) => Ok(update),
             other => Err(unexpected(other)),
         }
     }

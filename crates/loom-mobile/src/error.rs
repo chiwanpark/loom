@@ -1,6 +1,6 @@
 use loom_client::proto::relay::RelayErrorCode;
 use loom_client::proto::{ErrorCode, PROTOCOL_VERSION};
-use loom_client::{ClientError, RelayError, agent_protocol, can_update_agent};
+use loom_client::{ClientError, RelayError, agent_protocol};
 
 /// Why a call into the core failed. The message is for the user.
 ///
@@ -62,13 +62,9 @@ fn version_mismatch(message: &str) -> String {
             "The agent speaks protocol {agent}, newer than this app's {PROTOCOL_VERSION}: \
              update the app."
         ),
-        Some(agent) if agent < PROTOCOL_VERSION && can_update_agent(agent) => format!(
-            "The agent speaks protocol {agent}, older than this app's {PROTOCOL_VERSION}: \
-             use Update agents… in the menu of the host."
-        ),
         Some(agent) if agent < PROTOCOL_VERSION => format!(
             "The agent speaks protocol {agent}, older than this app's {PROTOCOL_VERSION}: \
-             update loom-agent on the host and restart the agent."
+             start a new codespace with a newer loom-agent."
         ),
         _ => format!("{message}; update the app or the agent so that both speak the same version"),
     }
@@ -106,7 +102,7 @@ pub type Result<T, E = LoomError> = std::result::Result<T, E>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_client::proto::{ApiError, UPDATE_PROTOCOL_MIN};
+    use loom_client::proto::ApiError;
 
     #[test]
     fn a_version_mismatch_says_what_to_update() {
@@ -120,11 +116,7 @@ mod tests {
         assert!(message.contains("protocol 999, newer"), "{message}");
         assert!(message.ends_with("update the app."), "{message}");
         let older = format!("client speaks protocol {PROTOCOL_VERSION}, agent speaks 1");
-        assert!(version_mismatch(&older).contains("restart the agent"));
-        let updatable = format!(
-            "client speaks protocol {PROTOCOL_VERSION}, agent speaks {UPDATE_PROTOCOL_MIN}"
-        );
-        assert!(version_mismatch(&updatable).contains("Update agents…"));
+        assert!(version_mismatch(&older).contains("start a new codespace"));
         assert!(version_mismatch("something else").contains("update the app or the agent"));
 
         let busy = LoomError::from(ClientError::Api(ApiError::new(ErrorCode::Busy, "busy")));

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use loom_config::Dirs;
-use loom_crypto::{CLIENT_IDENTITY_FILE, ClientIdentity, PairingUri, decode_key, encode_key};
+use loom_crypto::{CLIENT_IDENTITY_FILE, ClientIdentity, decode_key, encode_key};
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
 use loom_transport::{AccessToken, FrameStream, RelayClient, RelayEndpoint};
@@ -83,27 +83,4 @@ impl RelayHost {
                 .await?,
         )
     }
-}
-
-pub async fn pair_with_uri(
-    uri: &str,
-    identity: &ClientIdentity,
-    label: &str,
-    access: Option<AccessToken>,
-) -> Result<(RelayHost, InstanceId)> {
-    let uri: PairingUri = uri.parse()?;
-    let endpoint = RelayEndpoint {
-        url: uri.relay_url.clone(),
-        access: access.clone(),
-    };
-    loom_transport::pair_relay(&endpoint, &uri, identity, label).await?;
-    Ok((
-        RelayHost {
-            url: uri.relay_url.clone(),
-            host: uri.host,
-            host_key: uri.host_static,
-            access,
-        },
-        uri.instance.clone(),
-    ))
 }
