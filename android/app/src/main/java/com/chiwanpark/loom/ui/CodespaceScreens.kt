@@ -64,12 +64,21 @@ import com.chiwanpark.loom.core.OracleModels
 import com.chiwanpark.loom.core.OracleWorkspace
 import com.chiwanpark.loom.core.RepositoryState
 import com.chiwanpark.loom.core.closePlan
+import com.chiwanpark.loom.core.inTime
 import com.chiwanpark.loom.userMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 private fun starting(status: CodespaceStatus) =
     status == CodespaceStatus.PROVISIONING || status == CodespaceStatus.STARTING
+
+private fun stopped(codespace: Codespace) = codespace.status == CodespaceStatus.STOPPED
+
+private fun resume(app: LoomApplication, oracle: OracleLink, codespace: Codespace, scope: CoroutineScope, snackbar: SnackbarHostState) =
+    scope.attempt(snackbar) {
+        oracle.connection().resumeCodespace(codespace.id)
+        app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id))
+    }
 
 private suspend fun codespaceConnection(app: LoomApplication, loom: Loom, oracle: OracleLink, codespace: Codespace): AgentConnection {
     val instance = codespace.instance?.takeIf { codespace.status == CodespaceStatus.READY }
@@ -216,15 +225,18 @@ fun LazyListScope.workspaceItems(
                     CodespaceRow(
                         codespace,
                         onOpen = {
-                            if (codespace.status == CodespaceStatus.READY) {
-                                openCodespace(app, loom, oracle, codespace, scope, snackbar)
-                            } else {
-                                app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id))
+                            when {
+                                codespace.status == CodespaceStatus.READY && codespace.step == null ->
+                                    openCodespace(app, loom, oracle, codespace, scope, snackbar)
+                                stopped(codespace) -> resume(app, oracle, codespace, scope, snackbar)
+                                else -> app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id))
                             }
                         },
                         onNewSession = { openCodespace(app, loom, oracle, codespace, scope, snackbar, fresh = true) },
                         onProgress = { app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id)) },
                         onPullRequest = { onPullRequest(oracle, codespace) },
+                        onStop = { scope.attempt(snackbar) { oracle.connection().stopCodespace(codespace.id) } },
+                        onResume = { resume(app, oracle, codespace, scope, snackbar) },
                         onClose = { onClose(oracle, codespace) },
                     )
                 }
@@ -257,17 +269,22 @@ private fun CodespaceRow(
     onNewSession: () -> Unit,
     onProgress: () -> Unit,
     onPullRequest: () -> Unit,
+    onStop: () -> Unit,
+    onResume: () -> Unit,
     onClose: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    var confirmStop by remember { mutableStateOf(false) }
     val ready = codespace.status == CodespaceStatus.READY
     CompactListItem(
         modifier = Modifier.padding(start = 32.dp).clickable(onClick = onOpen),
         leadingContent = {
             when {
-                starting(codespace.status) -> SpinningIcon(codespace.state, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
+                starting(codespace.status) || codespace.step != null ->
+                    SpinningIcon(codespace.state, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
                 codespace.status == CodespaceStatus.FAILED ->
                     LoomIcon(LoomIcons.CircleX, codespace.state, size = 20.dp, tint = MaterialTheme.colorScheme.error)
+                stopped(codespace) -> LoomIcon(LoomIcons.Stop, codespace.state, size = 20.dp, tint = LoomColors.warning)
                 ready -> LoomIcon(LoomIcons.Container, codespace.state, size = 20.dp, tint = LoomColors.success)
                 else -> LoomIcon(LoomIcons.Container, codespace.state, size = 20.dp, tint = MaterialTheme.colorScheme.outline)
             }
@@ -275,8 +292,15 @@ private fun CodespaceRow(
         headlineContent = { Text(codespace.branch, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             val sessions = codespace.sessions.toInt()
+            val now = System.currentTimeMillis() / 1000
+            val deletion = codespace.deleteAt?.let { " · deleted ${inTime(now.toULong(), it)}" }.orEmpty()
+            val text = if (stopped(codespace)) {
+                "${codespace.preset ?: "no preset"} · ${codespace.state}$deletion"
+            } else {
+                "${codespace.preset ?: "no preset"} · ${codespace.state} · $sessions session${if (sessions == 1) "" else "s"}"
+            }
             Text(
-                "${codespace.preset ?: "no preset"} · ${codespace.state} · $sessions session${if (sessions == 1) "" else "s"}",
+                text,
                 color = if (codespace.status == CodespaceStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -287,16 +311,30 @@ private fun CodespaceRow(
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
-                    if (ready) {
+                    if (ready && codespace.step == null) {
                         MenuEntry("New session", LoomIcons.Plus, close, onNewSession)
                         MenuEntry("Open pull request", LoomIcons.GitPullRequest, close, onPullRequest)
                     }
-                    if (!ready) MenuEntry("Start progress", LoomIcons.ScrollText, close, onProgress)
+                    if (!ready && !stopped(codespace)) MenuEntry("Start progress", LoomIcons.ScrollText, close, onProgress)
+                    if (codespace.stoppable) MenuEntry("Stop codespace", LoomIcons.Stop, close) { confirmStop = true }
+                    if (stopped(codespace)) MenuEntry("Resume codespace", LoomIcons.Refresh, close, onResume)
                     MenuEntry("Close codespace", LoomIcons.Trash, close, onClose)
                 }
             }
         },
     )
+    if (confirmStop) {
+        ConfirmDialog(
+            title = "Stop codespace?",
+            text = "Its sessions and terminals end. The files stay, and you can resume the codespace later.",
+            confirm = "Stop",
+            onConfirm = {
+                confirmStop = false
+                onStop()
+            },
+            onDismiss = { confirmStop = false },
+        )
+    }
 }
 
 @Composable
@@ -757,6 +795,7 @@ fun CodespaceProgressScreen(app: LoomApplication, loom: Loom, oracle: OracleLink
             val color = when (codespace.status) {
                 CodespaceStatus.READY -> LoomColors.success
                 CodespaceStatus.FAILED -> MaterialTheme.colorScheme.error
+                CodespaceStatus.STOPPED -> LoomColors.warning
                 else -> MaterialTheme.colorScheme.primary
             }
             if (starting(codespace.status)) LinearProgressIndicator(Modifier.fillMaxWidth())
