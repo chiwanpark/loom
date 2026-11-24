@@ -10,7 +10,8 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::auth::{
-    AccountInfo, AccountStatus, LoginMethod, LoginMethodInfo, LoginPrompt, ProviderStatus,
+    AccountInfo, AccountStatus, LentCredential, LoginMethod, LoginMethodInfo, LoginPrompt,
+    ProviderStatus,
 };
 use crate::error::{LlmError, Result};
 use crate::kind::{PendingLogin, ProviderKind, Shared, StartedLogin, parse_settings};
@@ -137,11 +138,11 @@ impl ProviderKind for Kind {
             api_key_set: false,
             accounts: credential
                 .into_iter()
-                .map(|_| AccountStatus {
+                .map(|c| AccountStatus {
                     id: "default".into(),
                     label: None,
                     active: true,
-                    signed_in: true,
+                    signed_in: !c.token.is_empty(),
                 })
                 .collect(),
         })
@@ -152,5 +153,22 @@ impl ProviderKind for Kind {
             .store
             .update_section::<auth::Credential, _, _>(ID.as_str(), |section| *section = None)
             .await
+    }
+
+    async fn lend(&self, shared: &Shared, margin_secs: u64) -> Result<Option<LentCredential>> {
+        if shared
+            .store
+            .load_section::<auth::Credential>(ID.as_str())
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let mut credential = auth::fresh_credential(shared, margin_secs).await?;
+        credential.github_token = String::new();
+        Ok(Some(LentCredential::new(
+            &credential,
+            Some(credential.expires_at),
+        )?))
     }
 }

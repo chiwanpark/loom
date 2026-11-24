@@ -6,7 +6,7 @@ use loom_oracle_proto::{
 };
 
 pub const SIGN_IN_PROVIDERS: &[&str] = &["anthropic", "openai", "openai-codex"];
-pub const DEVICE_CODE_PROVIDERS: &[&str] = &["openai-codex"];
+pub const DEVICE_CODE_PROVIDERS: &[&str] = &["github-copilot", "openai-codex"];
 pub const EXPIRY_WARNING_SECS: u64 = 14 * 24 * 3600;
 
 fn days(n: u64) -> String {

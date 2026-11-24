@@ -174,3 +174,58 @@ async fn an_agent_uses_lent_credentials_and_cannot_sign_in() {
     );
     assert!(status.signed_in());
 }
+
+#[tokio::test]
+async fn copilot_and_opencode_go_lend_without_long_lived_tokens() {
+    let h = Harness::new().await;
+    let copilot = common::COPILOT;
+    let auth = h.auth.clone().with_auth_base_url(copilot, h.server.uri());
+    let old_exp = now() + 600;
+    let new_exp = now() + 3600;
+    h.set_section(
+        copilot,
+        json!({
+            "github_token": "ghu_secret",
+            "token": "tid=old;proxy-ep=proxy.individual.githubcopilot.com",
+            "expires_at": old_exp,
+        }),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .and(header("authorization", "Bearer ghu_secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "tid=new;proxy-ep=proxy.individual.githubcopilot.com",
+            "expires_at": new_exp,
+        })))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+
+    let lent = auth.lend(&id(copilot), 300).await.unwrap().unwrap();
+    assert_eq!(
+        lent.section["token"],
+        "tid=old;proxy-ep=proxy.individual.githubcopilot.com"
+    );
+    assert_eq!(lent.section["github_token"], "");
+    assert_eq!(lent.expires_at, Some(old_exp));
+
+    let lent = auth.lend(&id(copilot), 900).await.unwrap().unwrap();
+    assert_eq!(
+        lent.section["token"],
+        "tid=new;proxy-ep=proxy.individual.githubcopilot.com"
+    );
+    assert_eq!(lent.section["github_token"], "");
+    assert_eq!(lent.expires_at, Some(new_exp));
+    assert_eq!(h.section(copilot).await["github_token"], "ghu_secret");
+
+    assert!(auth.lend(&id("opencode-go"), 900).await.unwrap().is_none());
+    auth.set_api_key(&id("opencode-go"), Some("oc-secret".into()))
+        .await
+        .unwrap();
+    let lent = auth.lend(&id("opencode-go"), 900).await.unwrap().unwrap();
+    assert_eq!(lent.section["api_key"], "oc-secret");
+    assert_eq!(lent.expires_at, None);
+    auth.logout(&id("opencode-go")).await.unwrap();
+    assert!(auth.lend(&id("opencode-go"), 900).await.unwrap().is_none());
+}

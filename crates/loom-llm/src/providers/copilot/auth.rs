@@ -29,14 +29,14 @@ pub(super) fn headers(builder: RequestBuilder) -> RequestBuilder {
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Credential {
-    github_token: String,
+    pub(super) github_token: String,
     pub token: String,
-    expires_at: u64,
+    pub(super) expires_at: u64,
 }
 
 impl Credential {
-    fn is_fresh(&self) -> bool {
-        !self.token.is_empty() && self.expires_at > now_unix().saturating_add(REFRESH_MARGIN)
+    fn is_fresh(&self, margin_secs: u64) -> bool {
+        !self.token.is_empty() && self.expires_at > now_unix().saturating_add(margin_secs)
     }
 
     pub fn api_base(&self) -> &'static str {
@@ -251,13 +251,13 @@ async fn exchange(shared: &Shared, github_token: String) -> Result<Credential> {
     })
 }
 
-pub(super) async fn credential(shared: &Shared) -> Result<Credential> {
+pub(super) async fn fresh_credential(shared: &Shared, margin_secs: u64) -> Result<Credential> {
     let credential: Credential = shared
         .store
         .load_section(ID.as_str())
         .await?
         .ok_or_else(not_signed_in)?;
-    if credential.is_fresh() {
+    if credential.is_fresh(margin_secs) {
         return Ok(credential);
     }
     let guard = shared.store.lock().await?;
@@ -265,12 +265,22 @@ pub(super) async fn credential(shared: &Shared) -> Result<Credential> {
         .load_section(ID.as_str())
         .await?
         .ok_or_else(not_signed_in)?;
-    if credential.is_fresh() {
+    if credential.is_fresh(margin_secs) {
         return Ok(credential);
+    }
+    if credential.github_token.is_empty() {
+        return Err(LlmError::NotAuthenticated {
+            provider: ID.to_string(),
+            message: "missing GitHub token; sign in again".into(),
+        });
     }
     let refreshed = exchange(shared, credential.github_token).await?;
     guard.save_section(ID.as_str(), Some(&refreshed)).await?;
     Ok(refreshed)
+}
+
+pub(super) async fn credential(shared: &Shared) -> Result<Credential> {
+    fresh_credential(shared, REFRESH_MARGIN).await
 }
 
 #[cfg(test)]

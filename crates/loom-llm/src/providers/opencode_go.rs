@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use super::{anthropic, compatible::chat};
-use crate::auth::{LoginMethod, LoginMethodInfo, ProviderStatus};
+use crate::auth::{LentCredential, LoginMethod, LoginMethodInfo, ProviderStatus};
 use crate::error::{LlmError, Result};
 use crate::kind::{ProviderKind, Shared, StartedLogin, check_http_url, parse_settings};
 use crate::provider::{ChunkStream, LlmProvider, ProviderId};
@@ -122,6 +122,19 @@ impl ProviderKind for Kind {
                 creds.get_or_insert_default().api_key = key;
             })
             .await
+    }
+
+    async fn lend(&self, shared: &Shared, _margin_secs: u64) -> Result<Option<LentCredential>> {
+        let Some(key) = shared
+            .store
+            .load_section::<Credentials>(ID.as_str())
+            .await?
+            .and_then(|c| c.api_key)
+        else {
+            return Ok(None);
+        };
+        let lent = Credentials { api_key: Some(key) };
+        Ok(Some(LentCredential::new(&lent, None)?))
     }
 }
 
