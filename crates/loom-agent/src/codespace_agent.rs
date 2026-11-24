@@ -9,7 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use loom_agent_core::{Agent, AgentNotice};
 use loom_client::OracleClient;
-use loom_client::oracle_proto::{PresetBundle, Secret, SessionSummary};
+use loom_client::oracle_proto::{CodespaceMetrics, PresetBundle, Secret, SessionSummary};
 use loom_llm::{CredentialLock, CredentialSource, Credentials, LlmError};
 use loom_proto::{ContentPart, SessionInfo, SessionState};
 use tokio::sync::{Notify, broadcast, watch};
@@ -19,6 +19,8 @@ const RECENT_FETCH: Duration = Duration::from_secs(10);
 const RETRY: Duration = Duration::from_secs(30);
 const NO_EXPIRY_WAIT: Duration = Duration::from_secs(3600);
 const NOTES_DELAY: Duration = Duration::from_secs(1);
+const ACTIVITY_CHECK: Duration = Duration::from_secs(10);
+const METRICS_REPORT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresetPaths {
@@ -299,6 +301,55 @@ async fn send_all(agent: &Agent, client: &OracleClient) {
     }
 }
 
+pub fn codespace_metrics(agent: &Agent) -> CodespaceMetrics {
+    let snapshot = agent.metrics_snapshot();
+    CodespaceMetrics {
+        uptime_secs: snapshot.uptime_secs,
+        sessions: snapshot.sessions,
+        busy_sessions: snapshot.busy_sessions,
+        connections: snapshot.connections,
+        terminals: agent.open_terminals(),
+        turns_completed: snapshot.turns_completed,
+        turns_failed: snapshot.turns_failed,
+        tool_calls: snapshot.tool_calls,
+        input_tokens: snapshot.input_tokens,
+        output_tokens: snapshot.output_tokens,
+    }
+}
+
+pub fn is_active(metrics: &CodespaceMetrics) -> bool {
+    metrics.connections > 0 || metrics.busy_sessions > 0 || metrics.terminals > 0
+}
+
+pub async fn report_activity(agent: Agent, mut clients: watch::Receiver<OracleClient>) {
+    let mut reported: Option<bool> = None;
+    let mut last_report = Instant::now();
+    let mut check = tokio::time::interval(ACTIVITY_CHECK);
+    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            changed = clients.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                reported = None;
+            }
+            _ = check.tick() => {}
+        }
+        let metrics = codespace_metrics(&agent);
+        let active = is_active(&metrics);
+        if reported == Some(active) && last_report.elapsed() < METRICS_REPORT {
+            continue;
+        }
+        let client = clients.borrow_and_update().clone();
+        if let Err(err) = client.codespace_activity(active, Some(metrics)).await {
+            tracing::debug!(error = %err, "cannot report the activity to the oracle");
+        }
+        reported = Some(active);
+        last_report = Instant::now();
+    }
+}
+
 pub async fn report_sessions(agent: Agent, mut clients: watch::Receiver<OracleClient>) {
     let mut notices = agent.notices();
     let client = clients.borrow_and_update().clone();
@@ -403,6 +454,33 @@ mod tests {
     use loom_client::oracle_proto::PresetFile;
 
     use super::*;
+
+    #[test]
+    fn clients_running_turns_and_terminals_make_a_codespace_active() {
+        assert!(!is_active(&CodespaceMetrics::default()));
+        for metrics in [
+            CodespaceMetrics {
+                connections: 1,
+                ..Default::default()
+            },
+            CodespaceMetrics {
+                busy_sessions: 1,
+                ..Default::default()
+            },
+            CodespaceMetrics {
+                terminals: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(is_active(&metrics), "{metrics:?}");
+        }
+        let idle = CodespaceMetrics {
+            sessions: 4,
+            turns_completed: 9,
+            ..Default::default()
+        };
+        assert!(!is_active(&idle));
+    }
 
     #[test]
     fn secrets_keep_their_values_in_the_env_file() {

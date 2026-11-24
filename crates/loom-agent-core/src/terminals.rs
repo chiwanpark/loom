@@ -197,6 +197,10 @@ impl Terminals {
         lock(&self.state).changes.subscribe()
     }
 
+    pub fn count(&self) -> usize {
+        lock(&self.state).open.len()
+    }
+
     /// The open terminals, oldest first, as `connection` sees them.
     pub fn list(&self, connection: ConnectionId) -> Vec<TerminalInfo> {
         let state = lock(&self.state);

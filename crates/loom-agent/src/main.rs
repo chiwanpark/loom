@@ -138,6 +138,11 @@ struct Target {
     workspace: Option<PathBuf>,
     #[arg(long)]
     instance: Option<String>,
+    #[arg(
+        long,
+        help = "Connect to the agent of this codespace, as `loom-host stdio` does"
+    )]
+    managed: bool,
 }
 
 #[derive(Args)]
@@ -307,7 +312,8 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
                     spawn: args.spawn,
                 },
                 (None, Some(id)) => StdioTarget::Instance(id),
-                (None, None) => bail!("pass --workspace or --instance"),
+                (None, None) if args.target.managed => StdioTarget::Managed,
+                (None, None) => bail!("pass --workspace, --instance, or --managed"),
             };
             let entry = find_target(&target, &ctx.config_path, &config, &ctx.dirs).await?;
             bridge(&entry).await?;
