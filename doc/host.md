@@ -117,9 +117,11 @@ The `incus` driver builds an image for the codespaces of the host. It builds a n
 4. It runs the setup script of the host as root, if there is one.
 5. It stops the container and publishes it as `loom-image-<hash>`, with zstd compression if Incus can use it.
 
-Set the environment with `loom-oracle-cli set-environment`. The first codespace after a change waits for the build. On a test host with the `dir` pool, the first codespace took 50 seconds with the build. On the test hosts, a codespace from an existing image took 4 to 6 seconds.
+Set the environment on the **Hosts** page of the oracle settings in the desktop client, or with `loom-oracle-cli set-environment`. The first codespace after a change waits for the build. On a test host with the `dir` pool, the first codespace took 50 seconds with the build. On the test hosts, a codespace from an existing image took 4 to 6 seconds.
 
 `loom-host check --docker` starts a test container from the newest image, and runs `docker run hello-world` in it.
+
+When `loom-host serve` connects, it sends the results of `loom-host check` without the Docker test to the oracle. The oracle can run the check again, with or without the Docker test. The desktop client shows the results on the **Hosts** page.
 
 ## Codespace containers
 

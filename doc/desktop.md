@@ -95,7 +95,7 @@ Loom-Next is in development. An oracle keeps workspaces, presets, and codespaces
 
 ### Add an oracle
 
-1. On a device that is paired with the oracle, run `loom-oracle-cli pair-device`. It shows a pairing link.
+1. Get a pairing link. For the first device, run `loom-oracle pair` on the oracle machine. For other devices, click **Add device…** on the **Devices** page of the oracle settings on a paired device, or run `loom-oracle-cli pair-device`.
 2. In the desktop client, use **Pair through a relay**.
 3. Type a name and paste the link.
 
@@ -135,6 +135,24 @@ The **…** button of a codespace opens its menu:
 In a codespace with more than one repository, the **Changes** panel shows the changes of each repository under its directory name.
 
 The model picker shows the account name of each model provider.
+
+### Oracle settings
+
+You do all configuration of an oracle in the desktop client. Click the gear button next to the oracle under **Workspaces**, or run **oracle: settings** in the command palette. The settings replace the panes until you open a session or click the close button. Unsaved changes stay when you close the settings.
+
+| Page | Contents |
+| --- | --- |
+| Devices | The paired devices. **Add device…** shows a pairing link and a QR code. You can rename and revoke a device, and cancel an open link. |
+| Hosts | The hosts with their status, their report, and the results of `loom-host check`. **Add host…** shows a join link. **Check** runs the check again, and **Check with Docker** also tests Docker. You can set the environment, the setup script, and the SSH destination of each host. The page shows the volumes on each host with their sizes. |
+| Git providers | The URLs, the Git name and email, and the route of each provider. The Git credentials of each provider with their scope, login, and expiry date. You can check a token and replace it. The page shows a warning for a token that expires in 14 days or less. |
+| Models | The model accounts with their provider, kind, email, and organization. **Add account…** signs in with the browser or a device code, or adds an API key. The client catches the redirect of the browser when the provider uses a local URL. Otherwise, paste the code or the URL. |
+| Secrets | The names of the secrets, and the presets and variables that use each secret. You can set, replace, and delete a value. You cannot read a value. |
+| Presets | The presets and the credentials that each names. **Edit** opens `agent.yaml`, `AGENTS.md`, and the skill files in a text editor. **Import from this computer…** reads `agent.yaml`, `AGENTS.md`, and the skills in `~/.config/loom`, and removes the sections that a codespace sets itself. **Duplicate…** copies a preset with a new name. |
+| Workspaces | The repositories, the volumes, and the host of each workspace, and the volumes of the oracle. **New workspace…** searches the repositories of a Git provider. Select a repository, a name, and a host. **Edit** changes the host, the repositories, and the volumes. |
+
+- The oracle validates each change when you save it. If it refuses the change, the form or a notification shows the reason.
+- The local rules of a host are not in the client. They stay in the file on the host.
+- The first device pairs with the link of `loom-oracle pair` on the oracle machine. After that, add the other devices on the **Devices** page.
 
 ## Terminals
 

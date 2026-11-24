@@ -17,6 +17,7 @@ pub mod picker;
 pub mod ports_view;
 pub mod prompt_view;
 pub mod session;
+pub mod settings;
 pub mod tab;
 pub mod tabs;
 pub mod tasks_view;

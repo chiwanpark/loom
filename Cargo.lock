@@ -4855,6 +4855,7 @@ dependencies = [
  "loom-version",
  "loom-view-model",
  "loom-vt",
+ "qrcode",
  "serde",
  "serde_json",
  "tempfile",
