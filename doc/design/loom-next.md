@@ -214,7 +214,7 @@ Agents work when no client is connected. Thus, "close" must be an explicit actio
 
 ### 6.8 Data that must outlive a container goes to the oracle or to a volume
 
-Today the notes of an agent stay when you delete a session. In a temporary container, they are lost. The oracle keeps the notes for each workspace, and each new codespace gets them. An archive of sessions in the oracle is a later option.
+Today the notes of an agent stay when you delete a session. In a temporary container, they are lost. The oracle keeps the notes for each workspace, and each new codespace gets them. From phase 7, the oracle also keeps an archive of the sessions of each closed codespace. See section 7.18.
 
 Large data that must stay goes into a volume of the workspace. Examples are caches and data sets. See section 7.14.
 
@@ -248,7 +248,7 @@ SQLite with `rusqlite`, which the agent already uses. Numbered migrations.
 | `workspace_repositories` | The repositories of each workspace in their sequence: provider, owner, repository, directory name, base branch. |
 | `volumes` | The volumes: name, kind, optional size limit, and the path of a host directory. The hosts that have each Incus volume. |
 | `workspace_volumes` | The volumes of each workspace: volume, mount path, read-only mark. |
-| `codespaces` | Workspace, preset, host, CPU limit, memory limit, instance name, state, branch, base branch of each repository, keys of the agent, times. The first message until the agent takes it. |
+| `codespaces` | Workspace, preset, host, CPU limit, memory limit, instance name, state, branch, base branch of each repository, keys of the agent, times. The first message until the agent takes it. The size, time, or error of the session archive. The archive files are in the data directory of the oracle. |
 | `sessions` | The last summary of each session: title, state, time. |
 | `notes` | Notes for each workspace. |
 | `audit` | What each peer did and when. |
@@ -322,7 +322,7 @@ The authentication method is a personal access token, because you cannot install
 - A preset names the Git credentials of its codespaces. For each request, the oracle uses the named credential with the smallest scope that matches.
 - A fine-grained token needs these repository permissions: Contents (write), Pull requests (write), and Metadata (read). Add others for the `gh` commands that you use.
 - The oracle reads the expiry date of each token from the API responses. The clients show a warning before a token expires.
-- A token is long-lived, and each program in the container can ask the helper for it. A fine-grained token with selected repositories limits the damage. The Git proxy of phase 7 removes the token from the container.
+- A token is long-lived, and each program in the container can ask the helper for it or read it from the configuration of `gh`. A fine-grained token with selected repositories, few permissions, and a short expiry limits the damage. The agent and the model must use `git` and `gh` with these tokens, so the tokens stay in the container. See section 12.
 - The credential helper is set for the Git provider of each named credential. A codespace gets these credentials and no other credential.
 - The agent writes a token for each of these providers into the configuration of `gh`, so `gh` and **Open pull request** work.
 - Each provider has its own Git name and email. Each clone uses the name and email of its provider.
@@ -432,7 +432,7 @@ When the oracle restarts, codespaces continue to run. The agents and the hosts c
 - The oracle keeps the last summary. Thus, the lists also show a codespace that is not connected.
 - A client subscribes to events on its connection to the oracle: codespace states, start progress, and session summaries.
 - The oracle also gives the list of models, because a client needs it before a codespace is there. The list is for the model accounts of one preset.
-- The content of sessions does not go to the oracle. The first message is the exception. The oracle keeps it until the agent takes it, and then deletes it.
+- While a codespace is open, the content of its sessions does not go to the oracle. The first message is the exception. The oracle keeps it until the agent takes it, and then deletes it. When a codespace closes, the oracle copies its sessions into the archive of section 7.18.
 - Notifications do not change: each agent encrypts them for the devices and sends them through the relay.
 
 ### 7.11 Configuration operations
@@ -584,7 +584,7 @@ Phase 0 showed that a container reaches the Incus API port of its host and the o
 
 - `rules.network.isolate` is on by default. `loom-host` then sets `security.port_isolation`, `security.mac_filtering`, `security.ipv4_filtering`, and `security.ipv6_filtering` on the network interface of each container.
 - Port isolation stops the traffic between codespaces. The instance of `loom-host` on IncusOS stays reachable, because it does not have the option.
-- The filters stop a container that uses the MAC or IP address of a different instance. Thus, the Git proxy can identify a codespace by its address. See section 7.18.
+- The filters stop a container that uses the MAC or IP address of a different instance.
 - Isolation does not stop the traffic to the host and to other networks. For this, `rules.network.acls` names Incus network ACLs. `loom-host` adds them to the network interface with the default actions of `host.yaml`. The default action is `allow`, so an ACL lists only the traffic to stop.
 - A restricted certificate cannot make ACLs, because a shared bridge has its ACLs in the `default` project. Thus, the administrator makes them with the `incus` CLI. `loom-host check` reports an ACL that does not exist.
 
@@ -605,17 +605,18 @@ The agent runs the setup script `.loom/setup.sh` of each repository after the cl
 - A failed script does not make the codespace fail. GitHub Codespaces also continues in this case. The progress shows the failure, and a log file in the codespace has the output.
 - The agent does not read `devcontainer.json`. See section 12.
 
-### 7.18 Git proxy (phase 7)
+### 7.18 Session archive (phase 7)
 
-The Git proxy keeps the tokens of the providers out of the codespaces. It is optional: `git_proxy` in `host.yaml` turns it on for a host.
+When a codespace closes, its container goes, and with it the session store of its agent. The archive keeps a read-only copy of the sessions in the oracle. A close by you and a delete after the retention both make an archive.
 
-- `loom-host` listens for Git over HTTP on an address on the bridge. The host report has the URL of the proxy.
-- For a codespace on such a host, the Git setup has a proxy URL for each provider: `<proxy>/<provider>`. The agent writes `url.<proxy>/<provider>/.insteadOf <web URL>/`, and the credential helper for the proxy URL. `gh` gets no token.
-- The credential helper gets the codespace ID and a random proxy secret from the oracle. The oracle keeps the secrets in memory. After a restart of the oracle, the codespaces get new secrets. The oracle gives no provider token to a codespace on a host with a proxy.
-- The proxy accepts only `info/refs`, `git-upload-pack`, and `git-receive-pack` for `<provider>/<owner>/<repository>`. It checks that the address of the client is an address of the instance of the codespace. Then it asks the oracle with the new host command `git_proxy_access`. The oracle checks the secret, the host, and the state of the codespace. It gives the URL of the repository on the provider and the token of the preset, or no token. The proxy adds the token and streams the request and the answer. Thus, the proxy is not an open proxy: the oracle makes the upstream URL from the provider.
-- The agent opens pull requests through the new codespace command `codespace_api_request`. The oracle permits only `GET` and `POST` on `/repos/<owner>/<repository>/pulls` and `PATCH` on `/repos/<owner>/<repository>/pulls/<number>`, for the repository of the URL, and adds the token.
-- The proxy needs the address filters of section 7.16. The traffic on the bridge is HTTP.
-- Not in phase 7: Git LFS, Git over SSH, and the process driver.
+- Before the oracle deletes the instance, it stops the instance. The SQLite files of the agent are then complete.
+- The oracle sends the host command `archive_files`. `loom-host` copies the session files of the agent from the instance into its data directory, and returns their names, sizes, and SHA-256 checksums. Only files with the names of the session store are copied: `<hex>.sqlite` and `<hex>.sqlite-wal` in `/home/dev/.local/share/loom/sessions`. The Incus file API reads them also from a stopped container.
+- The oracle reads each file in parts of 1 MiB with the host command `archive_chunk`, and checks the size and the checksum. Then it merges the WAL file into the database, and keeps one SQLite file for each session store in `archive/<codespace>` in its data directory. When the host deletes the instance, it also deletes its copy.
+- The oracle then deletes the instance as before. A host that is not connected delays the archive and the delete together. Other errors, such as an archive that is too large, do not stop the delete. The codespace then shows the error of the archive.
+- The closed codespace keeps its session summaries and the archive until `codespaces.archive_retention` in `oracle.yaml` (default 90 days). A closed codespace without an archive goes after `codespaces.closed_retention` as before. `codespaces.archive: false` turns the archive off, and `codespaces.archive_max_size` (default 1 GiB) limits the size of one archive.
+- A client reads the events of an archived session with the command `archive_events`. The oracle sends the events as the agent stored them, so the client decodes them as the events of a live session. `delete_archive` deletes an archive before its time.
+- The desktop client lists the closed codespaces with an archive in each workspace, and opens their sessions read-only. `loom-oracle-cli` lists the archived sessions and prints a session as text.
+- A lost codespace has no instance, so it gets no archive. The Android app does not show the archive in phase 7.
 
 ## 8. Compatibility with the current Loom (requirement 7)
 
@@ -651,7 +652,7 @@ Each phase ends with a state that you can use and test. Each phase has its own b
 | 5a. Clients: daily work | L | Desktop and Android: host kind `oracle`, pairing, **Workspaces**, **New codespace** with a workspace, a preset, and the first message, progress view, lists from the oracle, **Changes** for more than one repository, codespace menu, notifications. A first version can start after phase 2. | You do all daily work from the desktop client and the Android app. |
 | 5b. Desktop client: configuration | L | The configuration pages of section 14. | You do all configuration in the desktop client. |
 | 6. Lifecycle and SSH | M | Stop and resume, idle timeout, retention, limits for each host, metrics, audit. The SSH connection type and its selection. | Codespaces clean up themselves. The desktop client uses SSH where it can. |
-| 7. Hardening | L | Network rules for containers. A Git proxy that keeps tokens out of containers. Incus image of `loom-host`. Repository setup scripts. Session archive. | Codespaces cannot reach each other, and provider tokens stay out of containers. |
+| 7. Hardening | L | Network rules for containers. Incus image of `loom-host`. Repository setup scripts. Session archive. | Codespaces cannot reach each other. `loom-host` runs on IncusOS from an image in the image store of the host. |
 | 8. Removal of the classic modes | M | Remove local hosts, SSH hosts, relay hosts for directories, worktree sessions, and the pairing with agents. Remove the code that only they use. Clean up the agent protocol with one version bump. | Loom has one mode. |
 
 ### Phase 0: results on the first host
@@ -799,14 +800,14 @@ Not tested yet:
 | Risk | Mitigation |
 | --- | --- |
 | The oracle is one point of failure and a valuable target. It can start code in the company network. | Encrypted secrets, local rules of each `loom-host`, restricted Incus project, Cloudflare Access, audit log. Codespaces continue when the oracle is down. |
-| Long-lived tokens for the Git providers are in the oracle. A program in a container can read all Git credentials and secrets of its preset. | A preset names only the credentials that its work needs. Fine-grained tokens with selected repositories and an expiry date. The Git proxy of phase 7. |
+| Long-lived tokens for the Git providers are in the oracle. A program in a container can read all Git credentials and secrets of its preset. | A preset names only the credentials that its work needs. Fine-grained tokens with selected repositories, few permissions, and an expiry date. |
 | All containers of the company network have one public IP address. The relay limits connections and messages for each IP address. | Limits for each registered peer in phase 1. |
 | Docker does not work in a container on one of your Linux hosts, because the host is different from the test hosts. An example is SELinux in enforcing mode. | Phase 0 showed that it works on IncusOS with ZFS, and on test hosts with `dir` on ext4 and on XFS. One test host had the kernel version of your host. `loom-host check` tests Docker on each host. All codespaces are containers, so such a host needs a change of its setup. |
 | Hosts with the `dir` driver start codespaces slowly. | Phase 0 measured 2 to 3 s more for an image of 1 GB. A small image with zstd compression. |
 | Version skew: old containers, a new client, and two clients of different versions. | The agent version follows the client. The current update command. JSON in the control service. |
 | Lost work when a container is deleted. | Close guard, push of the branch. Stop and retention warnings in phase 6. |
 | A container can reach the network of its host. Phase 0 confirmed this for the Incus API port and for other instances on the bridge. | Network rules in phase 7. Before that, the host setup document recommends a separate bridge for codespaces. |
-| Docker in the container needs nesting, which makes the isolation weaker. | Unprivileged containers in a restricted project. The network rules and the Git proxy of phase 7. |
+| Docker in the container needs nesting, which makes the isolation weaker. | Unprivileged containers in a restricted project. The network rules of phase 7. |
 | Disk use: each codespace has full clones, its build output, and Docker images. A codespace has no disk limit, so one codespace can fill the storage pool of its host. Volumes use more disk space. | Codespaces are temporary. Optional size limits of volumes, retention, registry mirrors in the Docker settings of the host. A disk limit is a later option. |
 | The codespaces on a host use more memory than the host has, because a limit is not a reservation. | The memory limit of each codespace. The maximum number of codespaces of each host. Idle timeout in phase 6. |
 | The configuration pages are a large part of the desktop work. | Text editors with validation for files. Forms only for lists. The test CLI until the pages are there. |
@@ -839,6 +840,7 @@ Not tested yet:
 - Prepared instances: containers that a host makes before a request, so that a new codespace on a host with `dir` does not wait for the copy of the image. Each codespace starts from a fresh instance.
 - VM instances. All codespaces are containers.
 - GitHub Apps. You cannot install an app in the company infrastructure, so all Git credentials are personal access tokens.
+- A Git proxy that keeps the tokens out of the containers. The agent and the model must run `git` and `gh` with the credentials of the user, and `gh` cannot use such a proxy. A stolen token works until it expires, so use fine-grained tokens with selected repositories and a short expiry.
 
 ## 13. Open questions
 
