@@ -118,9 +118,7 @@ private val WorkspacePadding = Modifier.padding(start = 12.dp, end = 12.dp, top 
 @Composable
 fun NewCodespaceChooser(
     oracles: List<OracleLink>,
-    withAgents: Boolean,
     onWorkspace: (OracleLink, String) -> Unit,
-    onAgent: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -147,14 +145,6 @@ fun NewCodespaceChooser(
                     }
                 }
                 if (!any) Text("The oracles have no workspaces. Add one with loom-oracle-cli workspace add.")
-                if (withAgents) {
-                    HorizontalDivider()
-                    CompactListItem(
-                        modifier = Modifier.clickable(onClick = onAgent),
-                        leadingContent = { LoomIcon(LoomIcons.Bot, null, size = 20.dp) },
-                        headlineContent = { Text("New session on an agent…") },
-                    )
-                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },

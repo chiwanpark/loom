@@ -1,22 +1,18 @@
-//! The app's entry point: its identity, the hosts it paired with, and
-//! connections to their agents.
+//! The app's entry point: its identity, the oracles it paired with, and
+//! connections to the agents of their codespaces.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use loom_client::oracle_proto::ORACLE_INSTANCE;
 use loom_client::proto::InstanceId;
-use loom_client::{
-    Client, ClientIdentity, OracleEndpoint, PairingUri, RelayHost, pair_oracle, pair_with_uri,
-    update_agent_with,
-};
+use loom_client::{ClientIdentity, OracleEndpoint, RelayHost, pair_oracle};
 use loom_crypto::{CLIENT_IDENTITY_FILE, decode_key, encode_key};
 use loom_view_model::host_colors;
 
 use crate::agent::AgentConnection;
 use crate::error::{LoomError, Result};
 use crate::oracle::{KeyBook, OracleConnection};
-use crate::records::{Agent, AgentUpdateInfo, Host, HostColor, PushNotice};
+use crate::records::{Host, HostColor, PushNotice};
 use crate::runtime::run;
 
 /// The name the core gives itself when it connects to an agent.
@@ -53,7 +49,7 @@ impl Loom {
         }))
     }
 
-    /// This device's public key, as `loom-agent clients list` shows it.
+    /// This device's public key, as the oracle shows it.
     pub fn device_key(&self) -> String {
         encode_key(&self.identity.public_key())
     }
@@ -62,47 +58,26 @@ impl Loom {
         self.lock().clone()
     }
 
-    /// Pairs with a host using the `loom://` link that `loom-agent pair`
-    /// prints, and keeps it as `name`. `label` names this device on the
-    /// host. Pairing again with a known host updates it under its old name.
+    /// Pairs with an oracle using the `loom://` link that
+    /// `loom-oracle-cli pair-device` prints, and keeps it as `name`. `label`
+    /// names this device on the oracle. Pairing again with a known oracle
+    /// updates it under its old name.
     pub async fn pair(self: Arc<Self>, link: String, label: String, name: String) -> Result<Host> {
         let identity = self.identity.clone();
-        let oracle = link
-            .trim()
-            .parse::<PairingUri>()
-            .is_ok_and(|uri| uri.instance.0 == ORACLE_INSTANCE);
         let crypto = |err: loom_client::ClientError| match err {
             loom_client::ClientError::Crypto(err) => LoomError::invalid(err.to_string()),
             err => err.into(),
         };
-        let mut host = if oracle {
-            let endpoint =
-                run(async move { pair_oracle(link.trim(), &identity, label.trim(), None).await })
-                    .await
-                    .map_err(crypto)?;
-            Host {
-                name: name.trim().to_owned(),
-                relay_url: endpoint.url.clone(),
-                host_id: endpoint.host.to_string(),
-                host_key: endpoint.host_key_text(),
-                instance: Some(ORACLE_INSTANCE.to_owned()),
-                color: None,
-                oracle: true,
-            }
-        } else {
-            let (relay, instance) =
-                run(async move { pair_with_uri(link.trim(), &identity, label.trim(), None).await })
-                    .await
-                    .map_err(crypto)?;
-            Host {
-                name: name.trim().to_owned(),
-                relay_url: relay.url.clone(),
-                host_id: relay.host.to_string(),
-                host_key: relay.host_key_text(),
-                instance: Some(instance.to_string()),
-                color: None,
-                oracle: false,
-            }
+        let endpoint =
+            run(async move { pair_oracle(link.trim(), &identity, label.trim(), None).await })
+                .await
+                .map_err(crypto)?;
+        let mut host = Host {
+            name: name.trim().to_owned(),
+            relay_url: endpoint.url.clone(),
+            host_id: endpoint.host.to_string(),
+            host_key: endpoint.host_key_text(),
+            color: None,
         };
         let mut hosts = self.lock();
         if let Some(known) = hosts.iter_mut().find(|h| h.host_id == host.host_id) {
@@ -175,33 +150,18 @@ impl Loom {
         Ok(())
     }
 
-    /// Opens a notification from a paired host's agent: `host_id` and
-    /// `payload` are the `h` and `p` of the push message. Fails for a host
-    /// that is not paired, and for one that did not seal it for this device.
+    /// Opens a notification from the agent of a codespace: `host_id` and
+    /// `payload` are the `h` and `p` of the push message. Fails for an
+    /// agent that no paired oracle lists, and for one that did not seal it
+    /// for this device.
     pub fn open_push(&self, host_id: String, payload: String) -> Result<PushNotice> {
         use base64::Engine;
-        let known = {
-            let hosts = self.lock();
-            hosts
-                .iter()
-                .find(|h| !h.oracle && h.host_id.eq_ignore_ascii_case(host_id.trim()))
-                .map(|host| (host.name.clone(), host.host_key.clone()))
-        };
-        let codespace = match known {
-            Some(_) => None,
-            None => self.keys.find(&host_id),
-        };
-        let (name, host_key) = match (known, &codespace) {
-            (Some(known), _) => known,
-            (None, Some(key)) => (key.oracle.clone(), key.host_key.clone()),
-            (None, None) => {
-                return Err(LoomError::invalid(
-                    "a notification from a host that is not paired",
-                ));
-            }
-        };
-        let host_key =
-            decode_key(&host_key).ok_or_else(|| LoomError::invalid("the host's key is invalid"))?;
+        let key = self
+            .keys
+            .find(&host_id)
+            .ok_or_else(|| LoomError::invalid("a notification from a host that is not paired"))?;
+        let host_key = decode_key(&key.host_key)
+            .ok_or_else(|| LoomError::invalid("the host's key is invalid"))?;
         let sealed = base64::engine::general_purpose::STANDARD
             .decode(payload.trim())
             .map_err(|_| LoomError::invalid("a malformed notification"))?;
@@ -211,11 +171,9 @@ impl Loom {
             .map_err(|_| {
             LoomError::invalid("a notification of a version this app does not know")
         })?;
-        let mut notice = PushNotice::of(&name, notice);
-        if let Some(key) = codespace {
-            notice.workspace = format!("{} · {}", key.workspace, key.branch);
-            notice.codespace = Some(key.codespace);
-        }
+        let mut notice = PushNotice::of(&key.oracle, notice);
+        notice.workspace = format!("{} · {}", key.workspace, key.branch);
+        notice.codespace = Some(key.codespace);
         Ok(notice)
     }
 
@@ -224,7 +182,7 @@ impl Loom {
             let hosts = self.lock();
             let entry = hosts
                 .iter()
-                .find(|h| h.name == host && h.oracle)
+                .find(|h| h.name == host)
                 .ok_or_else(|| LoomError::invalid(format!("there is no oracle named {host}")))?;
             OracleEndpoint::from_parts(&entry.relay_url, &entry.host_id, &entry.host_key, None)
                 .map_err(|err| LoomError::invalid(err.to_string()))?
@@ -232,109 +190,63 @@ impl Loom {
         OracleConnection::open(host, endpoint, self.identity.clone(), self.keys.clone()).await
     }
 
-    /// The agents running on a host. Their workspaces are known when one of
-    /// them could be asked; otherwise only their instance IDs.
-    pub async fn list_agents(self: Arc<Self>, host: String) -> Result<Vec<Agent>> {
-        let relay = self.relay(&host)?;
-        let identity = self.identity.clone();
-        run(async move {
-            let instances = relay.list_agents().await?;
-            let Some(first) = instances.first() else {
-                return Ok(Vec::new());
-            };
-            let detailed = async {
-                let stream = relay.connect(Some(first), &identity).await?;
-                let (client, _notifications) = Client::connect(stream, CLIENT_NAME).await?;
-                let mut infos = vec![client.agent().clone()];
-                // Its siblings, when it supervises them.
-                match client.list_agents().await {
-                    Ok(more) => infos.extend(more),
-                    Err(err) => tracing::debug!(error = %err, "could not list sibling agents"),
-                }
-                Ok::<_, loom_client::ClientError>(infos)
-            };
-            let mut agents: Vec<Agent> = match detailed.await {
-                Ok(infos) => {
-                    let mut agents: Vec<Agent> = Vec::new();
-                    for info in &infos {
-                        if !agents.iter().any(|a| a.instance == info.instance.0) {
-                            agents.push(Agent::from(info));
-                        }
-                    }
-                    agents
-                }
-                Err(err) => {
-                    tracing::debug!(error = %err, "could not reach an agent to describe it");
-                    Vec::new()
-                }
-            };
-            // Agents the relay knows of but the one asked did not list.
-            for instance in &instances {
-                if !agents.iter().any(|a| a.instance == instance.0) {
-                    agents.push(Agent {
-                        instance: instance.to_string(),
-                        workspace: None,
-                        version: None,
-                    });
-                }
-            }
-            agents.sort_by(|a, b| a.workspace.cmp(&b.workspace));
-            Ok(agents)
-        })
-        .await
-    }
-
-    /// Connects to an agent on a host. The connection then follows the
-    /// agent's sessions; see [`AgentConnection::next_updates`].
+    /// Connects to the agent of a codespace of the oracle `host`. The
+    /// connection then follows the agent's sessions; see
+    /// [`AgentConnection::next_updates`].
     pub async fn connect(
         self: Arc<Self>,
         host: String,
         instance: String,
     ) -> Result<Arc<AgentConnection>> {
-        if let Some((relay, directories)) = self.codespace_relay(&host, &instance)? {
-            let connection =
-                AgentConnection::open(relay, InstanceId(instance), self.identity.clone()).await?;
-            connection.set_directories(directories);
-            return Ok(connection);
-        }
-        let relay = self.relay(&host)?;
-        AgentConnection::open(relay, InstanceId(instance), self.identity.clone()).await
-    }
-
-    pub async fn update_agents(
-        self: Arc<Self>,
-        host: String,
-        version: Option<String>,
-    ) -> Result<AgentUpdateInfo> {
-        let relay = self.relay(&host)?;
-        let identity = self.identity.clone();
-        run(async move {
-            let instances = relay.list_agents().await?;
-            let first = instances
-                .into_iter()
-                .next()
-                .ok_or_else(|| LoomError::invalid(format!("no agent runs on {host}")))?;
-            let connect = || relay.connect(Some(&first), &identity);
-            Ok(update_agent_with(connect, CLIENT_NAME, version)
-                .await?
-                .into())
-        })
-        .await
+        let (relay, directories) = self.codespace_relay(&host, &instance)?;
+        let connection =
+            AgentConnection::open(relay, InstanceId(instance), self.identity.clone()).await?;
+        connection.set_directories(directories);
+        Ok(connection)
     }
 }
 
 impl Loom {
-    fn codespace_relay(
+    #[doc(hidden)]
+    pub fn add_test_codespace(
         &self,
-        name: &str,
-        instance: &str,
-    ) -> Result<Option<(RelayHost, Vec<String>)>> {
+        oracle: Host,
+        host_id: String,
+        host_key: String,
+        instance: String,
+    ) -> Result<()> {
+        let name = oracle.name.clone();
+        {
+            let mut hosts = self.lock();
+            hosts.retain(|h| h.name != name);
+            hosts.push(oracle);
+            save_hosts(&self.dir, &hosts)?;
+        }
+        self.keys.set(
+            &name,
+            vec![crate::oracle::CodespaceKey {
+                oracle: name.clone(),
+                codespace: instance.clone(),
+                workspace: instance.clone(),
+                branch: "main".into(),
+                host_id,
+                host_key,
+                instance: Some(instance),
+                repositories: Vec::new(),
+            }],
+        );
+        Ok(())
+    }
+
+    fn codespace_relay(&self, name: &str, instance: &str) -> Result<(RelayHost, Vec<String>)> {
         let url = {
             let hosts = self.lock();
-            match hosts.iter().find(|h| h.name == name && h.oracle) {
-                Some(host) => host.relay_url.clone(),
-                None => return Ok(None),
-            }
+            hosts
+                .iter()
+                .find(|h| h.name == name)
+                .ok_or_else(|| unknown_host(name))?
+                .relay_url
+                .clone()
         };
         let key = self
             .keys
@@ -344,26 +256,11 @@ impl Loom {
             })?;
         let relay = RelayHost::from_parts(&url, &key.host_id, &key.host_key, None)
             .map_err(|err| LoomError::invalid(err.to_string()))?;
-        Ok(Some((relay, key.repositories)))
+        Ok((relay, key.repositories))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Host>> {
         self.hosts.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn relay(&self, name: &str) -> Result<RelayHost> {
-        let hosts = self.lock();
-        let host = hosts
-            .iter()
-            .find(|h| h.name == name)
-            .ok_or_else(|| unknown_host(name))?;
-        if host.oracle {
-            return Err(LoomError::invalid(format!(
-                "{name} is an oracle, not a host of agents"
-            )));
-        }
-        RelayHost::from_parts(&host.relay_url, &host.host_id, &host.host_key, None)
-            .map_err(|err| LoomError::invalid(err.to_string()))
     }
 }
 
@@ -396,16 +293,32 @@ fn unique_name(hosts: &[Host], name: &str, host_id: &str) -> String {
 }
 
 fn load_hosts(dir: &Path) -> Result<Vec<Host>> {
-    match std::fs::read(dir.join(HOSTS_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(LoomError::storage),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(err) => Err(LoomError::storage(err)),
-    }
+    let bytes = match std::fs::read(dir.join(HOSTS_FILE)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(LoomError::storage(err)),
+    };
+    let stored: Vec<serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(LoomError::storage)?;
+    stored
+        .into_iter()
+        .filter(|host| host.get("oracle").and_then(serde_json::Value::as_bool) == Some(true))
+        .map(serde_json::from_value)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(LoomError::storage)
 }
 
 fn save_hosts(dir: &Path, hosts: &[Host]) -> Result<()> {
     let tmp = dir.join(format!("{HOSTS_FILE}.tmp"));
-    let bytes = serde_json::to_vec_pretty(hosts).map_err(LoomError::storage)?;
+    let mut stored = Vec::with_capacity(hosts.len());
+    for host in hosts {
+        let mut value = serde_json::to_value(host).map_err(LoomError::storage)?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert("oracle".into(), true.into());
+        }
+        stored.push(value);
+    }
+    let bytes = serde_json::to_vec_pretty(&stored).map_err(LoomError::storage)?;
     std::fs::write(&tmp, bytes).map_err(LoomError::storage)?;
     std::fs::rename(&tmp, dir.join(HOSTS_FILE)).map_err(LoomError::storage)
 }
@@ -420,9 +333,7 @@ mod tests {
             relay_url: "wss://relay".into(),
             host_id: id.into(),
             host_key: "k".into(),
-            instance: None,
             color: None,
-            oracle: false,
         }
     }
 
@@ -513,10 +424,11 @@ mod tests {
     fn host_colors_are_kept() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_string_lossy().into_owned();
-        // Hosts saved before hosts had colors.
+        // Hosts saved before hosts had colors, and a relay host of the
+        // classic modes, which the app drops.
         std::fs::write(
             dir.path().join(HOSTS_FILE),
-            r#"[{"name":"box","relay_url":"wss://relay","host_id":"a","host_key":"k","instance":null}]"#,
+            r#"[{"name":"box","relay_url":"wss://relay","host_id":"a","host_key":"k","instance":"oracle","oracle":true},{"name":"old","relay_url":"wss://relay","host_id":"b","host_key":"k","instance":null}]"#,
         )
         .unwrap();
         let loom = Loom::new(path.clone()).unwrap();

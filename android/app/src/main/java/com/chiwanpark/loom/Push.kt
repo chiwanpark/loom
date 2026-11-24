@@ -49,33 +49,14 @@ class Push(private val app: LoomApplication) {
         if (newToken == token) return
         token = newToken
         told.clear()
-        app.links.all.forEach(::linked)
         app.oracles.all.forEach(::oracleLinked)
     }
 
     /**
-     * A link is up: tells its host where to send this device's notifications,
-     * unless it knows. The token belongs to this device's key on the host,
-     * so one agent of a host is enough.
+     * A link to an oracle is up: tells it where to send this device's
+     * notifications, unless it knows. The oracle gives the token to the
+     * agents of its codespaces.
      */
-    fun linked(link: AgentLink) {
-        val current = token ?: return
-        if (link.state != LinkState.Connected) return
-        val host = link.host
-        if (app.oracles.find(host) != null) return
-        if (told[host] == current || !telling.add(host)) return
-        app.scope.launch {
-            try {
-                link.connection().setPushToken(current)
-                told[host] = current
-            } catch (e: LoomException) {
-                Log.w(TAG, "could not register for notifications with $host: ${e.userMessage()}")
-            } finally {
-                telling.remove(host)
-            }
-        }
-    }
-
     fun oracleLinked(link: OracleLink) {
         val current = token ?: return
         if (link.state != LinkState.Connected) return
@@ -96,7 +77,6 @@ class Push(private val app: LoomApplication) {
     /** Tells the hosts again, as after pairing, which makes a host forget the token. */
     fun tellAgain() {
         told.clear()
-        app.links.all.forEach(::linked)
         app.oracles.all.forEach(::oracleLinked)
     }
 

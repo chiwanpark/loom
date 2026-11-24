@@ -1,6 +1,6 @@
-//! The mobile core against a real agent behind an in-process relay: pair,
-//! list agents, connect, prompt, approve a tool call, and catch up after
-//! the link was lost.
+//! The mobile core against a real agent behind an in-process relay, as the
+//! agent of a codespace: connect, prompt, approve a tool call, and catch up
+//! after the link was lost.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -12,13 +12,13 @@ use async_trait::async_trait;
 use loom_agent::push::PushObserver;
 use loom_agent::relay::{LocalHostKeys, relay_endpoint, start_relay, wait_registered};
 use loom_agent::server::{ServerContext, serve_stream};
-use loom_agent_core::{Agent, AgentOptions, SessionObserver, Supervisor};
-use loom_client::proto::{AgentInfo, ApiError, ErrorCode, InstanceId, SessionEvent, SessionId};
+use loom_agent_core::{Agent, AgentOptions, SessionObserver};
+use loom_client::proto::{AgentInfo, InstanceId, SessionEvent, SessionId};
 use loom_client::{Client, Notification, memory_pair};
 use loom_config::{
     AgentConfig, Dirs, FcmConfig, PolicyAction, PolicyConfig, PushConfig, RelayServerConfig,
 };
-use loom_crypto::{HostIdentity, PairingUri, Pairings};
+use loom_crypto::{HostIdentity, decode_key, encode_key};
 use loom_llm::{
     AssistantContent, AssistantMessage, ChunkStream, CompletionChunk, CompletionRequest,
     LlmProvider, ProviderId, StopReason, ToolCall, Usage,
@@ -168,10 +168,6 @@ impl Host {
         let keys = Arc::new(LocalHostKeys::new(identity.clone(), &data, &config));
         let mut ctx = ServerContext::new(agent, info);
         ctx.host_keys = Some(keys.clone());
-        ctx.supervisor = Some(Arc::new(Supervised {
-            this: ctx.info.clone(),
-            others: Mutex::new(Vec::new()),
-        }));
         let agent_link = CancellationToken::new();
         let endpoint = relay_endpoint(&config).unwrap().unwrap();
         let mut handle = start_relay(
@@ -209,18 +205,25 @@ impl Host {
             .unwrap_or_else(|| panic!("no {name} in the relay's metrics"))
     }
 
-    fn pairing_link(&self) -> String {
-        let (_, secret) = Pairings::in_dir(&self.data)
-            .create(Duration::from_secs(600))
+    fn add_to(&self, loom: &Loom) {
+        let key = decode_key(&loom.device_key()).unwrap();
+        loom_crypto::AuthorizedClients::in_dir(&self.data)
+            .authorize(key, "phone")
             .unwrap();
-        PairingUri {
+        let oracle = loom_mobile::Host {
+            name: "lab".into(),
             relay_url: format!("ws://{}", self.addr),
-            host: self.identity.host_id(),
-            instance: self.ctx.info.instance.clone(),
-            host_static: self.identity.static_public(),
-            secret,
-        }
-        .to_string()
+            host_id: "f".repeat(64),
+            host_key: encode_key(&[7; 32]),
+            color: None,
+        };
+        loom.add_test_codespace(
+            oracle,
+            self.identity.host_id().to_string(),
+            encode_key(&self.identity.static_public()),
+            self.ctx.info.instance.0.clone(),
+        )
+        .unwrap();
     }
 
     /// A client connected to the agent directly, as one on the host is.
@@ -374,29 +377,9 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
         .await
         .unwrap_err();
     assert!(matches!(bad, LoomError::Invalid { .. }), "{bad:?}");
-    let paired = loom
-        .clone()
-        .pair(host.pairing_link(), "phone".into(), "lab".into())
-        .await
-        .unwrap();
-    assert_eq!(paired.name, "lab");
-    assert_eq!(paired.instance.as_deref(), Some("phone-test"));
-    assert_eq!(loom.hosts(), std::slice::from_ref(&paired));
-    // Pairing with the host again updates its entry.
-    assert!(
-        loom.clone()
-            .pair(host.pairing_link(), "phone".into(), "lab".into())
-            .await
-            .is_ok()
-    );
-    assert_eq!(loom.hosts().len(), 1, "pairing again keeps one entry");
-
-    let agents = loom.clone().list_agents("lab".into()).await.unwrap();
-    assert_eq!(agents.len(), 1);
-    assert_eq!(
-        agents[0].workspace.as_deref(),
-        Some(host.root.join("ws").to_string_lossy().as_ref())
-    );
+    host.add_to(&loom);
+    assert_eq!(loom.hosts().len(), 1);
+    assert_eq!(loom.hosts()[0].name, "lab");
 
     let conn = loom
         .clone()
@@ -715,10 +698,7 @@ async fn a_long_session_opens_through_the_relay_within_its_limits() {
 
     let phone_dir = tempfile::tempdir().unwrap();
     let loom = Loom::new(phone_dir.path().to_string_lossy().into_owned()).unwrap();
-    loom.clone()
-        .pair(host.pairing_link(), "phone".into(), "lab".into())
-        .await
-        .unwrap();
+    host.add_to(&loom);
     let conn = loom
         .clone()
         .connect("lab".into(), "phone-test".into())
@@ -896,20 +876,15 @@ async fn a_phone_is_told_about_approvals_and_ended_turns() {
     .await;
     let phone_dir = tempfile::tempdir().unwrap();
     let loom = Loom::new(phone_dir.path().to_string_lossy().into_owned()).unwrap();
-    loom.clone()
-        .pair(host.pairing_link(), "phone".into(), "lab".into())
-        .await
-        .unwrap();
+    host.add_to(&loom);
     let conn = loom
         .clone()
         .connect("lab".into(), "phone-test".into())
         .await
         .unwrap();
-    conn.clone()
-        .set_push_token(Some("phone-token".into()))
-        .await
-        .unwrap();
     let clients = loom_crypto::AuthorizedClients::in_dir(&host.data);
+    let key = decode_key(&loom.device_key()).unwrap();
+    clients.set_push_token(&key, Some("phone-token")).unwrap();
     let token = || clients.list().unwrap()[0].push_token.clone();
     assert_eq!(token().as_deref(), Some("phone-token"));
 
@@ -935,8 +910,8 @@ async fn a_phone_is_told_about_approvals_and_ended_turns() {
         PushNotice {
             host: "lab".into(),
             instance: "phone-test".into(),
-            workspace: host.root.join("ws").to_string_lossy().into_owned(),
-            codespace: None,
+            workspace: "phone-test · main".into(),
+            codespace: Some("phone-test".into()),
             session: session.id.clone(),
             title: notice.title.clone(),
             kind: PushKind::Approval,
@@ -983,10 +958,7 @@ async fn a_phone_is_told_about_approvals_and_ended_turns() {
     assert_eq!(notice.title.as_deref(), Some("write it"));
 
     // A token FCM no longer knows is forgotten.
-    conn.clone()
-        .set_push_token(Some("dead".into()))
-        .await
-        .unwrap();
+    clients.set_push_token(&key, Some("dead")).unwrap();
     app.until(&conn, "the end of the turn", |app| app.idle())
         .await;
     conn.clone()
@@ -1008,20 +980,13 @@ async fn a_phone_is_told_about_approvals_and_ended_turns() {
     }
     assert_eq!(host.relay_counter("loom_relay_pushes_rejected_total"), 1);
     assert_eq!(host.relay_counter("loom_relay_pushes_sent_total"), 2);
-
-    // Clients on the host have no push token to set.
-    let local = host.local_client().await;
-    assert!(local.set_push_token(Some("t")).await.is_err());
 }
 
-/// A phone paired with `host` as "lab", and its connection to the agent.
+/// A phone that knows `host` as the codespace agent of "lab", and its connection to the agent.
 async fn phone(host: &Host) -> (tempfile::TempDir, Arc<Loom>, Arc<AgentConnection>) {
     let dir = tempfile::tempdir().unwrap();
     let loom = Loom::new(dir.path().to_string_lossy().into_owned()).unwrap();
-    loom.clone()
-        .pair(host.pairing_link(), "phone".into(), "lab".into())
-        .await
-        .unwrap();
+    host.add_to(&loom);
     let conn = loom
         .clone()
         .connect("lab".into(), "phone-test".into())
@@ -1402,105 +1367,6 @@ async fn terminals_move_between_the_phone_and_the_desktop() {
     );
     app.until(&conn, "no terminals", |app| app.terminals.is_empty())
         .await;
-}
-
-/// Stands in for `loom-agent serve`'s supervisor: the agent's own workspace
-/// has it, any other existing directory gets a (pretend) new agent, and the
-/// rest is refused as the real one refuses it.
-struct Supervised {
-    this: AgentInfo,
-    others: Mutex<Vec<AgentInfo>>,
-}
-
-#[async_trait]
-impl Supervisor for Supervised {
-    async fn list(&self) -> Result<Vec<AgentInfo>, ApiError> {
-        let mut all = vec![self.this.clone()];
-        all.extend(self.others.lock().unwrap().iter().cloned());
-        Ok(all)
-    }
-
-    async fn spawn(&self, workspace: PathBuf) -> Result<AgentInfo, ApiError> {
-        if workspace == self.this.workspace {
-            return Ok(self.this.clone());
-        }
-        if !workspace.is_dir() {
-            return Err(ApiError::new(
-                ErrorCode::NotFound,
-                format!("{} is not a directory", workspace.display()),
-            ));
-        }
-        let info = AgentInfo {
-            instance: InstanceId(format!("spawned-{}", self.others.lock().unwrap().len())),
-            workspace,
-            ..self.this.clone()
-        };
-        self.others.lock().unwrap().push(info.clone());
-        Ok(info)
-    }
-
-    async fn stop(&self, _instance: &InstanceId) -> Result<(), ApiError> {
-        Ok(())
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_phone_starts_an_agent_for_another_directory() {
-    let host = Host::start(Vec::new()).await;
-    let (_dir, loom, conn) = phone(&host).await;
-    let other = host.root.join("other");
-    std::fs::create_dir_all(&other).unwrap();
-
-    // The agent's own workspace has its agent already.
-    let same = conn
-        .clone()
-        .spawn_agent(host.root.join("ws").display().to_string())
-        .await
-        .unwrap();
-    assert_eq!(same.instance, "phone-test");
-
-    let spawned = conn
-        .clone()
-        .spawn_agent(format!("  {}  ", other.display()))
-        .await
-        .unwrap();
-    assert_eq!(spawned.instance, "spawned-0");
-    assert_eq!(spawned.workspace.as_deref(), Some(other.to_str().unwrap()));
-    // The host's agents list it.
-    let agents = loom.clone().list_agents("lab".into()).await.unwrap();
-    assert!(
-        agents.iter().any(|a| a.instance == "spawned-0"),
-        "{agents:?}"
-    );
-
-    let missing = conn
-        .clone()
-        .spawn_agent(host.root.join("nope").display().to_string())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&missing, LoomError::Api { code, .. } if code == "NotFound"),
-        "{missing:?}"
-    );
-    assert!(matches!(
-        conn.clone().spawn_agent("  ".into()).await,
-        Err(LoomError::Invalid { .. })
-    ));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_phone_updates_the_agents_of_a_host_without_a_link() {
-    let host = Host::start(Vec::new()).await;
-    let (_dir, loom, _conn) = phone(&host).await;
-    let err = loom
-        .clone()
-        .update_agents("lab".into(), Some("0.5.0".into()))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&err, LoomError::Api { code, message } if code == "Unsupported" && message.contains("cannot update itself")),
-        "{err:?}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

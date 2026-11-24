@@ -115,9 +115,8 @@ async fn the_app_pairs_with_an_oracle_and_follows_its_lists() {
         .pair(link, "phone".into(), "next".into())
         .await
         .unwrap();
-    assert!(paired.oracle);
     assert_eq!(paired.name, "next");
-    assert!(loom.clone().list_agents("next".into()).await.is_err());
+    assert_eq!(loom.hosts(), std::slice::from_ref(&paired));
 
     let connection = loom.clone().connect_oracle("next".into()).await.unwrap();
     let lists = wait_lists(&connection, |l| l.connected && !l.workspaces.is_empty()).await;

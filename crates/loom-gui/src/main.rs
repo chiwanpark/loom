@@ -39,6 +39,12 @@ fn main() -> anyhow::Result<()> {
     let config_path = config_path.unwrap_or_else(|| ClientConfig::default_path(&env.dirs));
     let config = ClientConfig::load(&config_path)
         .with_context(|| format!("loading {}", config_path.display()))?;
+    if !config.removed_hosts.is_empty() {
+        tracing::warn!(
+            hosts = %config.removed_hosts.join(", "),
+            "Loom no longer has local, SSH, and relay hosts; the client ignores them and removes them from the file when it saves it"
+        );
+    }
     let backend = Backend::new()?;
     // An updated client restarts with the same configuration.
     let restart_arguments = vec!["--config".into(), config_path.clone().into_os_string()];

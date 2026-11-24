@@ -22,8 +22,8 @@ use gpui_component::{
     resizable_panel, v_flex, v_resizable,
 };
 use loom_client::proto::{
-    ChangeStatus, Command, ConfigReload, ErrorCode, FileChange as GitChange, Notice, Payload,
-    SessionId, SessionInfo, TerminalHolder, WorkspaceChanges,
+    ChangeStatus, FileChange as GitChange, Notice, SessionId, SessionInfo, TerminalHolder,
+    WorkspaceChanges,
 };
 use loom_config::{ClientConfig, HostEntry};
 use loom_view_model::host_colors;
@@ -31,7 +31,7 @@ use loom_view_model::host_colors;
 use crate::agent_list::{self, AgentEntry, Group, Link};
 use crate::backend::Backend;
 use crate::changes::{FileChange, display_path, session_changes};
-use crate::connection::{self, AgentSummary, Env, Target};
+use crate::connection::{self, AgentSummary, Env};
 use crate::conversation::{Activity, short_id, state_label};
 use crate::layout::{self, GroupKey, SavedGroup, SavedLayout, SavedPane, SavedTab};
 use crate::oracle::OracleLink;
@@ -42,7 +42,6 @@ use crate::ui::dialogs::{self, FormField, open_form};
 use crate::ui::diff::{DiffKind, DiffView};
 use crate::ui::file_view::FileView;
 use crate::ui::files::{FileTreeEvent, FileTreeView};
-use crate::ui::new_session::{self, NewSessionView, Pick, WorkspaceChoice};
 use crate::ui::notes_view::NotesView;
 use crate::ui::notify;
 use crate::ui::panes::{Axis, Member, PaneGroup, PaneId, SplitDirection};
@@ -96,8 +95,8 @@ actions!(
         MoveTabRight,
         ShowProviders,
         ChooseModel,
-        AddSshHost,
-        PairRelay,
+        #[action(deprecated_aliases = ["loom::PairRelay"])]
+        PairOracle,
         Quit,
         SplitLeft,
         SplitRight,
@@ -434,8 +433,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("pane: activate down", Box::new(ActivatePaneDown)),
         ("theme: select theme", Box::new(SelectTheme)),
         ("agent: providers and sign-in", Box::new(ShowProviders)),
-        ("hosts: add ssh host", Box::new(AddSshHost)),
-        ("hosts: pair with a relay", Box::new(PairRelay)),
+        ("hosts: pair with an oracle", Box::new(PairOracle)),
         ("app: check for updates", Box::new(CheckForUpdates)),
         ("app: quit", Box::new(Quit)),
     ]
@@ -632,8 +630,6 @@ pub struct Workspace {
     connecting: HashSet<(String, String)>,
     /// Why the last connection to an agent failed, by `(host, instance)`.
     connect_errors: HashMap<(String, String), String>,
-    /// Agents stopped from here, which may still be listed while they exit.
-    stopped: HashSet<(String, String)>,
     show_archived: bool,
     active_connection: Option<Entity<AgentConnection>>,
     groups: Vec<SessionGroup>,
@@ -704,7 +700,6 @@ impl Workspace {
             connections: Vec::new(),
             connecting: HashSet::new(),
             connect_errors: HashMap::new(),
-            stopped: HashSet::new(),
             show_archived: false,
             active_connection: None,
             groups: Vec::new(),
@@ -1043,9 +1038,9 @@ impl Workspace {
         self.list_host(ix, true, window, cx);
     }
 
-    /// Lists the host's agents again. With `retry_failed`, agents whose
-    /// connection failed are tried again; otherwise they wait for a click, so
-    /// a failure that triggers a listing cannot loop.
+    /// Lists the host's codespace agents again. With `retry_failed`, agents
+    /// whose connection failed are tried again; otherwise they wait for a
+    /// click, so a failure that triggers a listing cannot loop.
     fn list_host(
         &mut self,
         ix: usize,
@@ -1056,70 +1051,11 @@ impl Workspace {
         let Some(host) = self.hosts.get_mut(ix) else {
             return;
         };
-        if codespaces::is_oracle(&host.entry) {
-            let name = host.entry.name().to_owned();
-            if retry_failed {
-                self.connect_errors.retain(|(host, _), _| *host != name);
-            }
-            self.sync_oracle(ix, window, cx);
-            return;
-        }
-        host.loading = true;
-        host.error = None;
-        let entry = host.entry.clone();
+        let name = host.entry.name().to_owned();
         if retry_failed {
-            self.connect_errors
-                .retain(|(host, _), _| host != entry.name());
+            self.connect_errors.retain(|(host, _), _| *host != name);
         }
-        let env = self.env.clone();
-        let task = self
-            .backend
-            .run(async move { connection::list_agents(&env, &entry).await });
-        let name = host.entry.name().to_owned();
-        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
-            let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Some(ix) = this.hosts.iter().position(|h| h.entry.name() == name) {
-                    let host = &mut this.hosts[ix];
-                    host.loading = false;
-                    match result {
-                        Some(Ok(agents)) => {
-                            host.agents = agents;
-                            this.connect_discovered(ix, window, cx);
-                        }
-                        Some(Err(err)) => host.error = Some(err),
-                        None => {}
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    /// Connects in the background to the host's agents that have no
-    /// connection yet, so the Sessions tab can list their sessions and follow
-    /// their state. Agents whose last connection failed wait for a click.
-    fn connect_discovered(&mut self, host_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host) = self.hosts.get(host_ix) else {
-            return;
-        };
-        let name = host.entry.name().to_owned();
-        let pending: Vec<String> = host
-            .agents
-            .iter()
-            .map(|agent| agent.instance.clone())
-            .filter(|instance| {
-                let key = (name.clone(), instance.clone());
-                self.find_connection(&name, instance, cx).is_none()
-                    && !self.connect_errors.contains_key(&key)
-                    && !self.stopped.contains(&key)
-            })
-            .collect();
-        for instance in pending {
-            self.connect_with(host_ix, Target::Instance(instance), true, None, window, cx);
-        }
+        self.sync_oracle(ix, window, cx);
     }
 
     /// Drops an agent from its host's list until the host is listed again.
@@ -1149,33 +1085,33 @@ impl Workspace {
     fn connect(
         &mut self,
         host_ix: usize,
-        target: Target,
+        instance: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.connect_with(host_ix, target, false, None, window, cx);
+        self.connect_with(host_ix, instance, false, None, window, cx);
     }
 
-    /// Connects to an agent, and runs `then` with its connection once the
-    /// client is connected.
+    /// Connects to a codespace agent, and runs `then` with its connection
+    /// once the client is connected.
     pub(crate) fn connect_then(
         &mut self,
         host_ix: usize,
-        target: Target,
+        instance: String,
         then: AfterConnect,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.connect_with(host_ix, target, false, Some(then), window, cx);
+        self.connect_with(host_ix, instance, false, Some(then), window, cx);
     }
 
-    /// Connects to an agent. A `background` connection neither reports
-    /// errors nor replaces the active agent. `then` runs once the client
-    /// is connected.
+    /// Connects to a codespace agent. A `background` connection neither
+    /// reports errors nor replaces the active agent. `then` runs once the
+    /// client is connected.
     fn connect_with(
         &mut self,
         host_ix: usize,
-        target: Target,
+        instance: String,
         background: bool,
         then: Option<AfterConnect>,
         window: &mut Window,
@@ -1185,14 +1121,7 @@ impl Workspace {
             return;
         };
         let entry = host.entry.clone();
-        let key = (
-            entry.name().to_owned(),
-            match &target {
-                Target::Instance(id) => id.clone(),
-                Target::Workspace(path) | Target::Attach(path) => path.display().to_string(),
-            },
-        );
-        let by_instance = matches!(target, Target::Instance(_));
+        let key = (entry.name().to_owned(), instance.clone());
         if !self.connecting.insert(key.clone()) {
             if then.is_some() {
                 notify::info(
@@ -1208,7 +1137,7 @@ impl Workspace {
         let task = {
             let entry = entry.clone();
             self.backend
-                .run(async move { connection::connect(&env, &entry, &target).await })
+                .run(async move { connection::connect(&env, &entry, &instance).await })
         };
         cx.notify();
         cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
@@ -1283,9 +1212,7 @@ impl Workspace {
                         }
                         this.connect_errors.insert(key, err);
                         // The agent may be gone; the listing drops it if so.
-                        if by_instance
-                            && let Some(ix) = this.hosts.iter().position(|h| h.entry == entry)
-                        {
+                        if let Some(ix) = this.hosts.iter().position(|h| h.entry == entry) {
                             this.list_host(ix, false, window, cx);
                         }
                     }
@@ -1314,10 +1241,10 @@ impl Workspace {
                         {
                             return false;
                         }
-                        let target = reconnect_target(conn.read(cx));
+                        let instance = conn.read(cx).info.instance.0.clone();
                         let host = conn.read(cx).host.name().to_owned();
                         if let Some(ix) = this.hosts.iter().position(|h| h.entry.name() == host) {
-                            this.connect_with(ix, target, true, None, window, cx);
+                            this.connect_with(ix, instance, true, None, window, cx);
                         }
                         true
                     })
@@ -1398,10 +1325,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let target = reconnect_target(conn.read(cx));
+        let instance = conn.read(cx).info.instance.0.clone();
         let host = conn.read(cx).host.name().to_owned();
         if let Some(ix) = self.hosts.iter().position(|h| h.entry.name() == host) {
-            self.connect(ix, target, window, cx);
+            self.connect(ix, instance, window, cx);
         }
     }
 
@@ -2542,87 +2469,6 @@ impl Workspace {
         }
     }
 
-    /// Asks the agent to read its configuration file again. The agent tells
-    /// every client of an applied or rejected file with a notice, so only
-    /// the other outcomes are reported here.
-    fn reload_config(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let read = conn.read(cx);
-        let client = read.client.clone();
-        let title = read.title();
-        let task = read
-            .backend
-            .run(async move { client.request(Command::ReloadConfig).await });
-        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
-            let result = task.await;
-            let _ = this.update_in(cx, |_, window, cx| match result {
-                Some(Ok(Payload::ConfigReloaded(ConfigReload::Unchanged))) => notify::info(
-                    window,
-                    cx,
-                    format!("{title}: the configuration file has not changed"),
-                ),
-                Some(Ok(_)) => {}
-                Some(Err(loom_client::ClientError::Api(err))) if err.code == ErrorCode::Config => {}
-                Some(Err(err)) => notify::error(
-                    window,
-                    cx,
-                    format!("{title}: could not reload the configuration: {err}"),
-                ),
-                None => {}
-            });
-        })
-        .detach();
-    }
-
-    fn stop_agent(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let mut unsaved = self.unsaved_in(|g| g.connection == conn, cx);
-        unsaved.extend(self.unsaved_notes(Some(&conn), cx));
-        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
-            ws.stop_agent_now(conn, window, cx)
-        });
-    }
-
-    fn stop_agent_now(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let read = conn.read(cx);
-        let client = read.client.clone();
-        let instance = read.info.instance.clone();
-        let host = read.host.name().to_owned();
-        self.stopped.insert((host.clone(), instance.0.clone()));
-        let task = read
-            .backend
-            .run(async move { client.stop_agent(&instance).await });
-        self.drop_connection(&conn, window, cx);
-        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
-            let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Some(Err(err)) = result
-                    && !matches!(err, loom_client::ClientError::Closed)
-                {
-                    notify::error(window, cx, err.to_string());
-                }
-                if let Some(ix) = this.hosts.iter().position(|h| h.entry.name() == host) {
-                    this.refresh_host(ix, window, cx);
-                }
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     /// Closes a connection and its tabs.
     fn drop_connection(
         &mut self,
@@ -2667,280 +2513,17 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Asks where to start a session on a host: in the workspace of one of
-    /// its agents, or in a new directory, for which an agent starts.
-    fn new_session_dialog(
-        &mut self,
-        host_ix: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Entity<NewSessionView>> {
-        let name = self.hosts.get(host_ix)?.entry.name().to_owned();
-        let choices = self
-            .panel_agents(cx)
-            .into_iter()
-            .filter(|agent| agent.host_ix == Some(host_ix))
-            .map(|agent| WorkspaceChoice {
-                label: agent.entry.workspace.clone(),
-                detail: match &agent.entry.link {
-                    Link::Connected => None,
-                    Link::Connecting => Some("Connecting…".to_owned()),
-                    Link::Offline(_) if agent.conn.is_some() => Some("Disconnected".to_owned()),
-                    Link::Offline(_) => Some("Not connected".to_owned()),
-                },
-                instance: agent.instance,
-            })
-            .collect();
-        let this = cx.entity().downgrade();
-        let view = new_session::open(
-            name,
-            choices,
-            Rc::new(move |pick, window, cx| {
-                let _ = this.update(cx, |ws, cx| ws.start_session(host_ix, pick, window, cx));
-            }),
-            window,
-            cx,
-        );
-        Some(view)
-    }
-
-    /// Starts a session where the new session dialog says, after it
-    /// connects to the agent or starts one.
-    fn start_session(
-        &mut self,
-        host_ix: usize,
-        pick: Pick,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let target = match pick {
-            Pick::Agent { instance } => {
-                let connected = self
-                    .hosts
-                    .get(host_ix)
-                    .and_then(|host| self.find_connection(host.entry.name(), &instance, cx))
-                    .filter(|conn| conn.read(cx).status == LinkStatus::Connected);
-                if let Some(conn) = connected {
-                    self.active_connection = Some(conn.clone());
-                    self.new_session(conn, window, cx);
-                    return;
-                }
-                Target::Instance(instance)
-            }
-            Pick::Directory(path) => Target::Workspace(path),
-        };
-        self.connect_then(
-            host_ix,
-            target,
-            Box::new(move |ws, conn, window, cx| ws.new_session(conn, window, cx)),
-            window,
-            cx,
-        );
-    }
-
-    /// Asks for the release to install on a host, through one of its
-    /// connected agents.
-    fn update_agents_dialog(
-        &mut self,
-        host_ix: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(host) = self.hosts.get(host_ix) else {
-            return;
-        };
-        let name = host.entry.name().to_owned();
-        let agents: Vec<loom_client::proto::AgentInfo> = self
-            .connections
-            .iter()
-            .map(|c| c.read(cx))
-            .filter(|c| c.host.name() == name && c.status == LinkStatus::Connected)
-            .map(|c| c.info.clone())
-            .collect();
-        let listed: Vec<String> = host
-            .agents
-            .iter()
-            .map(|a| match &a.workspace {
-                Some(workspace) => workspace.display().to_string(),
-                None => a.instance.clone(),
-            })
-            .collect();
-        if agents.is_empty() && listed.is_empty() {
-            notify::error(
-                window,
-                cx,
-                format!("No agent runs on {name}. Start an agent on {name} to update its agents."),
-            );
-            return;
-        }
-        let mut description = format!(
-            "Install a release of loom-agent on {name}. All agents on {name} that run the replaced binary restart at once. Their running turns stop."
-        );
-        if agents.is_empty() {
-            description.push_str("\n\nAgents:");
-            for agent in &listed {
-                description.push_str(&format!("\n• {agent}"));
-            }
-        } else {
-            description.push_str("\n\nConnected agents:");
-            for agent in &agents {
-                description.push_str(&format!(
-                    "\n• {}: {}",
-                    agent.workspace.display(),
-                    agent.version
-                ));
-            }
-        }
-        description.push_str("\n\nClear the version to install the latest release.");
-        let this = cx.entity();
-        open_form(
-            "Update agents",
-            Some(description),
-            vec![
-                FormField::new("Version", "latest")
-                    .value(loom_update::current_version().to_string()),
-            ],
-            "Update",
-            move |values, window, cx| {
-                let version = values.into_iter().next().unwrap_or_default();
-                let version = (!version.trim().is_empty()).then(|| version.trim().to_owned());
-                this.update(cx, |ws, cx| ws.update_agents(&name, version, window, cx));
-            },
-            window,
-            cx,
-        );
-    }
-
-    fn update_agents(
-        &mut self,
-        host: &str,
-        version: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let conn = self
-            .connections
-            .iter()
-            .find(|c| {
-                let c = c.read(cx);
-                c.host.name() == host && c.status == LinkStatus::Connected
-            })
-            .cloned();
-        let via = if let Some(conn) = conn {
-            Ok(conn.read(cx).client.clone())
-        } else {
-            let Some(node) = self.hosts.iter().find(|h| h.entry.name() == host) else {
-                return;
-            };
-            let Some(agent) = node.agents.first() else {
-                notify::error(window, cx, format!("No agent runs on {host}."));
-                return;
-            };
-            Err((self.env.clone(), node.entry.clone(), agent.instance.clone()))
-        };
-        let task = self.backend.run(async move {
-            match via {
-                Ok(client) => client
-                    .update_agent(version)
-                    .await
-                    .map_err(|e| e.to_string()),
-                Err((env, entry, instance)) => {
-                    connection::update_agents(&env, &entry, &instance, version).await
-                }
-            }
-        });
-        notify::info(window, cx, format!("Updating the agents on {host}…"));
-        let host = host.to_owned();
-        cx.spawn_in(window, async move |this, cx: &mut AsyncWindowContext| {
-            let result = task.await;
-            let _ = this.update_in(cx, |_, window, cx| match result {
-                Some(Ok(update)) => {
-                    let mut message = format!(
-                        "Installed {} on {host}; {} restart{}.",
-                        update.version,
-                        match update.restarting.len() {
-                            1 => "1 agent".to_owned(),
-                            n => format!("{n} agents"),
-                        },
-                        if update.restarting.len() == 1 {
-                            "s"
-                        } else {
-                            ""
-                        },
-                    );
-                    if !update.not_restarted.is_empty() {
-                        message.push_str(&format!(
-                            " {} of another build keep{} {} version until you restart {}.",
-                            match update.not_restarted.len() {
-                                1 => "1 agent".to_owned(),
-                                n => format!("{n} agents"),
-                            },
-                            if update.not_restarted.len() == 1 {
-                                "s"
-                            } else {
-                                ""
-                            },
-                            if update.not_restarted.len() == 1 {
-                                "its"
-                            } else {
-                                "their"
-                            },
-                            if update.not_restarted.len() == 1 {
-                                "it"
-                            } else {
-                                "them"
-                            },
-                        ));
-                    }
-                    notify::success(window, cx, message);
-                }
-                Some(Err(err)) => notify::error(
-                    window,
-                    cx,
-                    format!("Could not update the agents on {host}: {err}"),
-                ),
-                None => {}
-            });
-        })
-        .detach();
-    }
-
-    fn add_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let this = cx.entity();
-        open_form(
-            "Add an SSH host",
-            Some("Loom runs `loom-agent stdio` on the host over your SSH configuration.".into()),
-            vec![
-                FormField::new("Name", "devbox"),
-                FormField::new("SSH destination", "user@devbox"),
-                FormField::new("Remote loom-agent path (optional)", "loom-agent"),
-            ],
-            "Add",
-            move |values, window, cx| {
-                let [name, destination, remote_bin] =
-                    <[String; 3]>::try_from(values).unwrap_or_default();
-                this.update(cx, |ws, cx| {
-                    let entry = HostEntry::Ssh {
-                        name,
-                        destination,
-                        remote_bin: (!remote_bin.is_empty()).then_some(remote_bin),
-                    };
-                    ws.add_host(entry, window, cx);
-                });
-            },
-            window,
-            cx,
-        );
-    }
-
     fn pair_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         open_form(
-            "Pair through a relay",
-            Some("Run `loom-agent pair` on the agent host, or `loom-oracle-cli pair-device` for an oracle, and paste the pairing link here.".into()),
+            "Pair with an oracle",
+            Some(
+                "Run `loom-oracle-cli pair-device` on the oracle, and paste the pairing link here."
+                    .into(),
+            ),
             vec![
                 FormField::new("Name", "home"),
-                FormField::new("Pairing link", "loom://relay.example.com/…"),
+                FormField::new("Pairing link", "loom://oracle.example.com/…"),
                 FormField::new("Client label", "").value(connection::default_label()),
             ],
             "Pair",
@@ -3430,21 +3013,11 @@ impl Workspace {
             })
             .when(tab == RightTab::Sessions, |el| {
                 el.child(
-                    Button::new("add-ssh")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Globe)
-                        .tooltip("Add an SSH host")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.add_ssh_dialog(window, cx)),
-                        ),
-                )
-                .child(
                     Button::new("pair")
                         .ghost()
                         .xsmall()
                         .icon(IconName::Network)
-                        .tooltip("Pair through a relay")
+                        .tooltip("Pair with an oracle")
                         .on_click(cx.listener(|this, _, window, cx| this.pair_dialog(window, cx))),
                 )
             })
@@ -3746,10 +3319,8 @@ impl Workspace {
     fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_connection.clone() {
             Some(conn) => self.new_session(conn, window, cx),
-            None if self.hosts.iter().any(|h| codespaces::is_oracle(&h.entry)) => {
-                self.workspace_picker(window, cx)
-            }
-            None => notify::info(window, cx, "Connect to an agent first."),
+            None if !self.hosts.is_empty() => self.workspace_picker(window, cx),
+            None => notify::info(window, cx, "Pair with an oracle first."),
         }
     }
 
@@ -4042,7 +3613,7 @@ impl Workspace {
                                     cx.notify();
                                 }
                             }
-                            None => ws.connect(hix, Target::Instance(instance), window, cx),
+                            None => ws.connect(hix, instance, window, cx),
                         });
                     })
                     .detail(format!("{} · {status}", host.entry.name())),
@@ -4098,18 +3669,13 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_add_ssh(&mut self, _: &AddSshHost, window: &mut Window, cx: &mut Context<Self>) {
-        self.add_ssh_dialog(window, cx);
-    }
-
-    fn on_pair(&mut self, _: &PairRelay, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_pair(&mut self, _: &PairOracle, window: &mut Window, cx: &mut Context<Self>) {
         self.pair_dialog(window, cx);
     }
 
     /// The agents the panel lists: every agent the hosts report, plus
     /// connections to agents they no longer list.
     fn panel_agents(&self, cx: &App) -> Vec<PanelAgent> {
-        let home = std::env::var("HOME").ok();
         let mut agents = Vec::new();
         let mut seen = HashSet::new();
         let link_of = |conn: Option<&Entity<AgentConnection>>, key: &(String, String)| match conn
@@ -4120,16 +3686,9 @@ impl Workspace {
             Some(LinkStatus::Disconnected(reason)) => Link::Offline(Some(reason)),
             None => Link::Offline(self.connect_errors.get(key).cloned()),
         };
-        let workspace_label = |host: &HostEntry, path: String| match host {
-            HostEntry::Local { .. } => agent_list::short_path(&path, home.as_deref()),
-            _ => path,
-        };
         for (hix, host) in self.hosts.iter().enumerate() {
             for agent in &host.agents {
                 let key = (host.entry.name().to_owned(), agent.instance.clone());
-                if self.stopped.contains(&key) {
-                    continue;
-                }
                 let conn = self.find_connection(host.entry.name(), &agent.instance, cx);
                 if let Some(conn) = &conn {
                     seen.insert(conn.entity_id());
@@ -4141,16 +3700,13 @@ impl Workspace {
                     .unwrap_or_else(|| format!("agent {}", short_id(&agent.instance)));
                 let link = link_of(conn.as_ref(), &key);
                 let sessions = match &conn {
-                    Some(c) if link == Link::Connected || !codespaces::is_oracle(&host.entry) => {
-                        c.read(cx).sessions.clone()
-                    }
-                    None if !codespaces::is_oracle(&host.entry) => Vec::new(),
+                    Some(c) if link == Link::Connected => c.read(cx).sessions.clone(),
                     _ => self.codespace_sessions(&host.entry, &agent.instance, cx),
                 };
                 agents.push(PanelAgent {
                     entry: AgentEntry {
                         remote: host.entry.name().to_owned(),
-                        workspace: workspace_label(&host.entry, path),
+                        workspace: path,
                         link,
                         sessions,
                     },
@@ -4169,10 +3725,7 @@ impl Workspace {
             agents.push(PanelAgent {
                 entry: AgentEntry {
                     remote: read.host.name().to_owned(),
-                    workspace: workspace_label(
-                        &read.host,
-                        read.info.workspace.display().to_string(),
-                    ),
+                    workspace: read.info.workspace.display().to_string(),
                     link: link_of(Some(conn), &key),
                     sessions: read.sessions.clone(),
                 },
@@ -4185,7 +3738,7 @@ impl Workspace {
     }
 
     /// The Sessions tab: the sessions of the connected agents by state, then
-    /// the hosts with their agents.
+    /// the workspaces of the oracles.
     fn render_sessions_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let agents = self.panel_agents(cx);
@@ -4200,7 +3753,9 @@ impl Workspace {
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .whitespace_normal()
-                    .child("No sessions. To start one, click + next to a workspace under Workspaces or a host under Remotes."),
+                    .child(
+                        "No sessions. To start one, click + next to a workspace under Workspaces.",
+                    ),
             );
         }
         for (group, rows) in groups {
@@ -4219,10 +3774,7 @@ impl Workspace {
                 ));
             }
         }
-        if self.hosts.iter().any(|h| codespaces::is_oracle(&h.entry)) {
-            list = list.child(self.render_oracles(cx));
-        }
-        list = list.child(self.render_remotes(&agents, cx));
+        list = list.child(self.render_oracles(cx));
         div()
             .id("sessions-scroll")
             .flex_1()
@@ -4361,7 +3913,7 @@ impl Workspace {
                         let id = click_session.id.clone();
                         this.connect_then(
                             *host_ix,
-                            Target::Instance(instance.clone()),
+                            instance.clone(),
                             Box::new(move |ws, conn, window, cx| {
                                 let info =
                                     conn.read(cx).sessions.iter().find(|s| s.id == id).cloned();
@@ -4426,175 +3978,17 @@ impl Workspace {
             )
             .when_some(conn, |el, conn| {
                 let id = SharedString::from(format!("session-menu-{group:?}-{ix}"));
-                el.child(self.render_row_menu(id, conn, Some(info), cx))
+                el.child(self.render_row_menu(id, conn, info, cx))
             })
             .into_any_element()
     }
 
-    /// One agent of a host under Remotes: its workspace and how the client
-    /// is linked to it. A click connects to an agent that is not connected.
-    fn render_host_agent(
-        &self,
-        host_ix: usize,
-        ix: usize,
-        agent: &PanelAgent,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme().clone();
-        let conn = agent.conn.clone();
-        let link = agent.entry.link.clone();
-        let (indicator, detail): (AnyElement, Option<(String, gpui::Hsla)>) = match &link {
-            Link::Connected => {
-                let count = agent.entry.sessions.iter().filter(|s| !s.archived).count();
-                let text = match count {
-                    0 => "No sessions".to_owned(),
-                    1 => "1 session".to_owned(),
-                    n => format!("{n} sessions"),
-                };
-                (dot(theme.success), Some((text, theme.muted_foreground)))
-            }
-            Link::Connecting => (
-                spinner(theme.muted_foreground),
-                Some(("Connecting…".to_owned(), theme.muted_foreground)),
-            ),
-            Link::Offline(reason) => {
-                let state = if conn.is_some() {
-                    "Disconnected"
-                } else {
-                    "Not connected"
-                };
-                match reason {
-                    Some(reason) => (dot(theme.danger), Some((reason.clone(), theme.danger))),
-                    None => (
-                        dot(theme.muted_foreground),
-                        Some((state.to_owned(), theme.muted_foreground)),
-                    ),
-                }
-            }
-        };
-        let unlinked = conn.is_none() && matches!(link, Link::Offline(_));
-        let instance = agent.instance.clone();
-        let click_conn = conn.clone();
-        let workspace_label = agent.entry.workspace.clone();
-        h_flex()
-            .id(SharedString::from(format!("host-agent-{host_ix}-{ix}")))
-            .w_full()
-            .items_start()
-            .gap_2()
-            .pl_5()
-            .pr_1()
-            .py_0p5()
-            .rounded_md()
-            .hover(|s| s.bg(theme.list_hover))
-            .when(link != Link::Connecting, |el| el.cursor_pointer())
-            .on_click(
-                cx.listener(move |this, _, window, cx| match (&click_conn, &link) {
-                    (_, Link::Connecting) => {}
-                    (Some(conn), Link::Connected) => {
-                        this.active_connection = Some(conn.clone());
-                        cx.notify();
-                    }
-                    (Some(conn), Link::Offline(_)) => this.reconnect(conn, window, cx),
-                    (None, _) => {
-                        this.connect(host_ix, Target::Instance(instance.clone()), window, cx)
-                    }
-                }),
-            )
-            .child(div().h(px(20.)).flex().items_center().child(indicator))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .child(workspace_label),
-                    )
-                    .when_some(detail, |el, (text, color)| {
-                        el.child(
-                            div()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .text_xs()
-                                .text_color(color)
-                                .child(text),
-                        )
-                    }),
-            )
-            .when_some(conn, |el, conn| {
-                let id = SharedString::from(format!("host-agent-menu-{host_ix}-{ix}"));
-                el.child(self.render_row_menu(id, conn, None, cx))
-            })
-            .when(unlinked, |el| {
-                let id = SharedString::from(format!("host-agent-menu-{host_ix}-{ix}"));
-                el.child(self.render_unlinked_menu(id, agent, cx))
-            })
-            .into_any_element()
-    }
-
-    /// The menu of an agent the host lists but the client has no connection
-    /// to, such as one that failed to connect or has exited.
-    fn render_unlinked_menu(
-        &self,
-        id: SharedString,
-        agent: &PanelAgent,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let workspace = cx.entity().downgrade();
-        let host_ix = agent.host_ix;
-        let host = agent.entry.remote.clone();
-        let instance = agent.instance.clone();
-        div()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                Button::new(id)
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Ellipsis)
-                    .dropdown_menu(move |mut menu, _, _| {
-                        let item = |label: &'static str, run: Rc<MenuAction>| {
-                            let workspace = workspace.clone();
-                            PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                                let run = run.clone();
-                                let _ = workspace.update(cx, |ws, cx| run(ws, window, cx));
-                            })
-                        };
-                        if let Some(hix) = host_ix {
-                            let id = instance.clone();
-                            menu = menu.item(item(
-                                "Connect",
-                                Rc::new(move |ws, window, cx| {
-                                    ws.connect(hix, Target::Instance(id.clone()), window, cx)
-                                }),
-                            ));
-                            menu = menu.item(item(
-                                "Look for agents again",
-                                Rc::new(move |ws, window, cx| ws.refresh_host(hix, window, cx)),
-                            ));
-                        }
-                        let (host, id) = (host.clone(), instance.clone());
-                        menu.separator().item(item(
-                            "Remove from list",
-                            Rc::new(move |ws, _, cx| {
-                                ws.forget_agent(&host, &id);
-                                cx.notify();
-                            }),
-                        ))
-                    }),
-            )
-            .into_any_element()
-    }
-
-    /// The menu of a session, or with `session` of `None`, of its agent.
+    /// The menu of a session.
     fn render_row_menu(
         &self,
         id: SharedString,
         conn: Entity<AgentConnection>,
-        session: Option<SessionInfo>,
+        info: SessionInfo,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let workspace = cx.entity().downgrade();
@@ -4634,60 +4028,40 @@ impl Workspace {
                             "New session in this workspace",
                             Rc::new(move |ws, window, cx| ws.new_session(c.clone(), window, cx)),
                         ));
-                        if let Some(info) = &session {
-                            let (c, i) = (conn.clone(), info.clone());
-                            menu = menu.item(item(
-                                "Rename…",
-                                Rc::new(move |_, window, cx| {
-                                    crate::ui::session::open_rename(
-                                        c.clone(),
-                                        i.id.clone(),
-                                        i.title.clone().unwrap_or_default(),
-                                        window,
-                                        cx,
-                                    )
-                                }),
-                            ));
-                            let (c, i) = (conn.clone(), info.clone());
-                            menu = menu.item(item(
-                                "System prompt",
-                                Rc::new(move |ws, window, cx| {
-                                    ws.open_session(c.clone(), i.clone(), window, cx);
-                                    ws.show_system_prompt(window, cx);
-                                }),
-                            ));
-                            let (c, id, archived) = (conn.clone(), info.id.clone(), info.archived);
-                            menu = menu.item(item(
-                                if archived { "Restore" } else { "Archive" },
-                                Rc::new(move |ws, window, cx| {
-                                    ws.archive_session(c.clone(), id.clone(), !archived, window, cx)
-                                }),
-                            ));
-                            let (c, i) = (conn.clone(), info.clone());
-                            menu = menu.item(item(
-                                "Delete…",
-                                Rc::new(move |ws, window, cx| {
-                                    ws.delete_session(c.clone(), i.clone(), window, cx)
-                                }),
-                            ));
-                            return menu;
-                        }
-                        let c = conn.clone();
-                        menu = menu.separator().item(item(
-                            "Providers and sign-in…",
+                        let (c, i) = (conn.clone(), info.clone());
+                        menu = menu.item(item(
+                            "Rename…",
                             Rc::new(move |_, window, cx| {
-                                dialogs::open_providers(c.clone(), window, cx)
+                                crate::ui::session::open_rename(
+                                    c.clone(),
+                                    i.id.clone(),
+                                    i.title.clone().unwrap_or_default(),
+                                    window,
+                                    cx,
+                                )
                             }),
                         ));
-                        let c = conn.clone();
+                        let (c, i) = (conn.clone(), info.clone());
                         menu = menu.item(item(
-                            "Reload configuration",
-                            Rc::new(move |ws, window, cx| ws.reload_config(c.clone(), window, cx)),
+                            "System prompt",
+                            Rc::new(move |ws, window, cx| {
+                                ws.open_session(c.clone(), i.clone(), window, cx);
+                                ws.show_system_prompt(window, cx);
+                            }),
                         ));
-                        let c = conn.clone();
+                        let (c, id, archived) = (conn.clone(), info.id.clone(), info.archived);
+                        menu = menu.item(item(
+                            if archived { "Restore" } else { "Archive" },
+                            Rc::new(move |ws, window, cx| {
+                                ws.archive_session(c.clone(), id.clone(), !archived, window, cx)
+                            }),
+                        ));
+                        let (c, i) = (conn.clone(), info.clone());
                         menu.item(item(
-                            "Stop agent",
-                            Rc::new(move |ws, window, cx| ws.stop_agent(c.clone(), window, cx)),
+                            "Delete…",
+                            Rc::new(move |ws, window, cx| {
+                                ws.delete_session(c.clone(), i.clone(), window, cx)
+                            }),
                         ))
                     }),
             )
@@ -4736,147 +4110,6 @@ impl Workspace {
                 )
             })
             .into_any_element()
-    }
-
-    /// The configured hosts, with their agents, discovery errors, and
-    /// actions.
-    fn render_remotes(&self, agents: &[PanelAgent], cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let mut section = v_flex().w_full().gap_0p5().child(
-            div()
-                .px_1()
-                .pt_3()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.muted_foreground)
-                .child("Remotes"),
-        );
-        for (hix, host) in self.hosts.iter().enumerate() {
-            if codespaces::is_oracle(&host.entry) {
-                continue;
-            }
-            let kind = match &host.entry {
-                HostEntry::Local { .. } => "local".to_owned(),
-                HostEntry::Ssh { destination, .. } => format!("ssh {destination}"),
-                HostEntry::Relay { .. } => "relay".to_owned(),
-                HostEntry::Oracle { .. } => "oracle".to_owned(),
-            };
-            let count = host.agents.len();
-            let color = self.host_color(host.entry.name());
-            section = section.child(
-                v_flex()
-                    .w_full()
-                    .px_1()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(Icon::new(IconName::HardDrive).xsmall())
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .text_sm()
-                                    .child(
-                                        div()
-                                            .when_some(color, |el, color| el.text_color(color))
-                                            .child(host.entry.name().to_owned()),
-                                    )
-                                    .child(
-                                        div()
-                                            .ml_1()
-                                            .text_xs()
-                                            .text_color(theme.muted_foreground)
-                                            .child(format!(
-                                                "{kind} · {count} agent{}",
-                                                if count == 1 { "" } else { "s" }
-                                            )),
-                                    )
-                                    .flex()
-                                    .items_baseline(),
-                            )
-                            .child(
-                                Button::new(("refresh", hix))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::RefreshCw)
-                                    .loading(host.loading)
-                                    .tooltip("Look for agents again")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.refresh_host(hix, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new(("new-session", hix))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Plus)
-                                    .tooltip("New session")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.new_session_dialog(hix, window, cx);
-                                    })),
-                            )
-                            .child(self.render_host_color_menu(hix, cx))
-                            .child(
-                                Button::new(("update-agents", hix))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(gpui_kit_assets::IconName::Download)
-                                    .tooltip("Update agents…")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.update_agents_dialog(hix, window, cx)
-                                    })),
-                            )
-                            .when(!matches!(host.entry, HostEntry::Local { .. }), |el| {
-                                el.child(
-                                    Button::new(("remove-host", hix))
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(IconName::Delete)
-                                        .tooltip("Remove this host")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.remove_host(hix, window, cx)
-                                        })),
-                                )
-                            }),
-                    )
-                    .when_some(host.error.clone(), |el, error| {
-                        el.child(
-                            div()
-                                .pl_5()
-                                .text_xs()
-                                .text_color(theme.danger)
-                                .whitespace_normal()
-                                .child(error),
-                        )
-                    }),
-            );
-            for (ix, agent) in agents
-                .iter()
-                .filter(|agent| agent.host_ix == Some(hix))
-                .enumerate()
-            {
-                section = section.child(self.render_host_agent(hix, ix, agent, cx));
-            }
-        }
-        let others: Vec<&PanelAgent> = agents.iter().filter(|a| a.host_ix.is_none()).collect();
-        if !others.is_empty() {
-            section = section.child(
-                div()
-                    .px_1()
-                    .pt_2()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("Agents of removed hosts"),
-            );
-            for (ix, agent) in others.into_iter().enumerate() {
-                section = section.child(self.render_host_agent(usize::MAX, ix, agent, cx));
-            }
-        }
-        section.into_any_element()
     }
 
     fn render_center(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -5162,14 +4395,8 @@ impl Workspace {
         let mut right = h_flex().gap_3();
         if let Some(conn) = &self.active_connection {
             let conn = conn.read(cx);
-            let (transport, transport_icon) = match &conn.host {
-                HostEntry::Local { .. } => ("local socket", IconName::HardDrive),
-                HostEntry::Ssh { .. } => ("ssh", IconName::Network),
-                HostEntry::Relay { .. } => ("relay (end-to-end encrypted)", IconName::Globe),
-                HostEntry::Oracle { .. } => {
-                    ("oracle relay (end-to-end encrypted)", IconName::Globe)
-                }
-            };
+            let (transport, transport_icon) =
+                ("oracle relay (end-to-end encrypted)", IconName::Globe);
             let agent_tooltip: SharedString =
                 format!("Agent {} over {transport}", conn.title()).into();
             left = left.child(
@@ -5295,15 +4522,6 @@ fn telemetry_item(
     )
 }
 
-fn reconnect_target(conn: &AgentConnection) -> Target {
-    match conn.host {
-        HostEntry::Relay { .. } | HostEntry::Oracle { .. } => {
-            Target::Instance(conn.info.instance.0.clone())
-        }
-        _ => Target::Attach(conn.info.workspace.clone()),
-    }
-}
-
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -5390,7 +4608,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_show_sessions))
             .on_action(cx.listener(Self::on_providers))
             .on_action(cx.listener(Self::on_choose_model))
-            .on_action(cx.listener(Self::on_add_ssh))
             .on_action(cx.listener(Self::on_pair))
             .on_action(cx.listener(Self::on_split_left))
             .on_action(cx.listener(Self::on_split_right))
@@ -5629,7 +4846,6 @@ mod tests {
                 state_home: root.join("gui-state"),
                 runtime_dir: None,
             },
-            agent_bin: "/nonexistent/loom-agent".into(),
             codespaces: Default::default(),
         };
         let backend = agent.backend.clone();
@@ -5708,54 +4924,6 @@ mod tests {
             notice_toast(title, &Notice::ShuttingDown).1,
             "local · /work: the agent is shutting down"
         );
-    }
-
-    /// Each reload shows one toast: the agent's notice for an applied or
-    /// rejected file, the reply for an unchanged one.
-    #[gpui::test]
-    fn reloading_the_configuration_reports_each_outcome_once(cx: &mut TestAppContext) {
-        let agent = TestAgent::start();
-        let (ws, conn, cx) = connected(&agent, cx);
-        let toasts =
-            |cx: &mut VisualTestContext| cx.update(|window, cx| window.notifications(cx).len());
-        let reload = |cx: &mut VisualTestContext, expected: usize| {
-            ws.update_in(cx, |ws, window, cx| {
-                ws.reload_config(conn.clone(), window, cx)
-            });
-            let mut settled = 0;
-            for _ in 0..1000 {
-                cx.run_until_parked();
-                if toasts(cx) >= expected {
-                    // Give a second toast the time to turn up.
-                    settled += 1;
-                    if settled == 30 {
-                        assert_eq!(toasts(cx), expected);
-                        return;
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            panic!("timed out waiting for toast {expected}");
-        };
-        let allow = "policy:\n  default: allow\n";
-
-        std::fs::write(&agent.config_path, allow).unwrap();
-        reload(cx, 1);
-        assert_eq!(
-            agent.config().policy.default,
-            loom_config::PolicyAction::Allow
-        );
-        reload(cx, 2);
-
-        std::fs::write(&agent.config_path, format!("{allow}bogus: 1\n")).unwrap();
-        reload(cx, 3);
-        assert_eq!(
-            agent.config().policy.default,
-            loom_config::PolicyAction::Allow
-        );
-
-        std::fs::write(&agent.config_path, allow).unwrap();
-        reload(cx, 4);
     }
 
     fn file_view(ws: &Entity<Workspace>, cx: &App) -> Option<Entity<FileView>> {
@@ -6632,7 +5800,17 @@ mod tests {
     #[gpui::test]
     fn host_colors_are_saved_and_go_with_their_host(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
-        let (ws, _conn, cx) = connected(&agent, cx);
+        let (ws, conn, cx) = connected(&agent, cx);
+        let entry = conn.read_with(cx, |conn, _| conn.host.clone());
+        ws.update(cx, |ws, _| {
+            ws.hosts.push(HostNode {
+                entry,
+                agents: Vec::new(),
+                loading: false,
+                error: None,
+                oracle: None,
+            })
+        });
         let saved = |cx: &mut VisualTestContext| {
             let path = ws.read_with(cx, |ws, _| ws.config_path.clone());
             ClientConfig::load(&path).unwrap().appearance.host_colors
@@ -6749,43 +5927,5 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-    }
-
-    /// An agent without sessions has no row among the sessions, only under
-    /// its host, and the host's + button starts sessions in its workspace.
-    #[gpui::test]
-    fn the_new_session_dialog_starts_sessions_in_running_agents(cx: &mut TestAppContext) {
-        let agent = TestAgent::start();
-        let (ws, conn, cx) = connected(&agent, cx);
-        cx.run_until_parked();
-        let listed = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
-            ws.read_with(cx, |ws, cx| {
-                let agents = ws.panel_agents(cx);
-                let entries: Vec<AgentEntry> = agents.iter().map(|a| a.entry.clone()).collect();
-                let sessions: usize = agent_list::group(&entries)
-                    .iter()
-                    .map(|(_, rows)| rows.len())
-                    .sum();
-                let under_host = agents.iter().filter(|a| a.host_ix == Some(0)).count();
-                (sessions, under_host)
-            })
-        };
-        assert_eq!(listed(&ws, cx), (0, 1));
-
-        let dialog = ws
-            .update_in(cx, |ws, window, cx| ws.new_session_dialog(0, window, cx))
-            .unwrap();
-        cx.run_until_parked();
-        assert!(has_dialog(cx));
-        let choices = dialog.read_with(cx, |view, _| view.choices().to_vec());
-        assert_eq!(choices.len(), 1);
-        assert_eq!(choices[0].instance, "test-instance");
-        assert_eq!(choices[0].detail, None);
-        click("workspace-choice-0", cx);
-        assert!(!has_dialog(cx));
-        wait_until(cx, |cx| {
-            ws.read(cx).active_group.is_some() && conn.read(cx).sessions.len() == 1
-        });
-        assert_eq!(listed(&ws, cx), (1, 1));
     }
 }

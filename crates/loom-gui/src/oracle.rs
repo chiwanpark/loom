@@ -513,7 +513,6 @@ pub(crate) mod tests {
             .unwrap();
             let env = Env {
                 dirs: dirs(&root.join("client")),
-                agent_bin: "/nonexistent/loom-agent".into(),
                 codespaces: Default::default(),
             };
             let device = oracle
@@ -559,9 +558,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let test = TestOracle::start(&root);
-        let HostEntry::Oracle { name, url, .. } = &test.entry else {
-            panic!("{:?}", test.entry);
-        };
+        let HostEntry::Oracle { name, url, .. } = &test.entry;
         assert_eq!(name, "next");
         assert!(url.starts_with("ws://127.0.0.1:"), "{url}");
 
