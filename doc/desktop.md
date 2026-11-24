@@ -130,11 +130,17 @@ The **…** button of a codespace opens its menu:
 - **New session** adds a session in the codespace.
 - **Open pull request…** asks for a title, a body, and the draft mark. For each repository with commits, the agent pushes the branch and opens a pull request to the base branch. The client opens the first pull request in the browser.
 - **Show start progress** opens the progress view of a codespace that starts or that failed.
+- **Stop codespace…** stops the codespace. Its sessions and terminals end, and its files stay.
+- **Resume codespace…** starts a stopped codespace again and shows the start progress. A click on a stopped codespace also does this.
 - **Close codespace…** shows the close guard. For each repository with unsaved work, select **Push** or **Discard**. A push of changed files needs a commit message. The client pushes the selected repositories and then tells the oracle to close the codespace. If a push fails, the codespace stays open.
 
 In a codespace with more than one repository, the **Changes** panel shows the changes of each repository under its directory name.
 
 The model picker shows the account name of each model provider.
+
+The tooltip of a codespace shows when the oracle stops it after a time without activity, and when it deletes a stopped codespace. See [Codespace lifecycle](oracle.md#codespace-lifecycle).
+
+When the host of a codespace has an SSH destination, the client connects to the agent through SSH first. If SSH fails, it uses the relay of the oracle. See [SSH connections](host.md#ssh-connections).
 
 ### Oracle settings
 
@@ -143,12 +149,13 @@ You do all configuration of an oracle in the desktop client. Click the gear butt
 | Page | Contents |
 | --- | --- |
 | Devices | The paired devices. **Add device…** shows a pairing link and a QR code. You can rename and revoke a device, and cancel an open link. |
-| Hosts | The hosts with their status, their report, and the results of `loom-host check`. **Add host…** shows a join link. **Check** runs the check again, and **Check with Docker** also tests Docker. You can set the environment, the setup script, and the SSH destination of each host. The page shows the volumes on each host with their sizes. |
+| Hosts | The hosts with their status, their report, and the results of `loom-host check`. **Add host…** shows a join link. **Check** runs the check again, and **Check with Docker** also tests Docker. You can set the environment, the setup script, and the SSH destination of each host. **Limits…** sets the maximum codespaces, the maximum running codespaces, the idle stop, and the retention of a host. See [Codespace limits](oracle.md#codespace-limits). The page shows the volumes on each host with their sizes. |
 | Git providers | The URLs, the Git name and email, and the route of each provider. The Git credentials of each provider with their scope, login, and expiry date. You can check a token and replace it. The page shows a warning for a token that expires in 14 days or less. |
 | Models | The model accounts with their provider, kind, email, and organization. **Add account…** signs in with the browser or a device code, or adds an API key. The client catches the redirect of the browser when the provider uses a local URL. Otherwise, paste the code or the URL. |
 | Secrets | The names of the secrets, and the presets and variables that use each secret. You can set, replace, and delete a value. You cannot read a value. |
 | Presets | The presets and the credentials that each names. **Edit** opens `agent.yaml`, `AGENTS.md`, and the skill files in a text editor. **Import from this computer…** reads `agent.yaml`, `AGENTS.md`, and the skills in `~/.config/loom`, and removes the sections that a codespace sets itself. **Duplicate…** copies a preset with a new name. |
 | Workspaces | The repositories, the volumes, and the host of each workspace, and the volumes of the oracle. **New workspace…** opens the repository search of a Git provider. When you select a repository, the name of the workspace comes from it. Add more repositories and volumes, select the host, and click **Create**. **Edit** changes the host, the repositories, and the volumes. |
+| Audit log | The changes that devices, hosts, and the oracle made, newest first. **Show older entries** loads more. |
 
 - The oracle validates each change when you save it. If it refuses the change, the form or a notification shows the reason.
 - The local rules of a host are not in the client. They stay in the file on the host.
