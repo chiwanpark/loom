@@ -179,7 +179,7 @@ impl SettingsView {
     pub fn has_unsaved(&self, cx: &App) -> bool {
         self.preset.as_ref().is_some_and(|p| p.is_dirty(cx))
             || self.scripts.values().any(|s| s.is_dirty(cx))
-            || self.workspace.as_ref().is_some_and(|w| w.is_dirty())
+            || self.workspace.as_ref().is_some_and(|w| w.is_dirty(cx))
     }
 
     fn call<T, F, Fut>(&self, cx: &App, f: F) -> impl Future<Output = Result<T, String>> + 'static
@@ -438,7 +438,7 @@ impl Render for SettingsView {
 mod tests {
     use gpui::{AppContext, TestAppContext, VisualTestContext};
     use gpui_component::{Root, WindowExt};
-    use loom_client::oracle_proto::{HostCall, HostReport, Repository, Role};
+    use loom_client::oracle_proto::{HostCall, HostReport, Role, VolumeInput, VolumeKind};
     use loom_client::{ClientIdentity, OracleClient, pair_oracle};
     use serde_json::json;
 
@@ -484,6 +484,7 @@ mod tests {
                             {"name": "driver", "status": "ok", "detail": "process"},
                             {"name": "docker", "status": if docker { "ok" } else { "warning" }, "detail": "not tested"},
                         ]})),
+                        HostCall::CheckWorkspace(_) => Ok(json!({"volumes": true})),
                         _ => Ok(json!({})),
                     };
                     let _ = answer.reply(id, reply).await;
@@ -592,24 +593,54 @@ mod tests {
         cx.run_until_parked();
 
         click("settings-page-workspaces", cx);
-        let repository = Repository {
-            url: "https://github.com/acme/Web_Server.git".into(),
-            provider: None,
-            directory: None,
-            base_branch: None,
-        };
-        view.update_in(cx, |view, window, cx| {
-            view.create_workspace_for(repository, window, cx)
-        });
+        test.oracle
+            .create_volume(
+                &VolumeInput {
+                    name: "cache".into(),
+                    kind: VolumeKind::Incus,
+                    size_mib: None,
+                    path: None,
+                },
+                None,
+            )
+            .unwrap();
+        wait(cx, |cx| !link.read(cx).config.volumes.is_empty());
+        view.update_in(cx, |view, window, cx| view.new_workspace(window, cx));
         cx.run_until_parked();
+        assert!(cx.debug_bounds("settings-workspace-editor").is_some());
+        cx.simulate_input("https://github.com/acme/Web_Server.git");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        view.update_in(cx, |view, window, cx| view.add_repository(window, cx));
+        cx.run_until_parked();
+        cx.simulate_input("https://github.com/acme/web.git");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        view.update_in(cx, |view, window, cx| view.add_mount(window, cx));
+        cx.run_until_parked();
+        cx.simulate_input("/home/dev/.cache");
         click("form-submit", cx);
+        let (name, repositories, volumes) = view.read_with(cx, |view, cx| {
+            let draft = view.workspace.as_ref().expect("no draft");
+            (
+                draft.typed_name(cx),
+                draft.repositories.len(),
+                draft.volumes.len(),
+            )
+        });
+        assert_eq!((name.as_str(), repositories, volumes), ("web-server", 2, 1));
+        view.update_in(cx, |view, window, cx| view.save_workspace(window, cx));
         wait(cx, |cx| {
             link.read(cx)
                 .workspaces
                 .iter()
                 .any(|w| w.name == "web-server")
         });
-        assert_eq!(test.oracle.workspaces().unwrap()[0].host, "box");
+        let workspace = &test.oracle.workspaces().unwrap()[0];
+        assert_eq!(workspace.host, "box");
+        assert_eq!(workspace.repositories.len(), 2);
+        assert_eq!(workspace.volumes[0].path, "/home/dev/.cache");
+        assert!(view.read_with(cx, |view, _| view.workspace.is_none()));
         assert!(cx.debug_bounds("settings-workspace-0").is_some());
     }
 }

@@ -12,7 +12,7 @@ use gpui_component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_fle
 use loom_client::oracle_proto::{
     RemoteRepository, Repository, VolumeInput, VolumeKind, Workspace, WorkspaceVolume, valid_name,
 };
-use loom_view_model::codespaces::parse_memory;
+use loom_view_model::codespaces::{directory, parse_memory};
 use loom_view_model::settings::{age, mount_label, repository_label, suggest_name, volume_label};
 
 use super::form::{self, Field};
@@ -22,16 +22,38 @@ use crate::ui::notify;
 
 pub struct WorkspaceDraft {
     pub name: String,
+    pub name_input: Option<Entity<InputState>>,
     pub host: String,
     pub repositories: Vec<Repository>,
     pub volumes: Vec<WorkspaceVolume>,
-    pub original: Workspace,
+    pub original: Option<Workspace>,
 }
 
 impl WorkspaceDraft {
-    pub fn is_dirty(&self) -> bool {
-        let w = &self.original;
-        w.host != self.host || w.repositories != self.repositories || w.volumes != self.volumes
+    pub fn is_new(&self) -> bool {
+        self.original.is_none()
+    }
+
+    pub(super) fn typed_name(&self, cx: &App) -> String {
+        match &self.name_input {
+            Some(input) => input.read(cx).value().trim().to_owned(),
+            None => self.name.clone(),
+        }
+    }
+
+    pub fn is_dirty(&self, cx: &App) -> bool {
+        match &self.original {
+            Some(w) => {
+                w.host != self.host
+                    || w.repositories != self.repositories
+                    || w.volumes != self.volumes
+            }
+            None => {
+                !self.repositories.is_empty()
+                    || !self.volumes.is_empty()
+                    || !self.typed_name(cx).is_empty()
+            }
+        }
     }
 }
 
@@ -286,11 +308,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .workspace
-            .as_ref()
-            .is_some_and(WorkspaceDraft::is_dirty)
-        {
+        if self.workspace.as_ref().is_some_and(|w| w.is_dirty(cx)) {
             self.confirm_then(
                 "Discard your changes?".to_owned(),
                 "The changes to the open workspace are not saved.".to_owned(),
@@ -308,78 +326,30 @@ impl SettingsView {
         }
     }
 
-    fn new_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn new_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.with_workspace_closed(
             |this, window, cx| {
-                if this.link.read(cx).hosts.is_empty() {
+                let link = this.link.read(cx);
+                let host = link
+                    .hosts
+                    .iter()
+                    .find(|h| h.connected)
+                    .or(link.hosts.first())
+                    .map(|h| h.name.clone());
+                let Some(host) = host else {
                     return notify::error(window, cx, "Add a host first.");
-                }
-                let view = cx.entity().downgrade();
-                open_search(
-                    this.link.clone(),
-                    Rc::new(move |repository, window, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            view.create_workspace_for(repository, window, cx)
-                        });
-                    }),
-                    window,
-                    cx,
-                );
-            },
-            window,
-            cx,
-        );
-    }
-
-    pub(super) fn create_workspace_for(
-        &mut self,
-        repository: Repository,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let link = self.link.read(cx);
-        let mut hosts: Vec<&loom_client::oracle_proto::Host> = link.hosts.iter().collect();
-        hosts.sort_by_key(|h| !h.connected);
-        let hosts: Vec<String> = hosts.into_iter().map(|h| h.name.clone()).collect();
-        let taken: Vec<String> = link.workspaces.iter().map(|w| w.name.clone()).collect();
-        let suggested = suggest_name(&loom_view_model::codespaces::directory(&repository), &taken);
-        let link = self.link.clone();
-        form::open(
-            "New workspace",
-            Some(format!(
-                "A workspace with {}. Each codespace of the workspace clones it. To add more repositories or volumes, edit the workspace later.",
-                repository.url
-            )),
-            vec![
-                Field::text("Name").value(suggested),
-                Field::choice("Host", hosts),
-            ],
-            "Create",
-            move |values, done, window, cx| {
-                let name = values.text(0);
-                if !valid_name(&name) {
-                    return done.fail("Use lowercase letters, digits, and dashes.", window, cx);
-                }
-                if taken.contains(&name) {
-                    return done.fail(format!("A workspace {name} is there already."), window, cx);
-                }
-                let host = values.text(1);
-                let repositories = vec![repository.clone()];
-                let task = super::call(&link, cx, move |client| async move {
-                    client.create_workspace(&name, &host, repositories).await
+                };
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("acme"));
+                this.workspace = Some(WorkspaceDraft {
+                    name: String::new(),
+                    name_input: Some(input),
+                    host,
+                    repositories: Vec::new(),
+                    volumes: Vec::new(),
+                    original: None,
                 });
-                done.wait(
-                    task,
-                    |workspace, window, cx| {
-                        notify::success(
-                            window,
-                            cx,
-                            format!("Made the workspace {}.", workspace.name),
-                        )
-                    },
-                    window,
-                    cx,
-                );
+                cx.notify();
+                this.add_repository(window, cx);
             },
             window,
             cx,
@@ -396,10 +366,11 @@ impl SettingsView {
             move |this, _, cx| {
                 this.workspace = Some(WorkspaceDraft {
                     name: workspace.name.clone(),
+                    name_input: None,
                     host: workspace.host.clone(),
                     repositories: workspace.repositories.clone(),
                     volumes: workspace.volumes.clone(),
-                    original: workspace.clone(),
+                    original: Some(workspace.clone()),
                 });
                 cx.notify();
             },
@@ -408,36 +379,54 @@ impl SettingsView {
         );
     }
 
-    fn save_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn save_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(draft) = &self.workspace else {
             return;
         };
+        let new = draft.is_new();
+        let name = draft.typed_name(cx);
+        if new {
+            if !valid_name(&name) {
+                return notify::error(
+                    window,
+                    cx,
+                    "Give the workspace a name of lowercase letters, digits, and dashes.",
+                );
+            }
+            if self.link.read(cx).workspaces.iter().any(|w| w.name == name) {
+                return notify::error(window, cx, format!("A workspace {name} is there already."));
+            }
+        }
         if draft.repositories.is_empty() {
             return notify::error(window, cx, "Add a repository.");
         }
-        let (name, host) = (draft.name.clone(), draft.host.clone());
+        let host = draft.host.clone();
         let (repositories, volumes) = (draft.repositories.clone(), draft.volumes.clone());
         let workspace = name.clone();
         let task = self.call(cx, move |client| async move {
-            client
-                .update_workspace(&workspace, Some(&host), Some(repositories), Some(volumes))
-                .await
+            if new {
+                client
+                    .create_workspace_with_volumes(&workspace, &host, repositories, volumes)
+                    .await
+            } else {
+                client
+                    .update_workspace(&workspace, Some(&host), Some(repositories), Some(volumes))
+                    .await
+            }
         });
         self.act(
-            Some(format!("save-workspace:{name}")),
+            Some("save-workspace".to_owned()),
             task,
-            |this, workspace, window, cx| {
-                if this
-                    .workspace
-                    .as_ref()
-                    .is_some_and(|d| d.name == workspace.name)
-                {
-                    this.workspace = None;
-                }
+            move |this, workspace, window, cx| {
+                this.workspace = None;
                 notify::success(
                     window,
                     cx,
-                    format!("Saved the workspace {}.", workspace.name),
+                    if new {
+                        format!("Made the workspace {}.", workspace.name)
+                    } else {
+                        format!("Saved the workspace {}.", workspace.name)
+                    },
                 );
             },
             window,
@@ -462,16 +451,33 @@ impl SettingsView {
         );
     }
 
-    fn add_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn add_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         open_search(
             self.link.clone(),
-            Rc::new(move |repository, _, cx| {
-                draft_update(&this, cx, |draft| {
-                    if !draft.repositories.iter().any(|r| r.url == repository.url) {
-                        draft.repositories.push(repository);
+            Rc::new(move |repository, window, cx| {
+                let _ = this.update(cx, |view, cx| {
+                    let taken: Vec<String> = view
+                        .link
+                        .read(cx)
+                        .workspaces
+                        .iter()
+                        .map(|w| w.name.clone())
+                        .collect();
+                    let Some(draft) = &mut view.workspace else {
+                        return;
+                    };
+                    if let Some(input) = &draft.name_input
+                        && input.read(cx).value().trim().is_empty()
+                    {
+                        let suggested = suggest_name(&directory(&repository), &taken);
+                        input.update(cx, |input, cx| input.set_value(suggested, window, cx));
                     }
-                })
+                    if !draft.repositories.iter().any(|r| r.url == repository.url) {
+                        draft.repositories.push(repository.clone());
+                    }
+                    cx.notify();
+                });
             }),
             window,
             cx,
@@ -517,7 +523,7 @@ impl SettingsView {
         );
     }
 
-    fn add_mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn add_mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let volumes: Vec<String> = self
             .link
             .read(cx)
@@ -562,14 +568,15 @@ impl SettingsView {
 
     fn render_workspace_draft(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let draft = self.workspace.as_ref()?;
-        let hosts: Vec<String> = self
+        let hosts: Vec<(String, bool)> = self
             .link
             .read(cx)
             .hosts
             .iter()
-            .map(|h| h.name.clone())
+            .map(|h| (h.name.clone(), h.connected))
             .collect();
-        let saving = self.is_busy(&format!("save-workspace:{}", draft.name));
+        let saving = self.is_busy("save-workspace");
+        let new = draft.is_new();
         let current = draft.host.clone();
         let this = cx.entity().downgrade();
         let mut el = card(cx)
@@ -577,17 +584,16 @@ impl SettingsView {
             .child(
                 h_flex()
                     .gap_2()
+                    .child(div().flex_1().text_sm().child(if new {
+                        "New workspace".to_owned()
+                    } else {
+                        format!("Workspace {}", draft.name)
+                    }))
                     .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .child(format!("Workspace {}", draft.name)),
-                    )
-                    .child(
-                        small_button("workspace-save", "Save")
+                        small_button("workspace-save", if new { "Create" } else { "Save" })
                             .primary()
                             .loading(saving)
-                            .disabled(saving || !draft.is_dirty())
+                            .disabled(saving || (!new && !draft.is_dirty(cx)))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.save_workspace(window, cx)),
                             ),
@@ -600,30 +606,46 @@ impl SettingsView {
                         )),
                     ),
             )
+            .when_some(draft.name_input.clone(), |el, input| {
+                el.child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w_12().text_sm().child("Name"))
+                        .child(div().flex_1().child(Input::new(&input).small())),
+                )
+            })
             .child(
-                h_flex().gap_2().child(div().text_sm().child("Host")).child(
-                    Button::new("workspace-host")
-                        .outline()
-                        .xsmall()
-                        .label(current.clone())
-                        .dropdown_menu(move |mut menu, _, _| {
-                            for host in &hosts {
-                                let this = this.clone();
-                                let picked = host.clone();
-                                menu = menu.item(
-                                    PopupMenuItem::new(host.clone())
-                                        .checked(*host == current)
-                                        .on_click(
+                h_flex()
+                    .gap_2()
+                    .child(div().w_12().text_sm().child("Host"))
+                    .child(
+                        Button::new("workspace-host")
+                            .outline()
+                            .xsmall()
+                            .label(current.clone())
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for (host, connected) in &hosts {
+                                    let this = this.clone();
+                                    let picked = host.clone();
+                                    let label = if *connected {
+                                        host.clone()
+                                    } else {
+                                        format!("{host} (offline)")
+                                    };
+                                    menu = menu.item(
+                                        PopupMenuItem::new(label)
+                                            .checked(*host == current)
+                                            .on_click(
                                             move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                                                 let picked = picked.clone();
                                                 draft_update(&this, cx, |draft| draft.host = picked)
                                             },
                                         ),
-                                );
-                            }
-                            menu
-                        }),
-                ),
+                                    );
+                                }
+                                menu
+                            }),
+                    ),
             )
             .child(subheader(
                 "Repositories",
@@ -711,7 +733,11 @@ impl SettingsView {
             );
         }
         el = el.child(detail(
-            "A change applies to new codespaces. Open codespaces keep their repositories and volumes.",
+            if new {
+                "Each codespace of the workspace clones the repositories and mounts the volumes."
+            } else {
+                "A change applies to new codespaces. Open codespaces keep their repositories and volumes."
+            },
             cx,
         ));
         Some(el.into_any_element())
@@ -730,7 +756,7 @@ impl SettingsView {
                     .help("Only for an Incus volume. Empty for no limit."),
                 Field::text("Host path")
                     .placeholder("/srv/data")
-                    .help("Only for a host directory: an absolute path on the host. Empty for a directory that loom-host makes."),
+                    .help("Only for a host directory: an absolute path on the host."),
             ],
             "Create",
             move |values, done, window, cx| {
