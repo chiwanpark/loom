@@ -10,7 +10,7 @@ use crate::load::parse_yaml;
 use crate::relay_server::{
     AccessVerifyConfig, PushConfig, RelayLimits, RelayServerConfig, TlsConfig,
 };
-use crate::units::HumanDuration;
+use crate::units::{ByteSize, HumanDuration};
 
 pub const ORACLE_CONFIG_FILE: &str = "oracle.yaml";
 pub const ORACLE_CONFIG_ENV: &str = "LOOM_ORACLE_CONFIG";
@@ -44,6 +44,9 @@ pub struct CodespaceLifecycle {
     pub retention: HumanDuration,
     pub closed_retention: HumanDuration,
     pub check_interval: HumanDuration,
+    pub archive: bool,
+    pub archive_retention: HumanDuration,
+    pub archive_max_size: ByteSize,
 }
 
 impl Default for CodespaceLifecycle {
@@ -53,6 +56,9 @@ impl Default for CodespaceLifecycle {
             retention: HumanDuration::from_secs(30 * 24 * 3600),
             closed_retention: HumanDuration::from_secs(7 * 24 * 3600),
             check_interval: HumanDuration::from_secs(60),
+            archive: true,
+            archive_retention: HumanDuration::from_secs(90 * 24 * 3600),
+            archive_max_size: ByteSize::gib(1),
         }
     }
 }
@@ -237,6 +243,8 @@ mod tests {
             config.codespaces.retention,
             HumanDuration::from_secs(30 * 24 * 3600)
         );
+        assert!(config.codespaces.archive);
+        assert_eq!(config.codespaces.archive_max_size, ByteSize::gib(1));
         let relay = config.relay_config();
         assert!(relay.allowed_hosts.is_empty());
         assert_eq!(relay.listen, "127.0.0.1:8090");

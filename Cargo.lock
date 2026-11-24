@@ -4765,6 +4765,7 @@ name = "loom-client"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "loom-config",
@@ -4856,6 +4857,7 @@ dependencies = [
  "loom-view-model",
  "loom-vt",
  "qrcode",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -4873,6 +4875,7 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "clap",
  "loom-client",
  "loom-config",
@@ -4983,6 +4986,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "blake3",
  "bytes",
  "chacha20poly1305",
@@ -5002,6 +5006,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

@@ -302,6 +302,15 @@ pub enum Command {
         #[serde(default)]
         metrics: Option<CodespaceMetrics>,
     },
+    ArchiveEvents {
+        codespace: String,
+        session: String,
+        #[serde(default)]
+        after: Option<u64>,
+    },
+    DeleteArchive {
+        codespace: String,
+    },
 }
 
 pub const DEFAULT_AUDIT_LIMIT: u32 = 100;

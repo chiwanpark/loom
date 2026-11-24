@@ -19,7 +19,7 @@ use loom_client::{
     pair_oracle,
 };
 use loom_config::{ByteSize, Dirs, HumanDuration};
-use loom_proto::{PushRepositories, RepositoryStatus};
+use loom_proto::{ContentPart, PushRepositories, RepositoryStatus, SequencedEvent, SessionEvent};
 use serde::{Deserialize, Serialize};
 
 const STATE_ENV: &str = "LOOM_ORACLE_CLI_STATE";
@@ -263,6 +263,13 @@ enum Command {
         id: String,
         #[arg(long)]
         no_wait: bool,
+    },
+    Archive {
+        codespace: String,
+        session: String,
+    },
+    DeleteArchive {
+        codespace: String,
     },
     Connections {
         id: String,
@@ -1016,10 +1023,63 @@ fn print_codespace(codespace: &Codespace) {
     if let Some(at) = codespace.delete_at {
         detail.push_str(&format!(", deletion {}", until(at)));
     }
+    if let Some(archive) = &codespace.archive {
+        match (&archive.error, archive.saved_at) {
+            (Some(error), _) => detail.push_str(&format!(", no archive: {error}")),
+            (None, Some(_)) => {
+                detail.push_str(&format!(", archive {}", ByteSize::bytes(archive.size)));
+                if let Some(at) = archive.delete_at {
+                    detail.push_str(&format!(" until {}", until(at)));
+                }
+            }
+            (None, None) => {}
+        }
+    }
     println!(
         "{}\t{}\t{}\t{}\t{}",
         codespace.id, codespace.workspace, codespace.host, codespace.branch, detail
     );
+}
+
+fn transcript(events: &[SequencedEvent]) -> String {
+    let mut entries: Vec<(u64, String)> = Vec::new();
+    for event in events {
+        let text = match &event.event {
+            SessionEvent::Cleared => {
+                entries.clear();
+                continue;
+            }
+            SessionEvent::Rewound { seq } => {
+                entries.retain(|(at, _)| at < seq);
+                continue;
+            }
+            SessionEvent::UserMessage { content } => {
+                let parts: Vec<String> = content
+                    .iter()
+                    .map(|part| match part {
+                        ContentPart::Text { text } => text.clone(),
+                        ContentPart::Image { mime_type, .. } => format!("[image {mime_type}]"),
+                    })
+                    .collect();
+                format!("## You\n\n{}", parts.join("\n"))
+            }
+            SessionEvent::AssistantMessage { text, model, .. } if !text.is_empty() => {
+                format!("## Assistant ({model})\n\n{text}")
+            }
+            SessionEvent::ToolCallRequested { call } => {
+                format!("- tool `{}`: {}", call.name, call.arguments)
+            }
+            SessionEvent::Warning { message } => format!("- warning: {message}"),
+            SessionEvent::Error { message } => format!("- error: {message}"),
+            _ => continue,
+        };
+        entries.push((event.seq, text));
+    }
+    entries
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn print_connection(connection: &CodespaceConnection) {
@@ -1783,6 +1843,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             print_codespace(&codespace);
         }
+        Command::Archive { codespace, session } => {
+            let events = client.archived_events(&codespace, &session).await?;
+            if json {
+                return print_json(&events);
+            }
+            println!("{}", transcript(&events));
+        }
+        Command::DeleteArchive { codespace } => {
+            client.delete_archive(&codespace).await?;
+            if !json {
+                println!("deleted the session archive of codespace {codespace}");
+            }
+        }
         Command::Connections { id, types } => {
             let types: Vec<&str> = types.iter().map(String::as_str).collect();
             let connections = client.codespace_connections(&id, &types).await?;
@@ -2239,4 +2312,44 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(seq: u64, event: SessionEvent) -> SequencedEvent {
+        SequencedEvent { seq, event }
+    }
+
+    fn user(text: &str) -> SessionEvent {
+        SessionEvent::UserMessage {
+            content: vec![ContentPart::text(text)],
+        }
+    }
+
+    fn answer(text: &str) -> SessionEvent {
+        SessionEvent::AssistantMessage {
+            text: text.into(),
+            reasoning: None,
+            model: "m".into(),
+        }
+    }
+
+    #[test]
+    fn the_transcript_follows_clears_and_rewinds() {
+        let events = [
+            at(0, user("old")),
+            at(1, SessionEvent::Cleared),
+            at(2, user("first")),
+            at(3, answer("one")),
+            at(4, user("dropped")),
+            at(5, SessionEvent::Rewound { seq: 4 }),
+            at(6, SessionEvent::AssistantDelta { text: "x".into() }),
+        ];
+        assert_eq!(
+            transcript(&events),
+            "## You\n\nfirst\n\n## Assistant (m)\n\none"
+        );
+    }
 }

@@ -23,6 +23,7 @@ use crate::seal::MasterKey;
 use crate::session::Session;
 use crate::store::{PairingRow, PeerRow, RelayHostRow, Store, StoreError};
 
+mod archive;
 mod codespaces;
 mod git;
 mod lifecycle;
@@ -36,6 +37,7 @@ pub use git::{normalize_url, parse_preset, provider_path, resolve_repository, se
 pub const STORE_FILE: &str = "oracle.db";
 pub const CREDENTIALS_ENV: &str = "CREDENTIALS_DIRECTORY";
 const EVENT_QUEUE: usize = 256;
+const ARCHIVE_DIR: &str = "archive";
 const MAX_PUSH_TOKEN: usize = 4096;
 const GRANT_TIMEOUT: Duration = Duration::from_secs(120);
 const RELINK_DELAY: Duration = Duration::from_secs(1);
@@ -202,6 +204,8 @@ pub struct Oracle {
     models: models::ModelState,
     lifecycle: CodespaceLifecycle,
     transitions: Mutex<HashSet<String>>,
+    deleting: Mutex<HashSet<String>>,
+    archive_root: Option<PathBuf>,
 }
 
 impl Oracle {
@@ -210,13 +214,19 @@ impl Oracle {
         let data_dir = config.data_dir(dirs);
         let identity = HostIdentity::load_or_create(&data_dir)
             .with_context(|| format!("cannot read the keys in {}", data_dir.display()))?;
-        Self::new(config, Arc::new(store), Arc::new(identity))
+        Self::new(
+            config,
+            Arc::new(store),
+            Arc::new(identity),
+            Some(data_dir.join(ARCHIVE_DIR)),
+        )
     }
 
     pub fn new(
         config: &OracleConfig,
         store: Arc<Store>,
         identity: Arc<HostIdentity>,
+        archive_root: Option<PathBuf>,
     ) -> anyhow::Result<Arc<Self>> {
         let hosts = Arc::new(RelayHosts::new(
             store.relay_hosts()?.into_iter().map(|row| row.host),
@@ -249,6 +259,8 @@ impl Oracle {
             models: models::ModelState::new(),
             lifecycle: config.codespaces,
             transitions: Mutex::new(HashSet::new()),
+            deleting: Mutex::new(HashSet::new()),
+            archive_root,
         }))
     }
 

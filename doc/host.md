@@ -94,7 +94,7 @@ In the container, these paths are in `/var/lib/loom-host`:
 | Path | Contents |
 | --- | --- |
 | `config/loom/host.yaml` | The configuration. |
-| `data/loom/host/` | The data directory: the key, the address of the oracle, the Incus certificates, and the agent binaries. |
+| `data/loom/host/` | The data directory: the key, the address of the oracle, the Incus certificates, the agent binaries, and the copies of the sessions of a closing codespace. |
 
 `/root/.config`, `/root/.local/share`, and `/root/.local/state` are links to `config`, `data`, and `state` in `/var/lib/loom-host`. Thus, `incus exec` and the service use the same files.
 

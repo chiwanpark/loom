@@ -8,7 +8,7 @@ use loom_host::{
     AGENT_UNIT, Agent, CheckStatus, Driver, IMAGE_PREFIX, IncusDriver, KEY_CODESPACE, KEY_ORACLE,
     Progress, SetupResult, environment_hash,
 };
-use loom_incus::fake::FakeIncus;
+use loom_incus::fake::{FakeFile, FakeIncus, FakeInstance};
 use tokio::sync::mpsc;
 
 const ORACLE: &str = "oracle-1";
@@ -525,4 +525,85 @@ async fn custom_volumes_are_created_once_and_survive_instance_deletion() {
     driver.delete_volume(ORACLE, "cache").await.unwrap();
     assert!(fake.state().volumes.is_empty());
     assert!(source.is_dir());
+}
+
+#[tokio::test]
+async fn session_stores_are_copied_from_a_stopped_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeIncus::start(dir.path()).await;
+    let sessions = "/home/dev/.local/share/loom/sessions";
+    {
+        let mut state = fake.state();
+        let mut instance = FakeInstance::default();
+        instance.instance.name = "loom-c1".into();
+        instance.instance.status = "Stopped".into();
+        instance
+            .instance
+            .config
+            .insert(KEY_ORACLE.into(), ORACLE.into());
+        for (name, content) in [
+            ("0a1b.sqlite", b"database".as_slice()),
+            ("0a1b.sqlite-wal", b"wal"),
+            ("0a1b.sqlite-shm", b"shm"),
+            ("notes.txt", b"other"),
+        ] {
+            instance.files.insert(
+                format!("{sessions}/{name}"),
+                FakeFile {
+                    content: content.to_vec(),
+                    kind: "file".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        state.instances.insert("loom-c1".into(), instance);
+    }
+    let driver = IncusDriver::new(
+        fake.client(Some("loom")),
+        "default".into(),
+        "incusbr0".into(),
+        HostRules::default(),
+    );
+    let target = dir.path().join("copy");
+    std::fs::create_dir_all(&target).unwrap();
+    driver
+        .copy_sessions(ORACLE, "loom-c1", &target, 1024)
+        .await
+        .unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(&target)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["0a1b.sqlite", "0a1b.sqlite-wal"]);
+    assert_eq!(
+        std::fs::read(target.join("0a1b.sqlite")).unwrap(),
+        b"database"
+    );
+    assert!(!fake.state().instances["loom-c1"].instance.running());
+
+    let err = driver
+        .copy_sessions(ORACLE, "loom-c1", &target, 10)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("more than"), "{err:#}");
+    assert!(
+        driver
+            .copy_sessions("other", "loom-c1", &target, 1024)
+            .await
+            .is_err()
+    );
+    fake.state()
+        .instances
+        .get_mut("loom-c1")
+        .unwrap()
+        .files
+        .clear();
+    let empty = dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    driver
+        .copy_sessions(ORACLE, "loom-c1", &empty, 1024)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
 }

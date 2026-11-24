@@ -3,10 +3,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
-    AgentAddress, AuditLog, Branches, Bundle, ClientHello, ClientMessage, Codespace,
+    AgentAddress, ArchivePage, AuditLog, Branches, Bundle, ClientHello, ClientMessage, Codespace,
     CodespaceConnection, CodespaceConnections, CodespaceMetrics, CodespaceResult, CodespaceSession,
     Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment, Event, FirstMessage,
     FirstMessageResult, GitCredential, GitCredentialInput, GitCredentialResult, GitCredentials,
@@ -20,8 +22,8 @@ use loom_oracle_proto::{
     VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings, Workspace, WorkspaceNotes,
     WorkspaceResult, WorkspaceVolume, Workspaces, encode, parse_server_message,
 };
-use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
+use loom_proto::{InstanceId, SequencedEvent};
 use loom_transport::{AccessToken, FrameReceiver, FrameSender, FrameStream, RelayEndpoint};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -633,6 +635,54 @@ impl OracleClient {
 
     pub async fn audit(&self, limit: Option<u32>, before: Option<u64>) -> Result<AuditLog> {
         self.call(Command::ListAudit { limit, before }).await
+    }
+
+    pub async fn archive_page(
+        &self,
+        codespace: &str,
+        session: &str,
+        after: Option<u64>,
+    ) -> Result<ArchivePage> {
+        self.call(Command::ArchiveEvents {
+            codespace: codespace.to_owned(),
+            session: session.to_owned(),
+            after,
+        })
+        .await
+    }
+
+    pub async fn archived_events(
+        &self,
+        codespace: &str,
+        session: &str,
+    ) -> Result<Vec<SequencedEvent>> {
+        let mut events = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.archive_page(codespace, session, after).await?;
+            for data in &page.events {
+                let bytes = STANDARD
+                    .decode(data)
+                    .map_err(|err| ClientError::Protocol(format!("bad archived event: {err}")))?;
+                match loom_proto::decode::<SequencedEvent>(&bytes) {
+                    Ok(event) => events.push(event),
+                    Err(err) => tracing::debug!(error = %err, "skipping an archived event"),
+                }
+            }
+            if !page.more || page.last.is_none() || page.last == after {
+                return Ok(events);
+            }
+            after = page.last;
+        }
+    }
+
+    pub async fn delete_archive(&self, codespace: &str) -> Result<()> {
+        done(
+            self.call(Command::DeleteArchive {
+                codespace: codespace.to_owned(),
+            })
+            .await,
+        )
     }
 
     pub async fn codespace_activity(

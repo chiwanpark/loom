@@ -1,4 +1,5 @@
 mod agents;
+mod archive;
 mod driver;
 mod incus;
 mod link;
@@ -91,6 +92,7 @@ pub fn host(config: HostConfig, dirs: &Dirs) -> anyhow::Result<Host> {
         oracle,
         identity,
         http: loom_github::Http::new()?,
+        archive_dir: data_dir.join(archive::ARCHIVE_DIR),
     })
 }
 

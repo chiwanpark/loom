@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use loom_client::oracle_proto::{CreateInstance, InstanceReport, VolumeUsage};
@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 
 pub type Input = Box<dyn AsyncRead + Unpin + Send>;
 pub type Output = Box<dyn AsyncWrite + Unpin + Send>;
+
+pub const SESSIONS_DIR: &str = ".local/share/loom/sessions";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DriverReport {
@@ -106,6 +108,14 @@ pub trait Driver: Send + Sync {
     async fn delete_volume(&self, oracle: &str, volume: &str) -> anyhow::Result<()>;
 
     async fn volume_usage(&self, oracle: &str, volumes: &[String]) -> Vec<VolumeUsage>;
+
+    async fn copy_sessions(
+        &self,
+        oracle: &str,
+        instance: &str,
+        target: &Path,
+        max_size: u64,
+    ) -> anyhow::Result<()>;
 }
 
 pub fn valid_instance(name: &str) -> bool {

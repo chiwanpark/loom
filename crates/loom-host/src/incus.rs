@@ -5,7 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use loom_client::oracle_proto::{
-    Bootstrap, CreateInstance, Environment, InstanceReport, InstanceVolume, VolumeKind, VolumeUsage,
+    Bootstrap, CreateInstance, Environment, InstanceReport, InstanceVolume, VolumeKind,
+    VolumeUsage, valid_archive_file,
 };
 use loom_config::HostRules;
 use loom_incus::{Exec, FileOwner, Incus, IncusError, Instance, Project, StateAction, StoragePool};
@@ -13,7 +14,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::driver::{
-    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, valid_instance,
+    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, SESSIONS_DIR,
+    valid_instance,
 };
 use crate::volumes::{DEV_GID, DEV_UID, idmap, incus_volume, prepare_mounts};
 
@@ -37,6 +39,7 @@ const DEV: u32 = 1000;
 const CREATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
+const COPY_TIMEOUT: Duration = Duration::from_secs(120);
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 pub struct IncusDriver {
@@ -1139,6 +1142,45 @@ impl Driver for IncusDriver {
             .await
             .map_err(incus_error)
             .with_context(|| format!("cannot delete the storage volume {name}"))
+    }
+
+    async fn copy_sessions(
+        &self,
+        oracle: &str,
+        instance: &str,
+        target: &Path,
+        max_size: u64,
+    ) -> anyhow::Result<()> {
+        self.owned(oracle, instance).await?;
+        let source = format!("{DEV_HOME}/{SESSIONS_DIR}");
+        let Some(names) = self
+            .incus
+            .list_files(instance, &source)
+            .await
+            .map_err(incus_error)?
+        else {
+            return Ok(());
+        };
+        let mut total = 0;
+        for name in names.iter().filter(|name| valid_archive_file(name)) {
+            let mut file = tokio::fs::File::create(target.join(name))
+                .await
+                .with_context(|| format!("cannot write the copy of {name}"))?;
+            let timeout = COPY_TIMEOUT + Duration::from_secs(max_size >> 20);
+            total += self
+                .incus
+                .pull_file_to(
+                    instance,
+                    &format!("{source}/{name}"),
+                    &mut file,
+                    max_size.saturating_sub(total),
+                    timeout,
+                )
+                .await
+                .map_err(incus_error)?;
+            file.sync_all().await?;
+        }
+        Ok(())
     }
 
     async fn check(&self, deep: bool) -> Vec<CheckItem> {

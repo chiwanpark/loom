@@ -560,6 +560,15 @@ impl Session {
                 host: oracle.set_host_limits(&name, &limits, me)?,
             }),
             Command::ListAudit { limit, before } => ok(oracle.audit_entries(limit, before)?),
+            Command::ArchiveEvents {
+                codespace,
+                session,
+                after,
+            } => ok(oracle.archive_events(&codespace, &session, after)?),
+            Command::DeleteArchive { codespace } => {
+                oracle.delete_archive(&codespace, me)?;
+                ok(Empty {})
+            }
             Command::CodespaceWarnings { workspace, preset } => ok(Warnings {
                 warnings: oracle.codespace_warnings(&workspace, preset.as_deref())?,
             }),

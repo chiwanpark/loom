@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use loom_config::HumanDuration;
 use loom_oracle_proto::{
     AuditEntry, AuditLog, CONNECTION_RELAY, CONNECTION_SSH, Codespace, CodespaceConnection,
     CodespaceMetrics, CodespaceState, DEFAULT_AUDIT_LIMIT, ErrorCode, Event, HostCall, HostLimits,
@@ -93,6 +94,7 @@ pub fn validate_limits(limits: &HostLimits) -> Result<(), OracleError> {
 
 pub(super) async fn run(oracle: Arc<Oracle>, shutdown: CancellationToken) {
     let interval = oracle.lifecycle.check_interval.as_duration();
+    oracle.clean_archives();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
@@ -149,6 +151,10 @@ impl Oracle {
         let mut view = codespace(row);
         view.stop_at = stop_at(row, timeouts);
         view.delete_at = delete_at(row, timeouts);
+        view.archive = super::archive::archive_view(
+            row,
+            self.lifecycle.archive_retention.as_duration().as_secs(),
+        );
         view
     }
 
@@ -603,14 +609,17 @@ impl Oracle {
                 tracing::warn!(codespace = %row.id, error = %err, "cannot apply the lifecycle of a codespace");
             }
         }
-        let keep = self.lifecycle.closed_retention.as_duration().as_secs();
-        if keep > 0 {
-            match self
-                .store
-                .delete_closed_codespaces(now.saturating_sub(keep))
-            {
+        let before = |keep: HumanDuration| {
+            let keep = keep.as_duration().as_secs();
+            (keep > 0).then(|| now.saturating_sub(keep))
+        };
+        let closed = before(self.lifecycle.closed_retention);
+        let archived = before(self.lifecycle.archive_retention);
+        if closed.is_some() || archived.is_some() {
+            match self.store.delete_closed_codespaces(closed, archived) {
                 Ok(ids) => {
                     for id in ids {
+                        self.remove_archive(&id);
                         self.emit(Event::CodespaceRemoved { id });
                     }
                 }

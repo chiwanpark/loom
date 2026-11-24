@@ -1,3 +1,4 @@
+pub mod archive_view;
 pub mod close_codespace;
 pub mod code;
 pub mod dialogs;
