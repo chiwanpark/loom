@@ -1,38 +1,84 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use loom_client::oracle_proto::{AgentAddress, ORACLE_INSTANCE};
 use loom_client::proto::{AgentInfo, AgentUpdate, InstanceId, PROTOCOL_VERSION};
 use loom_client::{
     AccessToken, AgentTarget, Client, ClientError, ClientIdentity, FrameStream, Notifications,
     OracleClient, OracleEndpoint, OracleEvents, RelayHost, SshTarget, can_update_agent,
-    connect_local, connect_ssh, list_local_agents, list_remote_agents, load_client_identity,
-    local_registry, pair_oracle, pair_with_uri, update_agent_of_protocol,
+    connect_command, connect_local, connect_ssh, list_local_agents, list_remote_agents,
+    load_client_identity, local_registry, pair_oracle, pair_with_uri, update_agent_of_protocol,
 };
 use loom_config::{AgentConfig, CloudflareAccessConfig, Dirs, HostEntry};
 
 pub const CLIENT_NAME: &str = "loom-gui";
+const SSH_CONNECT_TIMEOUT: &str = "ConnectTimeout=5";
+const SSH_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
+const SSH_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshRoute {
+    pub destination: String,
+    pub command: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodespaceRoute {
+    pub address: AgentAddress,
+    pub ssh: Option<SshRoute>,
+}
+
+type RouteKey = (String, String);
 
 #[derive(Debug, Clone, Default)]
 pub struct CodespaceBook {
-    agents: Arc<Mutex<HashMap<(String, String), AgentAddress>>>,
+    agents: Arc<Mutex<HashMap<RouteKey, CodespaceRoute>>>,
+    ssh_failed: Arc<Mutex<HashMap<RouteKey, Instant>>>,
 }
 
 impl CodespaceBook {
-    pub fn set(&self, host: &str, addresses: Vec<AgentAddress>) {
+    pub fn set(&self, host: &str, routes: Vec<CodespaceRoute>) {
         let mut agents = self.agents.lock().unwrap_or_else(|e| e.into_inner());
         agents.retain(|(name, _), _| name != host);
-        for address in addresses {
-            if let Some(instance) = address.instance.clone() {
-                agents.insert((host.to_owned(), instance), address);
+        for route in routes {
+            if let Some(instance) = route.address.instance.clone() {
+                agents.insert((host.to_owned(), instance), route);
             }
         }
     }
 
     pub fn get(&self, host: &str, instance: &str) -> Option<AgentAddress> {
+        self.route(host, instance).map(|route| route.address)
+    }
+
+    pub fn route(&self, host: &str, instance: &str) -> Option<CodespaceRoute> {
         let agents = self.agents.lock().unwrap_or_else(|e| e.into_inner());
         agents.get(&(host.to_owned(), instance.to_owned())).cloned()
+    }
+
+    fn ssh_route(&self, host: &str, instance: &str) -> Option<SshRoute> {
+        let key = (host.to_owned(), instance.to_owned());
+        let failed = self.ssh_failed.lock().unwrap_or_else(|e| e.into_inner());
+        if failed
+            .get(&key)
+            .is_some_and(|at| at.elapsed() < SSH_RETRY_AFTER)
+        {
+            return None;
+        }
+        drop(failed);
+        self.route(host, instance)?.ssh
+    }
+
+    fn ssh_result(&self, host: &str, instance: &str, worked: bool) {
+        let key = (host.to_owned(), instance.to_owned());
+        let mut failed = self.ssh_failed.lock().unwrap_or_else(|e| e.into_inner());
+        if worked {
+            failed.remove(&key);
+        } else {
+            failed.insert(key, Instant::now());
+        }
     }
 }
 
@@ -267,11 +313,56 @@ async fn open(env: &Env, entry: &HostEntry, target: &Target) -> Result<FrameStre
     })
 }
 
+async fn connect_codespace_ssh(
+    env: &Env,
+    route: &SshRoute,
+    instance: &str,
+) -> Result<(Client, Notifications), String> {
+    let Some((program, args)) = route.command.split_first() else {
+        return Err("the oracle gave no SSH command".into());
+    };
+    let mut ssh = env.ssh_target(&route.destination, Some(program))?;
+    ssh.extra_args = vec![
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        SSH_CONNECT_TIMEOUT.into(),
+    ];
+    let stream = connect_command(ssh.command(args)).map_err(|e| e.to_string())?;
+    let (client, notifications) =
+        tokio::time::timeout(SSH_HELLO_TIMEOUT, Client::connect(stream, CLIENT_NAME))
+            .await
+            .map_err(|_| "the SSH connection took too long".to_owned())?
+            .map_err(err)?;
+    if client.agent().instance.0 != instance {
+        return Err(format!(
+            "SSH reached the agent {}, not {instance}",
+            client.agent().instance.0
+        ));
+    }
+    Ok((client, notifications))
+}
+
 pub async fn connect(
     env: &Env,
     entry: &HostEntry,
     target: &Target,
 ) -> Result<(Client, Notifications), String> {
+    if let (HostEntry::Oracle { .. }, Target::Instance(instance)) = (entry, target)
+        && let Some(route) = env.codespaces.ssh_route(entry.name(), instance)
+    {
+        match connect_codespace_ssh(env, &route, instance).await {
+            Ok(connected) => {
+                tracing::info!(destination = %route.destination, %instance, "connected to a codespace over SSH");
+                env.codespaces.ssh_result(entry.name(), instance, true);
+                return Ok(connected);
+            }
+            Err(error) => {
+                tracing::info!(destination = %route.destination, %instance, %error, "SSH to the codespace failed; using the relay");
+                env.codespaces.ssh_result(entry.name(), instance, false);
+            }
+        }
+    }
     let stream = open(env, entry, target).await?;
     Client::connect(stream, CLIENT_NAME)
         .await
@@ -400,6 +491,36 @@ mod tests {
             agent_target(&Target::Instance("a".into())),
             AgentTarget::Instance("a".into())
         );
+    }
+
+    #[test]
+    fn a_failed_ssh_route_waits_before_the_next_try() {
+        let book = CodespaceBook::default();
+        let address = AgentAddress {
+            host_id: "h".into(),
+            host_key: "k".into(),
+            instance: Some("i1".into()),
+        };
+        let ssh = SshRoute {
+            destination: "dev@box".into(),
+            command: loom_client::oracle_proto::ssh_command("c1"),
+        };
+        book.set(
+            "next",
+            vec![CodespaceRoute {
+                address: address.clone(),
+                ssh: Some(ssh.clone()),
+            }],
+        );
+        assert_eq!(book.get("next", "i1"), Some(address));
+        assert_eq!(book.ssh_route("next", "i1"), Some(ssh.clone()));
+        assert_eq!(book.ssh_route("other", "i1"), None);
+        book.ssh_result("next", "i1", false);
+        assert_eq!(book.ssh_route("next", "i1"), None);
+        book.ssh_result("next", "i1", true);
+        assert_eq!(book.ssh_route("next", "i1"), Some(ssh));
+        book.set("next", Vec::new());
+        assert_eq!(book.route("next", "i1"), None);
     }
 
     #[test]

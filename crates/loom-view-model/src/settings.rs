@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use loom_oracle_proto::{
-    Environment, GitCredential, HostCheck, HostCheckStatus, Preset, Repository, Volume, VolumeKind,
-    VolumeUsage, WorkspaceVolume,
+    AuditEntry, Environment, GitCredential, HostCheck, HostCheckStatus, HostLimits, Preset,
+    Repository, Volume, VolumeKind, VolumeUsage, WorkspaceVolume,
 };
 
 pub const SIGN_IN_PROVIDERS: &[&str] = &["anthropic", "openai", "openai-codex"];
@@ -34,6 +34,113 @@ pub fn until(now: u64, then: u64) -> String {
         0..3600 => format!("expires in {} min", (then - now).div_ceil(60)),
         seconds @ 3600..86_400 => format!("expires in {} h", seconds / 3600),
         seconds => format!("expires in {}", days(seconds / 86_400)),
+    }
+}
+
+pub fn in_time(now: u64, then: u64) -> String {
+    match then.saturating_sub(now) {
+        0 => "now".to_owned(),
+        seconds @ 1..3600 => format!("in {} min", seconds.div_ceil(60)),
+        seconds @ 3600..86_400 => format!("in {} h", seconds / 3600),
+        seconds => format!("in {}", days(seconds / 86_400)),
+    }
+}
+
+const UNITS: [(&str, u64); 4] = [("d", 86_400), ("h", 3600), ("m", 60), ("s", 1)];
+
+pub fn duration_text(secs: u64) -> String {
+    if secs == 0 {
+        return "never".to_owned();
+    }
+    UNITS
+        .iter()
+        .find(|(_, size)| secs.is_multiple_of(*size))
+        .map(|(unit, size)| format!("{}{unit}", secs / size))
+        .unwrap_or_else(|| format!("{secs}s"))
+}
+
+pub fn parse_limit_count(text: &str) -> Result<Option<u32>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<u32>() {
+        Ok(0) | Err(_) => Err(format!("{text:?} is not a number of 1 or more")),
+        Ok(n) => Ok(Some(n)),
+    }
+}
+
+pub fn parse_limit_duration(text: &str) -> Result<Option<u64>, String> {
+    let text = text.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text == "never" || text == "0" {
+        return Ok(Some(0));
+    }
+    let split = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(split);
+    let size = match unit.trim() {
+        "s" | "sec" | "secs" => 1,
+        "m" | "min" | "mins" => 60,
+        "h" | "hour" | "hours" => 3600,
+        "d" | "day" | "days" => 86_400,
+        _ => {
+            return Err(format!(
+                "{text:?} is not a time; use a number and a unit, such as 30m, 2h, or 7d, or 'never'"
+            ));
+        }
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(size))
+        .filter(|secs| *secs > 0)
+        .map(Some)
+        .ok_or_else(|| format!("{text:?} is not a time such as 30m, 2h, or 7d"))
+}
+
+pub fn limit_duration_field(secs: Option<u64>) -> String {
+    secs.map(duration_text).unwrap_or_default()
+}
+
+pub fn limits_line(limits: &HostLimits) -> String {
+    let mut parts = Vec::new();
+    if let Some(max) = limits.max_codespaces {
+        parts.push(format!("at most {max} codespaces"));
+    }
+    if let Some(max) = limits.max_running {
+        parts.push(format!("at most {max} running"));
+    }
+    match limits.idle_stop_secs {
+        Some(0) => parts.push("no idle stop".to_owned()),
+        Some(secs) => parts.push(format!("stop after {} idle", duration_text(secs))),
+        None => parts.push("idle stop of the oracle".to_owned()),
+    }
+    match limits.retention_secs {
+        Some(0) => parts.push("keep stopped codespaces".to_owned()),
+        Some(secs) => parts.push(format!("delete after {} stopped", duration_text(secs))),
+        None => parts.push("retention of the oracle".to_owned()),
+    }
+    parts.join(" · ")
+}
+
+pub fn audit_actor(entry: &AuditEntry) -> String {
+    match (&entry.peer_label, entry.peer) {
+        (Some(label), _) => label.clone(),
+        (None, Some(peer)) => format!("peer {peer}"),
+        (None, None) => "oracle".to_owned(),
+    }
+}
+
+pub fn audit_action(action: &str) -> String {
+    let text = action.replace('_', " ");
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => text,
     }
 }
 
@@ -359,6 +466,57 @@ mod tests {
         assert!(parse_redirect("https://console.example.com/oauth/code").is_none());
         assert!(parse_redirect("http://example.com:80/cb").is_none());
         assert!(parse_redirect("http://127.0.0.1/cb").is_none());
+    }
+
+    #[test]
+    fn limits_read_and_show_their_times() {
+        assert_eq!(parse_limit_count(""), Ok(None));
+        assert_eq!(parse_limit_count(" 3 "), Ok(Some(3)));
+        assert!(parse_limit_count("0").is_err());
+        assert!(parse_limit_count("x").is_err());
+        assert_eq!(parse_limit_duration(""), Ok(None));
+        assert_eq!(parse_limit_duration("never"), Ok(Some(0)));
+        assert_eq!(parse_limit_duration("30m"), Ok(Some(1800)));
+        assert_eq!(parse_limit_duration("2 h"), Ok(Some(7200)));
+        assert_eq!(parse_limit_duration("7days"), Ok(Some(7 * 86_400)));
+        assert!(parse_limit_duration("30").is_err());
+        assert!(parse_limit_duration("m").is_err());
+        assert_eq!(duration_text(1800), "30m");
+        assert_eq!(duration_text(7 * 86_400), "7d");
+        assert_eq!(duration_text(90), "90s");
+        assert_eq!(limit_duration_field(Some(0)), "never");
+        assert_eq!(limit_duration_field(None), "");
+        let limits = HostLimits {
+            max_running: Some(2),
+            idle_stop_secs: Some(0),
+            retention_secs: Some(3600),
+            ..Default::default()
+        };
+        assert_eq!(
+            limits_line(&limits),
+            "at most 2 running · no idle stop · delete after 1h stopped"
+        );
+        assert_eq!(in_time(100, 100), "now");
+        assert_eq!(in_time(0, 90), "in 2 min");
+        assert_eq!(in_time(0, 2 * 86_400), "in 2 days");
+    }
+
+    #[test]
+    fn audit_entries_read_as_text() {
+        let mut entry = AuditEntry {
+            id: 1,
+            at: 0,
+            peer: None,
+            peer_label: None,
+            action: "codespace_idle_stopped".into(),
+            detail: "codespace c1".into(),
+        };
+        assert_eq!(audit_actor(&entry), "oracle");
+        entry.peer = Some(4);
+        assert_eq!(audit_actor(&entry), "peer 4");
+        entry.peer_label = Some("laptop".into());
+        assert_eq!(audit_actor(&entry), "laptop");
+        assert_eq!(audit_action(&entry.action), "Codespace idle stopped");
     }
 
     #[test]
