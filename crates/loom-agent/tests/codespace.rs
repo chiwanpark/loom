@@ -451,9 +451,8 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
         &[
             ("README.md", "hello\n"),
             (
-                ".devcontainer/devcontainer.json",
-                r#"{"image": "base", "containerEnv": {"STAGE": "dev"},
-                    "postCreateCommand": "echo $STAGE > setup-ran"}"#,
+                ".loom/setup.sh",
+                "echo \"$(basename \"$PWD\")\" > setup-ran\n",
             ),
         ],
     )
@@ -491,7 +490,7 @@ async fn a_host_starts_a_codespace_that_a_device_reaches_through_the_relay() {
     assert!(clone.join("README.md").exists());
     assert_eq!(
         std::fs::read_to_string(clone.join("setup-ran")).unwrap(),
-        "dev\n"
+        "app\n"
     );
 
     let phone = ClientIdentity::generate().unwrap();
