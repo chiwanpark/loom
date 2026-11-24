@@ -1,0 +1,14 @@
+FROM docker.io/library/alpine:3
+
+ARG TARGETARCH
+COPY ${TARGETARCH}/loom-host ${TARGETARCH}/loom-agent /usr/local/bin/
+
+ENV HOME=/var/lib/loom-host \
+    XDG_CONFIG_HOME=/var/lib/loom-host/config \
+    XDG_DATA_HOME=/var/lib/loom-host/data \
+    XDG_STATE_HOME=/var/lib/loom-host/state
+
+WORKDIR /var/lib/loom-host
+
+ENTRYPOINT ["/usr/local/bin/loom-host"]
+CMD ["serve", "--wait"]

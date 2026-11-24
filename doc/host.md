@@ -83,6 +83,41 @@ The members of `incus-admin` have full control of Incus. If you do not want this
 
 `--no-pin` uses the CA certificates of the system, and does not keep the server certificate. `incus.client_certificate`, `incus.client_key`, and `incus.server_certificate` select different files.
 
+### Run `loom-host` as an OCI image on IncusOS
+
+On IncusOS, `loom-host` can run in an application container from an OCI image. The image has `loom-host`, `loom-agent` of the same build, and the CA certificates of Alpine Linux. The recipe is `contrib/oci/Containerfile`.
+
+There is no published image yet. Each CI build has the artifact `oci-loom-host`: an OCI archive for `amd64` and `arm64`. Copy it to a registry that Incus can reach, for example with `skopeo copy --all oci-archive:loom-host-oci.tar docker://<registry>/loom-host:<tag>`.
+
+In the image, these paths are in `/var/lib/loom-host`:
+
+| Path | Contents |
+| --- | --- |
+| `config/loom/host.yaml` | The configuration. |
+| `data/loom/host/` | The data directory: the key, the address of the oracle, the Incus certificates, and the agent binaries. |
+
+Keep `/var/lib/loom-host` on a custom volume, so that it stays when you replace the instance with a newer image. These commands come from the Incus documentation and were not tested. Use a project other than the project of the codespaces:
+
+```sh
+incus remote add <registry> https://<registry> --protocol=oci
+incus create <registry>:loom-host:<tag> loom-host
+incus storage volume create <pool> loom-host-data
+incus storage volume attach <pool> loom-host-data loom-host /var/lib/loom-host
+incus start loom-host
+incus exec loom-host -- loom-host config init
+incus file edit loom-host/var/lib/loom-host/config/loom/host.yaml
+```
+
+In `host.yaml`, set `incus.url` to the address of Incus that the instance reaches, `incus.project`, `incus.pool`, `incus.network`, and `agent.path: /usr/local/bin/loom-agent`. Then prepare the host:
+
+```sh
+incus exec loom-host -- loom-host trust '<token>'
+incus exec loom-host -- loom-host join '<link>' --name <name>
+incus exec loom-host -- loom-host check --docker
+```
+
+The image starts `loom-host serve --wait`. It waits until the configuration is valid and the host has joined an oracle, and then it serves. Until then, it writes what is missing to the log of the instance and checks again every 5 seconds. For a Git provider with a company CA, put a file with all CA certificates on the volume, and set `environment.SSL_CERT_FILE` of the instance to its path.
+
 ## `host.yaml`
 
 | Key | Meaning |
