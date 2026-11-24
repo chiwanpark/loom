@@ -128,7 +128,7 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `set-provider <name> --url <url> [--api-url <url>] [--git-name <name>] [--git-email <email>] [--route direct\|hosts]` | Adds or changes a Git provider. The default API URL is `https://api.github.com` for `https://github.com`, and `<url>/api/v3` for other servers. |
 | `delete-provider <name>` | Deletes a Git provider. The oracle refuses this while a credential or a workspace uses it. |
 | `credentials` | Lists the Git credentials. The list does not show the tokens. |
-| `set-credential <name> --provider <provider> [--owner <owner> [--repository <repository>]] [--token-file <path>]` | Adds or changes a Git credential. `--token-file -` reads the token from standard input. A new credential needs a token. The oracle checks the token. |
+| `set-credential <name> --provider <provider> [--owner <owner> [--repository <repository>]] [--token-file <path>] [--app-id <id>]` | Adds or changes a Git credential. `--token-file -` reads the token from standard input. A new credential needs a token. The oracle checks the token. With `--app-id`, the credential is a GitHub App, and the file has the private key of the app. See [GitHub Apps](#github-apps). |
 | `check-credential <name>` | Checks the token again. |
 | `delete-credential <name>` | Deletes a Git credential. The oracle refuses this while a preset uses it. |
 | `presets` | Lists the presets. |
@@ -254,6 +254,31 @@ A credential has a scope:
 
 When the oracle saves a credential, it reads the user and the expiry date of the token from the provider.
 
+### GitHub Apps
+
+A Git credential can also be a GitHub App. Then the oracle keeps the private key of the app, and gives each codespace tokens that expire after 1 hour. The tokens of the credential helper are only for the repository of the request.
+
+1. Make a GitHub App on the provider. Give it the repository permissions Contents (read and write), Pull requests (read and write), and Metadata (read). It needs no webhook.
+2. Install the app for the owner, for example your organization. Select the repositories that the codespaces can use.
+3. Make a private key of the app, and add the credential with the ID of the app:
+
+   ```sh
+   loom-oracle-cli set-credential acme-app --provider github --owner acme --app-id 123456 --token-file app.private-key.pem
+   ```
+
+The credential needs `--owner`, because an installation is for one owner. With `--repository`, the tokens are only for that repository.
+
+When the oracle saves the credential, it reads the app and finds the installation for the owner. The login of the credential is the bot of the app, for example `loom-acme[bot]`. Commits use this login as the name if the provider has no Git name. On github.com, the email is the noreply address of the bot.
+
+The oracle makes a new token when the old token expires in 5 minutes or less. It keeps the tokens in memory only.
+
+Limits:
+
+- The codespace gets no token for `gh` from a GitHub App credential, because the token expires after 1 hour. Git, **Open pull request**, and the search of repositories use the credential.
+- An app reaches only the owners where it is installed, as the user tokens of an app do. Use a personal access token for other owners.
+- The desktop client cannot add a GitHub App credential. Use `loom-oracle-cli`.
+- The tests used a mock of the GitHub API. There is no test with a real app on github.com or on GitHub Enterprise Server yet.
+
 ### Presets
 
 A preset is an agent configuration with a name. It has an `agent.yaml` file, an optional `AGENTS.md`, and optional skills. The oracle validates the preset when you save it.
@@ -304,7 +329,7 @@ For each repository, the codespace uses the credential of the preset with the sm
 The codespace configures Git for each provider:
 
 - The Git credential helper asks the oracle for the token of each repository when Git needs it. Git does not keep the token.
-- `gh` uses the credential of the first repository of the provider. The codespace writes this token to the configuration file of `gh`.
+- `gh` uses the credential of the first repository of the provider. The codespace writes this token to the configuration file of `gh`. A GitHub App credential gives no token to `gh`.
 - The Git name and email come from the provider. If the provider has no name, the codespace uses the login of the credential. If the provider is github.com and has no email, the codespace uses the noreply address of the login. For other providers, set the email on the provider. When the codespace has no email for a provider, the oracle shows a warning.
 
 When a provider, a credential, or a preset changes, the oracle sends `git_changed` to the codespaces. They read the new setup.

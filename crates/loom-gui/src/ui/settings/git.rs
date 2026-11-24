@@ -168,12 +168,14 @@ impl SettingsView {
                 if token.is_none() && (editing.is_none() || token_only) {
                     return done.fail("Give a token.", window, cx);
                 }
+                let app_id = editing.as_ref().and_then(|c| c.app_id);
                 let input = GitCredentialInput {
                     name,
                     provider: provider.clone(),
                     owner,
                     repository,
                     token,
+                    app_id,
                 };
                 let task = super::call(&link, cx, move |client| async move {
                     client.set_git_credential(input).await
