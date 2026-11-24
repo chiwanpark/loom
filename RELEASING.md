@@ -5,14 +5,16 @@ Loom's binaries are published as archives on [GitHub releases](https://github.co
 | Archive | Contents | Runs on |
 | --- | --- | --- |
 | `loom-<version>-x86_64-unknown-linux-gnu.tar.gz` | `loom` (GUI) and `loom-agent`, with the desktop entry and icons under `share/` | x86-64 Linux with glibc 2.39 or newer (Ubuntu 24.04, Debian 13), `libxkbcommon`, Wayland, and a Vulkan driver |
-| `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any x86-64 Linux; statically linked |
-| `loom-relay-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-relay` and its systemd unit | any x86-64 Linux; statically linked |
-| `loom-agent-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-agent` and its systemd unit | any arm64 Linux; statically linked |
-| `loom-relay-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-relay` and its systemd unit | any arm64 Linux; statically linked |
+| `loom-agent-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-agent` | any x86-64 Linux; statically linked |
+| `loom-oracle-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-oracle` and its systemd unit | any x86-64 Linux; statically linked |
+| `loom-host-<version>-x86_64-unknown-linux-musl.tar.gz` | `loom-host` and its systemd unit | any x86-64 Linux; statically linked |
+| `loom-agent-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-agent` | any arm64 Linux; statically linked |
+| `loom-oracle-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-oracle` and its systemd unit | any arm64 Linux; statically linked |
+| `loom-host-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-host` and its systemd unit | any arm64 Linux; statically linked |
 
 Each architecture is built natively, the arm64 archives on GitHub's `ubuntu-24.04-arm` runners.
 
-`scripts/install.sh`, `loom-agent update`, and the desktop client's update download the archives and `SHA256SUMS` from the latest published release, so keep those names and the layout of the archives when changing the build. Drafts are not visible to them, and until a release is published `scripts/install.sh` can only build from source (`--source`).
+`scripts/install.sh`, `loom-host` (for the agent of a codespace), and the desktop client's update download the archives and `SHA256SUMS` from the latest published release, so keep those names and the layout of the archives when changing the build. Drafts are not visible to them, and until a release is published `scripts/install.sh` can only build from source (`--source`).
 
 Every crate shares the version in `[workspace.package]` of `Cargo.toml`. The binaries print it with `--version`, followed by the commit they were built from: `loom-agent 0.1.0 (b89ff2d9f 2026-11-11)`.
 
@@ -55,18 +57,20 @@ git push
 
 sudo apt install musl-tools
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked --target x86_64-unknown-linux-musl -p loom-agent -p loom-relay
+cargo build --release --locked --target x86_64-unknown-linux-musl -p loom-agent -p loom-oracle -p loom-host
 cargo build --release --locked --target x86_64-unknown-linux-gnu -p loom-gui -p loom-agent
 scripts/package-release.sh x86_64-unknown-linux-musl loom-agent loom-agent
-scripts/package-release.sh x86_64-unknown-linux-musl loom-relay loom-relay
+scripts/package-release.sh x86_64-unknown-linux-musl loom-oracle loom-oracle
+scripts/package-release.sh x86_64-unknown-linux-musl loom-host loom-host
 scripts/package-release.sh x86_64-unknown-linux-gnu loom loom loom-agent
 
 # On an arm64 machine, for the arm64 archives (the cc crate needs to be told
 # about musl-gcc there). Copy them into dist/ here before the checksums.
 rustup target add aarch64-unknown-linux-musl
-CC_aarch64_unknown_linux_musl=musl-gcc cargo build --release --locked --target aarch64-unknown-linux-musl -p loom-agent -p loom-relay
+CC_aarch64_unknown_linux_musl=musl-gcc cargo build --release --locked --target aarch64-unknown-linux-musl -p loom-agent -p loom-oracle -p loom-host
 scripts/package-release.sh aarch64-unknown-linux-musl loom-agent loom-agent
-scripts/package-release.sh aarch64-unknown-linux-musl loom-relay loom-relay
+scripts/package-release.sh aarch64-unknown-linux-musl loom-oracle loom-oracle
+scripts/package-release.sh aarch64-unknown-linux-musl loom-host loom-host
 
 (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
 gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file <(sed -n '/^## X.Y.Z$/,/^## /{//!p}' CHANGELOG.md) dist/*

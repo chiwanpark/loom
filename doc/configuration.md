@@ -2,7 +2,9 @@
 
 ## Configuration file
 
-The agent reads `~/.config/loom/agent.yaml`. To use a different file, use `--config <path>` or `LOOM_CONFIG`.
+The agent runs in a codespace. It writes its `agent.yaml` from the preset of the codespace. See [Presets](oracle.md#presets).
+
+Outside a codespace, `loom-agent config` reads `~/.config/loom/agent.yaml`. To use a different file, use `--config <path>` or `LOOM_CONFIG`. Use these commands to write and validate a preset:
 
 ```sh
 loom-agent config init     # write ~/.config/loom/agent.yaml
@@ -17,20 +19,20 @@ loom-agent config schema   # show the JSON Schema
 
 | Section | Contents |
 | --- | --- |
-| `allowed_roots` | The directories that an agent can serve as a workspace. The default is `~`. |
-| `llm` | The default model and the provider settings. See [Model providers](#model-providers). In a preset of a Loom-Next oracle, `accounts` gives the model account of each provider. See [Presets](oracle.md#presets). |
+| `llm` | The default model and the provider settings. See [Model providers](#model-providers). In a preset, `accounts` gives the model account of each provider. See [Presets](oracle.md#presets). |
 | `tools` | The settings of the tools. See [Tools](#tools). |
 | `tools.comment_guard` | Stops the model when it adds comments to code. See [Comment guard](comment-guard.md). |
 | `policy` | Tells if the agent runs a tool call, refuses it, or asks for your approval. See [Policy and harmful tool calls](policy.md). |
-| `environment` | The environment variables of shell commands and terminals, and the env file with secrets. See [Environment variables and secrets](environment.md). In a preset of a Loom-Next oracle, `secrets` gives the secret of the oracle for each variable. |
-| `git` | `credentials` names the Git credentials of the oracle that a codespace can use. Only presets of a Loom-Next oracle use it. See [Presets](oracle.md#presets). |
+| `environment` | The environment variables of shell commands and terminals, and the env file with secrets. See [Environment variables and secrets](environment.md). In a preset, `secrets` gives the secret of the oracle for each variable. |
+| `git` | `credentials` names the Git credentials of the oracle that a codespace can use. See [Presets](oracle.md#presets). |
 | `sandbox` | Confines shell commands with `landlock` or `bubblewrap`. It is off by default. It can also block the network and add writable paths. Changes in the writable paths are not [harmful](policy.md#harmful-tool-calls), also when the sandbox is off. |
 | `context` | The limits of tool output, and when to compact a long conversation. |
 | `limits` | See [Limits](#limits). |
 | `instructions` | More instructions for the model. The agent also adds the `AGENTS.md` files of the workspace. |
 | `skills` | The settings of [skills](skills.md). |
-| `relay` | The settings of the relay connection. See [Relays](remote-hosts.md#relays). |
 | `telemetry` | OpenTelemetry (OTLP) export of metrics and events. It is off by default. See [Telemetry](telemetry.md). |
+
+The agent of a codespace sets `allowed_roots`, `socket`, `storage`, `lifecycle`, and `relay` itself.
 
 ### Model providers
 
@@ -43,21 +45,19 @@ loom-agent config schema   # show the JSON Schema
 | `opencode-go` | [OpenCode Go](https://opencode.ai/docs/console/go/) API key (`OPENCODE_API_KEY`) |
 | Any OpenAI-compatible server | API key. Configure it in `llm.providers`. |
 
-To sign in, use **Providers and sign-in…** in the menu of the agent.
+Add and sign in to model accounts on the **Models** page of the oracle settings in the desktop client, or with `loom-oracle-cli sign-in` and `loom-oracle-cli set-api-key`. Select the account for each provider in `llm.accounts` of the preset. See [Model accounts](oracle.md#model-accounts).
 
 The `anthropic` provider uses message threads by default on Anthropic's API. When the history and request settings still match, Loom sends only the new messages and the billing block.
 If the thread expires, Loom sends the full history again.
 To turn off threads, set `llm.providers.anthropic.message_threads: false`.
 Threads are off by default for custom base URLs. Set `message_threads: true` only if the endpoint supports the Anthropic message-threads beta.
 
-For GitHub Copilot, choose **Device code** and enter the code on the GitHub page that opens.
+For GitHub Copilot, sign in with a device code and enter the code on the GitHub page that opens.
 After sign-in, select a Copilot model in the model picker.
 To make it the default, set `llm.default_model` to `github-copilot/<model-id>` with a model ID from the picker.
 Loom does not change which models your account or organization enables.
 
-The agent keeps the credentials in `credentials.json` in its data directory. The data directory is `storage.data_dir`. The default is `~/.local/share/loom`.
-
-For OpenCode Go, paste a Console API key from a Go workspace in **Providers and sign-in…**, or set `OPENCODE_API_KEY` in the agent's environment. The environment variable takes precedence over the stored key. Select an OpenCode Go model in the model picker, or set `llm.default_model` to a model such as `opencode-go/deepseek-v4.1-flash`.
+For OpenCode Go, add an API key account from a Go workspace on the **Models** page of the oracle settings (or with `loom-oracle-cli set-api-key`), or set `OPENCODE_API_KEY` in the environment. The environment variable takes precedence over the stored key. Select an OpenCode Go model in the model picker, or set `llm.default_model` to a model such as `opencode-go/deepseek-v4.1-flash`.
 
 This example adds an OpenAI-compatible server, such as a local model:
 
@@ -97,30 +97,22 @@ This limit stops a model that is in a loop when nobody looks at it. The agent ke
 
 ## Reload the configuration
 
-A running agent reads `agent.yaml` again when the file changes. You can also make it read the file manually. For example, do this when the agent did not see a change, or when you want to know if the agent accepted the file.
+A running agent reads `agent.yaml` again when the file changes. For example, the oracle changes the file when you change the preset of the codespace.
 
-- Run `loom-agent reload --workspace <dir> | --instance <id> | --all`.
-- Or, in the Sessions panel of the client, choose **Reload configuration** in the menu of an agent under **Remotes**.
-
-Each agent tells if it reloaded the file, if the file did not change, or if it rejected the file. `loom-agent reload` exits with status 1 if an agent rejected the file or if it could not connect to an agent.
+The agent tells each connected client if it reloaded the file or if it rejected the file.
 
 If an agent rejects the file, it keeps its current configuration. Each connected client shows the reason.
 
 A new session gets its model, reasoning effort, policy action, and comment guard from `llm.default_model`, `llm.default_reasoning_effort`, `policy.default`, and `tools.comment_guard.mode`. A reload does not change these settings in the sessions that exist.
 
-Changes to `relay`, `socket`, `storage`, `lifecycle`, and `telemetry` apply only after the agent restarts. The agent shows the sections that wait for a restart.
+Changes to `telemetry` apply only after the agent restarts. The agent shows the sections that wait for a restart.
 
 ## Agent commands
 
 | Command | Effect |
 | --- | --- |
-| `loom-agent serve --workspace <dir>` | Runs an agent for a workspace. `--default` serves `lifecycle.default_workspace`. |
-| `loom-agent ps [--json]` | Shows the agents that run on this host. |
-| `loom-agent stop --workspace <dir> \| --instance <id> \| --all` | Stops agents gracefully. |
-| `loom-agent reload --workspace <dir> \| --instance <id> \| --all` | Makes agents read their configuration file again. See [Reload the configuration](#reload-the-configuration). |
-| `loom-agent stdio --workspace <dir> [--spawn]` | Connects stdin and stdout to an agent. SSH connections use this command. `--spawn` starts the agent if it does not run. |
-| `loom-agent pair` | Shows a one-time pairing link for a relay client. |
-| `loom-agent clients list \| revoke <label>` | Manages the clients that are paired through a relay. |
-| `loom-agent host [--json]` | Shows the ID and the public key of this host. |
+| `loom-agent serve --managed` | Runs the agent of a codespace. `loom-host` starts it in the codespace. See [Codespace agents](host.md#codespace-agents). |
+| `loom-agent stdio --managed` | Connects stdin and stdout to the agent of the codespace. SSH connections to a codespace use this command. |
 | `loom-agent config init \| check \| schema \| path \| fetch-telemetry` | Manages the configuration. |
-| `loom-agent update [--check] [--version <version>] [--restart]` | Updates `loom-agent`. See [Updates](install.md#updates). |
+
+Loom no longer has the commands `ps`, `stop`, `reload`, `pair`, `clients`, `host`, and `update`, and `serve` and `stdio` without `--managed`.

@@ -8,8 +8,8 @@ The client reads `~/.config/loom/client.yaml`. It has these sections:
 
 | Section | Contents |
 | --- | --- |
-| `hosts` | The hosts of the agents. See [Remote hosts and relays](remote-hosts.md). |
-| `appearance` | The theme, the UI and monospace fonts and sizes, and fallback fonts. A fallback font shows the glyphs that the monospace font does not have, for example Hangul in terminals. `wrap_lines` tells if file and diff views wrap long lines when they open. It is off by default. `host_colors` sets the color of each host by its name, for example `devbox: '#3b82f6'`. See [Host colors](#host-colors). |
+| `hosts` | The oracles that the client paired with. See [Add an oracle](#add-an-oracle). |
+| `appearance` | The theme, the UI and monospace fonts and sizes, and fallback fonts. A fallback font shows the glyphs that the monospace font does not have, for example Hangul in terminals. `wrap_lines` tells if file and diff views wrap long lines when they open. It is off by default. `host_colors` sets the color of each oracle by its name, for example `devbox: '#3b82f6'`. See [Host colors](#host-colors). |
 | `keymap` | Changes to the default key bindings. |
 | `check_for_updates` | Tells if the client looks for a newer release when it starts and one time each day. It is on by default. See [Updates](install.md#updates). |
 
@@ -41,7 +41,7 @@ The tab and panel keys also work in terminals. Thus, a terminal program does not
 
 ## Sessions panel
 
-The Sessions panel puts the sessions of the connected agents and of the codespaces into groups by [state](sessions.md#session-states):
+The Sessions panel puts the sessions of the codespaces into groups by [state](sessions.md#session-states):
 
 - **Needs approval**: waiting for approval.
 - **Working**: thinking, responding, or running a tool.
@@ -49,21 +49,16 @@ The Sessions panel puts the sessions of the connected agents and of the codespac
 - **Idle**.
 - **Archived**.
 
-Under **Remotes**, the panel shows each host and its agents. For each agent, it shows the workspace, the number of sessions, and the connection status.
-
-- To connect to an agent, click it.
-- The menu of an agent has the actions for the agent, such as **Stop agent**.
-
 Under **Workspaces**, the panel shows each oracle with its workspaces and their codespaces. See [Codespaces](#codespaces).
 
 ### Host colors
 
-You can give each host a color. The color helps you to identify the sessions of each host.
+You can give each oracle a color. The color helps you to identify the sessions of each oracle.
 
-1. Under **Remotes**, click the palette button of the host.
+1. Under **Workspaces**, click the palette button of the oracle.
 2. Select a color.
 
-The panel then shows the name of the host in this color. The name shows in each session of the host and under **Remotes**. The client keeps the colors in `appearance.host_colors` of `client.yaml`.
+The panel then shows the name of the oracle in this color. The name shows in each session of the oracle and under **Workspaces**. The client keeps the colors in `appearance.host_colors` of `client.yaml`.
 
 ```yaml
 appearance:
@@ -71,14 +66,7 @@ appearance:
     devbox: '#3b82f6'
 ```
 
-Each color must have the format `#rrggbb`. A host without a color has no mark.
-
-### Start a session
-
-1. Click **+** next to a host. The **New session** dialog shows the workspaces of the agents on the host.
-2. Do one of these steps:
-   - Click a workspace to start a session there.
-   - Type a different directory and click **Start**. The host starts an agent for the directory. The session opens when the client connects to the agent.
+Each color must have the format `#rrggbb`. An oracle without a color has no mark.
 
 ### Open and close a session
 
@@ -90,15 +78,15 @@ Each code block in an answer has a copy button. It copies the code without the f
 
 ## Codespaces
 
-Loom-Next is in development. An oracle keeps workspaces, presets, and codespaces. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
+An oracle keeps workspaces, presets, and codespaces. Each session runs in a codespace. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
 
 ### Add an oracle
 
 1. Get a pairing link. For the first device, run `loom-oracle pair` on the oracle machine. For other devices, click **Add device…** on the **Devices** page of the oracle settings on a paired device, or run `loom-oracle-cli pair-device`.
-2. In the desktop client, use **Pair through a relay**.
+2. In the desktop client, click the **Pair with an oracle** button in the header of the Sessions tab, or run the command `hosts: pair with an oracle` from the command palette.
 3. Type a name and paste the link.
 
-The client keeps the oracle in `client.yaml` as a host of the kind `oracle`:
+The client keeps the oracle in `client.yaml` as a host of the kind `oracle`. It is the only kind of host:
 
 ```yaml
 hosts:
@@ -108,6 +96,8 @@ hosts:
   host_id: 3b1f…
   host_key: Qm9i…
 ```
+
+Loom no longer has the hosts of the kinds `local`, `ssh`, and `relay`. The client ignores them in `client.yaml` and writes a warning to its log. It removes them from the file when it saves the file.
 
 The client then shows the oracle under **Workspaces**. For each workspace, it shows the host, the repositories, and the codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The lists come from the oracle. The client connects to the agent of a codespace only when you open a session.
 

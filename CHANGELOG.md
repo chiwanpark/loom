@@ -6,15 +6,20 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ### Upgrade notes
 
-- The protocol version is now 20. Clients and agents of 0.5.0 (protocol 19) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
+- **Loom-Next.** Loom now needs an oracle and an Incus host. Each session runs in a codespace. See [Oracle](doc/oracle.md) and [Hosts and codespaces](doc/host.md).
+- **The classic modes are gone.** Loom no longer has local agents, agents over SSH, `loom-relay`, pairing with agents, or sessions in a git worktree. `loom-agent` has only `serve --managed`, `stdio --managed`, and `config`. The commands `ps`, `stop`, `reload`, `host`, `pair`, `clients`, and `update` are gone. An agent cannot update itself.
+- `client.yaml` can have only hosts of the kind `oracle`. The desktop client ignores the hosts of the kinds `local`, `ssh`, and `relay`, and removes them from the file when it saves the file. The Android app removes these hosts. Pair the apps with the oracle again.
+- `agent.yaml` has no `worktrees` section. Remove it from your presets.
+- The oracle has no relay hosts. `loom-oracle-cli` has no `relay-hosts`, `add-relay-host`, `remove-relay-host`, or `client-entry`.
+- `scripts/install.sh` installs only `agent` and `desktop`, and has no `--systemd` option. The release has no `loom-relay` archives and no systemd unit for `loom-agent`.
+- The protocol version is now 21. Clients and agents of 0.5.0 (protocol 19) cannot connect to this version. Upgrade the agents, the desktop app, and the Android app together.
 - The agent does not load the sessions of earlier versions. It skips them and logs a warning. To remove them, delete the session stores in `~/.local/share/loom/sessions/`.
 - `llm.default_reasoning_effort` is now `medium` if you do not set it. Before, the agent sent no effort, and the model used its own default. For Claude models, this turns on thinking. To turn off reasoning, set `llm.default_reasoning_effort: none`.
 
 ### New features
 
-- **OpenCode Go.** Loom gets the current model list from OpenCode Go. Set `OPENCODE_API_KEY` on the agent or enter a key in **Providers and sign-in…**.
+- **OpenCode Go.** Loom gets the current model list from OpenCode Go. Add an API key account for `opencode-go` on the **Models** page of the oracle settings or with `loom-oracle-cli set-api-key`.
 - **GitHub Copilot.** Sign in with a GitHub device code and select a Copilot model that your account can use. See [Model providers](doc/configuration.md#model-providers).
-- **Restart after an update.** The new `loom-agent update --restart` option restarts the running agents of the replaced binary in place. The agents keep their sessions. See [Updates](doc/install.md#agent).
 - **Anthropic message threads.** Loom sends only new messages and the billing block when it can continue a thread. If the thread expires, Loom sends the full history again. See [Model providers](doc/configuration.md#model-providers).
 
 ### Changes
@@ -25,9 +30,7 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ### Fixes
 
-- **Updates of older agents.** The desktop app and the Android app could not update an agent that spoke an older protocol. Now they update the agents of 0.4.0 and later also when the protocol is different. The update no longer needs a connected agent. When a connection fails because the agent is older, the apps tell you how to update it.
 - **Anthropic billing version.** Loom reports Claude Code 2.1.323 by default. If Anthropic requires a higher billing version, Loom retries once with the version Anthropic names.
-
 ## 0.5.0
 
 ### Upgrade notes
