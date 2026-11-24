@@ -73,6 +73,6 @@ The redaction does not find all secrets. For example, a command can show a value
 - Give the agent credentials with the least privileges.
 - If commands do not need the network, set `sandbox.network: false`.
 
-## Environment of a systemd service
+## Environment in a codespace
 
-When systemd runs the agent, `~/.config/loom/agent.env` sets variables in the environment of the agent. Commands also get these variables, unless the rules above remove them.
+In a codespace, the systemd service of the agent loads `/etc/loom/environment`, which comes from the environment configuration of the host. The secrets of the preset go into `~/.local/share/loom/secrets.env`, which the agent reads as its env file. See [Presets](oracle.md#presets) and [The codespace image](host.md#the-codespace-image).

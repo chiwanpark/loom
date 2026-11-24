@@ -4,12 +4,12 @@
 
 | Crate | Contents |
 | --- | --- |
-| `crates/loom-agent` | The agent daemon `loom-agent` and its commands. |
+| `crates/loom-agent` | The agent `loom-agent` of a codespace and its commands. |
 | `crates/loom-gui` | The desktop client `loom`, built with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui). |
-| `crates/loom-relay` | The relay `loom-relay`. |
-| `crates/loom-oracle` | The oracle `loom-oracle` of Loom-Next: the relay, the control service, and the store. See [Oracle](oracle.md). |
+| `crates/loom-relay` | The relay that the oracle runs. |
+| `crates/loom-oracle` | The oracle `loom-oracle`: the relay, the control service, and the store. See [Oracle](oracle.md). |
 | `loom-oracle-proto` | The JSON messages of the control service. |
-| `crates/loom-host` | The host daemon `loom-host` of Loom-Next. It starts and deletes the codespaces of the oracle. See [Hosts and codespaces](host.md). |
+| `crates/loom-host` | The host daemon `loom-host`. It starts and deletes the codespaces of the oracle. See [Hosts and codespaces](host.md). |
 | `loom-incus` | A client for the REST API of Incus, over the local socket or HTTPS with a client certificate. The feature `fake` adds a fake Incus server for tests. |
 | `loom-agent-core` | The agent core. |
 | `loom-llm` | The model providers. |

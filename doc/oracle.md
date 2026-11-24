@@ -1,16 +1,15 @@
-# Oracle (Loom-Next)
+# Oracle
 
-The oracle is the central service of Loom-Next. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 4.
+The oracle is the central service of Loom. The plan is in [the design document](design/loom-next.md).
 
 The oracle does these things:
 
-- It is a relay. Current agents and clients use it as they use `loom-relay`.
+- It is the relay between the clients and the agents of the codespaces.
 - It has a control service. Paired devices manage hosts, Git providers and credentials, model accounts, secrets, presets, workspaces, notes, and volumes through this service.
 - It starts codespaces on hosts. See [Hosts and codespaces](host.md).
 - It keeps its data in a SQLite store. It encrypts the secrets in the store with a master key.
 
-The releases do not contain the oracle yet. Get `loom-oracle` from the `loom-next` CI archives or build it from the branch.
-Build the test client from source:
+Prebuilt binaries of `loom-oracle` are on the [releases page](https://github.com/chiwanpark/loom/releases). Build `loom-oracle` or `loom-oracle-cli` from source:
 
 ```sh
 cargo build --release --bin loom-oracle --bin loom-oracle-cli
@@ -21,7 +20,7 @@ cargo build --release --bin loom-oracle --bin loom-oracle-cli
 | Binary | Use |
 | --- | --- |
 | `loom-oracle` | The daemon. It has three commands: `serve`, `config`, and `pair`. |
-| `loom-oracle-cli` | A test client for the control service. Use it until the desktop client has the oracle pages. |
+| `loom-oracle-cli` | A command-line client for the control service. |
 
 ## Set up an oracle
 
@@ -37,17 +36,45 @@ After this, the first device makes the links for the other devices: on the **Dev
 
 ## `oracle.yaml`
 
-The keys are the same as in `relay.yaml`, with these differences:
-
 | Key | Meaning |
 | --- | --- |
 | `url` | The public URL of the oracle. Pairing links contain it. If it is not set, the oracle uses `ws://` or `wss://` with `listen`. |
+| `listen` | The address of the relay and the control service, for example `127.0.0.1:8080`. |
+| `metrics_listen` | The address of `/metrics`. See [Metrics](#metrics). |
+| `tls` | The `cert` and the `key` files, for `wss://` without a proxy. |
+| `cloudflare_access` | The `team_domain` and the `audience` of Cloudflare Access. The oracle then accepts only connections with a valid token. |
+| `push` | The notifications for the Android app. See [Notifications for the Android app](#notifications-for-the-android-app). |
+| `limits` | The limits of the relay, for example `max_frame` and `idle_timeout`. |
+| `logging` | The log level. |
 | `data_dir` | The directory of the store and the host keys. The default is `~/.local/share/loom/oracle`. |
 | `master_key` | The file of the master key. The default is `master.key` in `data_dir`. |
 | `codespaces` | The lifecycle of codespaces. See [Codespace lifecycle](#codespace-lifecycle). |
-| `allowed_hosts` | Not available. Use relay hosts. See [Use the oracle as a relay](#use-the-oracle-as-a-relay). |
 
-These keys are the same as in `relay.yaml`: `listen`, `metrics_listen`, `tls`, `cloudflare_access`, `push`, `limits`, and `logging`.
+The relay of the oracle lets in only the agents of the codespaces. `oracle.yaml` has no `allowed_hosts`.
+
+### Notifications for the Android app
+
+The Android app gets notifications through Firebase Cloud Messaging. For this, the oracle needs the private key of a service account of the Firebase project of the app.
+
+1. In the Firebase console, open **Project settings** and then **Service accounts**.
+2. Click **Generate new private key**. The language of the code sample is not important.
+3. Put the JSON file on the oracle machine. Only the oracle must be able to read it.
+4. Add the file to `oracle.yaml`:
+
+```yaml
+push:
+  fcm:
+    service_account: /etc/loom/firebase-service-account.json
+```
+
+The Android app gives its push token to the oracle. The oracle gives the tokens to the agents of the codespaces. The agents send the notifications through the relay of the oracle.
+
+The oracle has these metrics for notifications:
+
+| Metric | Meaning |
+| --- | --- |
+| `loom_relay_pushes_sent_total` | Notifications that the oracle sent. |
+| `loom_relay_pushes_rejected_total` | Notifications to tokens that Firebase does not know. The agents then forget these tokens. |
 
 ### Codespace lifecycle
 
@@ -166,7 +193,6 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `repositories <id>` | Shows the state of each repository of a codespace. |
 | `push <id> [--message <message>] [--directory <directory>]…` | Pushes the branch of each repository of a codespace. With `--message`, the agent first commits the uncommitted changes. |
 | `pull-request <id> --title <title> [--body <text> \| --body-file <path>] [--draft]` | Opens a pull request for each repository of a codespace that has commits. |
-| `client-entry <id> [--name <name>]` | Shows the host entry for `client.yaml` of the desktop client. |
 | `audit [--limit <n>] [--before <id>]` | Shows the audit log, newest first. The default limit is 100. `--before` shows the entries before an entry. |
 | `watch [--count <n>]` | Shows the events of the oracle until you stop it. |
 
@@ -176,7 +202,7 @@ If the oracle is behind Cloudflare Access, pair with `--access-id-env <name> --a
 
 ## Limits
 
-The oracle and `loom-relay` use the same limits from `limits` in their files. A connection uses the limits of its IP address until it proves its identity:
+The oracle uses the limits from `limits` in `oracle.yaml`. A connection uses the limits of its IP address until it proves its identity:
 
 - An agent uses its own limits after it registers.
 - A device uses its own limits after it opens a channel to the control service.
@@ -468,7 +494,7 @@ The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_r
 
 Volume changes send `volume_changed` and `volume_removed` to devices.
 
-Phase 4 adds these events for devices: `model_account_changed`, `model_account_removed`, `model_login_finished`, `secret_changed`, `secret_removed`, `workspace_notes_changed`, `session_changed`, `session_removed`, and `config_changed`. A device sign-in with a device code ends with `model_login_finished`.
+Other events for devices are: `model_account_changed`, `model_account_removed`, `model_login_finished`, `secret_changed`, `secret_removed`, `workspace_notes_changed`, `session_changed`, `session_removed`, and `config_changed`. A device sign-in with a device code ends with `model_login_finished`.
 
 The error codes are `bad_request`, `unknown_command`, `not_found`, `forbidden`, `conflict`, `unavailable`, and `internal`.
 

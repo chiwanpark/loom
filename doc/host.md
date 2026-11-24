@@ -1,10 +1,10 @@
-# Hosts and codespaces (Loom-Next)
+# Hosts and codespaces
 
-A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts, stops, and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md). This page describes the state after phase 6.
+A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts, stops, and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md).
 
-A workspace has one or more repositories and can have persistent volumes. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. The current desktop client connects to the agent through this relay.
+A workspace has one or more repositories and can have persistent volumes. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. Clients connect to the agent through this relay, or over SSH.
 
-The releases do not contain `loom-host` yet. Get `loom-host` and `loom-agent` from the CI archives for the same `loom-next` build, or build them:
+Prebuilt binaries of `loom-host` and `loom-agent` are on the [releases page](https://github.com/chiwanpark/loom/releases). Or build them from source:
 
 ```sh
 cargo build --release --bin loom-host --bin loom-agent
@@ -161,7 +161,7 @@ The test on an IncusOS host used the Incus API, not the `incus` client: import, 
 
 `loom-host config check` validates the file, and `loom-host config schema` shows its JSON Schema. `--config` or `LOOM_HOST_CONFIG` selects a different file.
 
-The releases before Loom-Next do not have the managed mode. Until a release has it, set `agent.path` to a build from the branch `loom-next`.
+For development builds, set `agent.path` to a local `loom-agent` binary.
 
 ## The codespace image
 
@@ -277,9 +277,9 @@ git:
   credentials: [acme-token]
 ```
 
-`create-codespace` shows the steps until the codespace is ready. Then it shows a host entry for `client.yaml` of the desktop client. `loom-oracle-cli client-entry <id>` shows the entry again. With `--message`, the agent starts a session with this message when the codespace is ready. A client does not need to be connected.
+`create-codespace` shows the steps until the codespace is ready. With `--message`, the agent starts a session with this message when the codespace is ready. A client does not need to be connected.
 
-The device keys of the oracle are the keys that the agent of a codespace accepts. Thus, the desktop client must use a key that is paired with the oracle. Pair the key of the desktop client with `loom-oracle-cli pair <link> --identity ~/.local/share/loom/client_identity.json`.
+Pair the desktop client with the oracle to see the codespace under **Workspaces**. See [Add an oracle](desktop.md#add-an-oracle).
 
 `loom-oracle-cli close-codespace <id>` deletes the container of the codespace and revokes the keys of its agent. Before that, the close guard checks the unsaved work. See [Git in a codespace](#git-in-a-codespace).
 

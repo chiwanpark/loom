@@ -787,6 +787,19 @@ Not tested yet:
 - The connection to a GitHub Enterprise Server. Phase 3 tests it.
 - A turn with a model. The container had no model credential. Phase 4 tests it.
 
+### Phase 8: what changed
+
+- `client.yaml` has only hosts of the kind `oracle`. The desktop client ignores the hosts of the kinds `local`, `ssh`, and `relay`, and writes a warning to its log. It removes them from the file when it saves the file. The Android app removes these hosts from its file.
+- The desktop client has no **Remotes** section, no dialog for SSH hosts, and no pairing with agents. The command `hosts: pair with a relay` becomes `hosts: pair with an oracle`.
+- `loom-agent` has only `serve --managed`, `stdio --managed`, `config`, and the hidden commands. `ps`, `stop`, `reload`, `host`, `pair`, `clients`, and `update` are gone. So are the agents that an agent spawned and supervised.
+- Worktree sessions are gone. `agent.yaml` has no `worktrees` section. A stored session with a worktree loads as a session in the workspace.
+- The oracle has no relay hosts. A store migration drops the table. Its relay lets in only the agents of codespaces.
+- The `loom-relay` binary, `relay.yaml`, and the systemd units of `loom-relay` and of the classic agent are gone. The `loom-relay` crate keeps the relay library of the oracle. `scripts/install.sh` installs only the agent and the desktop client.
+- The agent protocol goes from 20 to 21. `CreateSession` has no worktree options, and the file, terminal, and upload commands have no session. The worktree commands and payloads are gone.
+- The other commands of the classic modes stay in `Command`, so that the indexes of `UpdateAgent` and `AgentUpdated` do not move. A client of protocol 15 or newer can still read the answer to `UpdateAgent`. The agent answers `ListAgents`, `SpawnAgent`, `StopAgent`, `GetHostKey`, `AuthorizeClient`, `ListClients`, `RevokeClient`, `SetPushToken`, and `UpdateAgent` with `Unsupported`. A later version can remove them, with their own version bump.
+- An agent cannot update itself. A new codespace gets a new agent from `loom-host`.
+- `ProcessDriver` stays for the tests. See section 11.
+
 ## 10. Tests
 
 - Unit tests for the store, the control service, and the codespace state machine.

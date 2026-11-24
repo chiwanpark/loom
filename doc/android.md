@@ -1,6 +1,6 @@
 # Android app
 
-The Android app connects to agents through a relay only. It needs Android 17 (API 37) or newer on arm64.
+The Android app connects to the agents of the codespaces through the relay of the oracle. It needs Android 17 (API 37) or newer on arm64.
 
 ## Build
 
@@ -50,21 +50,20 @@ Notifications need a Firebase project.
 
 Builds without this file, such as the CI builds, work without notifications.
 
-The relay also needs a key of the same Firebase project. See [Notifications for the Android app](remote-hosts.md#notifications-for-the-android-app).
+The oracle also needs a key of the same Firebase project. See [Notifications for the Android app](oracle.md#notifications-for-the-android-app).
 
-## Pair with a host
+## Pair with an oracle
 
-1. Set up a relay and the agent. See [Relays](remote-hosts.md#relays).
-2. On the agent host, run `loom-agent pair`.
-3. In the app, use **Pair with a host**. Scan the QR code or paste the link.
+1. Get a pairing link. Run `loom-oracle-cli pair-device` on a device that is paired with the oracle, or click **Add device…** on the **Devices** page of the oracle settings in the desktop client. For the first device, run `loom-oracle pair` on the oracle machine.
+2. In the app, use **Pair with an oracle**. Scan the QR code or paste the link.
 
 To scan the QR code, the phone needs Google Play services. To paste the link, it does not.
 
+The app removes the hosts that it paired with before Loom-Next, because Loom no longer has them. Pair with the oracle again.
+
 ## Codespaces
 
-Loom-Next is in development. An oracle keeps workspaces, presets, and codespaces. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
-
-To pair with an oracle, run `loom-oracle-cli pair-device` on a device that is paired with the oracle. Then use **Pair with a host** in the app, and scan the QR code or paste the link. The app keeps the oracle as a host with the mark **Oracle**.
+An oracle keeps workspaces, presets, and codespaces. Each session runs in a codespace. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
 
 Under **Workspaces**, the start screen shows each oracle with its workspaces and their codespaces. For each workspace, it shows the host and the repositories. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The sessions of the codespaces come from the oracle, and the start screen puts them into groups with the other sessions. The app connects to the agent of a codespace only when you open a session.
 
@@ -96,7 +95,7 @@ The app tells the oracle where to send notifications. The oracle gives this to t
 
 ## Sessions
 
-The start screen shows all sessions of all agents on the paired hosts. It puts them into groups by state, as the Sessions panel of the desktop client does. On this screen, you can start, rename, archive, and delete sessions. A completed session becomes idle when you open it in the app.
+The start screen shows all sessions of the codespaces of the paired oracles. It puts them into groups by state, as the Sessions panel of the desktop client does. On this screen, you can rename, archive, and delete sessions. A completed session becomes idle when you open it in the app.
 
 In a session, you can do these steps:
 
@@ -118,22 +117,14 @@ The row above the prompt box shows the context used. It also lets you select the
 
 A new session gets these settings from the configuration of the agent, and the row shows their values. For example, if the agent has `llm.default_reasoning_effort: high`, the row shows **High**.
 
-### Start a session
+### Oracle colors
 
-1. Press **+** on the start screen.
-2. Select a connected agent, or select **In another directory…** on one of their hosts.
-3. For a different directory, type the directory, or select a directory from the list. `~` is your home directory on the host. The list has directories where you started sessions before, and directories of running agents.
-
-The agent of the host starts an agent in the directory, or uses the agent that already runs there. The session opens when the app connects to this agent through the relay. The directory must be in one of the `allowed_roots` of the agent configuration of the host.
-
-### Host colors
-
-You can give each host a color. The color helps you to identify the sessions of each host.
+You can give each oracle a color. The color helps you to identify the sessions of each oracle.
 
 1. In the menu of the start screen, open **Hosts**.
-2. In the menu of the host, choose **Color…**.
+2. In the menu of the oracle, choose **Color…**.
 
-If you have more than one host, each row of the start screen then shows the name of the host in this color.
+If you have more than one oracle, each row of the start screen then shows the name of the oracle in this color.
 
 ## Changes and files
 
@@ -183,7 +174,7 @@ To forward a port of the phone to a port of the agent host, press **Forward** on
 
 - The forward listens on the loopback address of the phone. It uses the same port number if it is free. Thus, the browser and other apps of the phone can open the server at `localhost`.
 - Forwards continue when Loom is not on the screen. A notification shows the forwards and lets you stop them.
-- When the app connects again or follows a restarted agent, it starts the forwards again on the same ports.
+- When the app connects again, it starts the forwards again on the same ports.
 
 ## Connections
 
@@ -191,11 +182,7 @@ The app keeps its connections to the agents while it runs. If a connection stops
 
 When the app comes back on the screen or the phone changes networks, the app examines each connection immediately. It does not wait for the heartbeat timeout.
 
-A restarted agent runs as a new instance. The app finds it by its workspace on the relay of the host. Open screens follow the new instance.
-
-If the app and an agent use different protocol versions, the app tells you which of the two to update.
-
-To update the agents of a host, use **Update agents…** in the menu of the host. See [Agents of a host](install.md#agents-of-a-host).
+If the app and an agent use different protocol versions, the app tells you which of the two to update. An agent cannot update itself. A new codespace gets a new `loom-agent`. See `agent.path` in [Hosts and codespaces](host.md#hostyaml).
 
 ## Notifications
 
@@ -206,7 +193,7 @@ If you build the app with a Firebase project, it shows a notification in these c
 
 Tap a notification to open the session. The app does not show notifications for the session on the screen. Each type of notification has its own channel in the notification settings of the system.
 
-When the app connects to a paired host, it tells the host where to send notifications. The agents of the host encrypt each notification with the keys from the pairing. Then they send it to their relay, which sends it through Firebase Cloud Messaging. Thus, Google sees only encrypted data.
+When the app connects to a paired oracle, it tells the oracle where to send notifications. The agents of the codespaces encrypt each notification with the keys from the pairing. Then they send it to the relay of the oracle, which sends it through Firebase Cloud Messaging. Thus, Google sees only encrypted data.
 
 ## Fonts
 
