@@ -127,12 +127,12 @@ mod tests {
         std::os::unix::fs::symlink(root.join("secret"), allowed.join("escape")).unwrap();
         std::fs::write(allowed.join("file"), "x").unwrap();
         let rules = HostRules {
-            max_codespaces: None,
             directories: vec![allowed.clone()],
             host_user: Some(HostUser {
                 uid: 1001,
                 gid: 1002,
             }),
+            ..HostRules::default()
         };
         let path = |rest: &str| root.join(rest).to_string_lossy().into_owned();
         assert_eq!(

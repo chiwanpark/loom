@@ -198,8 +198,31 @@ impl IncusDriver {
     fn base_devices(&self) -> Value {
         json!({
             "root": {"type": "disk", "path": "/", "pool": self.pool},
-            "eth0": {"type": "nic", "name": "eth0", "network": self.network},
+            "eth0": self.nic(),
         })
+    }
+
+    fn nic(&self) -> Value {
+        let rules = &self.rules.network;
+        let mut nic = json!({"type": "nic", "name": "eth0", "network": self.network});
+        if rules.isolate {
+            for key in [
+                "security.port_isolation",
+                "security.mac_filtering",
+                "security.ipv4_filtering",
+                "security.ipv6_filtering",
+            ] {
+                nic[key] = Value::String("true".into());
+            }
+        }
+        if !rules.acls.is_empty() {
+            nic["security.acls"] = Value::String(rules.acls.join(","));
+            nic["security.acls.default.egress.action"] =
+                Value::String(rules.default_egress.as_str().into());
+            nic["security.acls.default.ingress.action"] =
+                Value::String(rules.default_ingress.as_str().into());
+        }
+        nic
     }
 
     fn devices(&self, volumes: &[InstanceVolume]) -> anyhow::Result<Value> {
@@ -693,6 +716,67 @@ impl IncusDriver {
         }
     }
 
+    async fn check_network(&self) -> CheckItem {
+        let rules = &self.rules.network;
+        let network = match self.incus.network(&self.network).await {
+            Ok(network) => network,
+            Err(err) => {
+                return CheckItem::new(
+                    "network",
+                    CheckStatus::Failed,
+                    format!("{}: {}", self.network, err.message()),
+                );
+            }
+        };
+        let mut detail = format!("{} ({})", network.name, network.kind);
+        if rules.isolate && network.kind != "bridge" {
+            return CheckItem::new(
+                "network",
+                CheckStatus::Failed,
+                format!(
+                    "{detail}: the isolation of codespaces needs a bridge network; set rules.network.isolate: false"
+                ),
+            );
+        }
+        detail.push_str(if rules.isolate {
+            "; codespaces cannot reach each other or use other addresses"
+        } else {
+            "; codespaces are not isolated from each other"
+        });
+        let mut status = CheckStatus::Ok;
+        let mut problems = Vec::new();
+        for acl in &rules.acls {
+            match self.incus.network_acl(acl).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    status = CheckStatus::Failed;
+                    problems.push(format!("the network ACL {acl} does not exist"));
+                }
+                Err(err) => {
+                    if status == CheckStatus::Ok {
+                        status = CheckStatus::Warning;
+                    }
+                    problems.push(format!(
+                        "cannot read the network ACL {acl}: {}",
+                        err.message()
+                    ));
+                }
+            }
+        }
+        if !rules.acls.is_empty() {
+            detail.push_str(&format!(
+                "; ACLs {} (default egress {}, ingress {})",
+                rules.acls.join(", "),
+                rules.default_egress.as_str(),
+                rules.default_ingress.as_str()
+            ));
+        }
+        for problem in problems {
+            detail.push_str(&format!("; {problem}"));
+        }
+        CheckItem::new("network", status, detail)
+    }
+
     async fn check_docker(&self, items: &mut Vec<CheckItem>) {
         let image = match self.incus.images().await {
             Ok(images) => images
@@ -1157,18 +1241,7 @@ impl Driver for IncusDriver {
                     .any(|ext| ext == "storage_initial_owner"),
             ),
         );
-        match self.incus.network(&self.network).await {
-            Ok(network) => items.push(CheckItem::new(
-                "network",
-                CheckStatus::Ok,
-                format!("{} ({})", network.name, network.kind),
-            )),
-            Err(err) => items.push(CheckItem::new(
-                "network",
-                CheckStatus::Failed,
-                format!("{}: {}", self.network, err.message()),
-            )),
-        }
+        items.push(self.check_network().await);
         match self.incus.instances().await {
             Ok(instances) => {
                 let codespaces = instances

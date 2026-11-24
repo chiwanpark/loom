@@ -439,6 +439,17 @@ impl Incus {
         self.get(&format!("/1.0/networks/{}", encode(name))).await
     }
 
+    pub async fn network_acl(&self, name: &str) -> Result<Option<NetworkAcl>> {
+        match self
+            .get(&format!("/1.0/network-acls/{}", encode(name)))
+            .await
+        {
+            Ok(acl) => Ok(Some(acl)),
+            Err(err) if err.is_not_found() => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
     pub async fn project_info(&self, name: &str) -> Result<Project> {
         let envelope = self
             .call_with(
