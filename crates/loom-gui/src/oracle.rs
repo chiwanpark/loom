@@ -4,7 +4,8 @@ use std::time::Duration;
 use gpui::{AsyncApp, Context, EventEmitter, Task};
 use loom_client::OracleClient;
 use loom_client::oracle_proto::{
-    Codespace, CodespaceSession, CodespaceState, Event, Host, Preset, Workspace,
+    Codespace, CodespaceSession, CodespaceState, Device, Event, GitCredential, GitProvider, Host,
+    ModelAccount, Pairing, Preset, SecretInfo, Volume, Workspace,
 };
 use loom_config::HostEntry;
 use loom_view_model::codespaces::is_listed;
@@ -25,6 +26,11 @@ pub enum OracleStatus {
 pub enum OracleEvent {
     Ready(Codespace),
     Failed(Codespace),
+    LoginFinished {
+        login: String,
+        account: Option<ModelAccount>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -34,6 +40,19 @@ struct Lists {
     presets: Vec<Preset>,
     hosts: Vec<Host>,
     sessions: Vec<CodespaceSession>,
+    config: ConfigLists,
+}
+
+#[derive(Default, Clone)]
+pub struct ConfigLists {
+    pub devices: Vec<Device>,
+    pub pairings: Vec<Pairing>,
+    pub providers: Vec<GitProvider>,
+    pub credentials: Vec<GitCredential>,
+    pub accounts: Vec<ModelAccount>,
+    pub secrets: Vec<SecretInfo>,
+    pub volumes: Vec<Volume>,
+    pub me: Option<u64>,
 }
 
 pub struct OracleLink {
@@ -47,6 +66,7 @@ pub struct OracleLink {
     pub presets: Vec<Preset>,
     pub hosts: Vec<Host>,
     pub sessions: Vec<CodespaceSession>,
+    pub config: ConfigLists,
     pub progress: HashMap<String, Vec<String>>,
     generation: u64,
     retry: Duration,
@@ -54,6 +74,13 @@ pub struct OracleLink {
 }
 
 impl EventEmitter<OracleEvent> for OracleLink {}
+
+fn upsert<T>(list: &mut Vec<T>, item: T, same: impl Fn(&T, &T) -> bool) {
+    match list.iter_mut().find(|known| same(known, &item)) {
+        Some(known) => *known = item,
+        None => list.push(item),
+    }
+}
 
 impl OracleLink {
     pub fn new(entry: HostEntry, env: Env, backend: Backend, cx: &mut Context<Self>) -> Self {
@@ -68,6 +95,7 @@ impl OracleLink {
             presets: Vec::new(),
             hosts: Vec::new(),
             sessions: Vec::new(),
+            config: ConfigLists::default(),
             progress: HashMap::new(),
             generation: 0,
             retry: RETRY_INITIAL,
@@ -230,6 +258,7 @@ impl OracleLink {
         self.presets = lists.presets;
         self.hosts = lists.hosts;
         self.sessions = lists.sessions;
+        self.config = lists.config;
         self.sort();
     }
 
@@ -238,6 +267,15 @@ impl OracleLink {
         self.codespaces
             .sort_by_key(|c| std::cmp::Reverse(c.created_at));
         self.presets.sort_by(|a, b| a.name.cmp(&b.name));
+        self.hosts.sort_by(|a, b| a.name.cmp(&b.name));
+        let config = &mut self.config;
+        config.devices.sort_by_key(|d| d.id);
+        config.pairings.sort_by_key(|p| p.created_at);
+        config.providers.sort_by(|a, b| a.name.cmp(&b.name));
+        config.credentials.sort_by(|a, b| a.name.cmp(&b.name));
+        config.accounts.sort_by(|a, b| a.name.cmp(&b.name));
+        config.secrets.sort_by(|a, b| a.name.cmp(&b.name));
+        config.volumes.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     pub fn upsert_codespace(&mut self, codespace: Codespace, cx: &mut Context<Self>) {
@@ -263,15 +301,7 @@ impl OracleLink {
     fn apply(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::WorkspaceChanged { workspace } => {
-                match self
-                    .workspaces
-                    .iter_mut()
-                    .find(|w| w.name == workspace.name)
-                {
-                    Some(known) => *known = workspace,
-                    None => self.workspaces.push(workspace),
-                }
-                self.sort();
+                upsert(&mut self.workspaces, workspace, |a, b| a.name == b.name)
             }
             Event::WorkspaceRemoved { name } => self.workspaces.retain(|w| w.name != name),
             Event::CodespaceChanged { codespace } => {
@@ -289,20 +319,61 @@ impl OracleLink {
                 self.sessions.retain(|s| s.codespace != id);
             }
             Event::PresetChanged { preset } => {
-                match self.presets.iter_mut().find(|p| p.name == preset.name) {
-                    Some(known) => *known = preset,
-                    None => self.presets.push(preset),
-                }
-                self.sort();
+                upsert(&mut self.presets, preset, |a, b| a.name == b.name)
             }
             Event::PresetRemoved { name } => self.presets.retain(|p| p.name != name),
-            Event::HostChanged { host } => {
-                match self.hosts.iter_mut().find(|h| h.name == host.name) {
-                    Some(known) => *known = host,
-                    None => self.hosts.push(host),
-                }
-            }
+            Event::HostChanged { host } => upsert(&mut self.hosts, host, |a, b| a.name == b.name),
             Event::HostRemoved { name } => self.hosts.retain(|h| h.name != name),
+            Event::DeviceChanged { device } => {
+                upsert(&mut self.config.devices, device, |a, b| a.id == b.id)
+            }
+            Event::DeviceRemoved { id } => self.config.devices.retain(|d| d.id != id),
+            Event::PairingChanged { pairing } => {
+                upsert(&mut self.config.pairings, pairing, |a, b| a.id == b.id)
+            }
+            Event::PairingRemoved { id, .. } => self.config.pairings.retain(|p| p.id != id),
+            Event::GitProviderChanged { provider } => {
+                upsert(&mut self.config.providers, provider, |a, b| {
+                    a.name == b.name
+                })
+            }
+            Event::GitProviderRemoved { name } => self.config.providers.retain(|p| p.name != name),
+            Event::GitCredentialChanged { credential } => {
+                upsert(&mut self.config.credentials, credential, |a, b| {
+                    a.name == b.name
+                })
+            }
+            Event::GitCredentialRemoved { name } => {
+                self.config.credentials.retain(|c| c.name != name)
+            }
+            Event::ModelAccountChanged { account } => {
+                upsert(&mut self.config.accounts, account, |a, b| a.name == b.name)
+            }
+            Event::ModelAccountRemoved { name } => self.config.accounts.retain(|a| a.name != name),
+            Event::ModelLoginFinished {
+                login,
+                account,
+                error,
+            } => {
+                if let Some(account) = &account {
+                    upsert(&mut self.config.accounts, account.clone(), |a, b| {
+                        a.name == b.name
+                    });
+                }
+                cx.emit(OracleEvent::LoginFinished {
+                    login,
+                    account,
+                    error,
+                });
+            }
+            Event::SecretChanged { secret } => {
+                upsert(&mut self.config.secrets, secret, |a, b| a.name == b.name)
+            }
+            Event::SecretRemoved { name } => self.config.secrets.retain(|s| s.name != name),
+            Event::VolumeChanged { volume } => {
+                upsert(&mut self.config.volumes, volume, |a, b| a.name == b.name)
+            }
+            Event::VolumeRemoved { name } => self.config.volumes.retain(|v| v.name != name),
             Event::SessionChanged { session } => {
                 match self.sessions.iter_mut().find(|s| {
                     s.codespace == session.codespace && s.session.id == session.session.id
@@ -317,6 +388,7 @@ impl OracleLink {
             Event::EventsLost => self.reload(cx),
             _ => return,
         }
+        self.sort();
         cx.notify();
     }
 }
@@ -329,6 +401,16 @@ async fn load(client: &OracleClient) -> Result<Lists, String> {
         presets: client.presets().await.map_err(text)?,
         hosts: client.hosts().await.map_err(text)?,
         sessions: client.sessions(None).await.map_err(text)?,
+        config: ConfigLists {
+            devices: client.devices().await.map_err(text)?,
+            pairings: client.pairings().await.map_err(text)?,
+            providers: client.git_providers().await.map_err(text)?,
+            credentials: client.git_credentials().await.map_err(text)?,
+            accounts: client.model_accounts().await.map_err(text)?,
+            secrets: client.secrets().await.map_err(text)?,
+            volumes: client.volumes().await.map_err(text)?,
+            me: Some(client.hello().peer.id),
+        },
     })
 }
 
