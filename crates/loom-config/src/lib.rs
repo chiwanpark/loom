@@ -17,7 +17,7 @@ pub use agent::{
     ProviderSetting, ProvidersConfig, ReadToolConfig, ReasoningEffort, RedactionConfig,
     RelayConfig, SandboxBackend, SandboxConfig, ShellToolConfig, SkillsConfig, SocketConfig,
     StorageConfig, TasksToolConfig, TelemetryConfig, Temporality, TerminalConfig, ToolsConfig,
-    WebSearchToolConfig, WorktreesConfig, valid_variable_name,
+    WebSearchToolConfig, valid_variable_name,
 };
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};

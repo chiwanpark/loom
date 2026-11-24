@@ -36,30 +36,25 @@ sealed interface Screen {
     data class SystemPrompt(override val host: String, override val instance: String, val session: String) :
         Screen, AgentScreen
 
-    /** A directory of the agent's workspace, or of the worktree of the session `root`; an empty `path` is the top folder. */
+    /** A directory of the agent's workspace; an empty `path` is the top folder. */
     data class Files(
         override val host: String,
         override val instance: String,
         val path: String = "",
-        val root: String? = null,
     ) : Screen, AgentScreen
 
-    /** A file of the agent's workspace, or of the worktree of the session `root`, highlighted for its language. */
-    data class File(
-        override val host: String,
-        override val instance: String,
-        val path: String,
-        val root: String? = null,
-    ) : Screen, AgentScreen
+    /** A file of the agent's workspace, highlighted for its language. */
+    data class File(override val host: String, override val instance: String, val path: String) :
+        Screen, AgentScreen
 
-    /** The uncommitted changes of the workspace, or of the worktree of `session`, and the files `session` changed. */
+    /** The uncommitted changes of the workspace, and the files `session` changed. */
     data class Changes(override val host: String, override val instance: String, val session: String) :
         Screen, AgentScreen
 
     /**
      * A file's diff: what `session` changed in it when there is one, else its
-     * uncommitted changes in git in the workspace, or in the worktree of the
-     * session `root` (`oldPath` is where a renamed file came from).
+     * uncommitted changes in git in the workspace (`oldPath` is where a
+     * renamed file came from).
      */
     data class Diff(
         override val host: String,
@@ -67,7 +62,6 @@ sealed interface Screen {
         val path: String,
         val oldPath: String? = null,
         val session: String? = null,
-        val root: String? = null,
     ) : Screen, AgentScreen
 
     /**

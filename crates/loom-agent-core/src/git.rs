@@ -258,9 +258,6 @@ pub struct CommitBase<'a> {
     /// The base branch, or `None` for the upstream of the checked-out
     /// branch.
     pub branch: Option<&'a str>,
-    /// The commit of the branch at its last merge into the base, which a
-    /// squash merge leaves out of the history of the base.
-    pub merged_head: Option<&'a str>,
 }
 
 /// The files that differ between `from` and `to`, or the working tree when
@@ -302,13 +299,6 @@ async fn diff_files(
     Ok((files, truncated))
 }
 
-async fn is_ancestor(root: &Path, ancestor: &str, of: &str) -> bool {
-    matches!(
-        git(root, &["merge-base", "--is-ancestor", ancestor, of], 64).await,
-        Ok(output) if output.status == 0
-    )
-}
-
 /// The name of the base and the commit after which the branch's own
 /// commits come, or `None` when the branch has no base.
 async fn commit_base(root: &Path, base: CommitBase<'_>) -> Option<(String, String)> {
@@ -333,18 +323,10 @@ async fn commit_base(root: &Path, base: CommitBase<'_>) -> Option<(String, Strin
         .ok()
         .and_then(line)?,
     };
-    let mut since = git(root, &["merge-base", &name, "HEAD"], 256)
+    let since = git(root, &["merge-base", &name, "HEAD"], 256)
         .await
         .ok()
         .and_then(line)?;
-    if let Some(merged) = base.merged_head
-        && merged != since
-        && !merged.starts_with('-')
-        && is_ancestor(root, &since, merged).await
-        && is_ancestor(root, merged, "HEAD").await
-    {
-        since = merged.to_owned();
-    }
     Some((name, since))
 }
 

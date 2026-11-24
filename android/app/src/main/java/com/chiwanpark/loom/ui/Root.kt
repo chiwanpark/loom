@@ -60,10 +60,10 @@ fun LoomRoot(app: LoomApplication) {
                 app, app.links.get(loom, screen.host, screen.instance), screen.session,
             )
             is Screen.Files -> FilesScreen(
-                app, app.links.get(loom, screen.host, screen.instance), screen.path, screen.root,
+                app, app.links.get(loom, screen.host, screen.instance), screen.path,
             )
             is Screen.File -> FileScreen(
-                app, app.links.get(loom, screen.host, screen.instance), screen.path, screen.root,
+                app, app.links.get(loom, screen.host, screen.instance), screen.path,
             )
             is Screen.Changes -> ChangesScreen(app, app.links.get(loom, screen.host, screen.instance), screen.session)
             is Screen.Diff -> DiffScreen(
@@ -72,7 +72,6 @@ fun LoomRoot(app: LoomApplication) {
                 screen.path,
                 screen.oldPath,
                 screen.session,
-                screen.root,
             )
             is Screen.Terminal -> TerminalScreen(app, app.links.get(loom, screen.host, screen.instance), screen.number)
             is Screen.Ports -> PortsScreen(app, app.links.get(loom, screen.host, screen.instance))

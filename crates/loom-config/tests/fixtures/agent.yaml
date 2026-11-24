@@ -106,11 +106,6 @@ environment:
     enabled: true
     allow: [AWS_REGION, RUST_BACKTRACE]
 
-# Sessions in a git worktree of their own get it in
-# <dir>/<workspace-hash>/<session>.
-worktrees:
-  dir: ~/.config/loom/worktrees
-
 sandbox:
   backend: landlock
   network: false

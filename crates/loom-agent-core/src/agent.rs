@@ -4,15 +4,11 @@ use std::sync::{Arc, Mutex, Weak};
 
 use loom_config::{AgentConfig, Dirs};
 use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
-use loom_proto::{
-    ApiError, ConfigReload, ErrorCode, FileVersion, MergeStrategy, SessionEvent, SessionId,
-    SessionInfo, Task, WorktreeStatus,
-};
+use loom_proto::{ConfigReload, FileVersion, SessionEvent, SessionId, SessionInfo, Task};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::convert;
 use crate::environment::{EnvSnapshot, Environment};
 use crate::error::{CoreError, Result};
 use crate::metrics::Metrics;
@@ -61,8 +57,6 @@ pub struct AgentOptions {
     /// The environment that commands start from, in place of the agent's
     /// own.
     pub env_vars: Option<Vec<(std::ffi::OsString, std::ffi::OsString)>>,
-    /// The GitHub CLI program that opens pull requests.
-    pub gh: String,
     pub credentials: Option<CredentialStore>,
     pub config_loader: Option<ConfigLoader>,
     pub repository_dirs: Vec<PathBuf>,
@@ -91,7 +85,6 @@ impl AgentOptions {
             telemetry: None,
             config_path: None,
             env_vars: None,
-            gh: "gh".into(),
             credentials: None,
             config_loader: None,
             repository_dirs: Vec::new(),
@@ -118,10 +111,6 @@ struct Inner {
     telemetry: Option<TelemetryReport>,
     terminals: Terminals,
     environment: Arc<Environment>,
-    gh: String,
-    /// Lets one merge, pull request, or removal of a worktree run at a time,
-    /// since they change the repository that the worktrees share.
-    worktree_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -272,8 +261,6 @@ impl Agent {
                 telemetry: options.telemetry,
                 terminals: Terminals::default(),
                 environment,
-                gh: options.gh,
-                worktree_lock: tokio::sync::Mutex::new(()),
             }),
         };
         for stored in stored.sessions {
@@ -424,147 +411,6 @@ impl Agent {
         self.inner.observer.session_created(session.id());
         self.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
         Ok(session)
-    }
-
-    /// Creates a session that works in a new git worktree of its own.
-    pub async fn create_worktree_session(
-        &self,
-        model: Option<&str>,
-        options: crate::worktree::CreateOptions,
-    ) -> std::result::Result<Session, ApiError> {
-        let runtime = self.inner.runtime.current();
-        let model = new_session_model(&runtime, model)
-            .map_err(|e| convert::api_error(&CoreError::from(e)))?;
-        let session = Session::new(self.session_params(model));
-        let dir = self.config().worktrees_dir(&self.inner.dirs);
-        let worktree =
-            crate::worktree::create(self.workspace_root(), &dir, session.id(), options).await;
-        let worktree = match worktree {
-            Ok(worktree) => worktree,
-            Err(err) => {
-                session.mark_removed();
-                if let Some(store) = &self.inner.store {
-                    store.delete_session(session.id());
-                }
-                return Err(err);
-            }
-        };
-        session.set_worktree(Some(worktree));
-        self.insert(session.clone());
-        self.inner.observer.session_created(session.id());
-        self.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
-        Ok(session)
-    }
-
-    /// The session's worktree, for an action that must not run while the
-    /// session runs a turn in it.
-    fn idle_worktree(
-        &self,
-        id: &SessionId,
-    ) -> std::result::Result<(Session, crate::worktree::Worktree), ApiError> {
-        let session = self.session(id).map_err(|e| convert::api_error(&e))?;
-        let worktree = session
-            .worktree()
-            .ok_or_else(|| ApiError::new(ErrorCode::BadRequest, "the session has no worktree"))?;
-        if session.is_busy() {
-            return Err(convert::api_error(&CoreError::Busy));
-        }
-        Ok((session, worktree))
-    }
-
-    fn worktree_changed(&self, session: &Session, worktree: Option<crate::worktree::Worktree>) {
-        session.set_worktree(worktree);
-        self.notify(AgentNotice::SessionUpdated(Box::new(session.info())));
-    }
-
-    pub async fn worktree_status(
-        &self,
-        id: &SessionId,
-    ) -> std::result::Result<WorktreeStatus, ApiError> {
-        let session = self.session(id).map_err(|e| convert::api_error(&e))?;
-        let worktree = session
-            .worktree()
-            .ok_or_else(|| ApiError::new(ErrorCode::BadRequest, "the session has no worktree"))?;
-        crate::worktree::status(self.workspace_root(), &worktree).await
-    }
-
-    /// Merges the branch of the session's worktree into its base, and
-    /// returns the new commit.
-    pub async fn merge_worktree(
-        &self,
-        id: &SessionId,
-        strategy: MergeStrategy,
-        remove: bool,
-    ) -> std::result::Result<String, ApiError> {
-        let (session, mut worktree) = self.idle_worktree(id)?;
-        let _guard = self.inner.worktree_lock.lock().await;
-        let root = self.workspace_root();
-        let squash = match &strategy {
-            MergeStrategy::Merge => None,
-            MergeStrategy::Squash { message } => Some(message.as_str()),
-        };
-        let commit = crate::worktree::merge(root, &worktree, squash).await?;
-        worktree.merged_head = crate::worktree::branch_head(root, &worktree.branch).await;
-        if remove {
-            crate::worktree::remove(root, &worktree, true).await?;
-            self.delete_session(id)
-                .map_err(|e| convert::api_error(&e))?;
-        } else {
-            self.worktree_changed(&session, Some(worktree));
-        }
-        Ok(commit)
-    }
-
-    /// Opens a pull request for the branch of the session's worktree, and
-    /// returns its URL.
-    pub async fn open_pull_request(
-        &self,
-        id: &SessionId,
-        title: &str,
-        body: &str,
-        draft: bool,
-    ) -> std::result::Result<String, ApiError> {
-        let (session, mut worktree) = self.idle_worktree(id)?;
-        let _guard = self.inner.worktree_lock.lock().await;
-        let url = crate::worktree::open_pull_request(
-            &self.inner.gh,
-            self.workspace_root(),
-            &worktree,
-            title,
-            body,
-            draft,
-        )
-        .await?;
-        worktree.pull_request = Some(url.clone());
-        self.worktree_changed(&session, Some(worktree));
-        Ok(url)
-    }
-
-    /// Removes the session's worktree and its branch, and deletes the
-    /// session: a session does not go on without its worktree.
-    pub async fn remove_worktree(
-        &self,
-        id: &SessionId,
-        force: bool,
-    ) -> std::result::Result<(), ApiError> {
-        let (_, worktree) = self.idle_worktree(id)?;
-        let _guard = self.inner.worktree_lock.lock().await;
-        crate::worktree::remove(self.workspace_root(), &worktree, force).await?;
-        self.delete_session(id).map_err(|e| convert::api_error(&e))
-    }
-
-    /// Deletes a session; one with a worktree loses it too, unless it has
-    /// uncommitted changes or commits that were not merged.
-    pub async fn delete_session_and_worktree(
-        &self,
-        id: &SessionId,
-    ) -> std::result::Result<(), ApiError> {
-        let session = self.session(id).map_err(|e| convert::api_error(&e))?;
-        if session.worktree().is_some() {
-            self.remove_worktree(id, false).await
-        } else {
-            self.delete_session(id).map_err(|e| convert::api_error(&e))
-        }
     }
 
     pub fn delete_session(&self, id: &SessionId) -> Result<()> {

@@ -74,7 +74,7 @@ To connect to agents on other machines, see [Remote hosts and relays](doc/remote
 | [Environment variables and secrets](doc/environment.md) | The environment of commands, the env file, and redaction. |
 | [Comment guard](doc/comment-guard.md) | Stop the model when it adds comments to code. |
 | [Telemetry](doc/telemetry.md) | OpenTelemetry export of metrics and events. |
-| [Sessions](doc/sessions.md) | Session states, queue and steer, rewind, worktrees, notes, and tasks. |
+| [Sessions](doc/sessions.md) | Session states, queue and steer, rewind, notes, and tasks. |
 | [Skills](doc/skills.md) | Instructions for special tasks in the Agent Skills format. |
 | [Desktop client](doc/desktop.md) | `client.yaml`, key bindings, panels, codespaces, oracle settings, terminals, files, and ports. |
 | [Android app](doc/android.md) | Build, pairing, codespaces, and the functions of the app. |

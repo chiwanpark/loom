@@ -60,9 +60,7 @@ object LoomIcons {
     val FolderSymlink = Lucide.drawable.lucide_ic_folder_symlink
     val FoldVertical = Lucide.drawable.lucide_ic_fold_vertical
     val Gauge = Lucide.drawable.lucide_ic_gauge
-    val GitBranch = Lucide.drawable.lucide_ic_git_branch
     val GitCompare = Lucide.drawable.lucide_ic_git_compare
-    val GitMerge = Lucide.drawable.lucide_ic_git_merge
     val GitPullRequest = Lucide.drawable.lucide_ic_git_pull_request
     val Image = Lucide.drawable.lucide_ic_image
     val Info = Lucide.drawable.lucide_ic_info

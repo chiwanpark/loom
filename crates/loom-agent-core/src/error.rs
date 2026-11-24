@@ -27,10 +27,6 @@ pub enum CoreError {
     #[error("the conversation does not match its events, so it cannot go back to this message")]
     HistoryMismatch,
     #[error(
-        "the worktree {0} of this session is missing; remove the worktree to go on in the workspace"
-    )]
-    WorktreeMissing(String),
-    #[error(
         "the notes would be {size} bytes, more than the {max}-byte limit (tools.notes.max_bytes)"
     )]
     NotesTooLarge { size: usize, max: u64 },

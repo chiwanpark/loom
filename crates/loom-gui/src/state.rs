@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
     AgentInfo, ApiError, Command, DirectoryListing, ErrorCode, FileContent, FileDiff, FileVersion,
-    ListeningPort, MergeStrategy, NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId,
-    SessionInfo, SessionState, TaskChange, TasksContent, TelemetryStatus, TerminalHolder,
-    TerminalId, TerminalInfo, TerminalOwner, UsageLimits, WorkspaceChanges, WorktreeOptions,
+    ListeningPort, NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo,
+    SessionState, TaskChange, TasksContent, TelemetryStatus, TerminalHolder, TerminalId,
+    TerminalInfo, TerminalOwner, UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications, PortForward, terminal_owner};
 use loom_config::HostEntry;
@@ -46,9 +46,6 @@ pub enum ConnectionEvent {
     TerminalsChanged {
         closed: Vec<EntityId>,
     },
-    /// The Files and Changes panels show another root: the worktree of
-    /// another session, or the workspace.
-    FileScopeChanged,
     Closed,
 }
 
@@ -143,9 +140,6 @@ pub struct AgentConnection {
     loading_all_history: HashSet<SessionId>,
     /// Completed sessions that the agent is being told were seen.
     marking_seen: HashSet<SessionId>,
-    /// The session whose worktree the Files and Changes panels show; `None`
-    /// for the workspace.
-    file_scope: Option<SessionId>,
     /// The terminals that have a view here, held here or not.
     terminals: HashMap<TerminalId, TerminalEntry>,
     /// The agent's terminals, as it last listed them.
@@ -222,7 +216,6 @@ impl AgentConnection {
             loading_history: HashSet::new(),
             loading_all_history: HashSet::new(),
             marking_seen: HashSet::new(),
-            file_scope: None,
             terminals: HashMap::new(),
             listed: Vec::new(),
             terminal_owner: terminal_owner(),
@@ -544,7 +537,6 @@ impl AgentConnection {
                 conv.info.policy_default = info.policy_default;
                 conv.info.comment_guard = info.comment_guard;
                 conv.info.archived = info.archived;
-                conv.info.worktree = info.worktree.clone();
                 if info.title.is_some() {
                     conv.info.title = info.title.clone();
                 }
@@ -563,7 +555,6 @@ impl AgentConnection {
                 existing.policy_default = info.policy_default;
                 existing.comment_guard = info.comment_guard;
                 existing.archived = info.archived;
-                existing.worktree = info.worktree;
                 if info.title.is_some() {
                     existing.title = info.title;
                 }
@@ -573,22 +564,12 @@ impl AgentConnection {
         cx.notify();
     }
 
-    /// Deletes a session; one in a worktree loses its worktree and branch,
-    /// also the changes that were not merged.
     pub fn delete_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let session = id.clone();
-        let worktree = self
-            .sessions
-            .iter()
-            .any(|s| s.id == id && s.worktree.is_some());
-        let task = self.backend.run(async move {
-            if worktree {
-                client.remove_worktree(&session, true).await
-            } else {
-                client.delete_session(&session).await
-            }
-        });
+        let task = self
+            .backend
+            .run(async move { client.delete_session(&session).await });
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| match result {
@@ -679,8 +660,7 @@ impl AgentConnection {
             return;
         }
         self.git.loading = true;
-        let client = self.files_client();
-        let scope = self.file_scope.clone();
+        let client = self.client.clone();
         let task = self
             .backend
             .run(async move { client.workspace_changes().await });
@@ -688,10 +668,6 @@ impl AgentConnection {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.git.loading = false;
-                // The changes of a session that is no longer in view.
-                if this.file_scope != scope {
-                    return;
-                }
                 match result {
                     Some(Ok(changes)) => {
                         let error = this.git.error.take();
@@ -803,7 +779,7 @@ impl AgentConnection {
         old_path: Option<String>,
         committed: bool,
     ) -> impl Future<Output = Option<loom_client::Result<FileDiff>>> + use<> {
-        let client = self.files_client();
+        let client = self.client.clone();
         self.backend.run(async move {
             client
                 .file_diff(&path, old_path.as_deref(), committed)
@@ -815,7 +791,7 @@ impl AgentConnection {
         &self,
         path: String,
     ) -> impl Future<Output = Option<loom_client::Result<DirectoryListing>>> + use<> {
-        let client = self.files_client();
+        let client = self.client.clone();
         self.backend
             .run(async move { client.list_directory(&path).await })
     }
@@ -824,94 +800,9 @@ impl AgentConnection {
         &self,
         path: String,
     ) -> impl Future<Output = Option<loom_client::Result<FileContent>>> + use<> {
-        let client = self.files_client();
+        let client = self.client.clone();
         self.backend
             .run(async move { client.read_file(&path).await })
-    }
-
-    /// The client whose file, change, upload, download, and terminal
-    /// commands act in the root of the session in view: its worktree, or the
-    /// workspace.
-    pub fn files_client(&self) -> Client {
-        self.client.in_session(self.file_scope.clone())
-    }
-
-    /// The client whose file and terminal commands act in the root of
-    /// `session`: its worktree, or the workspace.
-    pub fn client_for(&self, session: &SessionId) -> Client {
-        let worktree = self
-            .sessions
-            .iter()
-            .any(|s| s.id == *session && s.worktree.is_some());
-        self.client.in_session(worktree.then(|| session.clone()))
-    }
-
-    /// The session whose worktree the Files and Changes panels show; `None`
-    /// for the workspace.
-    pub fn file_scope(&self) -> Option<&SessionId> {
-        self.file_scope.as_ref()
-    }
-
-    /// Makes the Files and Changes panels show the worktree of `session`, or
-    /// the workspace with `None`.
-    pub fn set_file_scope(&mut self, session: Option<SessionId>, cx: &mut Context<Self>) {
-        if self.file_scope == session {
-            return;
-        }
-        self.file_scope = session;
-        self.git = GitState::default();
-        cx.emit(ConnectionEvent::FileScopeChanged);
-        cx.notify();
-        self.refresh_changes(cx);
-    }
-
-    pub fn create_worktree_session(
-        &self,
-        options: WorktreeOptions,
-    ) -> impl Future<Output = Option<loom_client::Result<SessionInfo>>> + use<> {
-        let client = self.client.clone();
-        self.backend
-            .run(async move { client.create_worktree_session(None, options).await })
-    }
-
-    /// Merges the branch of a session's worktree into its base, and
-    /// returns the new commit.
-    pub fn merge_worktree(
-        &self,
-        session: SessionId,
-        strategy: MergeStrategy,
-    ) -> impl Future<Output = Option<loom_client::Result<String>>> + use<> {
-        let client = self.client.clone();
-        self.backend
-            .run(async move { client.merge_worktree(&session, strategy, false).await })
-    }
-
-    /// Pushes the branch of a session's worktree and opens a pull request,
-    /// and returns its URL.
-    pub fn open_pull_request(
-        &self,
-        session: SessionId,
-        title: String,
-        body: String,
-        draft: bool,
-    ) -> impl Future<Output = Option<loom_client::Result<String>>> + use<> {
-        let client = self.client.clone();
-        self.backend.run(async move {
-            client
-                .open_pull_request(&session, &title, &body, draft)
-                .await
-        })
-    }
-
-    /// Where the branch of a session's worktree is against its base.
-    pub fn worktree_status(
-        &self,
-        session: SessionId,
-    ) -> impl Future<Output = Option<loom_client::Result<loom_client::proto::WorktreeStatus>>> + use<>
-    {
-        let client = self.client.clone();
-        self.backend
-            .run(async move { client.worktree_status(&session).await })
     }
 
     /// The TCP ports that programs listen on, on the agent's host.
@@ -995,7 +886,7 @@ impl AgentConnection {
         text: String,
         expected: FileVersion,
     ) -> impl Future<Output = Option<loom_client::Result<FileVersion>>> + use<> {
-        let client = self.files_client();
+        let client = self.client.clone();
         self.backend
             .run(async move { client.write_file(&path, text, expected).await })
     }

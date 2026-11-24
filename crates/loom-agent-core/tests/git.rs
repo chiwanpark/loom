@@ -120,7 +120,6 @@ async fn lists_the_commits_since_the_base() {
 
     let base = CommitBase {
         branch: Some("base"),
-        merged_head: None,
     };
     let found = changes(root, base).await.unwrap();
     let committed = found.committed.unwrap();

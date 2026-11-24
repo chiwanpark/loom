@@ -98,8 +98,6 @@ The app tells the oracle where to send notifications. The oracle gives this to t
 
 The start screen shows all sessions of all agents on the paired hosts. It puts them into groups by state, as the Sessions panel of the desktop client does. On this screen, you can start, rename, archive, and delete sessions. A completed session becomes idle when you open it in the app.
 
-A session in a worktree shows its branch after its title, as in the Sessions panel of the desktop client.
-
 In a session, you can do these steps:
 
 - Read the conversation.
@@ -127,8 +125,6 @@ A new session gets these settings from the configuration of the agent, and the r
 3. For a different directory, type the directory, or select a directory from the list. `~` is your home directory on the host. The list has directories where you started sessions before, and directories of running agents.
 
 The agent of the host starts an agent in the directory, or uses the agent that already runs there. The session opens when the app connects to this agent through the relay. The directory must be in one of the `allowed_roots` of the agent configuration of the host.
-
-To start a session in a worktree, press the branch button next to the agent. See [Sessions in a worktree](sessions.md#sessions-in-a-worktree).
 
 ### Host colors
 

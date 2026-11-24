@@ -27,8 +27,6 @@ pub struct AgentConfig {
     pub terminal: TerminalConfig,
     pub policy: PolicyConfig,
     pub environment: EnvironmentConfig,
-    #[serde(skip_serializing_if = "WorktreesConfig::is_default")]
-    pub worktrees: WorktreesConfig,
     #[serde(skip_serializing_if = "GitConfig::is_default")]
     pub git: GitConfig,
     pub sandbox: SandboxConfig,
@@ -54,7 +52,6 @@ impl Default for AgentConfig {
             terminal: TerminalConfig::default(),
             policy: PolicyConfig::default(),
             environment: EnvironmentConfig::default(),
-            worktrees: WorktreesConfig::default(),
             git: GitConfig::default(),
             sandbox: SandboxConfig::default(),
             context: ContextConfig::default(),
@@ -488,22 +485,6 @@ impl Default for RedactionConfig {
     }
 }
 
-/// Sessions that work in a git worktree of their own.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct WorktreesConfig {
-    /// The directory of the worktrees; each workspace has a directory in it.
-    /// Absolute, or starting with `~`. Default: `~/.config/loom/worktrees`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dir: Option<PathBuf>,
-}
-
-impl WorktreesConfig {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitConfig {
@@ -783,14 +764,6 @@ impl AgentConfig {
             .unwrap_or_else(|| dirs.default_data_dir())
     }
 
-    /// The directory of the worktrees of all workspaces.
-    pub fn worktrees_dir(&self, dirs: &crate::Dirs) -> PathBuf {
-        self.worktrees
-            .dir
-            .clone()
-            .unwrap_or_else(|| dirs.config_dir().join("worktrees"))
-    }
-
     pub fn expand_paths(&mut self, home: &Path) {
         let expand = |path: &mut PathBuf| *path = expand_home(path, home);
         self.allowed_roots.iter_mut().for_each(expand);
@@ -800,7 +773,6 @@ impl AgentConfig {
         self.terminal.shell.iter_mut().for_each(expand);
         self.sandbox.writable.iter_mut().for_each(expand);
         self.skills.paths.iter_mut().for_each(expand);
-        self.worktrees.dir.iter_mut().for_each(expand);
         self.tools.allowed_dirs.iter_mut().for_each(expand);
         expand(&mut self.tools.shell.program);
     }
@@ -832,14 +804,6 @@ impl AgentConfig {
                     format!("{} must be an absolute path", dir.display()),
                 ));
             }
-        }
-        if let Some(dir) = &self.worktrees.dir
-            && !dir.is_absolute()
-        {
-            return Err(invalid(
-                "worktrees.dir",
-                format!("{} must be an absolute path", dir.display()),
-            ));
         }
 
         if self.relay.enabled {

@@ -179,7 +179,6 @@ pub fn session_info(summary: &SessionSummary) -> SessionInfo {
         created_at: summary.created_at,
         title: summary.title.clone(),
         archived: summary.archived,
-        worktree: None,
     }
 }
 
