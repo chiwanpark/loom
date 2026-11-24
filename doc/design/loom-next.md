@@ -278,7 +278,7 @@ Daemon settings, such as the listen address and TLS, stay in a YAML file (`oracl
 - A driver trait has two implementations. `IncusDriver` uses `loom-incus`. `ProcessDriver` starts a local `loom-agent` process, for tests and for development without Incus.
 - Each instance has `user.loom.*` keys that name the oracle and the codespace. `loom-host` reports its instances, and the oracle compares them with the `codespaces` table. Orphans are deleted, and lost codespaces get a mark.
 - A codespace gets the CPU limit and the memory limit that **New codespace** sets. See section 7.15.
-- Phase 7 adds an OCI image of `loom-host` for IncusOS. It has `loom-host`, `loom-agent` of the same build, and the CA certificates of Alpine Linux. Its configuration and data are in `/var/lib/loom-host`, which is a custom volume. It starts `loom-host serve --wait`, which waits until you run `trust` and `join` with `incus exec`. CI builds the image as an OCI archive. A registry for the image is an open decision. A test with `docker run` passed. Incus refused a test registry without TLS, so the launch in Incus is not tested.
+- Phase 7 adds an Incus image of `loom-host` for IncusOS: a metadata tarball and a rootfs tarball for each architecture. You import it into the image store of each host, so no registry is necessary. It is a system container with Alpine Linux, and `loom-host` and `loom-agent` of the same build. Busybox `init` gets the address with DHCP and starts `loom-host serve --wait`, which waits until you run `trust` and `join` with `incus exec`. The configuration and data are in `/var/lib/loom-host`, which is a custom volume, and the XDG directories of `root` are links to it. An update is an import and an `incus rebuild`. An OCI image is not used: Incus needs a registry with TLS for it, and Incus starts an imported image only as a system container. A test on the IncusOS host confirmed the start, the network, `incus exec`, the rebuild with the volume, and the stop.
 
 ### 7.3 Image, Docker, and the environment of a host
 
@@ -311,7 +311,7 @@ On IncusOS, you cannot load kernel modules by hand. Phase 0 showed that Docker w
 
 A provider has a web URL and an API URL. Examples are `https://github.com` with `https://api.github.com`, and `https://ghe.example.com` with `https://ghe.example.com/api/v3`.
 
-The first authentication method is a personal access token, because you do not install a GitHub App in the organization.
+The authentication method is a personal access token, because you cannot install a GitHub App in the company infrastructure.
 
 | Token type | Reach | Notes |
 | --- | --- | --- |
@@ -336,8 +336,6 @@ A codespace can need more than one Git provider. Examples are a workspace with r
 - `gh` keeps one token for each host. Phase 3 decides which token `gh` gets when a preset names more than one for a provider.
 - When the Git credentials of a preset change, the oracle tells the agents of its codespaces. They set the helper and `gh` again.
 - The search of repositories and the list of branches use all Git credentials of the oracle for a provider. They are not limited to one preset.
-
-Phase 7 adds the GitHub App method. A Git credential can be an app: the oracle keeps the private key, the ID of the app, and the owner of the installation. The credential helper gets installation tokens for one repository, which expire in 1 hour. The oracle keeps these tokens in memory and makes new ones 5 minutes before they expire. `gh` gets no token from an app, because the token expires. An app reaches only the accounts and organizations where it is installed. This is also true for the user tokens of the app. Thus, personal access tokens stay the method for your GitHub Enterprise Server.
 
 ### 7.6 Network reach
 
@@ -653,7 +651,7 @@ Each phase ends with a state that you can use and test. Each phase has its own b
 | 5a. Clients: daily work | L | Desktop and Android: host kind `oracle`, pairing, **Workspaces**, **New codespace** with a workspace, a preset, and the first message, progress view, lists from the oracle, **Changes** for more than one repository, codespace menu, notifications. A first version can start after phase 2. | You do all daily work from the desktop client and the Android app. |
 | 5b. Desktop client: configuration | L | The configuration pages of section 14. | You do all configuration in the desktop client. |
 | 6. Lifecycle and SSH | M | Stop and resume, idle timeout, retention, limits for each host, metrics, audit. The SSH connection type and its selection. | Codespaces clean up themselves. The desktop client uses SSH where it can. |
-| 7. Hardening | L | Network rules for containers. A Git proxy that keeps tokens out of containers. GitHub App method. OCI image of `loom-host`. VM instances. Repository setup scripts. Session archive. | Codespaces cannot reach each other, and provider tokens stay out of containers. |
+| 7. Hardening | L | Network rules for containers. A Git proxy that keeps tokens out of containers. Incus image of `loom-host`. Repository setup scripts. Session archive. | Codespaces cannot reach each other, and provider tokens stay out of containers. |
 | 8. Removal of the classic modes | M | Remove local hosts, SSH hosts, relay hosts for directories, worktree sessions, and the pairing with agents. Remove the code that only they use. Clean up the agent protocol with one version bump. | Loom has one mode. |
 
 ### Phase 0: results on the first host
@@ -803,12 +801,12 @@ Not tested yet:
 | The oracle is one point of failure and a valuable target. It can start code in the company network. | Encrypted secrets, local rules of each `loom-host`, restricted Incus project, Cloudflare Access, audit log. Codespaces continue when the oracle is down. |
 | Long-lived tokens for the Git providers are in the oracle. A program in a container can read all Git credentials and secrets of its preset. | A preset names only the credentials that its work needs. Fine-grained tokens with selected repositories and an expiry date. The Git proxy of phase 7. |
 | All containers of the company network have one public IP address. The relay limits connections and messages for each IP address. | Limits for each registered peer in phase 1. |
-| Docker does not work in a container on one of your Linux hosts, because the host is different from the test hosts. An example is SELinux in enforcing mode. | Phase 0 showed that it works on IncusOS with ZFS, and on test hosts with `dir` on ext4 and on XFS. One test host had the kernel version of your host. `loom-host check` tests Docker on each host. The fallback is VM instances. |
+| Docker does not work in a container on one of your Linux hosts, because the host is different from the test hosts. An example is SELinux in enforcing mode. | Phase 0 showed that it works on IncusOS with ZFS, and on test hosts with `dir` on ext4 and on XFS. One test host had the kernel version of your host. `loom-host check` tests Docker on each host. All codespaces are containers, so such a host needs a change of its setup. |
 | Hosts with the `dir` driver start codespaces slowly. | Phase 0 measured 2 to 3 s more for an image of 1 GB. A small image with zstd compression. |
 | Version skew: old containers, a new client, and two clients of different versions. | The agent version follows the client. The current update command. JSON in the control service. |
 | Lost work when a container is deleted. | Close guard, push of the branch. Stop and retention warnings in phase 6. |
 | A container can reach the network of its host. Phase 0 confirmed this for the Incus API port and for other instances on the bridge. | Network rules in phase 7. Before that, the host setup document recommends a separate bridge for codespaces. |
-| Docker in the container needs nesting, which makes the isolation weaker. | Unprivileged containers in a restricted project. VM instances as an option in phase 7. |
+| Docker in the container needs nesting, which makes the isolation weaker. | Unprivileged containers in a restricted project. The network rules and the Git proxy of phase 7. |
 | Disk use: each codespace has full clones, its build output, and Docker images. A codespace has no disk limit, so one codespace can fill the storage pool of its host. Volumes use more disk space. | Codespaces are temporary. Optional size limits of volumes, retention, registry mirrors in the Docker settings of the host. A disk limit is a later option. |
 | The codespaces on a host use more memory than the host has, because a limit is not a reservation. | The memory limit of each codespace. The maximum number of codespaces of each host. Idle timeout in phase 6. |
 | The configuration pages are a large part of the desktop work. | Text editors with validation for files. Forms only for lists. The test CLI until the pages are there. |
@@ -839,6 +837,8 @@ Not tested yet:
 - A copy or a synchronization of volumes between hosts.
 - Workspace templates: a saved instance with the clones and the result of the setup, from which a new codespace starts. A later plan can add them if large repositories or long setups make the start slow.
 - Prepared instances: containers that a host makes before a request, so that a new codespace on a host with `dir` does not wait for the copy of the image. Each codespace starts from a fresh instance.
+- VM instances. All codespaces are containers.
+- GitHub Apps. You cannot install an app in the company infrastructure, so all Git credentials are personal access tokens.
 
 ## 13. Open questions
 
@@ -910,7 +910,6 @@ Each oracle has a **Settings** tab with these pages:
 
 - GitHub Codespaces: [deep dive](https://docs.github.com/en/codespaces/about-codespaces/deep-dive), [lifecycle](https://docs.github.com/en/codespaces/about-codespaces/understanding-the-codespace-lifecycle), [repository access](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-repository-access-for-your-codespaces), [secrets](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-development-environment-secrets), [prebuilds](https://docs.github.com/en/codespaces/prebuilding-your-codespaces), [export to a branch](https://docs.github.com/en/codespaces/troubleshooting/exporting-changes-to-a-branch).
 - GitHub tokens: [personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens), [endpoints for fine-grained tokens on 3.18](https://docs.github.com/en/enterprise-server@3.18/rest/authentication/endpoints-available-for-fine-grained-personal-access-tokens), [token policy of an organization](https://docs.github.com/en/enterprise-server@3.20/organizations/managing-programmatic-access-to-your-organization/setting-a-personal-access-token-policy-for-your-organization), [expiry header](https://github.blog/changelog/2021-07-26-expiration-options-for-personal-access-tokens/).
-- GitHub Apps: [installation tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app), [user tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user), [installation requests](https://docs.github.com/en/apps/using-github-apps/requesting-a-github-app-from-your-organization-owner).
 - Incus: [REST API](https://linuxcontainers.org/incus/docs/main/rest-api-spec/), [authentication](https://linuxcontainers.org/incus/docs/main/authentication/), [projects](https://linuxcontainers.org/incus/docs/main/reference/projects/), [syscall interception](https://linuxcontainers.org/incus/docs/main/syscall-interception/), [Docker in a container](https://linuxcontainers.org/incus/docs/main/faq/), [storage drivers](https://linuxcontainers.org/incus/docs/main/reference/storage_drivers/), [ZFS driver](https://linuxcontainers.org/incus/docs/main/reference/storage_zfs/), [storage volumes](https://linuxcontainers.org/incus/docs/main/howto/storage_volumes/).
 - IncusOS: [introduction](https://linuxcontainers.org/incus-os/introduction/), [Incus application](https://linuxcontainers.org/incus-os/docs/main/reference/applications/incus/), [storage](https://linuxcontainers.org/incus-os/docs/main/reference/system/storage/).
 - Coder: [architecture](https://coder.com/docs/install/plan/architecture/), [external authentication](https://coder.com/docs/admin/external-auth).
