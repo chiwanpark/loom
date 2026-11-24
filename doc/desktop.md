@@ -148,7 +148,7 @@ You do all configuration of an oracle in the desktop client. Click the gear butt
 | Models | The model accounts with their provider, kind, email, and organization. **Add account…** signs in with the browser or a device code, or adds an API key. The client catches the redirect of the browser when the provider uses a local URL. Otherwise, paste the code or the URL. |
 | Secrets | The names of the secrets, and the presets and variables that use each secret. You can set, replace, and delete a value. You cannot read a value. |
 | Presets | The presets and the credentials that each names. **Edit** opens `agent.yaml`, `AGENTS.md`, and the skill files in a text editor. **Import from this computer…** reads `agent.yaml`, `AGENTS.md`, and the skills in `~/.config/loom`, and removes the sections that a codespace sets itself. **Duplicate…** copies a preset with a new name. |
-| Workspaces | The repositories, the volumes, and the host of each workspace, and the volumes of the oracle. **New workspace…** searches the repositories of a Git provider. Select a repository, a name, and a host. **Edit** changes the host, the repositories, and the volumes. |
+| Workspaces | The repositories, the volumes, and the host of each workspace, and the volumes of the oracle. **New workspace…** opens the repository search of a Git provider. When you select a repository, the name of the workspace comes from it. Add more repositories and volumes, select the host, and click **Create**. **Edit** changes the host, the repositories, and the volumes. |
 
 - The oracle validates each change when you save it. If it refuses the change, the form or a notification shows the reason.
 - The local rules of a host are not in the client. They stay in the file on the host.
