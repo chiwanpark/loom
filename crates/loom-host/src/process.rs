@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,8 @@ use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{
-    Agent, CheckItem, CheckStatus, Driver, DriverReport, Progress, cpus, memory_mib, valid_instance,
+    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, cpus, memory_mib,
+    valid_instance,
 };
 use crate::volumes::prepare_mounts;
 
@@ -33,6 +35,10 @@ struct InstanceFile {
     pid: i32,
     #[serde(default)]
     volumes: Vec<String>,
+    #[serde(default)]
+    agent: Option<PathBuf>,
+    #[serde(default)]
+    environment: BTreeMap<String, String>,
 }
 
 pub struct ProcessDriver {
@@ -143,7 +149,76 @@ impl ProcessDriver {
         kill(Pid::from_raw(file.pid), None).is_ok() && self.is_ours(file)
     }
 
-    async fn stop(&self, file: &InstanceFile) {
+    fn owned(&self, oracle: &str, instance: &str) -> anyhow::Result<InstanceFile> {
+        if !valid_instance(instance) {
+            bail!("{instance:?} is not an instance name of Loom");
+        }
+        let file = self
+            .read(instance)
+            .with_context(|| format!("the instance {instance} is not there"))?;
+        if file.oracle != oracle {
+            bail!("the instance {instance} belongs to a different oracle");
+        }
+        Ok(file)
+    }
+
+    fn command(&self, file: &InstanceFile, agent: &Path) -> tokio::process::Command {
+        let dir = self.dir(&file.instance);
+        let home = dir.join("home");
+        let mut command = tokio::process::Command::new(agent);
+        command
+            .current_dir(&dir)
+            .env_clear()
+            .envs(
+                PASSED_ENV
+                    .iter()
+                    .filter_map(|name| Some((*name, std::env::var_os(name)?))),
+            )
+            .envs(&file.environment)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_STATE_HOME", home.join(".local/state"))
+            .env("XDG_RUNTIME_DIR", dir.join("run"));
+        command
+    }
+
+    fn spawn(&self, file: &mut InstanceFile, agent: &Path) -> anyhow::Result<()> {
+        let dir = self.dir(&file.instance);
+        let log = std::fs::File::options()
+            .create(true)
+            .append(true)
+            .open(dir.join(LOG_FILE))
+            .context("cannot open the log file")?;
+        let mut command = self.command(file, agent);
+        command
+            .args(["serve", "--managed"])
+            .stdin(std::process::Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .process_group(0)
+            .kill_on_drop(false);
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("cannot start {}", agent.display()))?;
+        let pid = child.id().context("the agent stopped at once")?;
+        file.pid = i32::try_from(pid)?;
+        file.agent = Some(agent.to_owned());
+        write_private(
+            &dir.join(INSTANCE_FILE),
+            &serde_json::to_vec_pretty(&*file)?,
+        )?;
+        let instance = file.instance.clone();
+        tokio::spawn(async move {
+            match child.wait().await {
+                Ok(status) => tracing::info!(%instance, %status, "a codespace agent stopped"),
+                Err(err) => tracing::warn!(%instance, error = %err, "cannot wait for an agent"),
+            }
+        });
+        Ok(())
+    }
+
+    async fn terminate(&self, file: &InstanceFile) {
         if !self.running(file) {
             return;
         }
@@ -208,53 +283,21 @@ impl Driver for ProcessDriver {
             &serde_json::to_vec_pretty(&bootstrap)?,
         )
         .context("cannot write the bootstrap file")?;
-        let log = std::fs::File::create(dir.join(LOG_FILE)).context("cannot make the log file")?;
-        let mut command = tokio::process::Command::new(&agent.path);
-        command
-            .args(["serve", "--managed"])
-            .current_dir(&dir)
-            .env_clear()
-            .envs(
-                PASSED_ENV
-                    .iter()
-                    .filter_map(|name| Some((*name, std::env::var_os(name)?))),
-            )
-            .envs(&request.environment.variables)
-            .env("HOME", &home)
-            .env("XDG_CONFIG_HOME", home.join(".config"))
-            .env("XDG_DATA_HOME", home.join(".local/share"))
-            .env("XDG_STATE_HOME", home.join(".local/state"))
-            .env("XDG_RUNTIME_DIR", &runtime)
-            .stdin(std::process::Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .process_group(0)
-            .kill_on_drop(false);
-        progress.step("start");
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("cannot start {}", agent.path.display()))?;
-        let pid = child.id().context("the agent stopped at once")?;
-        let file = InstanceFile {
+        let mut file = InstanceFile {
             codespace: request.codespace.clone(),
             instance: request.instance.clone(),
             oracle: oracle.to_owned(),
-            pid: i32::try_from(pid)?,
+            pid: 0,
             volumes: mounts
                 .into_iter()
                 .filter(|mount| mount.kind == VolumeKind::Incus)
                 .map(|mount| mount.name)
                 .collect(),
+            agent: Some(agent.path.clone()),
+            environment: request.environment.variables.clone(),
         };
-        write_private(&dir.join(INSTANCE_FILE), &serde_json::to_vec_pretty(&file)?)?;
-        let instance = request.instance.clone();
-        tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => tracing::info!(%instance, %status, "a codespace agent stopped"),
-                Err(err) => tracing::warn!(%instance, error = %err, "cannot wait for an agent"),
-            }
-        });
-        Ok(())
+        progress.step("start");
+        self.spawn(&mut file, &agent.path)
     }
 
     async fn delete(&self, oracle: &str, instance: &str) -> anyhow::Result<()> {
@@ -269,12 +312,81 @@ impl Driver for ProcessDriver {
             Some(file) if file.oracle != oracle => {
                 bail!("the instance {instance} belongs to a different oracle")
             }
-            Some(file) => self.stop(&file).await,
+            Some(file) => self.terminate(&file).await,
             None => {}
         }
         tokio::fs::remove_dir_all(&dir)
             .await
             .with_context(|| format!("cannot remove {}", dir.display()))
+    }
+
+    async fn stop(&self, oracle: &str, instance: &str) -> anyhow::Result<()> {
+        let file = self.owned(oracle, instance)?;
+        self.terminate(&file).await;
+        Ok(())
+    }
+
+    async fn start(&self, oracle: &str, instance: &str) -> anyhow::Result<()> {
+        let mut file = self.owned(oracle, instance)?;
+        if self.running(&file) {
+            return Ok(());
+        }
+        let agent = file
+            .agent
+            .clone()
+            .context("the instance file has no agent path; delete the codespace")?;
+        self.spawn(&mut file, &agent)
+    }
+
+    async fn stdio(
+        &self,
+        oracle: &str,
+        instance: &str,
+        mut input: Input,
+        mut output: Output,
+        mut errors: Output,
+    ) -> anyhow::Result<i32> {
+        let file = self.owned(oracle, instance)?;
+        if !self.running(&file) {
+            bail!("the instance {instance} is stopped; resume the codespace first");
+        }
+        let agent = file
+            .agent
+            .clone()
+            .context("the instance file has no agent path")?;
+        let mut child = self
+            .command(&file, &agent)
+            .args(["stdio", "--managed"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("cannot start {}", agent.display()))?;
+        let mut stdin = child.stdin.take().context("no stdin")?;
+        let mut stdout = child.stdout.take().context("no stdout")?;
+        let mut stderr = child.stderr.take().context("no stderr")?;
+        let send = async {
+            let _ = tokio::io::copy(&mut input, &mut stdin).await;
+            drop(stdin);
+        };
+        let receive = async {
+            tokio::try_join!(
+                tokio::io::copy(&mut stdout, &mut output),
+                tokio::io::copy(&mut stderr, &mut errors)
+            )
+        };
+        tokio::pin!(send, receive);
+        let mut sent = false;
+        let received = loop {
+            tokio::select! {
+                result = &mut receive => break result,
+                () = &mut send, if !sent => sent = true,
+            }
+        };
+        received.context("cannot pass the output of the agent")?;
+        let status = child.wait().await?;
+        Ok(status.code().unwrap_or(-1))
     }
 
     async fn list(&self, oracle: &str) -> anyhow::Result<Vec<InstanceReport>> {
@@ -415,7 +527,11 @@ mod tests {
         );
         assert!(driver.list("o1").await.unwrap().is_empty());
         let script = dir.path().join("agent.sh");
-        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = stdio ]; then exec cat; fi\nexec sleep 30\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
         let agent = Agent {
@@ -498,6 +614,45 @@ mod tests {
         assert!(driver.list("o2").await.unwrap().is_empty());
         assert!(driver.delete("o2", "loom-c1").await.is_err());
         assert!(driver.delete("o1", "../x").await.is_err());
+
+        let (writer, mut reader) = tokio::io::duplex(1024);
+        let code = crate::stdio(
+            &driver,
+            "o1",
+            "c1",
+            Box::new(&b"hello"[..]),
+            Box::new(writer),
+            Box::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap();
+        let mut output = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut output)
+            .await
+            .unwrap();
+        assert_eq!((code, output.as_slice()), (0, &b"hello"[..]));
+        assert!(driver.stop("o2", "loom-c1").await.is_err());
+        driver.stop("o1", "loom-c1").await.unwrap();
+        assert!(!driver.list("o1").await.unwrap()[0].running);
+        let err = crate::stdio(
+            &driver,
+            "o1",
+            "c1",
+            Box::new(tokio::io::empty()),
+            Box::new(tokio::io::sink()),
+            Box::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("stopped"), "{err}");
+        assert!(
+            driver
+                .dir("loom-c1")
+                .join("workspaces/cache/marker")
+                .exists()
+        );
+        driver.start("o1", "loom-c1").await.unwrap();
+        assert!(driver.list("o1").await.unwrap()[0].running);
 
         driver.delete("o1", "loom-c1").await.unwrap();
         assert!(!dir.path().join("codespaces/loom-c1").exists());

@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use loom_client::oracle_proto::{
-    AgentAddress, Codespace, CodespaceState, ErrorCode, Event, HostCall, HostReport,
-    InstanceReport, Repository, Role,
+    AgentAddress, Codespace, CodespaceConnection, CodespaceMetrics, CodespaceState, ErrorCode,
+    Event, HostCall, HostLimits, HostReport, InstanceReport, OracleError, Repository, Role,
+    ssh_command,
 };
 use loom_client::{
     ClientError, ClientIdentity, NewCodespace, OracleCalls, OracleClient, OracleEndpoint,
@@ -814,5 +815,280 @@ async fn hosts_make_codespaces_whose_agents_report_to_the_oracle() {
     )
     .await;
     laptop.remove_host("box").await.unwrap();
+    oracle.shutdown.cancel();
+}
+
+async fn reply_ok(host: &OracleClient, calls: &mut OracleCalls, expected: HostCall) {
+    let (call_id, call) = next_call(calls).await;
+    assert_eq!(call, expected);
+    host.reply(call_id, Ok(serde_json::json!({})))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codespaces_stop_when_idle_resume_and_expire() {
+    let oracle = start_oracle().await;
+    let (laptop, _events) = oracle.device("laptop").await;
+    let link = laptop.create_host_pairing(None).await.unwrap();
+    let host_key = ClientIdentity::generate().unwrap();
+    let endpoint = pair_oracle(&link.link, &host_key, "box", None)
+        .await
+        .unwrap();
+    let (host, _host_events, mut calls) =
+        OracleClient::connect_with_calls(&endpoint, &host_key, "test-host")
+            .await
+            .unwrap();
+    host.host_report(HostReport {
+        version: "test".into(),
+        driver: "process".into(),
+        cpus: 4,
+        memory_mib: 8192,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    host.host_instances(Vec::new()).await.unwrap();
+    let bad = HostLimits {
+        idle_stop_secs: Some(5),
+        ..Default::default()
+    };
+    assert_eq!(
+        code(laptop.set_host_limits("box", bad).await.unwrap_err()),
+        ErrorCode::BadRequest
+    );
+    let limits = HostLimits {
+        max_codespaces: Some(2),
+        max_running: Some(1),
+        idle_stop_secs: Some(600),
+        retention_secs: Some(7200),
+    };
+    let updated = laptop.set_host_limits("box", limits).await.unwrap();
+    assert_eq!(updated.limits, limits);
+    laptop
+        .create_workspace(
+            "acme",
+            "box",
+            vec![Repository {
+                url: "https://github.com/acme/server.git".into(),
+                provider: None,
+                directory: None,
+                base_branch: None,
+            }],
+        )
+        .await
+        .unwrap();
+
+    let created = laptop
+        .create_codespace(NewCodespace {
+            workspace: "acme".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let (call_id, call) = next_call(&mut calls).await;
+    let HostCall::CreateInstance(create) = call else {
+        panic!("expected a create call, got {call:?}");
+    };
+    host.reply(call_id, Ok(serde_json::json!({})))
+        .await
+        .unwrap();
+    let agent_key = ClientIdentity::generate().unwrap();
+    let agent_endpoint = pair_oracle(&create.bootstrap.link, &agent_key, "agent", None)
+        .await
+        .unwrap();
+    let (agent, _agent_events) = OracleClient::connect(&agent_endpoint, &agent_key, "test-agent")
+        .await
+        .unwrap();
+    agent.codespace_ready().await.unwrap();
+    wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Ready).await;
+    assert_eq!(
+        code(
+            laptop
+                .create_codespace(NewCodespace {
+                    workspace: "acme".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::Conflict
+    );
+
+    let metrics = CodespaceMetrics {
+        sessions: 3,
+        busy_sessions: 1,
+        connections: 1,
+        ..Default::default()
+    };
+    agent
+        .codespace_activity(true, Some(metrics.clone()))
+        .await
+        .unwrap();
+    let active = wait_codespace(&laptop, &created.id, |c| c.active == Some(true)).await;
+    assert_eq!(active.metrics, Some(metrics));
+    assert_eq!(active.stop_at, None);
+    let text = oracle.oracle.metrics_text();
+    assert!(
+        text.contains("loom_oracle_codespaces{state=\"ready\"} 1"),
+        "{text}"
+    );
+    assert!(text.contains("loom_oracle_codespace_sessions 3"), "{text}");
+    assert!(
+        text.contains("loom_oracle_host_codespaces_running{host=\"box\"} 1"),
+        "{text}"
+    );
+
+    assert_eq!(
+        code(
+            laptop
+                .codespace_connections(&created.id, &["relay", "ssh"])
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::Unavailable
+    );
+    laptop.set_host_ssh("box", Some("dev@box")).await.unwrap();
+    let connections = laptop
+        .codespace_connections(&created.id, &["ssh"])
+        .await
+        .unwrap();
+    assert_eq!(
+        connections,
+        vec![CodespaceConnection::Ssh {
+            destination: "dev@box".into(),
+            command: ssh_command(&created.id),
+        }]
+    );
+
+    agent.codespace_activity(false, None).await.unwrap();
+    let idle = wait_codespace(&laptop, &created.id, |c| c.active == Some(false)).await;
+    let stop_at = idle.stop_at.expect("an idle codespace has a stop time");
+    oracle.oracle.check_lifecycle(stop_at - 1);
+    oracle.oracle.check_lifecycle(stop_at);
+    let stop = HostCall::StopInstance {
+        codespace: created.id.clone(),
+        instance: created.instance.clone(),
+    };
+    reply_ok(&host, &mut calls, stop.clone()).await;
+    let stopped =
+        wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Stopped).await;
+    assert!(stopped.stopped_at.is_some());
+    assert_eq!(stopped.active, None);
+    let delete_at = stopped
+        .delete_at
+        .expect("a stopped codespace has a delete time");
+    assert_eq!(delete_at, stopped.stopped_at.unwrap() + 7200);
+    assert_eq!(
+        code(
+            laptop
+                .codespace_connections(&created.id, &["relay"])
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        code(laptop.stop_codespace(&created.id).await.unwrap_err()),
+        ErrorCode::Conflict
+    );
+
+    let resuming = laptop.resume_codespace(&created.id).await.unwrap();
+    assert_eq!(resuming.state, CodespaceState::Starting);
+    reply_ok(
+        &host,
+        &mut calls,
+        HostCall::StartInstance {
+            codespace: created.id.clone(),
+            instance: created.instance.clone(),
+        },
+    )
+    .await;
+    let (agent, _agent_events) = OracleClient::connect(&agent_endpoint, &agent_key, "test-agent")
+        .await
+        .unwrap();
+    agent.codespace_ready().await.unwrap();
+    wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Ready).await;
+
+    laptop.stop_codespace(&created.id).await.unwrap();
+    let (call_id, call) = next_call(&mut calls).await;
+    assert_eq!(call, stop);
+    host.reply(
+        call_id,
+        Err(OracleError::new(
+            ErrorCode::Internal,
+            "the instance is busy",
+        )),
+    )
+    .await
+    .unwrap();
+    let failed = wait_codespace(&laptop, &created.id, |c| c.error.is_some()).await;
+    assert_eq!(failed.state, CodespaceState::Ready);
+    assert!(failed.error.unwrap().contains("busy"));
+    laptop.stop_codespace(&created.id).await.unwrap();
+    reply_ok(&host, &mut calls, stop.clone()).await;
+    let stopped =
+        wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Stopped).await;
+
+    oracle
+        .oracle
+        .check_lifecycle(stopped.delete_at.unwrap() + 1);
+    reply_ok(
+        &host,
+        &mut calls,
+        HostCall::DeleteInstance {
+            codespace: created.id.clone(),
+            instance: created.instance.clone(),
+        },
+    )
+    .await;
+    let closed = wait_codespace(&laptop, &created.id, |c| c.state == CodespaceState::Closed).await;
+    oracle
+        .oracle
+        .check_lifecycle(closed.updated_at + 8 * 24 * 3600);
+    for _ in 0..100 {
+        if !laptop
+            .codespaces()
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.id == created.id)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !laptop
+            .codespaces()
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.id == created.id)
+    );
+
+    let audit = laptop.audit(Some(50), None).await.unwrap();
+    let actions: Vec<&str> = audit.entries.iter().map(|e| e.action.as_str()).collect();
+    for action in [
+        "codespace_idle_stopped",
+        "codespace_resumed",
+        "codespace_stopped",
+        "codespace_expired",
+        "host_limits_set",
+    ] {
+        assert!(actions.contains(&action), "{action} not in {actions:?}");
+    }
+    let resumed = audit
+        .entries
+        .iter()
+        .find(|e| e.action == "codespace_resumed")
+        .unwrap();
+    assert_eq!(resumed.peer_label.as_deref(), Some("laptop"));
+    let older = laptop
+        .audit(Some(2), Some(audit.entries[0].id))
+        .await
+        .unwrap();
+    assert_eq!(older.entries.len(), 2);
+    assert!(older.entries[0].id < audit.entries[0].id);
     oracle.shutdown.cancel();
 }

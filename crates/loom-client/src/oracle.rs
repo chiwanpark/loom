@@ -6,18 +6,19 @@ use std::time::Duration;
 use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
-    AgentAddress, Branches, Bundle, ClientHello, ClientMessage, Codespace, CodespaceResult,
-    CodespaceSession, Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment,
-    Event, FirstMessage, FirstMessageResult, GitCredential, GitCredentialInput,
-    GitCredentialResult, GitCredentials, GitProvider, GitProviderInput, GitProviderResult,
-    GitProviders, GitTokenResult, Host, HostCall, HostReport, HostResult, Hosts, InstanceReport,
-    ModelAccount, ModelAccountResult, ModelAccounts, ModelCredentials, ModelLogin, ModelLoginInput,
-    ModelLoginMethod, Models, ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing,
-    PairingLink, Pairings, Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost,
-    RelayHostResult, RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo,
-    SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume,
-    VolumeInput, VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings, Workspace,
-    WorkspaceNotes, WorkspaceResult, WorkspaceVolume, Workspaces, encode, parse_server_message,
+    AgentAddress, AuditLog, Branches, Bundle, ClientHello, ClientMessage, Codespace,
+    CodespaceConnection, CodespaceConnections, CodespaceMetrics, CodespaceResult, CodespaceSession,
+    Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment, Event, FirstMessage,
+    FirstMessageResult, GitCredential, GitCredentialInput, GitCredentialResult, GitCredentials,
+    GitProvider, GitProviderInput, GitProviderResult, GitProviders, GitTokenResult, Host, HostCall,
+    HostLimits, HostReport, HostResult, Hosts, InstanceReport, ModelAccount, ModelAccountResult,
+    ModelAccounts, ModelCredentials, ModelLogin, ModelLoginInput, ModelLoginMethod, Models,
+    ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings,
+    Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost, RelayHostResult,
+    RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo, SecretResult,
+    Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume, VolumeInput,
+    VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings, Workspace, WorkspaceNotes,
+    WorkspaceResult, WorkspaceVolume, Workspaces, encode, parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -482,6 +483,14 @@ impl OracleClient {
             .host)
     }
 
+    pub async fn set_host_limits(&self, name: &str, limits: HostLimits) -> Result<Host> {
+        let name = name.to_owned();
+        Ok(self
+            .call::<HostResult>(Command::SetHostLimits { name, limits })
+            .await?
+            .host)
+    }
+
     pub async fn check_host(&self, name: &str, docker: bool) -> Result<Host> {
         let name = name.to_owned();
         Ok(self
@@ -591,6 +600,50 @@ impl OracleClient {
             .call::<CodespaceResult>(Command::CloseCodespace { id })
             .await?
             .codespace)
+    }
+
+    pub async fn stop_codespace(&self, id: &str) -> Result<Codespace> {
+        let id = id.to_owned();
+        Ok(self
+            .call::<CodespaceResult>(Command::StopCodespace { id })
+            .await?
+            .codespace)
+    }
+
+    pub async fn resume_codespace(&self, id: &str) -> Result<Codespace> {
+        let id = id.to_owned();
+        Ok(self
+            .call::<CodespaceResult>(Command::ResumeCodespace { id })
+            .await?
+            .codespace)
+    }
+
+    pub async fn codespace_connections(
+        &self,
+        id: &str,
+        types: &[&str],
+    ) -> Result<Vec<CodespaceConnection>> {
+        let id = id.to_owned();
+        let types = types.iter().map(|t| (*t).to_owned()).collect();
+        Ok(self
+            .call::<CodespaceConnections>(Command::CodespaceConnections { id, types })
+            .await?
+            .connections)
+    }
+
+    pub async fn audit(&self, limit: Option<u32>, before: Option<u64>) -> Result<AuditLog> {
+        self.call(Command::ListAudit { limit, before }).await
+    }
+
+    pub async fn codespace_activity(
+        &self,
+        active: bool,
+        metrics: Option<CodespaceMetrics>,
+    ) -> Result<()> {
+        done(
+            self.call(Command::CodespaceActivity { active, metrics })
+                .await,
+        )
     }
 
     pub async fn codespace_warnings(

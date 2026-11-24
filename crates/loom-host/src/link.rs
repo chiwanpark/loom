@@ -262,6 +262,23 @@ impl Host {
                 tracing::info!(%instance, "deleted a codespace instance");
                 Ok(Value::Object(Default::default()))
             }
+            HostCall::StopInstance { instance, .. } => {
+                tracing::info!(%instance, "stopping a codespace instance");
+                self.driver
+                    .stop(&self.oracle.host_id, &instance)
+                    .await
+                    .map_err(internal)?;
+                tracing::info!(%instance, "stopped a codespace instance");
+                Ok(Value::Object(Default::default()))
+            }
+            HostCall::StartInstance { instance, .. } => {
+                tracing::info!(%instance, "starting a codespace instance");
+                self.driver
+                    .start(&self.oracle.host_id, &instance)
+                    .await
+                    .map_err(internal)?;
+                Ok(Value::Object(Default::default()))
+            }
             HostCall::ListInstances => {
                 let instances = self
                     .driver

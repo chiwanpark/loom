@@ -2,7 +2,11 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use loom_client::oracle_proto::{CreateInstance, InstanceReport, VolumeUsage};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+
+pub type Input = Box<dyn AsyncRead + Unpin + Send>;
+pub type Output = Box<dyn AsyncWrite + Unpin + Send>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DriverReport {
@@ -77,6 +81,19 @@ pub trait Driver: Send + Sync {
     ) -> anyhow::Result<()>;
 
     async fn delete(&self, oracle: &str, instance: &str) -> anyhow::Result<()>;
+
+    async fn stop(&self, oracle: &str, instance: &str) -> anyhow::Result<()>;
+
+    async fn start(&self, oracle: &str, instance: &str) -> anyhow::Result<()>;
+
+    async fn stdio(
+        &self,
+        oracle: &str,
+        instance: &str,
+        input: Input,
+        output: Output,
+        errors: Output,
+    ) -> anyhow::Result<i32>;
 
     async fn list(&self, oracle: &str) -> anyhow::Result<Vec<InstanceReport>>;
 

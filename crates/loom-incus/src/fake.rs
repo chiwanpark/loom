@@ -4,15 +4,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::Role;
 
 use crate::{Image, ImageAlias, Incus, Instance, Project};
 
 pub type ExecHandler = Box<dyn Fn(&str, &[String]) -> (i32, String, String) + Send + Sync>;
+pub type StreamHandler =
+    Box<dyn Fn(&str, &[String], &[u8]) -> (i32, Vec<u8>, Vec<u8>) + Send + Sync>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FakeFile {
@@ -31,6 +37,15 @@ pub struct FakeInstance {
     pub execs: Vec<Vec<String>>,
 }
 
+type StreamResult = Option<(i32, Vec<u8>, Vec<u8>)>;
+
+struct FakeStream {
+    instance: String,
+    command: Vec<String>,
+    stdin: Mutex<Vec<u8>>,
+    result: tokio::sync::watch::Sender<StreamResult>,
+}
+
 pub struct FakeState {
     pub instances: BTreeMap<String, FakeInstance>,
     pub images: Vec<Image>,
@@ -42,6 +57,9 @@ pub struct FakeState {
     pub certificates: Vec<String>,
     pub reject_zstd: bool,
     pub exec: Option<ExecHandler>,
+    pub stream: Option<StreamHandler>,
+    streams: BTreeMap<String, Arc<FakeStream>>,
+    secrets: BTreeMap<String, (String, String)>,
     operations: BTreeMap<String, Value>,
     logs: BTreeMap<String, Vec<u8>>,
     next: u64,
@@ -60,6 +78,9 @@ impl Default for FakeState {
             certificates: Vec::new(),
             reject_zstd: false,
             exec: None,
+            stream: None,
+            streams: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             operations: BTreeMap::new(),
             logs: BTreeMap::new(),
             next: 1,
@@ -434,6 +455,35 @@ impl FakeState {
                 if !self.instances[name].instance.running() {
                     return self.operation(Err("Instance is not running".into()));
                 }
+                if request["wait-for-websocket"] == true {
+                    let id = format!("op-{}", self.next);
+                    self.next += 1;
+                    let mut fds = serde_json::Map::new();
+                    for fd in ["control", "0", "1", "2"] {
+                        let secret = format!("{id}-{fd}-secret");
+                        self.secrets
+                            .insert(secret.clone(), (id.clone(), fd.to_owned()));
+                        fds.insert(fd.to_owned(), Value::String(secret));
+                    }
+                    let (result, _) = tokio::sync::watch::channel(None);
+                    self.streams.insert(
+                        id.clone(),
+                        Arc::new(FakeStream {
+                            instance: name.to_owned(),
+                            command,
+                            stdin: Mutex::new(Vec::new()),
+                            result,
+                        }),
+                    );
+                    let body = json!({
+                        "type": "async",
+                        "status": "Operation created",
+                        "status_code": 100,
+                        "operation": format!("/1.0/operations/{id}"),
+                        "metadata": {"id": id, "status": "Running", "status_code": 103, "metadata": {"fds": fds}},
+                    });
+                    return (StatusCode::ACCEPTED, Bytes::from(body.to_string()));
+                }
                 let (code, stdout, stderr) = match &self.exec {
                     Some(handler) => handler(name, &command),
                     None => (0, String::new(), String::new()),
@@ -468,9 +518,124 @@ impl FakeState {
     }
 }
 
+fn finish_stream(state: &Arc<Mutex<FakeState>>, stream: &FakeStream) {
+    let stdin = std::mem::take(&mut *stream.stdin.lock().unwrap_or_else(|e| e.into_inner()));
+    let result = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        match &state.stream {
+            Some(handler) => handler(&stream.instance, &stream.command, &stdin),
+            None => (0, stdin, Vec::new()),
+        }
+    };
+    stream.result.send_if_modified(|current| {
+        let first = current.is_none();
+        if first {
+            *current = Some(result);
+        }
+        first
+    });
+}
+
+async fn serve_stream(
+    state: Arc<Mutex<FakeState>>,
+    stream: Arc<FakeStream>,
+    fd: String,
+    mut socket: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+) {
+    match fd.as_str() {
+        "0" => {
+            while let Some(Ok(message)) = socket.next().await {
+                match message {
+                    Message::Binary(bytes) => stream
+                        .stdin
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&bytes),
+                    Message::Text(text) if text.is_empty() => break,
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            finish_stream(&state, &stream);
+        }
+        "1" | "2" => {
+            let mut result = stream.result.subscribe();
+            let bytes = match result.wait_for(Option::is_some).await {
+                Ok(done) => match done.as_ref() {
+                    Some((_, stdout, _)) if fd == "1" => stdout.clone(),
+                    Some((_, _, stderr)) => stderr.clone(),
+                    None => Vec::new(),
+                },
+                Err(_) => return,
+            };
+            if !bytes.is_empty() {
+                let _ = socket.send(Message::Binary(bytes.into())).await;
+            }
+            let _ = socket.send(Message::Text("".into())).await;
+            while let Some(Ok(_)) = socket.next().await {}
+        }
+        _ => {
+            while let Some(Ok(_)) = socket.next().await {}
+            finish_stream(&state, &stream);
+        }
+    }
+}
+
+fn upgrade(
+    state: Arc<Mutex<FakeState>>,
+    secret: &str,
+    request: &mut Request<Incoming>,
+) -> Option<Response<Full<Bytes>>> {
+    let (stream, fd) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let (id, fd) = state.secrets.get(secret)?.clone();
+        (state.streams.get(&id)?.clone(), fd)
+    };
+    let key = request
+        .headers()
+        .get("sec-websocket-key")?
+        .as_bytes()
+        .to_vec();
+    let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(&key);
+    let upgrade = hyper::upgrade::on(request);
+    tokio::spawn(async move {
+        if let Ok(upgraded) = upgrade.await {
+            let socket =
+                WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+            serve_stream(state, stream, fd, socket).await;
+        }
+    });
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("upgrade", "websocket")
+        .header("connection", "Upgrade")
+        .header("sec-websocket-accept", accept)
+        .body(Full::new(Bytes::new()))
+        .ok()
+}
+
+async fn wait_stream(state: &Arc<Mutex<FakeState>>, id: &str) -> Option<Response<Full<Bytes>>> {
+    let stream = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .streams
+        .get(id)?
+        .clone();
+    let mut result = stream.result.subscribe();
+    let code = result
+        .wait_for(Option::is_some)
+        .await
+        .ok()
+        .and_then(|done| done.as_ref().map(|(code, _, _)| *code))?;
+    let (_, body) = sync(
+        json!({"id": id, "status": "Success", "status_code": 200, "metadata": {"return": code}, "err": ""}),
+    );
+    Response::builder().body(Full::new(body)).ok()
+}
+
 async fn respond(
     state: Arc<Mutex<FakeState>>,
-    request: Request<Incoming>,
+    mut request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
@@ -484,6 +649,20 @@ async fn respond(
             Some((decode(key), decode(value)))
         })
         .collect();
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    if let ["1.0", "operations", id, action] = parts.as_slice() {
+        let response = match *action {
+            "websocket" => {
+                let secret = query.get("secret").cloned().unwrap_or_default();
+                upgrade(state.clone(), &secret, &mut request)
+            }
+            "wait" => wait_stream(&state, id).await,
+            _ => None,
+        };
+        if let Some(response) = response {
+            return response;
+        }
+    }
     let headers = request.headers().clone();
     let body = request
         .into_body()
@@ -532,6 +711,7 @@ impl FakeIncus {
                     });
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(TokioIo::new(stream), service)
+                        .with_upgrades()
                         .await;
                 });
             }
