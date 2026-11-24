@@ -44,9 +44,23 @@ The keys are the same as in `relay.yaml`, with these differences:
 | `url` | The public URL of the oracle. Pairing links contain it. If it is not set, the oracle uses `ws://` or `wss://` with `listen`. |
 | `data_dir` | The directory of the store and the host keys. The default is `~/.local/share/loom/oracle`. |
 | `master_key` | The file of the master key. The default is `master.key` in `data_dir`. |
+| `codespaces` | The lifecycle of codespaces. See [Codespace lifecycle](#codespace-lifecycle). |
 | `allowed_hosts` | Not available. Use relay hosts. See [Use the oracle as a relay](#use-the-oracle-as-a-relay). |
 
 These keys are the same as in `relay.yaml`: `listen`, `metrics_listen`, `tls`, `cloudflare_access`, `push`, `limits`, and `logging`.
+
+### Codespace lifecycle
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `codespaces.idle_stop` | `30m` | The oracle stops a ready codespace after this time without activity. `0s` turns it off. |
+| `codespaces.retention` | `30days` | The oracle deletes a codespace after it is stopped for this time. `0s` turns it off. |
+| `codespaces.closed_retention` | `7days` | The oracle removes closed codespaces from its list after this time. `0s` keeps them. |
+| `codespaces.check_interval` | `1m` | The time between two checks of the idle stop and the retention. |
+
+A codespace is active when a client is connected to its agent, a turn runs, or a terminal is open. The agent tells the oracle when this changes. A codespace that waits to start its first message is not idle.
+
+Each host can set its own limits and timeouts. They replace the defaults. See [Codespace limits](#codespace-limits).
 
 ## Master key
 
@@ -107,6 +121,7 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `remove-host <name>` | Removes a host. The oracle refuses this while it has workspaces, open codespaces, or tracked volumes. |
 | `check-host <name> [--docker]` | Runs `loom-host check` on a connected host and shows the results. With `--docker`, the host also tests Docker in a test instance. |
 | `set-ssh <host> <destination>`, `set-ssh <host> --clear` | Sets or removes the SSH destination of a host, for example `dev@host.example.com`. |
+| `set-limits <host> [--max-codespaces <n>\|none] [--max-running <n>\|none] [--idle-stop <duration>\|never\|default] [--retention <duration>\|never\|default]` | Changes the limits of a host. The limits that you do not give stay the same. See [Codespace limits](#codespace-limits). |
 | `host-volumes <name>` | Shows the used space of each custom volume on a connected host. |
 | `set-environment <host> [--base-image <image>] [--setup-script <path>] [--env <name>=<value>]… [--ca-certificate <path>]… [--registry-mirror <url>]…` | Replaces the environment configuration of a host. The host builds a new image for the next codespace. |
 | `providers` | Lists the Git providers. |
@@ -143,10 +158,14 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `codespaces [--all]` | Lists the codespaces. `--all` also shows the closed codespaces. |
 | `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--message <text> \| --message-file <path>] [--model <provider>/<model>] [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. `--message` sets the first message: the agent starts a session with it when the codespace is ready. `--model` sets the model of this session. |
 | `close-codespace <id> [--push <directory>]… [--discard <directory>]… [--message <message>] [--force] [--no-wait]` | Closes a codespace. The host deletes its instance. First, the close guard asks the agent for the unsaved work of each repository. See [the host document](host.md#git-in-a-codespace). |
+| `stop-codespace <id> [--no-wait]` | Stops a codespace. The host stops its instance and keeps its disk. |
+| `resume-codespace <id> [--no-wait]` | Starts a stopped codespace again and waits until it is ready. |
+| `connections <id> [--type relay\|ssh]…` | Shows how a client can connect to a codespace. |
 | `repositories <id>` | Shows the state of each repository of a codespace. |
 | `push <id> [--message <message>] [--directory <directory>]…` | Pushes the branch of each repository of a codespace. With `--message`, the agent first commits the uncommitted changes. |
 | `pull-request <id> --title <title> [--body <text> \| --body-file <path>] [--draft]` | Opens a pull request for each repository of a codespace that has commits. |
 | `client-entry <id> [--name <name>]` | Shows the host entry for `client.yaml` of the desktop client. |
+| `audit [--limit <n>] [--before <id>]` | Shows the audit log, newest first. The default limit is 100. `--before` shows the entries before an entry. |
 | `watch [--count <n>]` | Shows the events of the oracle until you stop it. |
 
 With `--json`, each command writes JSON.
@@ -170,6 +189,42 @@ The oracle and `loom-relay` use the same limits from `limits` in their files. A 
 - A device uses its own limits after it opens a channel to the control service.
 
 Thus, many agents and devices behind one public IP address do not share one limit. Before this change, all limits applied to each IP address.
+
+## Codespace limits
+
+Each host has these limits. Set them with `loom-oracle-cli set-limits`, or in **Settings > Hosts > Limits…** of the desktop app.
+
+| Limit | Meaning |
+| --- | --- |
+| Maximum codespaces | The maximum number of open codespaces, running or stopped. `max_codespaces` in `host.yaml` also applies. The smaller value applies. |
+| Maximum running codespaces | The maximum number of running codespaces. To create or resume a codespace, stop or close a different one first. |
+| Idle stop | Replaces `codespaces.idle_stop` for the codespaces of the host. `never` turns it off. |
+| Retention | Replaces `codespaces.retention` for the codespaces of the host. `never` keeps stopped codespaces. |
+
+A list of codespaces shows when the oracle stops each idle codespace and when it deletes each stopped codespace.
+
+## Metrics
+
+When `metrics_listen` is set, `/metrics` gives the metrics of the relay and these gauges:
+
+| Metric | Meaning |
+| --- | --- |
+| `loom_oracle_codespaces{state}` | The codespaces in each state. |
+| `loom_oracle_codespaces_active` | The ready codespaces with a client, a running turn, or a terminal. |
+| `loom_oracle_codespace_sessions` | The sessions in running codespaces. |
+| `loom_oracle_codespace_busy_sessions` | The sessions with a running turn. |
+| `loom_oracle_codespace_connections` | The client connections to running codespaces. |
+| `loom_oracle_hosts_connected` | The connected hosts. |
+| `loom_oracle_devices_connected` | The connected devices. |
+| `loom_oracle_host_codespaces_running{host}` | The running codespaces of each host. |
+| `loom_oracle_host_cpus_limit{host}` | The sum of the CPU limits of the running codespaces of each host. |
+| `loom_oracle_host_memory_limit_bytes{host}` | The sum of the memory limits of the running codespaces of each host. |
+
+The agents send their session metrics every 5 minutes and when their activity changes.
+
+## Audit log
+
+The oracle records each change: pairings, devices, hosts, workspaces, presets, credentials, and codespaces. The entries show the device that made the change. Entries without a device are changes of the oracle itself, such as an idle stop (`codespace_idle_stopped`) or a deletion after the retention (`codespace_expired`). Read the log with `loom-oracle-cli audit` or in **Settings > Audit log** of the desktop app.
 
 ## Git providers
 

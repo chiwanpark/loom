@@ -84,6 +84,8 @@ A progress screen shows the steps of the start. When the codespace is ready, pre
 - **New session** adds a session in the codespace.
 - **Open pull request** asks for a title, a body, and the draft mark. For each repository with commits, the agent pushes the branch and opens a pull request. The app then opens the first pull request in the browser.
 - **Start progress** shows the steps of a codespace that starts or that failed.
+- **Stop codespace** stops the codespace. Its sessions and terminals end, and its files stay.
+- **Resume codespace** starts a stopped codespace again and shows the start progress. A tap on a stopped codespace also does this. A stopped codespace shows when the oracle deletes it.
 - **Close codespace** shows the close guard. For each repository with unsaved work, select **Push** or **Discard**. A push of changed files needs a commit message. If a push fails, the codespace stays open.
 
 In a codespace with more than one repository, **Changes** shows the files under the name of their repository.
