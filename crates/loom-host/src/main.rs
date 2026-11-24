@@ -30,7 +30,13 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    Serve,
+    Serve {
+        #[arg(
+            long,
+            help = "Wait until the configuration is valid and the host has joined an oracle"
+        )]
+        wait: bool,
+    },
     Check {
         #[arg(long, help = "Also test Docker in a test instance")]
         docker: bool,
@@ -177,10 +183,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             init_logging(LogLevel::Warn);
             runtime()?.block_on(setup(&config, &dirs))?;
         }
-        Command::Serve => {
+        Command::Serve { wait } => {
+            let runtime = runtime()?;
+            if wait && !runtime.block_on(wait_until_ready(&path, &dirs)) {
+                return Ok(ExitCode::SUCCESS);
+            }
             let config = HostConfig::load(&path, &dirs)?;
             init_logging(config.logging.level);
-            runtime()?.block_on(serve(config, dirs))?;
+            runtime.block_on(serve(config, dirs))?;
         }
         Command::Stdio { codespace } => {
             let config = HostConfig::load(&path, &dirs)?;
@@ -189,6 +199,43 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn not_ready(path: &Path, dirs: &Dirs) -> Option<String> {
+    let config = match HostConfig::load(path, dirs) {
+        Ok(config) => config,
+        Err(err) => return Some(format!("{err}")),
+    };
+    if let Err(err) = JoinedOracle::load(&config.data_dir(dirs)) {
+        return Some(format!("{err:#}"));
+    }
+    if let Err(err) = loom_host::driver(&config, dirs) {
+        return Some(format!("{err:#}"));
+    }
+    None
+}
+
+async fn wait_until_ready(path: &Path, dirs: &Dirs) -> bool {
+    let mut last = None;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    loop {
+        let Some(reason) = not_ready(path, dirs) else {
+            return true;
+        };
+        if last.as_ref() != Some(&reason) {
+            eprintln!("loom-host: waiting: {reason}");
+            eprintln!(
+                "loom-host: the configuration file is {}; the commands `trust`, `join`, and `setup` prepare the host",
+                path.display()
+            );
+            last = Some(reason);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+            _ = tokio::signal::ctrl_c() => return false,
+            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending().await } } => return false,
+        }
+    }
 }
 
 async fn check(config: HostConfig, dirs: Dirs, docker: bool) -> anyhow::Result<ExitCode> {
