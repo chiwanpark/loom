@@ -188,6 +188,7 @@ pub enum Command {
         codespace: String,
         step: String,
     },
+    GitProxyAccess(GitProxyRequest),
     CodespaceBundle,
     CodespaceAgent {
         address: AgentAddress,
@@ -202,6 +203,7 @@ pub enum Command {
     GitCredential {
         url: String,
     },
+    CodespaceApiRequest(CodespaceApiRequest),
     ListModelAccounts,
     StartModelLogin {
         account: String,
