@@ -259,6 +259,7 @@ async fn providers_credentials_and_presets_set_up_the_git_of_a_codespace() {
         owner: owner.map(str::to_owned),
         repository: None,
         token: token.map(Secret::new),
+        app_id: None,
     };
     let work = laptop
         .set_git_credential(credential("work", Some("acme"), Some("t-work")))
@@ -595,6 +596,165 @@ async fn providers_credentials_and_presets_set_up_the_git_of_a_codespace() {
         code(laptop.delete_git_provider("far").await.unwrap_err()),
         ErrorCode::NotFound
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_github_app_gives_short_tokens_for_one_repository() {
+    let oracle = start_oracle().await;
+    let (laptop, _events) = oracle.connect(Role::Device, "laptop").await;
+    let hub = MockServer::start().await;
+    let web = hub.uri();
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": 42, "slug": "loom-bot"})),
+        )
+        .mount(&hub)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/installation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 8})))
+        .mount(&hub)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/8/access_tokens"))
+        .and(wiremock::matchers::body_json(
+            json!({"repositories": ["server"]}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(
+                json!({"token": "ghs_server", "expires_at": "2099-01-01T00:00:00Z"}),
+            ),
+        )
+        .expect(1)
+        .mount(&hub)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/8/access_tokens"))
+        .and(wiremock::matchers::body_json(json!({})))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"token": "ghs_all", "expires_at": "2099-01-01T00:00:00Z"})),
+        )
+        .mount(&hub)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users/loom-bot[bot]"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 99})))
+        .mount(&hub)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/installation/repositories"))
+        .and(header("authorization", "Bearer ghs_all"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"repositories": [repo("acme", "server", &web)]})),
+        )
+        .mount(&hub)
+        .await;
+    laptop
+        .set_git_provider(GitProviderInput {
+            name: "github".into(),
+            web_url: web.clone(),
+            api_url: Some(web.clone()),
+            git_name: None,
+            git_email: Some("bot@example.com".into()),
+            route: ProviderRoute::Direct,
+        })
+        .await
+        .unwrap();
+    let key = rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+        .unwrap()
+        .serialize_pem();
+    let input = |owner: Option<&str>, key: Option<&str>, app_id: Option<u64>| GitCredentialInput {
+        name: "app".into(),
+        provider: "github".into(),
+        owner: owner.map(str::to_owned),
+        repository: None,
+        token: key.map(Secret::new),
+        app_id,
+    };
+    for bad in [
+        input(None, Some(&key), Some(42)),
+        input(Some("acme"), Some("not a key"), Some(42)),
+        input(Some("acme"), Some(&key), Some(0)),
+    ] {
+        assert_eq!(
+            code(laptop.set_git_credential(bad).await.unwrap_err()),
+            ErrorCode::BadRequest
+        );
+    }
+    let app = laptop
+        .set_git_credential(input(Some("acme"), Some(&key), Some(42)))
+        .await
+        .unwrap();
+    assert_eq!(app.check_error, None, "{app:?}");
+    assert_eq!(app.login.as_deref(), Some("loom-bot[bot]"));
+    assert_eq!((app.app_id, app.installation_id), (Some(42), Some(8)));
+    assert_eq!(app.expires_at, None);
+    assert_eq!(
+        code(
+            laptop
+                .set_git_credential(input(Some("acme"), None, None))
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::BadRequest
+    );
+    let found = laptop.search_repositories("github", "").await.unwrap();
+    assert_eq!(found.repositories[0].name, "server");
+
+    laptop
+        .set_preset("dev", "git:\n  credentials: [app]\n")
+        .await
+        .unwrap();
+    let (_host, mut calls) = start_host(&oracle).await;
+    laptop
+        .create_workspace("acme", "box", vec![repository("github:acme/server")])
+        .await
+        .unwrap();
+    laptop
+        .create_codespace(NewCodespace {
+            workspace: "acme".into(),
+            preset: Some("dev".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let create = loop {
+        match tokio::time::timeout(WAIT, calls.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            HostCall::CreateInstance(create) => break create,
+            _ => continue,
+        }
+    };
+    let agent_key = ClientIdentity::generate().unwrap();
+    let endpoint = pair_oracle(&create.bootstrap.link, &agent_key, "agent", None)
+        .await
+        .unwrap();
+    let (agent, _agent_events) = OracleClient::connect(&endpoint, &agent_key, "agent")
+        .await
+        .unwrap();
+    let bundle = agent.bundle().await.unwrap();
+    let github = &bundle.git.providers[0];
+    assert!(github.credentials);
+    assert!(github.gh.is_none());
+    assert_eq!(github.git_name.as_deref(), Some("loom-bot[bot]"));
+    for _ in 0..2 {
+        let token = agent
+            .git_credential(&format!("{web}/acme/server.git"))
+            .await
+            .unwrap()
+            .token
+            .unwrap();
+        assert_eq!(token.username, "x-access-token");
+        assert_eq!(token.password.expose(), "ghs_server");
+        assert!(token.expires_at.is_some());
+    }
+    hub.verify().await;
 }
 
 async fn host_call(calls: &mut OracleCalls) -> (u64, HostCall) {

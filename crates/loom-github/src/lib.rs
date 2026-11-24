@@ -103,6 +103,13 @@ pub fn parse_expiration(text: &str) -> Option<u64> {
     u64::try_from(seconds).ok()
 }
 
+pub fn parse_timestamp(text: &str) -> Option<u64> {
+    let (date, time) = text.trim().split_once('T')?;
+    let time = time.strip_suffix('Z').unwrap_or(time);
+    let time = time.split('.').next()?;
+    parse_expiration(&format!("{date} {time} UTC"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Method {
@@ -390,6 +397,45 @@ pub struct TokenOwner {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct App {
+    pub id: u64,
+    pub slug: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallationToken {
+    pub token: String,
+    pub expires_at: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct AppClaims {
+    iat: u64,
+    exp: u64,
+    iss: String,
+}
+
+pub fn app_jwt(app_id: u64, private_key: &str, now: u64) -> Result<String> {
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes()).map_err(|err| {
+        GitHubError::Route(format!(
+            "the private key of the app is not an RSA key in PEM: {err}"
+        ))
+    })?;
+    let claims = AppClaims {
+        iat: now.saturating_sub(60),
+        exp: now + 540,
+        iss: app_id.to_string(),
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &key,
+    )
+    .map_err(|err| GitHubError::Route(format!("cannot sign the token of the app: {err}")))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteRepository {
     pub owner: String,
     pub name: String,
@@ -509,6 +555,91 @@ impl GitHub {
             expires_at: response.token_expiration,
             scopes: response.scopes,
         })
+    }
+
+    pub async fn app(&self) -> Result<App> {
+        let response = self.send(&ApiRequest::get("/app")).await?;
+        let body = &response.body;
+        Ok(App {
+            id: body.get("id").and_then(Value::as_u64).unwrap_or_default(),
+            slug: text(body, "slug")
+                .ok_or_else(|| GitHubError::Decode("the app has no slug".into()))?,
+            name: text(body, "name"),
+        })
+    }
+
+    pub async fn user_id(&self, login: &str) -> Result<u64> {
+        let valid = !login.is_empty()
+            && login.len() <= 100
+            && login
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '[' | ']'));
+        if !valid {
+            return Err(GitHubError::Route(format!("{login:?} is not a login")));
+        }
+        let response = self
+            .send(&ApiRequest::get(format!("/users/{login}")))
+            .await?;
+        response
+            .body
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| GitHubError::Decode("the user has no id".into()))
+    }
+
+    pub async fn installation(&self, owner: &str) -> Result<u64> {
+        let owner = segment(owner)?;
+        let id = |response: ApiResponse| {
+            response
+                .body
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| GitHubError::Decode("the installation has no id".into()))
+        };
+        match self
+            .send(&ApiRequest::get(format!("/orgs/{owner}/installation")))
+            .await
+        {
+            Ok(response) => id(response),
+            Err(err) if err.status() == Some(404) => id(self
+                .send(&ApiRequest::get(format!("/users/{owner}/installation")))
+                .await?),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn installation_token(
+        &self,
+        installation: u64,
+        repositories: &[String],
+    ) -> Result<InstallationToken> {
+        let mut body = json!({});
+        if !repositories.is_empty() {
+            for repository in repositories {
+                segment(repository)?;
+            }
+            body["repositories"] = json!(repositories);
+        }
+        let path = format!("/app/installations/{installation}/access_tokens");
+        let response = self
+            .send(&ApiRequest::get(path).with_body(Method::Post, body))
+            .await?;
+        Ok(InstallationToken {
+            token: text(&response.body, "token")
+                .ok_or_else(|| GitHubError::Decode("the answer has no token".into()))?,
+            expires_at: text(&response.body, "expires_at")
+                .as_deref()
+                .and_then(parse_timestamp),
+        })
+    }
+
+    pub async fn installation_repositories(&self, limit: u32) -> Result<Page<RemoteRepository>> {
+        let request = ApiRequest::get("/installation/repositories")
+            .query("per_page", limit.clamp(1, 100).to_string());
+        self.repositories(request, |body| {
+            body.get("repositories").and_then(Value::as_array)
+        })
+        .await
     }
 
     async fn repositories(

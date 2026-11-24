@@ -329,9 +329,15 @@ enum Command {
         #[arg(
             long,
             value_name = "PATH",
-            help = "Read the token from this file; '-' reads standard input"
+            help = "Read the token, or the private key of a GitHub App, from this file; '-' reads standard input"
         )]
         token_file: Option<PathBuf>,
+        #[arg(
+            long,
+            requires = "owner",
+            help = "The ID of a GitHub App; the token file then has the private key of the app"
+        )]
+        app_id: Option<u64>,
     },
     CheckCredential {
         name: String,
@@ -574,6 +580,18 @@ fn read_token(path: &Path) -> anyhow::Result<Secret> {
         bail!("the token is empty");
     }
     Ok(Secret::new(token))
+}
+
+fn read_secret(path: &Path, key: bool) -> anyhow::Result<Secret> {
+    if !key {
+        return read_token(path);
+    }
+    let text = read_text(path, "the private key")?;
+    let key = text.trim();
+    if !key.starts_with("-----BEGIN") {
+        bail!("the private key of a GitHub App is a PEM file");
+    }
+    Ok(Secret::new(format!("{key}\n")))
 }
 
 fn read_text(path: &Path, what: &str) -> anyhow::Result<String> {
@@ -1073,6 +1091,12 @@ fn print_provider(provider: &GitProvider) {
 
 fn print_credential(credential: &GitCredential) {
     let mut marks = Vec::new();
+    if let Some(app) = credential.app_id {
+        marks.push(match credential.installation_id {
+            Some(installation) => format!("GitHub App {app}, installation {installation}"),
+            None => format!("GitHub App {app}"),
+        });
+    }
     if let Some(login) = &credential.login {
         marks.push(format!("login {login}"));
     }
@@ -1847,8 +1871,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             owner,
             repository,
             token_file,
+            app_id,
         } => {
-            let token = token_file.as_deref().map(read_token).transpose()?;
+            let token = token_file
+                .as_deref()
+                .map(|path| read_secret(path, app_id.is_some()))
+                .transpose()?;
             let credential = client
                 .set_git_credential(GitCredentialInput {
                     name,
@@ -1856,6 +1884,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     owner,
                     repository,
                     token,
+                    app_id,
                 })
                 .await?;
             if json {
