@@ -16,8 +16,25 @@ pub fn state_label(codespace: &Codespace) -> String {
             Some(error) => format!("failed: {error}"),
             None => "failed".to_owned(),
         },
+        CodespaceState::Ready if codespace.step.is_some() => {
+            format!("ready: {}", codespace.step.as_deref().unwrap_or_default())
+        }
+        CodespaceState::Ready | CodespaceState::Stopped if codespace.error.is_some() => {
+            format!(
+                "{}: {}",
+                codespace.state,
+                codespace.error.as_deref().unwrap_or_default()
+            )
+        }
         state => state.to_string(),
     }
+}
+
+pub fn can_stop(codespace: &Codespace) -> bool {
+    matches!(
+        codespace.state,
+        CodespaceState::Ready | CodespaceState::Failed
+    ) && codespace.step.is_none()
 }
 
 pub fn is_starting(state: CodespaceState) -> bool {
@@ -181,6 +198,12 @@ mod tests {
             first_message: false,
             created_at,
             updated_at: created_at,
+            active: None,
+            active_at: None,
+            metrics: None,
+            stopped_at: None,
+            stop_at: None,
+            delete_at: None,
         }
     }
 
@@ -241,6 +264,15 @@ mod tests {
         c.state = CodespaceState::Failed;
         c.error = Some("no disk".into());
         assert_eq!(state_label(&c), "failed: no disk");
+        c.state = CodespaceState::Ready;
+        c.step = Some("stopping".into());
+        assert_eq!(state_label(&c), "ready: stopping");
+        assert!(!can_stop(&c));
+        c.step = None;
+        assert!(can_stop(&c));
+        c.state = CodespaceState::Stopped;
+        assert_eq!(state_label(&c), "stopped: no disk");
+        assert!(!can_stop(&c));
         assert!(is_starting(CodespaceState::Provisioning));
         assert!(!is_starting(CodespaceState::Ready));
         c.state = CodespaceState::Closed;
