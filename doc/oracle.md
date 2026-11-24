@@ -31,7 +31,7 @@ cargo build --release --bin loom-oracle --bin loom-oracle-cli
 4. Run `loom-oracle pair` on the same machine. It shows a one-time `loom://` link and a QR code for the first device.
 5. On the device, run `loom-oracle-cli pair <link>`. `loom-oracle pair` stops when the device is paired.
 
-After this, the first device makes the links for the other devices with `loom-oracle-cli pair-device`.
+After this, the first device makes the links for the other devices: on the **Devices** page of the oracle settings in the desktop client, or with `loom-oracle-cli pair-device`. You can do all other configuration in the desktop client too. See [Oracle settings](desktop.md#oracle-settings).
 
 `loom-oracle config check` validates `oracle.yaml`. `loom-oracle config schema` shows its JSON Schema. `--config` or `LOOM_ORACLE_CONFIG` selects a different file.
 

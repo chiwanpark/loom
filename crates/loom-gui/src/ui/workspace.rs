@@ -49,6 +49,7 @@ use crate::ui::picker::{PickerItem, open_picker};
 use crate::ui::ports_view::PortsView;
 use crate::ui::prompt_view::SystemPromptView;
 use crate::ui::session::SessionView;
+use crate::ui::settings::SettingsView;
 use crate::ui::tab::Tab;
 use crate::ui::tabs::{PanelId, TabList};
 use crate::ui::tasks_view::TasksView;
@@ -63,6 +64,7 @@ actions!(
         NewSession,
         NewTerminal,
         NewCodespace,
+        OracleSettings,
         CloseTab,
         /// Closes the active session's tabs; the session stays on the agent.
         CloseSession,
@@ -395,6 +397,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
     vec![
         ("workspace: new session", Box::new(NewSession)),
         ("codespace: new codespace", Box::new(NewCodespace)),
+        ("oracle: settings", Box::new(OracleSettings)),
         ("workspace: new terminal", Box::new(NewTerminal)),
         ("workspace: close tab", Box::new(CloseTab)),
         ("workspace: next tab", Box::new(NextTab)),
@@ -640,6 +643,8 @@ pub struct Workspace {
     /// Each agent's ports, by its connection's entity, once the Ports tab
     /// has shown them.
     ports: HashMap<EntityId, Entity<PortsView>>,
+    settings: HashMap<String, Entity<SettingsView>>,
+    shown_settings: Option<Entity<SettingsView>>,
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_right: bool,
@@ -717,6 +722,8 @@ impl Workspace {
             restoring: HashMap::new(),
             notes: HashMap::new(),
             ports: HashMap::new(),
+            settings: HashMap::new(),
+            shown_settings: None,
         };
         cx.on_app_quit(|this, cx| {
             this.save_layout(cx);
@@ -1833,6 +1840,7 @@ impl Workspace {
             return;
         };
         self.active_group = Some(ix);
+        self.shown_settings = None;
         self.active_connection = Some(group.connection.clone());
         self.focus_active_panel(window, cx);
         self.see_active_session(window, cx);
@@ -3052,6 +3060,11 @@ impl Workspace {
             let host = self.hosts.remove(ix);
             self.config.appearance.host_colors.remove(host.entry.name());
             self.env.codespaces.set(host.entry.name(), Vec::new());
+            if let Some(view) = self.settings.remove(host.entry.name())
+                && self.shown_settings.as_ref() == Some(&view)
+            {
+                self.shown_settings = None;
+            }
             self.save_config(window, cx);
             cx.notify();
         }
@@ -4980,6 +4993,9 @@ impl Workspace {
 
     fn render_center(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
+        if let Some(settings) = self.shown_settings.clone() {
+            return self.render_settings(settings, cx);
+        }
         let Some(group) = self.active_group() else {
             return v_flex()
                 .size_full()
@@ -5437,6 +5453,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_select_theme))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_new_codespace))
+            .on_action(cx.listener(Self::on_oracle_settings))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_close_session))
@@ -5946,6 +5963,18 @@ mod tests {
         cx.dispatch_action(NewCodespace);
         cx.run_until_parked();
         assert!(has_dialog(cx));
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+
+        cx.dispatch_action(OracleSettings);
+        cx.run_until_parked();
+        assert!(ws.read_with(cx, |ws, _| ws.shown_settings.is_some()));
+        assert!(cx.debug_bounds("settings-page-workspaces").is_some());
+        click("settings-page-workspaces", cx);
+        assert!(cx.debug_bounds("settings-workspace-0").is_some());
+        ws.update_in(cx, |ws, window, cx| ws.close_settings(window, cx));
+        assert!(ws.read_with(cx, |ws, _| ws.shown_settings.is_none()));
+        assert!(ws.read_with(cx, |ws, _| ws.settings.len() == 1));
     }
 
     #[test]

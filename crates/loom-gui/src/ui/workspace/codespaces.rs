@@ -22,6 +22,7 @@ use crate::oracle::{OracleEvent, OracleLink, OracleStatus};
 use crate::ui::close_codespace;
 use crate::ui::new_codespace::{self, NewCodespaceForm, NewCodespaceRequest};
 use crate::ui::picker::{PickerItem, open_picker};
+use crate::ui::settings::{Page, SettingsView};
 
 type WorkspaceRow = (String, String, Vec<(Codespace, usize)>);
 
@@ -157,6 +158,7 @@ impl Workspace {
                     codespace.error.as_deref().unwrap_or("no reason")
                 ),
             ),
+            OracleEvent::LoginFinished { .. } => {}
         }
     }
 
@@ -219,6 +221,119 @@ impl Workspace {
         self.workspace_picker(window, cx);
     }
 
+    pub(super) fn on_oracle_settings(
+        &mut self,
+        _: &super::OracleSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let oracles: Vec<usize> = self
+            .hosts
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.oracle.is_some())
+            .map(|(ix, _)| ix)
+            .collect();
+        match oracles.as_slice() {
+            [] => notify::info(
+                window,
+                cx,
+                "Add an oracle first. Click + under Remotes and paste the pairing link of the oracle.",
+            ),
+            [ix] => self.open_settings(*ix, None, window, cx),
+            _ => {
+                let this = cx.entity().downgrade();
+                let items = oracles
+                    .into_iter()
+                    .map(|ix| {
+                        let this = this.clone();
+                        PickerItem::new(
+                            self.hosts[ix].entry.name().to_owned(),
+                            move |window, cx| {
+                                let _ = this
+                                    .update(cx, |ws, cx| ws.open_settings(ix, None, window, cx));
+                            },
+                        )
+                    })
+                    .collect();
+                open_picker("Oracle settings", "Choose an oracle", items, window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn open_settings(
+        &mut self,
+        hix: usize,
+        page: Option<Page>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.hosts.get(hix) else {
+            return;
+        };
+        let Some(link) = host.oracle.clone() else {
+            return;
+        };
+        let name = host.entry.name().to_owned();
+        let dirs = self.env.dirs.clone();
+        let view = self
+            .settings
+            .entry(name)
+            .or_insert_with(|| cx.new(|cx| SettingsView::new(link, dirs, window, cx)))
+            .clone();
+        if let Some(page) = page {
+            view.update(cx, |view, cx| view.show(page, window, cx));
+        }
+        gpui::Focusable::focus_handle(view.read(cx), cx).focus(window, cx);
+        self.shown_settings = Some(view);
+        cx.notify();
+    }
+
+    pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shown_settings = None;
+        self.focus_active_panel(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn render_settings(
+        &mut self,
+        settings: Entity<SettingsView>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let name = settings.read(cx).oracle_name(cx);
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(Icon::new(IconName::Settings).small())
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .child(format!("Settings of the oracle {name}")),
+                    )
+                    .child(
+                        Button::new("close-settings")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip("Close the settings")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
+                            ),
+                    ),
+            )
+            .child(div().flex_1().min_h_0().w_full().child(settings))
+            .into_any_element()
+    }
+
     pub(super) fn workspace_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let links: Vec<Entity<OracleLink>> =
             self.hosts.iter().filter_map(|h| h.oracle.clone()).collect();
@@ -254,7 +369,7 @@ impl Workspace {
             notify::info(
                 window,
                 cx,
-                "The oracles have no workspaces. Add one with loom-oracle-cli workspace add.",
+                "The oracles have no workspaces. Add one in the Workspaces page of the oracle settings.",
             );
             return;
         }
@@ -690,6 +805,16 @@ impl Workspace {
                                     })),
                             )
                             .child(self.render_host_color_menu(hix, cx))
+                            .child(
+                                Button::new(("oracle-settings", hix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Settings)
+                                    .tooltip("Settings of this oracle")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_settings(hix, None, window, cx)
+                                    })),
+                            )
                             .child(
                                 Button::new(("remove-oracle", hix))
                                     .ghost()
