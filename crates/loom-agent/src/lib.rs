@@ -1,6 +1,7 @@
 pub mod codespace_agent;
 pub mod codespace_git;
 pub mod codespace_repos;
+pub mod codespace_setup;
 pub mod logging;
 pub mod managed;
 pub mod push;
