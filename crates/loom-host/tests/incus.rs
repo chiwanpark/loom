@@ -392,6 +392,17 @@ async fn custom_volumes_are_created_once_and_survive_instance_deletion() {
         )
         .contains("does not belong")
     );
+    let usage = driver
+        .volume_usage(ORACLE, &["cache".into(), "missing".into()])
+        .await;
+    assert_eq!(usage[0].used_bytes, Some(4096));
+    assert!(usage[0].error.is_none());
+    assert!(usage[1].error.is_some());
+    assert!(
+        driver.volume_usage("other", &["cache".into()]).await[0]
+            .error
+            .is_some()
+    );
     let mut wrong_owner = request("c3", Environment::default());
     wrong_owner.volumes = vec![first.volumes[0].clone()];
     assert!(

@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use loom_client::oracle_proto::{
-    CONNECTION_RELAY, CreateInstance, ErrorCode, HostCall, HostReport, Instances, OracleError,
+    CONNECTION_RELAY, CreateInstance, ErrorCode, HostCall, HostCheck, HostCheckStatus, HostChecks,
+    HostReport, Instances, OracleError, VolumeUsages,
 };
 use loom_client::{
     AccessToken, ClientIdentity, OracleCalls, OracleClient, OracleEndpoint, pair_oracle,
@@ -18,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::AgentSource;
-use crate::driver::{Driver, Progress};
+use crate::driver::{CheckStatus, Driver, Progress};
 
 pub const ORACLE_FILE: &str = "oracle.json";
 pub const IDENTITY_FILE: &str = "identity.json";
@@ -138,6 +139,28 @@ fn internal(err: anyhow::Error) -> OracleError {
     OracleError::new(ErrorCode::Internal, format!("{err:#}"))
 }
 
+fn to_value(value: impl Serialize) -> Result<Value, OracleError> {
+    serde_json::to_value(value)
+        .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
+}
+
+async fn checks(driver: &dyn Driver, docker: bool) -> Vec<HostCheck> {
+    driver
+        .check(docker)
+        .await
+        .into_iter()
+        .map(|item| HostCheck {
+            name: item.name,
+            status: match item.status {
+                CheckStatus::Ok => HostCheckStatus::Ok,
+                CheckStatus::Warning => HostCheckStatus::Warning,
+                CheckStatus::Failed => HostCheckStatus::Failed,
+            },
+            detail: item.detail,
+        })
+        .collect()
+}
+
 impl Host {
     async fn report(&self) -> anyhow::Result<HostReport> {
         let report = self.driver.report().await?;
@@ -151,6 +174,7 @@ impl Host {
             incus_version: report.incus_version,
             max_codespaces: self.config.rules.max_codespaces,
             connection_types: vec![CONNECTION_RELAY.to_owned()],
+            checks: checks(self.driver.as_ref(), false).await,
         })
     }
 
@@ -244,8 +268,7 @@ impl Host {
                     .list(&self.oracle.host_id)
                     .await
                     .map_err(internal)?;
-                serde_json::to_value(Instances { instances })
-                    .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
+                to_value(Instances { instances })
             }
             HostCall::CheckWorkspace(check) => {
                 let mut result = crate::providers::check(&self.http, &check).await;
@@ -255,8 +278,7 @@ impl Host {
                     self.driver.local(),
                     &check.directories,
                 );
-                serde_json::to_value(result)
-                    .map_err(|err| OracleError::new(ErrorCode::Internal, err.to_string()))
+                to_value(result)
             }
             HostCall::ProviderRequest(request) => {
                 crate::providers::request(&self.http, &request).await
@@ -277,6 +299,18 @@ impl Host {
                 tracing::info!(%volume, "deleted a volume");
                 Ok(Value::Object(Default::default()))
             }
+            HostCall::Check { docker } => {
+                tracing::info!(docker, "checking the host for the oracle");
+                to_value(HostChecks {
+                    checks: checks(self.driver.as_ref(), docker).await,
+                })
+            }
+            HostCall::VolumeUsage { volumes } => to_value(VolumeUsages {
+                volumes: self
+                    .driver
+                    .volume_usage(&self.oracle.host_id, &volumes)
+                    .await,
+            }),
             HostCall::Unknown => Err(OracleError::new(
                 ErrorCode::UnknownCommand,
                 "this host does not know the call; update loom-host",

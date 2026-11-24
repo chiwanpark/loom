@@ -16,8 +16,8 @@ use loom_oracle_proto::{
     PairingLink, Pairings, Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost,
     RelayHostResult, RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo,
     SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume,
-    VolumeInput, VolumeResult, Volumes, Warnings, Workspace, WorkspaceNotes, WorkspaceResult,
-    WorkspaceVolume, Workspaces, encode, parse_server_message,
+    VolumeInput, VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings, Workspace,
+    WorkspaceNotes, WorkspaceResult, WorkspaceVolume, Workspaces, encode, parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -471,6 +471,31 @@ impl OracleClient {
             .call::<HostResult>(Command::SetHostEnvironment { name, environment })
             .await?
             .host)
+    }
+
+    pub async fn set_host_ssh(&self, name: &str, destination: Option<&str>) -> Result<Host> {
+        let name = name.to_owned();
+        let destination = destination.map(str::to_owned);
+        Ok(self
+            .call::<HostResult>(Command::SetHostSsh { name, destination })
+            .await?
+            .host)
+    }
+
+    pub async fn check_host(&self, name: &str, docker: bool) -> Result<Host> {
+        let name = name.to_owned();
+        Ok(self
+            .call::<HostResult>(Command::CheckHost { name, docker })
+            .await?
+            .host)
+    }
+
+    pub async fn host_volumes(&self, name: &str) -> Result<Vec<VolumeUsage>> {
+        let name = name.to_owned();
+        Ok(self
+            .call::<VolumeUsages>(Command::HostVolumes { name })
+            .await?
+            .volumes)
     }
 
     pub async fn workspaces(&self) -> Result<Vec<Workspace>> {

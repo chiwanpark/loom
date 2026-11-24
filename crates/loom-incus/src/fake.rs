@@ -309,6 +309,23 @@ impl FakeState {
                     None => error(StatusCode::NOT_FOUND, "Storage volume not found"),
                 }
             }
+            (
+                Method::GET,
+                [
+                    "1.0",
+                    "storage-pools",
+                    _,
+                    "volumes",
+                    "custom",
+                    name,
+                    "state",
+                ],
+            ) => match self.volumes.get(*name) {
+                Some(volume) => sync(json!({
+                    "usage": {"used": volume["used"].as_u64().unwrap_or(4096), "total": 0}
+                })),
+                None => error(StatusCode::NOT_FOUND, "Storage volume not found"),
+            },
             (Method::POST, ["1.0", "storage-pools", _, "volumes", "custom"]) => {
                 let request = json_body();
                 let name = request["name"].as_str().unwrap_or_default().to_owned();

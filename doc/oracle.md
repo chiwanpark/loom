@@ -105,6 +105,9 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `pair-host [--ttl <duration>] [--no-qr]` | Makes a one-time link for `loom-host join`. |
 | `hosts` | Lists the hosts with their status and their report. |
 | `remove-host <name>` | Removes a host. The oracle refuses this while it has workspaces, open codespaces, or tracked volumes. |
+| `check-host <name> [--docker]` | Runs `loom-host check` on a connected host and shows the results. With `--docker`, the host also tests Docker in a test instance. |
+| `set-ssh <host> <destination>`, `set-ssh <host> --clear` | Sets or removes the SSH destination of a host, for example `dev@host.example.com`. |
+| `host-volumes <name>` | Shows the used space of each custom volume on a connected host. |
 | `set-environment <host> [--base-image <image>] [--setup-script <path>] [--env <name>=<value>]… [--ca-certificate <path>]… [--registry-mirror <url>]…` | Replaces the environment configuration of a host. The host builds a new image for the next codespace. |
 | `providers` | Lists the Git providers. |
 | `set-provider <name> --url <url> [--api-url <url>] [--git-name <name>] [--git-email <email>] [--route direct\|hosts]` | Adds or changes a Git provider. The default API URL is `https://api.github.com` for `https://github.com`, and `<url>/api/v3` for other servers. |
@@ -323,6 +326,9 @@ Commands of devices:
 | `list_hosts` | | `hosts` |
 | `remove_host` | `name` | |
 | `set_host_environment` | `name`, `environment` | `host` |
+| `set_host_ssh` | `name`, optional `destination` | `host` |
+| `check_host` | `name`, optional `docker` | `host` with `checks` and `checked_at` |
+| `host_volumes` | `name` | `volumes`, each with `name`, `used_bytes`, `total_bytes`, or `error` |
 | `list_git_providers` | | `providers` |
 | `set_git_provider` | `name`, `web_url`, optional `api_url`, `git_name`, `git_email`, `route` | `provider` |
 | `delete_git_provider` | `name` | |
@@ -368,7 +374,7 @@ Commands of hosts:
 
 | Command | Fields | Use |
 | --- | --- | --- |
-| `host_report` | `report`: version, driver, CPUs, memory, and optional storage driver, Incus version, architecture, and maximum number of codespaces | The host sends it after each connection. |
+| `host_report` | `report`: version, driver, CPUs, memory, and optional storage driver, Incus version, architecture, maximum number of codespaces, and `checks` | The host sends it after each connection. The checks are the results of `loom-host check` without the Docker test. |
 | `host_instances` | `instances`: codespace, instance, oracle, running | The oracle deletes the instances that have no open codespace. It marks a codespace `lost` when its instance is missing. |
 | `instance_progress` | `codespace`, `step` | A step of `create_instance`, for example the image build. |
 
@@ -379,6 +385,8 @@ Calls to hosts:
 - `check_workspace` sends `providers` and `directories`. The reply has a result for each item and `volumes: true` if the host supports volume calls.
 - `provider_request` sends one API call to a provider.
 - `delete_volume` sends `volume`, the name of the custom volume to remove.
+- `check` sends `docker`. The reply has `checks`, each with `name`, `status` (`ok`, `warning`, or `failed`), and `detail`.
+- `volume_usage` sends `volumes`, the names of custom volumes. The reply has the used space of each volume.
 
 Commands of codespace agents:
 

@@ -362,6 +362,14 @@ impl Session {
                 oracle.delete_volume(&name, me).await?;
                 ok(Empty {})
             }),
+            Command::CheckHost { name, docker } => Box::pin(async move {
+                ok(HostResult {
+                    host: oracle.run_host_check(&name, docker, me).await?,
+                })
+            }),
+            Command::HostVolumes { name } => {
+                Box::pin(async move { ok(oracle.host_volumes(&name).await?) })
+            }
             Command::StartModelLogin {
                 account,
                 provider,
@@ -519,6 +527,9 @@ impl Session {
             }
             Command::SetHostEnvironment { name, environment } => ok(HostResult {
                 host: oracle.set_host_environment(&name, &environment, me)?,
+            }),
+            Command::SetHostSsh { name, destination } => ok(HostResult {
+                host: oracle.set_host_ssh(&name, destination.as_deref(), me)?,
             }),
             Command::ListWorkspaces => ok(Workspaces {
                 workspaces: oracle.workspaces()?,
