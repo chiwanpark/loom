@@ -83,25 +83,27 @@ The members of `incus-admin` have full control of Incus. If you do not want this
 
 `--no-pin` uses the CA certificates of the system, and does not keep the server certificate. `incus.client_certificate`, `incus.client_key`, and `incus.server_certificate` select different files.
 
-### Run `loom-host` as an OCI image on IncusOS
+### Run `loom-host` in a container on IncusOS
 
-On IncusOS, `loom-host` can run in an application container from an OCI image. The image has `loom-host`, `loom-agent` of the same build, and the CA certificates of Alpine Linux. The recipe is `contrib/oci/Containerfile`.
+On IncusOS, `loom-host` can run in a system container from an Incus image. The image has Alpine Linux, and `loom-host` and `loom-agent` of the same build. The build script is `contrib/incus/build-image.py`.
 
-There is no published image yet. Each CI build has the artifact `oci-loom-host`: an OCI archive for `amd64` and `arm64`. Copy it to a registry that Incus can reach, for example with `skopeo copy --all oci-archive:loom-host-oci.tar docker://<registry>/loom-host:<tag>`.
+There is no published image yet, and you do not need a registry. Each CI build has the artifact `incus-loom-host`. It has a metadata tarball and a rootfs tarball for `amd64` and for `arm64`. Import the two files of the architecture of the host into the image store of each host.
 
-In the image, these paths are in `/var/lib/loom-host`:
+In the container, these paths are in `/var/lib/loom-host`:
 
 | Path | Contents |
 | --- | --- |
 | `config/loom/host.yaml` | The configuration. |
 | `data/loom/host/` | The data directory: the key, the address of the oracle, the Incus certificates, and the agent binaries. |
 
-Keep `/var/lib/loom-host` on a custom volume, so that it stays when you replace the instance with a newer image. These commands come from the Incus documentation and were not tested. Use a project other than the project of the codespaces:
+`/root/.config`, `/root/.local/share`, and `/root/.local/state` are links to `config`, `data`, and `state` in `/var/lib/loom-host`. Thus, `incus exec` and the service use the same files.
+
+Keep `/var/lib/loom-host` on a custom volume, so that it stays when you rebuild the container from a newer image. Use a project other than the project of the codespaces:
 
 ```sh
-incus remote add <registry> https://<registry> --protocol=oci
-incus create <registry>:loom-host:<tag> loom-host
+incus image import loom-host-amd64.metadata.tar.xz loom-host-amd64.rootfs.tar.xz --alias loom-host
 incus storage volume create <pool> loom-host-data
+incus create loom-host loom-host
 incus storage volume attach <pool> loom-host-data loom-host /var/lib/loom-host
 incus start loom-host
 incus exec loom-host -- loom-host config init
@@ -116,7 +118,22 @@ incus exec loom-host -- loom-host join '<link>' --name <name>
 incus exec loom-host -- loom-host check --docker
 ```
 
-The image starts `loom-host serve --wait`. It waits until the configuration is valid and the host has joined an oracle, and then it serves. Until then, it writes what is missing to the log of the instance and checks again every 5 seconds. For a Git provider with a company CA, put a file with all CA certificates on the volume, and set `environment.SSL_CERT_FILE` of the instance to its path.
+The container gets its IPv4 address with DHCP and starts `loom-host serve --wait`. It waits until the configuration is valid and the host has joined an oracle, and then it serves. Until then, it writes what is missing to the log and checks again every 5 seconds. `incus console loom-host --show-log` shows the log. If `loom-host` stops, the container starts it again after 5 seconds.
+
+For a Git provider with a company CA, put a file with all CA certificates on the volume, and set `environment.SSL_CERT_FILE` of the instance to its path.
+
+To update `loom-host`, import the new image and rebuild the container. The volume stays:
+
+```sh
+incus image import loom-host-amd64.metadata.tar.xz loom-host-amd64.rootfs.tar.xz --alias loom-host --reuse
+incus stop loom-host
+incus rebuild loom-host loom-host
+incus start loom-host
+```
+
+A different host can copy the image from a host that has it: `incus image copy <remote>:loom-host local: --alias loom-host`.
+
+The test on an IncusOS host used the Incus API, not the `incus` client: import, start, DHCP, HTTPS to github.com, `config init` with `incus exec`, a rebuild with the volume, and a stop of 3 seconds. `trust` and `join` in the container are not tested yet.
 
 ## `host.yaml`
 
