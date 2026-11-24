@@ -50,7 +50,7 @@ Loom-Next is a self-hosted system like GitHub Codespaces.
 | Each codespace is a VM with a Docker dev container in it. | Each codespace is an LXC system container on your Incus host. |
 | The repository is cloned into `/workspaces`. The first clone is shallow. | The same directory. A shallow clone is an option. |
 | A codespace is for one repository. You give access to other repositories in `devcontainer.json` and clone them by hand. | A workspace can have more than one repository. The codespace clones all of them. |
-| `devcontainer.json`, features, and lifecycle commands define the environment. | A base image and a setup script define it. A subset of `devcontainer.json` is a later option. |
+| `devcontainer.json`, features, and lifecycle commands define the environment. | A base image and a setup script define it. Loom does not read `devcontainer.json` (section 12). |
 | Prebuilds keep the result of the setup, so a new codespace starts fast. | Each codespace starts from a fresh instance. There are no prebuilds (section 12). |
 | `GITHUB_TOKEN` is limited to the repository. A Git credential helper uses it. | The oracle gives a token through a Git credential helper. |
 | Secrets have a scope: user, repository, or organization. They become environment variables. | A preset names the secrets that its codespaces get, and the environment variable of each secret. |
@@ -598,17 +598,14 @@ Test on the first host (2026-11-24), with the restricted certificate and Incus 7
 - Docker in a container with the options pulled an image and reached the internet.
 - The request to make an ACL failed: "User does not have permission for project default". The ACLs themselves are not tested.
 
-### 7.17 Repository setup and `devcontainer.json` (phase 7)
+### 7.17 Repository setup (phase 7)
 
-The agent runs the setup of each repository after the clones, in the sequence of the workspace. It runs as the agent user in the clone. The host setup script runs before, as root, in the image.
+The agent runs the setup script `.loom/setup.sh` of each repository after the clones, in the sequence of the workspace. It runs the script with `bash`, as the agent user in the clone. The host setup script runs before, as root, in the image.
 
-- `.loom/setup.sh` comes first. If a repository has it, the agent does not read `devcontainer.json`.
-- Else the agent reads `.devcontainer/devcontainer.json` or `.devcontainer.json`, with comments and trailing commas.
-- The subset: `containerEnv` and `remoteEnv`, `onCreateCommand`, `updateContentCommand`, `postCreateCommand`, and `postStartCommand`, with the common variables such as `${containerWorkspaceFolder}`.
-- The image, Dockerfiles, features, mounts, and ports of `devcontainer.json` are not in the subset. The host sets the environment, as before. Full support stays out of the plan (section 12).
-- The variables of `devcontainer.json` go to the setup commands, the shell commands, and the terminals. They are not secrets, so the redaction does not hide them. The variables of the preset have priority.
-- The one-time commands run one time for each clone. `postStartCommand` runs at each start of the agent.
-- A failed command does not make the codespace fail. GitHub Codespaces also continues in this case. The progress shows the failure, and a log file in the codespace has the output.
+- The script gets the environment of the agent and the secrets of the preset.
+- The script runs one time for each clone. A state file in the data directory of the agent records this, so a restart does not run it again.
+- A failed script does not make the codespace fail. GitHub Codespaces also continues in this case. The progress shows the failure, and a log file in the codespace has the output.
+- The agent does not read `devcontainer.json`. See section 12.
 
 ### 7.18 Git proxy (phase 7)
 
@@ -656,7 +653,7 @@ Each phase ends with a state that you can use and test. Each phase has its own b
 | 5a. Clients: daily work | L | Desktop and Android: host kind `oracle`, pairing, **Workspaces**, **New codespace** with a workspace, a preset, and the first message, progress view, lists from the oracle, **Changes** for more than one repository, codespace menu, notifications. A first version can start after phase 2. | You do all daily work from the desktop client and the Android app. |
 | 5b. Desktop client: configuration | L | The configuration pages of section 14. | You do all configuration in the desktop client. |
 | 6. Lifecycle and SSH | M | Stop and resume, idle timeout, retention, limits for each host, metrics, audit. The SSH connection type and its selection. | Codespaces clean up themselves. The desktop client uses SSH where it can. |
-| 7. Hardening | L | Network rules for containers. A Git proxy that keeps tokens out of containers. GitHub App method. OCI image of `loom-host`. VM instances. `devcontainer.json` subset. Session archive. | Codespaces cannot reach each other, and provider tokens stay out of containers. |
+| 7. Hardening | L | Network rules for containers. A Git proxy that keeps tokens out of containers. GitHub App method. OCI image of `loom-host`. VM instances. Repository setup scripts. Session archive. | Codespaces cannot reach each other, and provider tokens stay out of containers. |
 | 8. Removal of the classic modes | M | Remove local hosts, SSH hosts, relay hosts for directories, worktree sessions, and the pairing with agents. Remove the code that only they use. Clean up the agent protocol with one version bump. | Loom has one mode. |
 
 ### Phase 0: results on the first host
@@ -830,7 +827,7 @@ Not tested yet:
 
 - A web client.
 - Configuration functions in the Android app.
-- Full support of `devcontainer.json` with Docker features.
+- `devcontainer.json`, also a subset of it. The base image, the host setup script, and `.loom/setup.sh` define the environment.
 - Public URLs for forwarded ports.
 - More than one user with separate permissions.
 - A move of old sessions from classic agents into Loom-Next.
