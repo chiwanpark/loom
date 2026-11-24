@@ -7,11 +7,11 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use loom_client::oracle_proto::{
-    Codespace, CodespaceState, Device, DockerSettings, Environment, Event, FirstMessage,
-    GitCredential, GitCredentialInput, GitProvider, GitProviderInput, Host, ModelAccount,
-    ModelLoginInput, ModelLoginMethod, ModelLoginPrompt, Pairing, PairingLink, Preset, PresetFile,
-    ProviderRoute, RelayHost, Repository, Secret, SecretInfo, Volume, VolumeInput, VolumeKind,
-    Workspace, WorkspaceVolume,
+    AuditEntry, Codespace, CodespaceConnection, CodespaceState, Device, DockerSettings,
+    Environment, Event, FirstMessage, GitCredential, GitCredentialInput, GitProvider,
+    GitProviderInput, Host, HostLimits, ModelAccount, ModelLoginInput, ModelLoginMethod,
+    ModelLoginPrompt, Pairing, PairingLink, Preset, PresetFile, ProviderRoute, RelayHost,
+    Repository, Secret, SecretInfo, Volume, VolumeInput, VolumeKind, Workspace, WorkspaceVolume,
 };
 use loom_client::{
     AccessToken, Client, ClientIdentity, CloseGuardError, NewCodespace, OracleClient,
@@ -113,6 +113,33 @@ enum Command {
             help = "Remove the SSH destination"
         )]
         clear: bool,
+    },
+    SetLimits {
+        host: String,
+        #[arg(
+            long,
+            value_parser = parse_limit_count,
+            help = "The maximum number of open codespaces; 'none' removes it"
+        )]
+        max_codespaces: Option<Limit<u32>>,
+        #[arg(
+            long,
+            value_parser = parse_limit_count,
+            help = "The maximum number of running codespaces; 'none' removes it"
+        )]
+        max_running: Option<Limit<u32>>,
+        #[arg(
+            long,
+            value_parser = parse_limit_duration,
+            help = "Stop a codespace after this idle time, such as 30m; 'never' turns it off; 'default' uses the oracle default"
+        )]
+        idle_stop: Option<Limit<u64>>,
+        #[arg(
+            long,
+            value_parser = parse_limit_duration,
+            help = "Delete a codespace after it is stopped for this time, such as 30days; 'never' turns it off; 'default' uses the oracle default"
+        )]
+        retention: Option<Limit<u64>>,
     },
     HostVolumes {
         name: String,
@@ -226,6 +253,31 @@ enum Command {
         message: Option<String>,
         #[arg(long, help = "Close the codespace when its agent cannot tell its work")]
         force: bool,
+    },
+    StopCodespace {
+        id: String,
+        #[arg(long)]
+        no_wait: bool,
+    },
+    ResumeCodespace {
+        id: String,
+        #[arg(long)]
+        no_wait: bool,
+    },
+    Connections {
+        id: String,
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            help = "relay or ssh; all when not given"
+        )]
+        types: Vec<String>,
+    },
+    Audit {
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long, help = "Show the entries before the entry with this ID")]
+        before: Option<u64>,
     },
     Repositories {
         id: String,
@@ -421,6 +473,37 @@ fn parse_duration(text: &str) -> Result<Duration, String> {
     text.parse::<HumanDuration>()
         .map(|d| d.as_duration())
         .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Limit<T> {
+    Clear,
+    Set(T),
+}
+
+impl<T> Limit<T> {
+    fn apply(change: Option<Self>, current: Option<T>) -> Option<T> {
+        match change {
+            None => current,
+            Some(Self::Clear) => None,
+            Some(Self::Set(value)) => Some(value),
+        }
+    }
+}
+
+fn parse_limit_count(text: &str) -> Result<Limit<u32>, String> {
+    match text {
+        "none" => Ok(Limit::Clear),
+        _ => text.parse().map(Limit::Set).map_err(|e| format!("{e}")),
+    }
+}
+
+fn parse_limit_duration(text: &str) -> Result<Limit<u64>, String> {
+    match text {
+        "default" => Ok(Limit::Clear),
+        "never" => Ok(Limit::Set(0)),
+        _ => parse_duration(text).map(|d| Limit::Set(d.as_secs())),
+    }
 }
 
 fn parse_memory(text: &str) -> Result<u64, String> {
@@ -806,6 +889,30 @@ fn print_host(host: &Host) {
         }
     }
     marks.push(format!("{} codespaces", host.codespaces));
+    marks.push(format!("{} running", host.running));
+    let limits = &host.limits;
+    if let Some(max) = limits.max_codespaces {
+        marks.push(format!("max {max} codespaces"));
+    }
+    if let Some(max) = limits.max_running {
+        marks.push(format!("max {max} running"));
+    }
+    match limits.idle_stop_secs {
+        Some(0) => marks.push("no idle stop".to_owned()),
+        Some(secs) => marks.push(format!(
+            "idle stop {}",
+            HumanDuration(Duration::from_secs(secs))
+        )),
+        None => {}
+    }
+    match limits.retention_secs {
+        Some(0) => marks.push("no retention limit".to_owned()),
+        Some(secs) => marks.push(format!(
+            "retention {}",
+            HumanDuration(Duration::from_secs(secs))
+        )),
+        None => {}
+    }
     for reach in &host.reach {
         marks.push(match &reach.error {
             None => format!("reaches {}", reach.name),
@@ -876,6 +983,14 @@ fn print_volume(volume: &Volume) {
     println!("{}\t{}", volume.name, marks.join(", "));
 }
 
+fn until(unix: u64) -> String {
+    let left = unix.saturating_sub(now_unix());
+    if left == 0 {
+        return "now".to_owned();
+    }
+    format!("in {}", HumanDuration(Duration::from_secs(left)))
+}
+
 fn print_codespace(codespace: &Codespace) {
     let mut detail = format!(
         "{}, {} CPUs, {}",
@@ -892,9 +1007,48 @@ fn print_codespace(codespace: &Codespace) {
     if let Some(preset) = &codespace.preset {
         detail.push_str(&format!(", preset {preset}"));
     }
+    if codespace.active == Some(true) {
+        detail.push_str(", active");
+    }
+    if let Some(at) = codespace.stop_at {
+        detail.push_str(&format!(", idle stop {}", until(at)));
+    }
+    if let Some(at) = codespace.delete_at {
+        detail.push_str(&format!(", deletion {}", until(at)));
+    }
     println!(
         "{}\t{}\t{}\t{}\t{}",
         codespace.id, codespace.workspace, codespace.host, codespace.branch, detail
+    );
+}
+
+fn print_connection(connection: &CodespaceConnection) {
+    match connection {
+        CodespaceConnection::Ssh {
+            destination,
+            command,
+        } => println!("ssh\t{destination}\t{}", command.join(" ")),
+        CodespaceConnection::Relay { address } => println!(
+            "relay\t{}\t{}",
+            address.host_id,
+            address.instance.as_deref().unwrap_or("-")
+        ),
+        CodespaceConnection::Unknown => println!("unknown"),
+    }
+}
+
+fn print_audit(entry: &AuditEntry) {
+    let by = match (&entry.peer_label, entry.peer) {
+        (Some(label), _) => label.clone(),
+        (None, Some(peer)) => format!("peer {peer}"),
+        (None, None) => "oracle".to_owned(),
+    };
+    println!(
+        "{}\t{}\t{by}\t{}\t{}",
+        entry.id,
+        time(entry.at),
+        entry.action,
+        entry.detail
     );
 }
 
@@ -1124,9 +1278,18 @@ async fn wait_codespace(
                 if done(codespace.state) {
                     return Ok(codespace.clone());
                 }
+                if codespace.state == CodespaceState::Ready
+                    && codespace.step.is_none()
+                    && let Some(error) = &codespace.error
+                {
+                    bail!("the codespace {id} is ready: {error}");
+                }
                 if matches!(
                     codespace.state,
-                    CodespaceState::Failed | CodespaceState::Lost | CodespaceState::Closed
+                    CodespaceState::Failed
+                        | CodespaceState::Lost
+                        | CodespaceState::Closed
+                        | CodespaceState::Stopped
                 ) {
                     bail!(
                         "the codespace {id} is {}: {}",
@@ -1315,6 +1478,36 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 Some(ssh) => println!("the host {} has the SSH destination {ssh}", host.name),
                 None => println!("the host {} has no SSH destination", host.name),
             }
+        }
+        Command::SetLimits {
+            host,
+            max_codespaces,
+            max_running,
+            idle_stop,
+            retention,
+        } => {
+            let current = client
+                .hosts()
+                .await?
+                .into_iter()
+                .find(|h| h.name == host)
+                .with_context(|| format!("no host has the name {host}"))?
+                .limits;
+            let host = client
+                .set_host_limits(
+                    &host,
+                    HostLimits {
+                        max_codespaces: Limit::apply(max_codespaces, current.max_codespaces),
+                        max_running: Limit::apply(max_running, current.max_running),
+                        idle_stop_secs: Limit::apply(idle_stop, current.idle_stop_secs),
+                        retention_secs: Limit::apply(retention, current.retention_secs),
+                    },
+                )
+                .await?;
+            if json {
+                return print_json(&host);
+            }
+            print_host(&host);
         }
         Command::HostVolumes { name } => {
             let volumes = client.host_volumes(&name).await?;
@@ -1557,6 +1750,53 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 return print_json(&codespace);
             }
             print_codespace(&codespace);
+        }
+        Command::StopCodespace { id, no_wait } => {
+            if !no_wait {
+                client.subscribe().await?;
+            }
+            let mut codespace = client.stop_codespace(&id).await?;
+            if !no_wait {
+                codespace = wait_codespace(&client, &mut events, &id, json, |state| {
+                    state == CodespaceState::Stopped
+                })
+                .await?;
+            }
+            if json {
+                return print_json(&codespace);
+            }
+            print_codespace(&codespace);
+        }
+        Command::ResumeCodespace { id, no_wait } => {
+            if !no_wait {
+                client.subscribe().await?;
+            }
+            let mut codespace = client.resume_codespace(&id).await?;
+            if !no_wait {
+                codespace = wait_codespace(&client, &mut events, &id, json, |state| {
+                    state == CodespaceState::Ready
+                })
+                .await?;
+            }
+            if json {
+                return print_json(&codespace);
+            }
+            print_codespace(&codespace);
+        }
+        Command::Connections { id, types } => {
+            let types: Vec<&str> = types.iter().map(String::as_str).collect();
+            let connections = client.codespace_connections(&id, &types).await?;
+            if json {
+                return print_json(&connections);
+            }
+            connections.iter().for_each(print_connection);
+        }
+        Command::Audit { limit, before } => {
+            let audit = client.audit(limit, before).await?;
+            if json {
+                return print_json(&audit.entries);
+            }
+            audit.entries.iter().for_each(print_audit);
         }
         Command::Providers => {
             let providers = client.git_providers().await?;
