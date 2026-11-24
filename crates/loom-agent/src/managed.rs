@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, oneshot, watch};
 
 use crate::codespace_agent::{
-    OracleCredentials, PresetPaths, SECRETS_FILE, first_wait, report_notes, report_sessions,
-    start_first_message, write_preset,
+    OracleCredentials, PresetPaths, SECRETS_FILE, first_wait, report_activity, report_notes,
+    report_sessions, start_first_message, write_preset,
 };
 use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
 use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
@@ -438,6 +438,7 @@ impl Link {
                 self.clients.subscribe(),
                 self.notes.take(),
             )),
+            tokio::spawn(report_activity(agent.clone(), self.clients.subscribe())),
         ];
         let _reporters = AbortOnDrop(reporters.into_iter().collect());
         let mut first = true;

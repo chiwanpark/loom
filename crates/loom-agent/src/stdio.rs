@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use loom_config::{AgentConfig, Dirs};
@@ -9,9 +10,32 @@ use tokio::net::UnixStream;
 use crate::spawn::spawn_agent;
 use crate::workspace::{canonical_workspace, resolve_workspace};
 
+const MANAGED_WAIT: Duration = Duration::from_secs(30);
+const MANAGED_POLL: Duration = Duration::from_millis(250);
+
 pub enum StdioTarget {
     Workspace { path: PathBuf, spawn: bool },
     Instance(String),
+    Managed,
+}
+
+pub async fn find_managed(registry: &Registry, wait: Duration) -> anyhow::Result<AgentEntry> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if let Some(entry) = registry
+            .list()?
+            .into_iter()
+            .max_by_key(|entry| entry.started_at)
+        {
+            return Ok(entry);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!(
+                "the agent of this codespace is not running; check `systemctl status loom-agent`"
+            );
+        }
+        tokio::time::sleep(MANAGED_POLL).await;
+    }
 }
 
 pub async fn find_target(
@@ -22,6 +46,7 @@ pub async fn find_target(
 ) -> anyhow::Result<AgentEntry> {
     let registry = Registry::new(config.runtime_dir(dirs));
     match target {
+        StdioTarget::Managed => find_managed(&registry, MANAGED_WAIT).await,
         StdioTarget::Instance(id) => registry
             .find_instance(id)?
             .with_context(|| format!("no agent with instance {id} is running")),
@@ -73,4 +98,35 @@ pub async fn bridge(entry: &AgentEntry) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_managed_target_is_the_newest_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::new(dir.path());
+        let err = find_managed(&registry, Duration::ZERO).await.unwrap_err();
+        assert!(err.to_string().contains("not running"), "{err}");
+        let mut registrations = Vec::new();
+        for (instance, started_at) in [("a", 10), ("b", 20)] {
+            let workspace = dir.path().join(instance);
+            let mut registration = registry.claim(instance, &workspace).unwrap();
+            registration
+                .publish(AgentEntry {
+                    instance: instance.into(),
+                    pid: std::process::id(),
+                    workspace,
+                    socket: dir.path().join(format!("{instance}.sock")),
+                    started_at,
+                    version: "test".into(),
+                })
+                .unwrap();
+            registrations.push(registration);
+        }
+        let entry = find_managed(&registry, Duration::ZERO).await.unwrap();
+        assert_eq!(entry.instance, "b");
+    }
 }
