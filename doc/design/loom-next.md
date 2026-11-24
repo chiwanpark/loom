@@ -51,7 +51,7 @@ Loom-Next is a self-hosted system like GitHub Codespaces.
 | The repository is cloned into `/workspaces`. The first clone is shallow. | The same directory. A shallow clone is an option. |
 | A codespace is for one repository. You give access to other repositories in `devcontainer.json` and clone them by hand. | A workspace can have more than one repository. The codespace clones all of them. |
 | `devcontainer.json`, features, and lifecycle commands define the environment. | A base image and a setup script define it. A subset of `devcontainer.json` is a later option. |
-| Prebuilds keep the result of the setup, so a new codespace starts fast. | Workspace templates on hosts with ZFS. Prepared instances on hosts with `dir`. |
+| Prebuilds keep the result of the setup, so a new codespace starts fast. | Each codespace starts from a fresh instance. There are no prebuilds (section 12). |
 | `GITHUB_TOKEN` is limited to the repository. A Git credential helper uses it. | The oracle gives a token through a Git credential helper. |
 | Secrets have a scope: user, repository, or organization. They become environment variables. | A preset names the secrets that its codespaces get, and the environment variable of each secret. |
 | A dotfiles repository personalizes each codespace. | The preset does this. A dotfiles repository is a later option. |
@@ -64,7 +64,7 @@ Three ideas from GitHub Codespaces are the most important for this plan:
 
 1. The environment holds no long-lived credential, where the provider permits this. It gets tokens from a central service.
 2. Stop and delete are different operations. Stop keeps the disk. Delete has a guard against lost work.
-3. Prebuilds make the start fast. Without them, each start pays for the clone and the setup.
+3. Prebuilds make the start fast. Without them, each start pays for the clone and the setup. This plan accepts this cost and uses fresh instances.
 
 Coder is the nearest open-source design. It has a control plane with a relay, and an agent in each workspace that connects back with a token. Its Git credentials also come from the control plane, with one provider for each Git host.
 
@@ -278,7 +278,7 @@ Daemon settings, such as the listen address and TLS, stay in a YAML file (`oracl
 - A driver trait has two implementations. `IncusDriver` uses `loom-incus`. `ProcessDriver` starts a local `loom-agent` process, for tests and for development without Incus.
 - Each instance has `user.loom.*` keys that name the oracle and the codespace. `loom-host` reports its instances, and the oracle compares them with the `codespaces` table. Orphans are deleted, and lost codespaces get a mark.
 - A codespace gets the CPU limit and the memory limit that **New codespace** sets. See section 7.15.
-- A later option is an OCI image of `loom-host`. Then one `incus launch` command installs it on IncusOS.
+- Phase 7 adds an OCI image of `loom-host` for IncusOS. It has `loom-host`, `loom-agent` of the same build, and the CA certificates of Alpine Linux. Its configuration and data are in `/var/lib/loom-host`, which is a custom volume. It starts `loom-host serve --wait`, which waits until you run `trust` and `join` with `incus exec`. CI builds the image as an OCI archive. A registry for the image is an open decision. A test with `docker run` passed. Incus refused a test registry without TLS, so the launch in Incus is not tested.
 
 ### 7.3 Image, Docker, and the environment of a host
 
@@ -296,7 +296,7 @@ The storage driver of the Incus pool changes the behavior:
 | --- | --- | --- |
 | New instance from the image | A copy-on-write clone. Fast. | A full copy of the image. Slower. |
 | Docker storage | Overlay on ZFS needs OpenZFS 2.2 or later. Phase 0 confirmed it with OpenZFS 2.4. The fallback is a block-mode volume for `/var/lib/docker`. | Overlay works on ext4, and on XFS with `ftype=1`. Phase 0 confirmed the two. |
-| Fast start in phase 7 | Workspace templates. | A small number of prepared instances. |
+| Start of a new codespace | Fast. Each codespace gets a fresh instance. | 2 to 3 s slower for each 1 GB of image. Each codespace gets a fresh instance, so the image must stay small. |
 
 On IncusOS, you cannot load kernel modules by hand. Phase 0 showed that Docker works there. It also works on test hosts with the `dir` driver on ext4 and on XFS. See section 9.
 
@@ -337,7 +337,7 @@ A codespace can need more than one Git provider. Examples are a workspace with r
 - When the Git credentials of a preset change, the oracle tells the agents of its codespaces. They set the helper and `gh` again.
 - The search of repositories and the list of branches use all Git credentials of the oracle for a provider. They are not limited to one preset.
 
-A GitHub App is a later method. Its tokens are for one repository and expire in 1 hour. But an app reaches only the accounts and organizations where it is installed. This is also true for the user tokens of the app.
+Phase 7 adds the GitHub App method. A Git credential can be an app: the oracle keeps the private key, the ID of the app, and the owner of the installation. The credential helper gets installation tokens for one repository, which expire in 1 hour. The oracle keeps these tokens in memory and makes new ones 5 minutes before they expire. `gh` gets no token from an app, because the token expires. An app reaches only the accounts and organizations where it is installed. This is also true for the user tokens of the app. Thus, personal access tokens stay the method for your GitHub Enterprise Server.
 
 ### 7.6 Network reach
 
@@ -580,6 +580,48 @@ A host runs many temporary containers at the same time. Thus, each codespace has
 
 Phase 0 tested the two limits, and a root disk without a size, on the IncusOS host. See section 9.
 
+### 7.16 Network rules (phase 7)
+
+Phase 0 showed that a container reaches the Incus API port of its host and the other instances on the bridge. The network rules are local rules of `loom-host` in `host.yaml`. The oracle cannot change them.
+
+- `rules.network.isolate` is on by default. `loom-host` then sets `security.port_isolation`, `security.mac_filtering`, `security.ipv4_filtering`, and `security.ipv6_filtering` on the network interface of each container.
+- Port isolation stops the traffic between codespaces. The instance of `loom-host` on IncusOS stays reachable, because it does not have the option.
+- The filters stop a container that uses the MAC or IP address of a different instance. Thus, the Git proxy can identify a codespace by its address. See section 7.18.
+- Isolation does not stop the traffic to the host and to other networks. For this, `rules.network.acls` names Incus network ACLs. `loom-host` adds them to the network interface with the default actions of `host.yaml`. The default action is `allow`, so an ACL lists only the traffic to stop.
+- A restricted certificate cannot make ACLs, because a shared bridge has its ACLs in the `default` project. Thus, the administrator makes them with the `incus` CLI. `loom-host check` reports an ACL that does not exist.
+
+Test on the first host (2026-11-24), with the restricted certificate and Incus 7.6:
+
+- The project accepted the four options.
+- Two containers with port isolation could not reach each other. Each reached a container without the option, the host, and the Incus API port.
+- A container with the filters could not send from a second IPv4 address. A container without the filters could.
+- Docker in a container with the options pulled an image and reached the internet.
+- The request to make an ACL failed: "User does not have permission for project default". The ACLs themselves are not tested.
+
+### 7.17 Repository setup and `devcontainer.json` (phase 7)
+
+The agent runs the setup of each repository after the clones, in the sequence of the workspace. It runs as the agent user in the clone. The host setup script runs before, as root, in the image.
+
+- `.loom/setup.sh` comes first. If a repository has it, the agent does not read `devcontainer.json`.
+- Else the agent reads `.devcontainer/devcontainer.json` or `.devcontainer.json`, with comments and trailing commas.
+- The subset: `containerEnv` and `remoteEnv`, `onCreateCommand`, `updateContentCommand`, `postCreateCommand`, and `postStartCommand`, with the common variables such as `${containerWorkspaceFolder}`.
+- The image, Dockerfiles, features, mounts, and ports of `devcontainer.json` are not in the subset. The host sets the environment, as before. Full support stays out of the plan (section 12).
+- The variables of `devcontainer.json` go to the setup commands, the shell commands, and the terminals. They are not secrets, so the redaction does not hide them. The variables of the preset have priority.
+- The one-time commands run one time for each clone. `postStartCommand` runs at each start of the agent.
+- A failed command does not make the codespace fail. GitHub Codespaces also continues in this case. The progress shows the failure, and a log file in the codespace has the output.
+
+### 7.18 Git proxy (phase 7)
+
+The Git proxy keeps the tokens of the providers out of the codespaces. It is optional: `git_proxy` in `host.yaml` turns it on for a host.
+
+- `loom-host` listens for Git over HTTP on an address on the bridge. The host report has the URL of the proxy.
+- For a codespace on such a host, the Git setup has a proxy URL for each provider: `<proxy>/<provider>`. The agent writes `url.<proxy>/<provider>/.insteadOf <web URL>/`, and the credential helper for the proxy URL. `gh` gets no token.
+- The credential helper gets the codespace ID and a random proxy secret from the oracle. The oracle keeps the secrets in memory. After a restart of the oracle, the codespaces get new secrets. The oracle gives no provider token to a codespace on a host with a proxy.
+- The proxy accepts only `info/refs`, `git-upload-pack`, and `git-receive-pack` for `<provider>/<owner>/<repository>`. It checks that the address of the client is an address of the instance of the codespace. Then it asks the oracle with the new host command `git_proxy_access`. The oracle checks the secret, the host, and the state of the codespace. It gives the URL of the repository on the provider and the token of the preset, or no token. The proxy adds the token and streams the request and the answer. Thus, the proxy is not an open proxy: the oracle makes the upstream URL from the provider.
+- The agent opens pull requests through the new codespace command `codespace_api_request`. The oracle permits only `GET` and `POST` on `/repos/<owner>/<repository>/pulls` and `PATCH` on `/repos/<owner>/<repository>/pulls/<number>`, for the repository of the URL, and adds the token.
+- The proxy needs the address filters of section 7.16. The traffic on the bridge is HTTP.
+- Not in phase 7: Git LFS, Git over SSH, and the process driver.
+
 ## 8. Compatibility with the current Loom (requirement 7)
 
 - The development branch of Loom-Next is `loom-next`. It starts from `main`.
@@ -614,7 +656,7 @@ Each phase ends with a state that you can use and test. Each phase has its own b
 | 5a. Clients: daily work | L | Desktop and Android: host kind `oracle`, pairing, **Workspaces**, **New codespace** with a workspace, a preset, and the first message, progress view, lists from the oracle, **Changes** for more than one repository, codespace menu, notifications. A first version can start after phase 2. | You do all daily work from the desktop client and the Android app. |
 | 5b. Desktop client: configuration | L | The configuration pages of section 14. | You do all configuration in the desktop client. |
 | 6. Lifecycle and SSH | M | Stop and resume, idle timeout, retention, limits for each host, metrics, audit. The SSH connection type and its selection. | Codespaces clean up themselves. The desktop client uses SSH where it can. |
-| 7. Speed and hardening | L | Workspace templates on ZFS, prepared instances on `dir`. Network rules for containers. A Git proxy that keeps tokens out of containers. GitHub App method. OCI image of `loom-host`. VM instances. `devcontainer.json` subset. Session archive. | A warm codespace starts in seconds. |
+| 7. Hardening | L | Network rules for containers. A Git proxy that keeps tokens out of containers. GitHub App method. OCI image of `loom-host`. VM instances. `devcontainer.json` subset. Session archive. | Codespaces cannot reach each other, and provider tokens stay out of containers. |
 | 8. Removal of the classic modes | M | Remove local hosts, SSH hosts, relay hosts for directories, worktree sessions, and the pairing with agents. Remove the code that only they use. Clean up the agent protocol with one version bump. | Loom has one mode. |
 
 ### Phase 0: results on the first host
@@ -726,8 +768,8 @@ Results for NFS directories as volumes. The test used an NFS 4.2 export with roo
 
 Consequences for the design:
 
-- On ZFS, the start of a container is not the slow part. The clone and the setup script are. Thus, workspace templates help only for large repositories and long setup scripts.
-- On `dir`, each new container is a full copy of the image. The copy took 2 to 3 s for 1 GB, and it grows with the image. Thus, hosts with `dir` need a small image, and prepared instances help there.
+- On ZFS, the start of a container is not the slow part. The clone and the setup script are. Thus, workspace templates would help only for large repositories and long setup scripts. They are not in this plan.
+- On `dir`, each new container is a full copy of the image. The copy took 2 to 3 s for 1 GB, and it grows with the image. Thus, hosts with `dir` need a small image. Prepared instances would save this time, but they are not in this plan.
 - On `dir`, Incus unpacks the image for each new container. Thus, `loom-host` uses zstd compression or no compression, not gzip.
 - Incus 6.0 is sufficient. The tests used only API functions that Incus 6.0.4 has.
 - Enterprise Linux 9 with kernel 5.14 and XFS is sufficient for a host.
@@ -765,7 +807,7 @@ Not tested yet:
 | Long-lived tokens for the Git providers are in the oracle. A program in a container can read all Git credentials and secrets of its preset. | A preset names only the credentials that its work needs. Fine-grained tokens with selected repositories and an expiry date. The Git proxy of phase 7. |
 | All containers of the company network have one public IP address. The relay limits connections and messages for each IP address. | Limits for each registered peer in phase 1. |
 | Docker does not work in a container on one of your Linux hosts, because the host is different from the test hosts. An example is SELinux in enforcing mode. | Phase 0 showed that it works on IncusOS with ZFS, and on test hosts with `dir` on ext4 and on XFS. One test host had the kernel version of your host. `loom-host check` tests Docker on each host. The fallback is VM instances. |
-| Hosts with the `dir` driver start codespaces slowly. | Phase 0 measured 2 to 3 s more for an image of 1 GB. A small image with zstd compression. Prepared instances in phase 7. |
+| Hosts with the `dir` driver start codespaces slowly. | Phase 0 measured 2 to 3 s more for an image of 1 GB. A small image with zstd compression. |
 | Version skew: old containers, a new client, and two clients of different versions. | The agent version follows the client. The current update command. JSON in the control service. |
 | Lost work when a container is deleted. | Close guard, push of the branch. Stop and retention warnings in phase 6. |
 | A container can reach the network of its host. Phase 0 confirmed this for the Incus API port and for other instances on the bridge. | Network rules in phase 7. Before that, the host setup document recommends a separate bridge for codespaces. |
@@ -798,6 +840,8 @@ Not tested yet:
 - A change of the preset or of the resource limits of a codespace that runs.
 - A disk limit for a codespace.
 - A copy or a synchronization of volumes between hosts.
+- Workspace templates: a saved instance with the clones and the result of the setup, from which a new codespace starts. A later plan can add them if large repositories or long setups make the start slow.
+- Prepared instances: containers that a host makes before a request, so that a new codespace on a host with `dir` does not wait for the copy of the image. Each codespace starts from a fresh instance.
 
 ## 13. Open questions
 
