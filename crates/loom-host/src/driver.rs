@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use loom_client::oracle_proto::{CreateInstance, InstanceReport};
+use loom_client::oracle_proto::{CreateInstance, InstanceReport, VolumeUsage};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,6 +87,8 @@ pub trait Driver: Send + Sync {
     }
 
     async fn delete_volume(&self, oracle: &str, volume: &str) -> anyhow::Result<()>;
+
+    async fn volume_usage(&self, oracle: &str, volumes: &[String]) -> Vec<VolumeUsage>;
 }
 
 pub fn valid_instance(name: &str) -> bool {

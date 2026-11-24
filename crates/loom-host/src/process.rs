@@ -6,7 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use loom_client::oracle_proto::{
-    Bootstrap, CreateInstance, InstanceReport, InstanceVolume, VolumeKind, WORKSPACES_ROOT,
+    Bootstrap, CreateInstance, InstanceReport, InstanceVolume, VolumeKind, VolumeUsage,
+    WORKSPACES_ROOT,
 };
 use loom_config::HostRules;
 use nix::sys::signal::{Signal, kill};
@@ -48,6 +49,20 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+fn dir_size(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        total += if meta.is_dir() {
+            dir_size(&entry.path())?
+        } else {
+            meta.len()
+        };
+    }
+    Ok(total)
 }
 
 impl ProcessDriver {
@@ -307,6 +322,32 @@ impl Driver for ProcessDriver {
         }
     }
 
+    async fn volume_usage(&self, oracle: &str, volumes: &[String]) -> Vec<VolumeUsage> {
+        volumes
+            .iter()
+            .map(|name| {
+                let size = self.volume_dir(oracle, name).and_then(|dir| {
+                    if dir.is_dir() {
+                        Ok(Some(dir_size(&dir)?))
+                    } else {
+                        Ok(None)
+                    }
+                });
+                let (used_bytes, error) = match size {
+                    Ok(Some(size)) => (Some(size), None),
+                    Ok(None) => (None, Some("the volume is not on this host".to_owned())),
+                    Err(err) => (None, Some(format!("{err:#}"))),
+                };
+                VolumeUsage {
+                    name: name.clone(),
+                    used_bytes,
+                    total_bytes: None,
+                    error,
+                }
+            })
+            .collect()
+    }
+
     async fn check(&self, _deep: bool) -> Vec<CheckItem> {
         let mut items = Vec::new();
         match std::fs::create_dir_all(&self.root) {
@@ -424,6 +465,12 @@ mod tests {
             "test data"
         );
         std::fs::write(workspace.join("cache/marker"), "saved").unwrap();
+        let usage = driver
+            .volume_usage("o1", &["cache".into(), "gone".into()])
+            .await;
+        assert_eq!(usage[0].used_bytes, Some(5));
+        assert!(usage[1].used_bytes.is_none());
+        assert!(usage[1].error.is_some());
         let err = driver.delete_volume("o1", "cache").await.unwrap_err();
         assert!(err.to_string().contains("in use"));
         assert!(

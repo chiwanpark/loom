@@ -263,6 +263,19 @@ pub enum Command {
         #[serde(default)]
         preset: Option<String>,
     },
+    CheckHost {
+        name: String,
+        #[serde(default)]
+        docker: bool,
+    },
+    SetHostSsh {
+        name: String,
+        #[serde(default)]
+        destination: Option<String>,
+    },
+    HostVolumes {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
