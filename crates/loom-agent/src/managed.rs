@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,9 @@ use crate::codespace_agent::{
 };
 use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
 use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
+use crate::codespace_setup::{
+    SETUP_TIMEOUT, SetupClone, SetupContext, SetupOutcome, SetupProgress, run_setup,
+};
 use crate::serve::{ServeOptions, Served, Started, serve};
 
 pub const BOOTSTRAP_FILE: &str = "bootstrap.json";
@@ -486,6 +489,50 @@ impl Drop for AbortOnDrop {
     }
 }
 
+struct OracleProgress<'a>(&'a OracleClient);
+
+#[async_trait::async_trait]
+impl SetupProgress for OracleProgress<'_> {
+    async fn step(&mut self, step: &str) {
+        if let Err(err) = self.0.codespace_progress(step).await {
+            tracing::debug!(error = %err, "cannot report the setup progress");
+        }
+    }
+}
+
+async fn setup_repositories(
+    layout: &Layout,
+    bundle: &Bundle,
+    data_dir: &Path,
+    client: &OracleClient,
+) -> SetupOutcome {
+    let clones: Vec<SetupClone> = layout
+        .repositories()
+        .into_iter()
+        .map(|repository| SetupClone {
+            directory: repository.directory,
+            path: repository.path,
+        })
+        .collect();
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    for (name, value) in &bundle.agent.secrets {
+        env.insert(name.clone(), value.expose().to_owned());
+    }
+    let context = SetupContext {
+        data_dir,
+        codespace: &bundle.codespace,
+        env,
+        timeout: SETUP_TIMEOUT,
+    };
+    match run_setup(&clones, context, &mut OracleProgress(client)).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), "cannot run the setup of the repositories");
+            SetupOutcome::default()
+        }
+    }
+}
+
 pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
     let ManagedOptions {
         bootstrap,
@@ -551,6 +598,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         helper.abort();
         return Ok(Served::Exit(0));
     }
+    let setup = setup_repositories(&layout, &bundle, &data_dir, &client).await;
     let workspace = layout.root.clone();
     let _ = client.codespace_progress("agent").await;
     std::fs::create_dir_all(&workspace)
@@ -566,6 +614,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         allowed_roots: vec![state.workspaces_root.clone()],
         workspace: workspace.clone(),
         env_file: paths.env_file.clone(),
+        variables: setup.variables,
     };
     let config = match write_preset(&paths, &bundle.agent)
         .and_then(|()| Ok(managed_config(&config_path, &dirs, &settings)?))

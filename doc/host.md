@@ -266,9 +266,10 @@ In a codespace, `loom-agent serve --managed` runs the agent:
 1. The bootstrap file `~/.config/loom/bootstrap.json` of the agent contains a one-time link for this codespace.
 2. The agent makes its keys and pairs with the oracle. Then it deletes the bootstrap file. It keeps the address of the oracle in `managed.json` in its data directory, so it can start again without the link.
 3. The agent sets up Git for the providers of the preset, clones each repository, and makes the branch `loom/<codespace>` in each clone.
-4. The agent writes the agent configuration of its preset and gets the model credentials from the oracle. See [Agent configuration in a codespace](oracle.md#agent-configuration-in-a-codespace). If the configuration is not valid, the codespace fails.
-5. The agent accepts the keys of the devices of the oracle. It also gets the push token of each device, so it can send notifications to the Android app through the relay of the oracle. When you pair or revoke a device, or a device sets a new push token, the agent gets the change.
-6. The agent registers with the relay of the oracle and reports `ready`. If the codespace has a first message, the agent then starts a session with it.
+4. The agent runs the setup of each repository in the sequence of the workspace. See [Repository setup](#repository-setup).
+5. The agent writes the agent configuration of its preset and gets the model credentials from the oracle. See [Agent configuration in a codespace](oracle.md#agent-configuration-in-a-codespace). If the configuration is not valid, the codespace fails.
+6. The agent accepts the keys of the devices of the oracle. It also gets the push token of each device, so it can send notifications to the Android app through the relay of the oracle. When you pair or revoke a device, or a device sets a new push token, the agent gets the change.
+7. The agent registers with the relay of the oracle and reports `ready`. If the codespace has a first message, the agent then starts a session with it.
 
 `--bootstrap <path>` selects a different bootstrap file.
 
@@ -284,6 +285,32 @@ The Git setup of a codespace is in the data directory of the agent (`~/.local/sh
 - The agent writes the token for `gh` of each provider into `~/.config/gh/hosts.yml`. It keeps the hosts that it did not write.
 
 When the oracle sends `git_changed`, the agent writes these files again.
+
+## Repository setup
+
+A repository can have a setup for its codespaces. The agent runs it after the clone, as the user `dev` in the directory of the clone. The setup of the host image runs before, as root. See [The codespace image](#the-codespace-image).
+
+The agent uses the first file that it finds:
+
+1. `.loom/setup.sh`. The agent runs it with `bash`. Then it does not read `devcontainer.json`.
+2. `.devcontainer/devcontainer.json` or `.devcontainer.json`. The agent uses a subset of the [Dev Container specification](https://containers.dev/implementors/json_reference/).
+
+The subset of `devcontainer.json`:
+
+| Key | What the agent does |
+| --- | --- |
+| `containerEnv`, `remoteEnv` | Sets the variables for the setup commands, the shell commands of the agent, and the terminals. A value in `remoteEnv` replaces the value in `containerEnv`. The agent does not hide these values from the model. A variable that the preset sets in `environment.set` keeps the value of the preset. |
+| `onCreateCommand`, `updateContentCommand`, `postCreateCommand` | Runs them one time, in this sequence, after the first clone. |
+| `postStartCommand` | Runs it at each start of the agent, after the other commands. |
+
+- A command is a string for `/bin/sh -c`, an array of a program and its arguments, or an object. The commands of an object run at the same time.
+- In strings, the agent replaces `${containerWorkspaceFolder}`, `${containerWorkspaceFolderBasename}`, `${localWorkspaceFolder}`, `${localWorkspaceFolderBasename}`, `${devcontainerId}`, `${containerEnv:NAME}`, and `${localEnv:NAME}`. A default value is possible, for example `${localEnv:NAME:value}`. The local names have the values in the container, because there is no local machine.
+- The file can have comments and trailing commas.
+- The agent does not use the other keys, for example `image`, `build`, `features`, `forwardPorts`, `mounts`, and `postAttachCommand`. The base image and the setup script of the host set the environment. The log names the keys that the agent does not use.
+
+The commands get the environment of the agent, the secrets of the preset, and the variables of `devcontainer.json`. Each command can run for up to 45 minutes.
+
+If a command fails, the agent stops the setup of that repository and continues. The codespace does not fail, so that you can examine the problem in it. The progress of the codespace shows the failure. The output of the setup of each repository is in `~/.local/share/loom/setup/<directory>.log` in the codespace. The agent does not run the one-time commands again after a restart, also when they failed.
 
 ## Git in a codespace
 
