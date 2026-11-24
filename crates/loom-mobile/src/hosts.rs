@@ -136,8 +136,8 @@ impl Loom {
         save_hosts(&self.dir, &hosts)
     }
 
-    /// Forgets a host. The host still lists this device until someone runs
-    /// `loom-agent clients revoke` there.
+    /// Forgets an oracle. The oracle still lists this device until someone
+    /// revokes it on the Devices page or with `loom-oracle-cli revoke-device`.
     pub fn remove_host(&self, name: String) -> Result<()> {
         let mut hosts = self.lock();
         let before = hosts.len();

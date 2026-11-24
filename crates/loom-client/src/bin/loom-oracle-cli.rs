@@ -423,11 +423,6 @@ enum Command {
         #[arg(value_name = "OWNER/REPOSITORY")]
         repository: String,
     },
-    ClientEntry {
-        id: String,
-        #[arg(long)]
-        name: Option<String>,
-    },
     Watch {
         #[arg(long)]
         count: Option<usize>,
@@ -1260,30 +1255,6 @@ fn print_event(event: &Event) {
     }
 }
 
-fn client_entry(
-    saved: &SavedOracle,
-    codespace: &Codespace,
-    name: Option<String>,
-) -> anyhow::Result<String> {
-    let Some(agent) = &codespace.agent else {
-        bail!(
-            "the agent of the codespace {} has not reported its keys yet",
-            codespace.id
-        );
-    };
-    let name = name.unwrap_or_else(|| format!("{}-{}", codespace.workspace, codespace.id));
-    let mut entry = format!(
-        "- kind: relay\n  name: {name}\n  url: {}\n  host_id: {}\n  host_key: {}\n",
-        saved.url, agent.host_id, agent.host_key
-    );
-    if let (Some(id), Some(secret)) = (&saved.access_id_env, &saved.access_secret_env) {
-        entry.push_str(&format!(
-            "  cloudflare_access:\n    client_id_env: {id}\n    client_secret_env: {secret}\n"
-        ));
-    }
-    Ok(entry)
-}
-
 async fn wait_codespace(
     client: &OracleClient,
     events: &mut OracleEvents,
@@ -1715,10 +1686,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 return print_json(&codespace);
             }
             print_codespace(&codespace);
-            if codespace.state == CodespaceState::Ready {
-                println!("Add this host entry to client.yaml to connect with the desktop client:");
-                print!("{}", client_entry(&saved, &codespace, None)?);
-            }
         }
         Command::CloseCodespace {
             id,
@@ -2178,10 +2145,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if branches.more {
                 println!("(more branches)");
             }
-        }
-        Command::ClientEntry { id, name } => {
-            let codespace = find_codespace(&client, &id).await?;
-            print!("{}", client_entry(&saved, &codespace, name)?);
         }
         Command::Repositories { id } => {
             let codespace = find_codespace(&client, &id).await?;
