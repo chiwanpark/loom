@@ -141,8 +141,8 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             when {
                 directory.hosts.isEmpty() -> Message(
-                    "Pair with an oracle to see the sessions of its codespaces here. Run " +
-                        "`loom-oracle-cli pair-device` on it, then scan the QR code or paste the link it prints.",
+                    "Pair with an oracle to see the sessions of its codespaces here. Make a link " +
+                        "on the Devices page of the desktop client (or run `loom-oracle pair` for the first device), then scan the QR code or paste the link.",
                 ) {
                     Button(onClick = { app.navigator.push(Screen.Pair()) }) { Text("Pair with an oracle") }
                 }

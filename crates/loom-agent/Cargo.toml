@@ -16,7 +16,7 @@ async-trait = "0.1.92"
 bytes = "1.12.1"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 loom-agent-core = { path = "../loom-agent-core" }
-loom-client = { path = "../loom-client", default-features = false }
+loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
 loom-github = { path = "../loom-github" }
@@ -46,7 +46,6 @@ workspace = true
 async-trait = "0.1.92"
 flate2 = "1.1.11"
 futures = "0.3.34"
-loom-client = { path = "../loom-client" }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
 loom-host = { path = "../loom-host" }

@@ -1,6 +1,6 @@
 # Hosts and codespaces
 
-A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts, stops, and deletes the codespaces of the host. The plan is in [the design document](design/loom-next.md).
+A host runs the codespaces of the oracle. The daemon `loom-host` connects out to the oracle and starts, stops, and deletes the codespaces of the host.
 
 A workspace has one or more repositories and can have persistent volumes. A codespace is an Incus container. In the container, the agent clones the repositories with the Git credentials of its preset, makes the branch `loom/<codespace>` in each clone, and registers with the relay of the oracle. Clients connect to the agent through this relay, or over SSH.
 
@@ -41,7 +41,7 @@ On a Linux host, `loom-host` runs as a systemd service and uses the local Incus 
    sudo -u loom-host loom-host --config /etc/loom/host.yaml setup
    ```
 
-5. On a device of the oracle, run `loom-oracle-cli pair-host`. It shows a one-time link. Then join the oracle and check the host:
+5. In the desktop client, click **Add host…** on the **Hosts** page of the oracle settings to get a one-time link. Then join the oracle and check the host:
 
    ```sh
    sudo -u loom-host loom-host --config /etc/loom/host.yaml join '<link>' --name <name>
@@ -56,7 +56,7 @@ On a Linux host, `loom-host` runs as a systemd service and uses the local Incus 
    sudo systemctl enable --now loom-host.service
    ```
 
-`loom-oracle-cli hosts` then shows the host as `connected`.
+The **Hosts** page of the oracle settings then shows the host as `connected`.
 
 The members of `incus-admin` have full control of Incus. If you do not want this, use a restricted client certificate as in the next section, with the HTTPS address of the local Incus.
 
@@ -173,7 +173,7 @@ The `incus` driver builds an image for the codespaces of the host. It builds a n
 4. It runs the setup script of the host as root, if there is one.
 5. It stops the container and publishes it as `loom-image-<hash>`, with zstd compression if Incus can use it.
 
-Set the environment on the **Hosts** page of the oracle settings in the desktop client, or with `loom-oracle-cli set-environment`. The first codespace after a change waits for the build. On a test host with the `dir` pool, the first codespace took 50 seconds with the build. On the test hosts, a codespace from an existing image took 4 to 6 seconds.
+Set the environment on the **Hosts** page of the oracle settings in the desktop client. The first codespace after a change waits for the build. On a test host with the `dir` pool, the first codespace took 50 seconds with the build. On the test hosts, a codespace from an existing image took 4 to 6 seconds.
 
 `loom-host check --docker` starts a test container from the newest image, and runs `docker run hello-world` in it.
 
@@ -251,22 +251,15 @@ rules:
 The mapping applies to all new codespaces on the host. A read-only mount cannot be used to write to the directory.
 The process driver uses symlinks and permits mount paths only below `/workspaces/`. It does not apply quotas, read-only marks, or UID/GID mappings.
 
-See [Workspace volumes](oracle.md#workspace-volumes) for commands to create, mount, and delete volumes.
+See [Workspace volumes](oracle.md#workspace-volumes) for how to create, mount, and delete volumes.
 
 ## Make a codespace
 
-With `loom-oracle-cli`:
+Configure the oracle on the settings pages of the desktop client (see [Oracle settings](desktop.md#oracle-settings)):
 
-```sh
-loom-oracle-cli set-provider github --url https://github.com
-loom-oracle-cli set-credential acme-token --provider github --owner acme --token-file - < token.txt
-loom-oracle-cli sign-in work --provider anthropic
-loom-oracle-cli set-preset work preset.yaml
-loom-oracle-cli create-workspace acme --host <host> --repository github:acme/app --repository github:acme/lib
-loom-oracle-cli create-codespace acme --preset work --cpus 2 --memory 4GiB --message "Fix the failing tests."
-```
-
-`preset.yaml` names the model account and the Git credentials:
+1. Add a Git provider and a Git credential on **Git providers**.
+2. Add a model account on **Models**.
+3. Create a preset on **Presets** whose `agent.yaml` names the model account and Git credentials:
 
 ```yaml
 llm:
@@ -277,23 +270,24 @@ git:
   credentials: [acme-token]
 ```
 
-`create-codespace` shows the steps until the codespace is ready. With `--message`, the agent starts a session with this message when the codespace is ready. A client does not need to be connected.
+4. Create a workspace with its host and repositories on **Workspaces**.
+5. Under **Workspaces** in the Sessions panel (or in the Android app), click **+** next to the workspace to start a codespace.
 
-Pair the desktop client with the oracle to see the codespace under **Workspaces**. See [Add an oracle](desktop.md#add-an-oracle).
+You can give a first message when you create the codespace: the agent starts a session with it when the codespace is ready, without a connected client.
 
-`loom-oracle-cli close-codespace <id>` deletes the container of the codespace and revokes the keys of its agent. Before that, the close guard checks the unsaved work. See [Git in a codespace](#git-in-a-codespace).
+Closing a codespace from its menu deletes the container of the codespace and revokes the keys of its agent. Before that, the close guard checks for unsaved work. See [Git in a codespace](#git-in-a-codespace).
 
 ## Stop and resume a codespace
 
-`loom-oracle-cli stop-codespace <id>` stops the instance of a codespace. The disk of the instance and its volumes stay. The sessions, the terminals, and the processes in the codespace end. The oracle also stops a codespace after a time without activity. See [Codespace lifecycle](oracle.md#codespace-lifecycle).
+Choose **Stop codespace…** in the codespace menu to stop the instance of a codespace. The disk of the instance and its volumes stay. The sessions, the terminals, and the processes in the codespace end. The oracle also stops a codespace after a time without activity. See [Codespace lifecycle](oracle.md#codespace-lifecycle).
 
-`loom-oracle-cli resume-codespace <id>` starts the instance again. The agent starts with its sessions and its clones, and reports `ready` again. The oracle deletes a codespace that stays stopped for longer than its retention.
+Choose **Resume codespace…** (or click a stopped codespace) to start the instance again. The agent starts with its sessions and its clones, and reports `ready` again. The oracle deletes a codespace that stays stopped for longer than its retention.
 
 With the `incus` driver, `loom-host` first asks the container to stop. If the container does not stop in time, it forces the stop. With the `process` driver, `loom-host` stops the agent process.
 
 ## SSH connections
 
-When a host has an SSH destination (`loom-oracle-cli set-ssh`), a client can connect to the agent of a codespace through SSH instead of the relay of the oracle:
+When a host has an SSH destination (set on the **Hosts** page of the oracle settings), a client can connect to the agent of a codespace through SSH instead of the relay of the oracle:
 
 ```sh
 ssh <destination> loom-host stdio --codespace <id>
@@ -301,11 +295,11 @@ ssh <destination> loom-host stdio --codespace <id>
 
 `loom-host stdio` finds the instance of the codespace and runs `loom-agent stdio --managed` in it. With the `incus` driver, it uses the exec API of Incus with WebSockets. The command needs the `host.yaml` and the join state of the `loom-host` service. Thus, the SSH user must be the user of the `loom-host` service, and `loom-host` must be on the `PATH` of this user.
 
-The desktop app tries SSH first when the host has an SSH destination. It uses `BatchMode=yes`, so SSH must not ask for a password. If SSH fails, the app uses the relay and does not try SSH again for 10 minutes. `loom-oracle-cli connections <id>` shows the connection types of a codespace.
+The desktop app tries SSH first when the host has an SSH destination. It uses `BatchMode=yes`, so SSH must not ask for a password. If SSH fails, the app uses the relay and does not try SSH again for 10 minutes.
 
 ## Git providers
 
-The oracle asks each connected host which Git providers it reaches. The host sends a request to the API URL of each provider. Any HTTP answer counts as a reach. `loom-oracle-cli hosts` shows the result.
+The oracle asks each connected host which Git providers it reaches. The host sends a request to the API URL of each provider. Any HTTP answer counts as a reach.
 
 For a provider with the route `hosts`, the oracle sends API calls through a host that reaches the provider, for example the search of repositories. The host sends each call to the API URL that the oracle gives. It sends only `GET`, `POST`, and `PATCH` requests to paths in the API.
 
@@ -352,24 +346,17 @@ Loom does not read `devcontainer.json`. The base image and the setup script of t
 
 A client asks the agent of a codespace for these Git actions:
 
-| Action | `loom-oracle-cli` | What the agent does |
-| --- | --- | --- |
-| Status | `repositories <id>` | Shows the branch, the base branch, the changed files, the commits after the base, and the commits that are not pushed, for each clone. |
-| Push | `push <id>` | Pushes the branch of each clone that has commits that are not pushed. With `--message`, it first commits all changes. |
-| Pull request | `pull-request <id> --title <title>` | For each clone of a provider with commits after the base, pushes the branch and opens a pull request into the base. If the branch has an open pull request, the agent uses it. When it opens more than one, it adds links to the others to each body. |
+| Action | What the agent does |
+| --- | --- |
+| Status | Reports the branch, the base branch, the changed files, the commits after the base, and the commits that are not pushed, for each clone. |
+| Push | Pushes the branch of each clone that has commits that are not pushed, optionally committing uncommitted changes first. |
+| Pull request | For each clone of a provider with commits after the base, pushes the branch and opens a pull request into the base. If the branch has an open pull request, the agent uses it. When it opens more than one, it adds links to the others to each body. |
 
 The agent sends the API calls for pull requests to the provider with the token that the oracle selects for the repository. It does not use `gh`. A repository without a provider gets no pull request.
 
 In a codespace with more than one repository, the **Changes** panel shows the changes of all clones. The path of each file starts with the directory of its clone.
 
-The close guard runs before a codespace closes. It asks the agent for the state of each clone. A clone has unsaved work when it has changed files or commits that are not pushed. For each repository with unsaved work, choose one:
-
-- `--push <directory>` pushes the branch. If the clone has changed files, also give `--message` to commit them.
-- `--discard <directory>` loses the work.
-
-`*` selects all repositories. The close stops if a repository with work has no choice.
-
-If the agent does not answer, the close stops. `--force` closes the codespace without the check. A lost codespace also needs `--force`.
+The close guard runs before a codespace closes. It asks the agent for the state of each clone. A clone has unsaved work when it has changed files or commits that are not pushed. For each repository with unsaved work, choose **Push** (with a commit message if there are uncommitted changes) or **Discard**. If a push fails or the agent does not answer, the codespace stays open unless you force the close.
 
 ## Codespace states
 

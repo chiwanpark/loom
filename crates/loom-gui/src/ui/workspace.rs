@@ -2518,7 +2518,7 @@ impl Workspace {
         open_form(
             "Pair with an oracle",
             Some(
-                "Run `loom-oracle-cli pair-device` on the oracle, and paste the pairing link here."
+                "Run `loom-oracle pair` on the oracle for the first device, or use Devices > Add device… in a paired desktop client."
                     .into(),
             ),
             vec![

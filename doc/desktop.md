@@ -82,7 +82,7 @@ An oracle keeps workspaces, presets, and codespaces. Each session runs in a code
 
 ### Add an oracle
 
-1. Get a pairing link. For the first device, run `loom-oracle pair` on the oracle machine. For other devices, click **Add device…** on the **Devices** page of the oracle settings on a paired device, or run `loom-oracle-cli pair-device`.
+1. Get a pairing link. For the first device, run `loom-oracle pair` on the oracle machine. For other devices, click **Add device…** on the **Devices** page of the oracle settings on a paired device.
 2. In the desktop client, click the **Pair with an oracle** button in the header of the Sessions tab, or run the command `hosts: pair with an oracle` from the command palette.
 3. Type a name and paste the link.
 

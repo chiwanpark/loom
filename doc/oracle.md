@@ -1,6 +1,6 @@
 # Oracle
 
-The oracle is the central service of Loom. The plan is in [the design document](design/loom-next.md).
+The oracle is the central service of Loom.
 
 The oracle does these things:
 
@@ -9,18 +9,13 @@ The oracle does these things:
 - It starts codespaces on hosts. See [Hosts and codespaces](host.md).
 - It keeps its data in a SQLite store. It encrypts the secrets in the store with a master key.
 
-Prebuilt binaries of `loom-oracle` are on the [releases page](https://github.com/chiwanpark/loom/releases). Build `loom-oracle` or `loom-oracle-cli` from source:
+Prebuilt binaries of `loom-oracle` are on the [releases page](https://github.com/chiwanpark/loom/releases). Or build it from source:
 
 ```sh
-cargo build --release --bin loom-oracle --bin loom-oracle-cli
+cargo build --release --bin loom-oracle
 ```
 
-## Components
-
-| Binary | Use |
-| --- | --- |
-| `loom-oracle` | The daemon. It has three commands: `serve`, `config`, and `pair`. |
-| `loom-oracle-cli` | A command-line client for the control service. |
+`loom-oracle` has three commands: `serve`, `config`, and `pair`.
 
 ## Set up an oracle
 
@@ -28,9 +23,9 @@ cargo build --release --bin loom-oracle --bin loom-oracle-cli
 2. In `oracle.yaml`, set `url` to the URL that clients and agents use, for example `wss://oracle.example.com`.
 3. Run `loom-oracle serve`. At the first start, the oracle makes its master key, its host keys, and its store.
 4. Run `loom-oracle pair` on the same machine. It shows a one-time `loom://` link and a QR code for the first device.
-5. On the device, run `loom-oracle-cli pair <link>`. `loom-oracle pair` stops when the device is paired.
+5. In the desktop client, use **Pair with an oracle** and paste the link (or scan the QR code in the Android app). `loom-oracle pair` stops when the device is paired.
 
-After this, the first device makes the links for the other devices: on the **Devices** page of the oracle settings in the desktop client, or with `loom-oracle-cli pair-device`. You can do all other configuration in the desktop client too. See [Oracle settings](desktop.md#oracle-settings).
+After this, the first device makes the links for the other devices on the **Devices** page of the oracle settings in the desktop client. You do all other configuration in the desktop client too. See [Oracle settings](desktop.md#oracle-settings).
 
 `loom-oracle config check` validates `oracle.yaml`. `loom-oracle config schema` shows its JSON Schema. `--config` or `LOOM_ORACLE_CONFIG` selects a different file.
 
@@ -128,78 +123,6 @@ sudo systemctl enable --now loom-oracle.service
 sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 ```
 
-## Test client
-
-`loom-oracle-cli` keeps its key and the address of the oracle in `~/.local/share/loom/oracle-cli`. `--state-dir` or `LOOM_ORACLE_CLI_STATE` selects a different directory. Thus, one machine can act as more than one device.
-
-| Command | Action |
-| --- | --- |
-| `pair <link> [--label <label>] [--identity <path>]` | Pairs with the oracle. The default label is the host name. `--identity` uses the key in this file, for example the key of the desktop client. |
-| `info` | Shows the oracle and this device. |
-| `devices` | Lists the paired devices. |
-| `rename-device <id> <label>` | Changes the label of a device. |
-| `revoke-device <id>` | Removes a device. Its connections close at once. |
-| `push-token <token>` or `push-token --clear` | Sets or removes the push token of this device. |
-| `pair-device [--ttl <duration>] [--no-qr]` | Makes a one-time link for a new device. The default time is 10 minutes. |
-| `pairings` | Lists the links that are not used yet. |
-| `cancel-pairing <id>` | Cancels a link. |
-| `pair-host [--ttl <duration>] [--no-qr]` | Makes a one-time link for `loom-host join`. |
-| `hosts` | Lists the hosts with their status and their report. |
-| `remove-host <name>` | Removes a host. The oracle refuses this while it has workspaces, open codespaces, or tracked volumes. |
-| `check-host <name> [--docker]` | Runs `loom-host check` on a connected host and shows the results. With `--docker`, the host also tests Docker in a test instance. |
-| `set-ssh <host> <destination>`, `set-ssh <host> --clear` | Sets or removes the SSH destination of a host, for example `dev@host.example.com`. |
-| `set-limits <host> [--max-codespaces <n>\|none] [--max-running <n>\|none] [--idle-stop <duration>\|never\|default] [--retention <duration>\|never\|default]` | Changes the limits of a host. The limits that you do not give stay the same. See [Codespace limits](#codespace-limits). |
-| `host-volumes <name>` | Shows the used space of each custom volume on a connected host. |
-| `set-environment <host> [--base-image <image>] [--setup-script <path>] [--env <name>=<value>]… [--ca-certificate <path>]… [--registry-mirror <url>]…` | Replaces the environment configuration of a host. The host builds a new image for the next codespace. |
-| `providers` | Lists the Git providers. |
-| `set-provider <name> --url <url> [--api-url <url>] [--git-name <name>] [--git-email <email>] [--route direct\|hosts]` | Adds or changes a Git provider. The default API URL is `https://api.github.com` for `https://github.com`, and `<url>/api/v3` for other servers. |
-| `delete-provider <name>` | Deletes a Git provider. The oracle refuses this while a credential or a workspace uses it. |
-| `credentials` | Lists the Git credentials. The list does not show the tokens. |
-| `set-credential <name> --provider <provider> [--owner <owner> [--repository <repository>]] [--token-file <path>]` | Adds or changes a Git credential. `--token-file -` reads the token from standard input. A new credential needs a token. The oracle checks the token. |
-| `check-credential <name>` | Checks the token again. |
-| `delete-credential <name>` | Deletes a Git credential. The oracle refuses this while a preset uses it. |
-| `presets` | Lists the presets. |
-| `set-preset <name> <path> [--agents-md <path>] [--skills <directory>]` | Adds or changes a preset from an `agent.yaml` file. `--agents-md` sets `AGENTS.md`. `--skills` sets the skills from the skill directories in this directory. Without these options, the preset keeps its `AGENTS.md` and skills. |
-| `show-preset <name>` | Shows a preset with its YAML file, `AGENTS.md`, and skill files. |
-| `delete-preset <name>` | Deletes a preset. The oracle refuses this while an open codespace uses it. |
-| `accounts` | Lists the model accounts. The list does not show the credentials. |
-| `sign-in <account> --provider <provider> [--device-code]` | Signs in a model account. The CLI shows a URL or a device code. |
-| `set-api-key <account> --provider <provider> [--key-file <path>]` | Adds or changes a model account with an API key. The default `--key-file -` reads the key from standard input. |
-| `delete-account <name>` | Deletes a model account. The oracle refuses this while a preset uses it. |
-| `models <preset>` | Lists the models that a preset can use, with the account of each model. |
-| `secrets` | Lists the secrets. The list does not show the values. |
-| `set-secret <name> [--value-file <path>]` | Adds or changes a secret. The default `--value-file -` reads the value from standard input. |
-| `delete-secret <name>` | Deletes a secret. The oracle refuses this while a preset uses it. |
-| `notes <workspace>` | Shows the notes of a workspace. |
-| `set-notes <workspace> <path>` | Replaces the notes of a workspace. `-` reads them from standard input. |
-| `sessions [--codespace <id>]` | Lists the sessions of the codespaces. |
-| `search <provider> [<query>]` | Searches the repositories of a provider. |
-| `branches <provider> <owner>/<repository>` | Lists the branches of a repository. |
-| `workspaces` | Lists the workspaces. |
-| `create-workspace <name> --host <host> --repository <repository>… [--volume <mount>]…` | Makes a workspace. Give each repository as `<url>[,directory=<name>][,branch=<branch>]`. `<url>` can also be `<provider>:<owner>/<repository>`. |
-| `update-workspace <name> [--host <host>] [--repository <repository>…] [--volume <mount>… \| --no-volumes]` | Changes the host or replaces the repositories or mounts. Open codespaces do not change. |
-| `delete-workspace <name>` | Deletes a workspace. The oracle refuses this while a codespace of the workspace is open. |
-| `volumes` | Lists the volumes and the hosts that may hold each custom volume. |
-| `create-volume <name> [--size <size> \| --path <host-directory>]` | Defines a volume. Without `--path`, it defines a custom Incus volume. |
-| `delete-volume <name>` | Deletes the definition and its custom volume on each tracked host. It does not delete the contents of a host directory. |
-| `codespaces [--all]` | Lists the codespaces. `--all` also shows the closed codespaces. |
-| `create-codespace <workspace> [--preset <preset>] [--cpus <n>] [--memory <size>] [--branch <branch>] [--base <directory>=<branch>]… [--message <text> \| --message-file <path>] [--model <provider>/<model>] [--no-wait]` | Makes a codespace and shows its steps until it is ready. The defaults are 2 CPUs and 4GiB. `--branch` sets the base branch of all repositories, and `--base` sets it for one repository. `--message` sets the first message: the agent starts a session with it when the codespace is ready. `--model` sets the model of this session. |
-| `close-codespace <id> [--push <directory>]… [--discard <directory>]… [--message <message>] [--force] [--no-wait]` | Closes a codespace. The host deletes its instance. First, the close guard asks the agent for the unsaved work of each repository. See [the host document](host.md#git-in-a-codespace). |
-| `stop-codespace <id> [--no-wait]` | Stops a codespace. The host stops its instance and keeps its disk. |
-| `resume-codespace <id> [--no-wait]` | Starts a stopped codespace again and waits until it is ready. |
-| `archive <id> <session>` | Shows an archived session of a closed codespace as text. With `--json`, it writes the events. `sessions --codespace <id>` lists the sessions. |
-| `delete-archive <id>` | Deletes the session archive of a closed codespace. |
-| `connections <id> [--type relay\|ssh]…` | Shows how a client can connect to a codespace. |
-| `repositories <id>` | Shows the state of each repository of a codespace. |
-| `push <id> [--message <message>] [--directory <directory>]…` | Pushes the branch of each repository of a codespace. With `--message`, the agent first commits the uncommitted changes. |
-| `pull-request <id> --title <title> [--body <text> \| --body-file <path>] [--draft]` | Opens a pull request for each repository of a codespace that has commits. |
-| `audit [--limit <n>] [--before <id>]` | Shows the audit log, newest first. The default limit is 100. `--before` shows the entries before an entry. |
-| `watch [--count <n>]` | Shows the events of the oracle until you stop it. |
-
-With `--json`, each command writes JSON.
-
-If the oracle is behind Cloudflare Access, pair with `--access-id-env <name> --access-secret-env <name>`. These are the names of the environment variables that contain the service token. The CLI keeps the names, not the values.
-
 ## Limits
 
 The oracle uses the limits from `limits` in `oracle.yaml`. A connection uses the limits of its IP address until it proves its identity:
@@ -211,7 +134,7 @@ Thus, many agents and devices behind one public IP address do not share one limi
 
 ## Codespace limits
 
-Each host has these limits. Set them with `loom-oracle-cli set-limits`, or in **Settings > Hosts > Limits…** of the desktop app.
+Each host has these limits. Set them in **Settings > Hosts > Limits…** of the desktop app.
 
 | Limit | Meaning |
 | --- | --- |
@@ -243,7 +166,7 @@ The agents send their session metrics every 5 minutes and when their activity ch
 
 ## Audit log
 
-The oracle records each change: pairings, devices, hosts, workspaces, presets, credentials, and codespaces. The entries show the device that made the change. Entries without a device are changes of the oracle itself, such as an idle stop (`codespace_idle_stopped`) or a deletion after the retention (`codespace_expired`). Read the log with `loom-oracle-cli audit` or in **Settings > Audit log** of the desktop app.
+The oracle records each change: pairings, devices, hosts, workspaces, presets, credentials, and codespaces. The entries show the device that made the change. Entries without a device are changes of the oracle itself, such as an idle stop (`codespace_idle_stopped`) or a deletion after the retention (`codespace_expired`). Read the log in **Settings > Audit log** of the desktop app.
 
 ## Session archive
 
@@ -256,7 +179,7 @@ When a codespace closes, the oracle keeps a read-only copy of its sessions. This
 
 If the host is not connected, the archive and the delete wait for the host. If the archive fails for a different cause, for example because the sessions are larger than `codespaces.archive_max_size`, the host deletes the instance and the codespace shows the error.
 
-`codespaces --all` shows the size of each archive and when the oracle deletes it. In the desktop app, open **Archive** below a workspace. Click a closed codespace to read its last session, or select a session in its menu. A lost codespace has no archive, because its instance is not there.
+In the desktop app, open **Archive** below a workspace. Click a closed codespace to read its last session, or select a session in its menu. A lost codespace has no archive, because its instance is not there.
 
 ## Git providers
 
@@ -265,7 +188,7 @@ A Git provider is github.com or a GitHub Enterprise Server. It has a name, a web
 - With the route `direct`, the oracle sends API calls to the provider.
 - With the route `hosts`, the oracle sends each API call through a connected host that reaches the provider. Use this route when the oracle cannot reach the provider.
 
-Each host tests which providers it reaches when it connects and when a provider changes. `loom-oracle-cli hosts` shows the result. The oracle keeps a result for 10 minutes.
+Each host tests which providers it reaches when it connects and when a provider changes. The oracle keeps a result for 10 minutes.
 
 A workspace can have up to 20 repositories. The oracle finds the provider of a repository from the start of its URL. A repository whose URL matches no provider is public: the codespace clones it without a credential.
 
@@ -281,8 +204,8 @@ A Git credential is a token of a provider, for example a fine-grained personal a
 A credential has a scope:
 
 - all repositories of the provider;
-- the repositories of one owner (`--owner`);
-- one repository (`--owner` and `--repository`).
+- the repositories of one owner;
+- one repository (owner and repository).
 
 When the oracle saves a credential, it reads the user and the expiry date of the token from the provider.
 
@@ -318,14 +241,9 @@ When a preset, a model account, or a secret of a preset changes, the oracle send
 
 ### Model accounts
 
-A model account is a sign-in or an API key for one model provider. It has a name and a provider. The oracle keeps the credentials sealed with the master key and refreshes the tokens.
+A model account is a sign-in or an API key for one model provider. It has a name and a provider. The oracle keeps the credentials sealed with the master key and refreshes the tokens. Add and manage accounts on the **Models** page of the oracle settings in the desktop client.
 
-```sh
-loom-oracle-cli sign-in work --provider anthropic
-loom-oracle-cli set-api-key team --provider openai --key-file key.txt
-```
-
-A provider with a sign-in, such as `anthropic` or `openai-codex`, can have a sign-in account. A custom provider, such as one of type `openai-compatible`, needs an API key account.
+A provider with a sign-in, such as `anthropic`, `github-copilot`, or `openai-codex`, can have a sign-in account. A provider such as `opencode-go` or a custom `openai-compatible` provider uses an API key account.
 
 A codespace never gets a refresh token. The agent asks the oracle for an access token that is valid for 30 minutes or more. It asks again before the token expires. The oracle refreshes the token of an account only once at a time, so many codespaces can use one account. In a codespace, the agent cannot sign in or sign out. Its status shows the name of the account.
 
@@ -355,23 +273,16 @@ The oracle keeps the notes of each workspace. A new codespace gets the notes of 
 
 ## Workspace volumes
 
-A volume keeps data after a codespace closes. Define the volume first, then give it a mount path in each workspace that uses it:
+A volume keeps data after a codespace closes. Define volumes and mount them in workspaces on the **Workspaces** page of the oracle settings in the desktop client.
 
-```sh
-loom-oracle-cli create-volume build-cache --size 4GiB
-loom-oracle-cli create-volume reference-data --path /srv/codespace-data/reference
-loom-oracle-cli create-workspace acme --host build-host --repository github:acme/app \
-  --volume build-cache:/cache/build --volume reference-data:/data:ro
-```
-
-Use `VOLUME:PATH` for a writable mount or `VOLUME:PATH:ro` for a read-only mount.
-Mount paths must be absolute and cannot overlap each other, the repository clones, the agent data directories, or system directories.
+Each mount specifies a volume, an absolute mount path, and whether the mount is read-only.
+Mount paths cannot overlap each other, the repository clones, the agent data directories, or system directories.
 Host directory volumes must use paths permitted by the host. See [host setup](host.md#host-directories).
 The oracle checks volume support and directory paths when it saves a workspace with a connected host. It checks again before it starts each codespace.
 
-Updating a workspace replaces its mount list for new codespaces only. Use `--no-volumes` to remove all mounts from the workspace.
+Updating a workspace replaces its mount list for new codespaces only.
 Before you delete a volume, remove its mounts from all workspaces and close the codespaces that still use it.
-The oracle must reach each host where it requested the custom volume. If deletion is pending, fix the host error and run `delete-volume` again.
+The oracle must reach each host where it requested the custom volume. If deletion is pending, fix the host error and delete the volume again.
 Hosts that already confirmed deletion are skipped on retry. A volume whose deletion is pending cannot be mounted again.
 
 ## Control service

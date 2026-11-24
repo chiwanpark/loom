@@ -144,7 +144,7 @@ fun NewCodespaceChooser(
                         )
                     }
                 }
-                if (!any) Text("The oracles have no workspaces. Add one with loom-oracle-cli workspace add.")
+                if (!any) Text("The oracles have no workspaces. Add one in the desktop client's oracle settings.")
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
@@ -199,7 +199,7 @@ fun LazyListScope.workspaceItems(
         if (oracle.state == LinkState.Connected && lists.workspaces.isEmpty()) {
             item(key = "oracle/${oracle.host}/empty") {
                 Text(
-                    "No workspaces. Add one with loom-oracle-cli workspace add.",
+                    "No workspaces. Add one in the desktop client's oracle settings.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 44.dp, end = 12.dp, bottom = 6.dp),
