@@ -507,34 +507,7 @@ fn read_text(path: &Path, what: &str) -> anyhow::Result<String> {
 }
 
 fn read_skills(root: &Path) -> anyhow::Result<Vec<PresetFile>> {
-    fn walk(dir: &Path, prefix: &str, files: &mut Vec<PresetFile>) -> anyhow::Result<()> {
-        let mut entries = std::fs::read_dir(dir)
-            .with_context(|| format!("cannot read {}", dir.display()))?
-            .collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            let relative = format!("{prefix}/{name}");
-            if entry.file_type()?.is_dir() {
-                walk(&path, &relative, files)?;
-            } else {
-                let content = std::fs::read_to_string(&path)
-                    .with_context(|| format!("cannot read {} as text", path.display()))?;
-                files.push(PresetFile {
-                    path: relative,
-                    content,
-                });
-            }
-        }
-        Ok(())
-    }
-    let mut files = Vec::new();
-    walk(root, "skills", &mut files)?;
-    Ok(files)
+    loom_client::read_skills(root).map_err(anyhow::Error::msg)
 }
 
 fn print_account(account: &ModelAccount) {
