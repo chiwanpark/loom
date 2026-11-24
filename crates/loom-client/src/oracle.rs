@@ -16,11 +16,11 @@ use loom_oracle_proto::{
     HostLimits, HostReport, HostResult, Hosts, InstanceReport, ModelAccount, ModelAccountResult,
     ModelAccounts, ModelCredentials, ModelLogin, ModelLoginInput, ModelLoginMethod, Models,
     ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings,
-    Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost, RelayHostResult,
-    RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo, SecretResult,
-    Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume, VolumeInput,
-    VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings, Workspace, WorkspaceNotes,
-    WorkspaceResult, WorkspaceVolume, Workspaces, encode, parse_server_message,
+    Preset, PresetDetail, PresetFile, PresetResult, Presets, Reply, Repository, RepositorySearch,
+    Request, Secret, SecretInfo, SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary,
+    Sessions, Volume, VolumeInput, VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings,
+    Workspace, WorkspaceNotes, WorkspaceResult, WorkspaceVolume, Workspaces, encode,
+    parse_server_message,
 };
 use loom_proto::relay::{AgentId, HostId};
 use loom_proto::{InstanceId, SequencedEvent};
@@ -428,28 +428,6 @@ impl OracleClient {
     pub async fn cancel_pairing(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
         self.call::<Empty>(Command::CancelPairing { id })
-            .await
-            .map(|_| ())
-    }
-
-    pub async fn relay_hosts(&self) -> Result<Vec<RelayHost>> {
-        Ok(self
-            .call::<RelayHosts>(Command::ListRelayHosts)
-            .await?
-            .relay_hosts)
-    }
-
-    pub async fn add_relay_host(&self, host_id: &str, label: &str) -> Result<RelayHost> {
-        let (host_id, label) = (host_id.to_owned(), label.to_owned());
-        Ok(self
-            .call::<RelayHostResult>(Command::AddRelayHost { host_id, label })
-            .await?
-            .relay_host)
-    }
-
-    pub async fn remove_relay_host(&self, host_id: &str) -> Result<()> {
-        let host_id = host_id.to_owned();
-        self.call::<Empty>(Command::RemoveRelayHost { host_id })
             .await
             .map(|_| ())
     }

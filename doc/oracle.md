@@ -116,9 +116,6 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 | `pair-device [--ttl <duration>] [--no-qr]` | Makes a one-time link for a new device. The default time is 10 minutes. |
 | `pairings` | Lists the links that are not used yet. |
 | `cancel-pairing <id>` | Cancels a link. |
-| `relay-hosts` | Lists the relay hosts and their connected agents. |
-| `add-relay-host <host_id> <label>` | Lets the agents of a host register. |
-| `remove-relay-host <host_id>` | Removes a relay host. Its agents disconnect at once. |
 | `pair-host [--ttl <duration>] [--no-qr]` | Makes a one-time link for `loom-host join`. |
 | `hosts` | Lists the hosts with their status and their report. |
 | `remove-host <name>` | Removes a host. The oracle refuses this while it has workspaces, open codespaces, or tracked volumes. |
@@ -176,15 +173,6 @@ sudo -u loom-oracle loom-oracle --config /etc/loom/oracle.yaml pair
 With `--json`, each command writes JSON.
 
 If the oracle is behind Cloudflare Access, pair with `--access-id-env <name> --access-secret-env <name>`. These are the names of the environment variables that contain the service token. The CLI keeps the names, not the values.
-
-## Use the oracle as a relay
-
-Current agents and clients use the oracle as their relay without a change.
-
-1. On the agent host, run `loom-agent host`. It shows the `host_id` of the host.
-2. Run `loom-oracle-cli add-relay-host <host_id> <label>`. The oracle does not need a restart.
-3. In `agent.yaml` of the agent, set `relay.enabled: true` and set `relay.url` to the URL of the oracle.
-4. Pair the clients with `loom-agent pair`, as with `loom-relay`.
 
 ## Limits
 
@@ -392,9 +380,6 @@ Commands of devices:
 | `create_device_pairing` | `ttl_secs` (optional, 1 to 604800) | `pairing`, `link` |
 | `list_pairings` | | `pairings` |
 | `cancel_pairing` | `id` | |
-| `list_relay_hosts` | | `relay_hosts` |
-| `add_relay_host` | `host_id`, `label` | `relay_host` |
-| `remove_relay_host` | `host_id` | |
 | `create_host_pairing` | `ttl_secs` (optional) | `pairing`, `link` |
 | `list_hosts` | | `hosts` |
 | `remove_host` | `name` | |
@@ -479,7 +464,7 @@ Commands of codespace agents:
 
 A codespace has one of these states: `provisioning`, `starting`, `ready`, `closing`, `closed`, `failed`, and `lost`.
 
-The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_removed`, `relay_host_changed`, `relay_host_removed`, `host_changed`, `host_removed`, `workspace_changed`, `workspace_removed`, `codespace_changed`, `codespace_progress`, `codespace_removed`, `git_provider_changed`, `git_provider_removed`, `git_credential_changed`, `git_credential_removed`, `preset_changed`, and `preset_removed`. A closed codespace is removed with its workspace or its host. If a client reads the events too slowly, the oracle sends `events_lost`. Then the client reads the lists again.
+The events are `device_changed`, `device_removed`, `pairing_changed`, `pairing_removed`, `host_changed`, `host_removed`, `workspace_changed`, `workspace_removed`, `codespace_changed`, `codespace_progress`, `codespace_removed`, `git_provider_changed`, `git_provider_removed`, `git_credential_changed`, `git_credential_removed`, `preset_changed`, and `preset_removed`. A closed codespace is removed with its workspace or its host. If a client reads the events too slowly, the oracle sends `events_lost`. Then the client reads the lists again.
 
 Volume changes send `volume_changed` and `volume_removed` to devices.
 

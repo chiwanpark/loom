@@ -197,16 +197,6 @@ async fn the_cli_drives_the_control_service() {
     let devices = json(laptop, &["devices"]).await;
     assert_eq!(devices[1]["push"], false);
 
-    let host = "ab".repeat(32);
-    let added = json(laptop, &["add-relay-host", &host, "devbox"]).await;
-    assert_eq!(added["host_id"], host);
-    let text = ok(laptop, &["relay-hosts"]).await;
-    assert!(text.contains("devbox\toffline"), "{text}");
-    let err = fails(laptop, &["add-relay-host", "nope", "x"]).await;
-    assert!(err.contains("not a host ID"), "{err}");
-    ok(laptop, &["remove-relay-host", &host]).await;
-    assert_eq!(json(laptop, &["relay-hosts"]).await, Value::Array(vec![]));
-
     let pending = json(laptop, &["pair-device", "--no-qr"]).await;
     let id = pending["pairing"]["id"].as_str().unwrap();
     ok(laptop, &["cancel-pairing", id]).await;

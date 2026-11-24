@@ -9,9 +9,8 @@ use loom_oracle_proto::{
     Devices, Empty, ErrorCode, Event, FirstMessageResult, GitCredentialResult, GitCredentials,
     GitProviderResult, GitProviders, HostResult, Hosts, InvalidMessage, ModelAccountResult,
     ModelAccounts, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets,
-    RelayHostResult, RelayHosts, Request, Response, Role, SecretResult, Secrets, ServerHello,
-    ServerMessage, Sessions, VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode,
-    parse_client_message,
+    Request, Response, Role, SecretResult, Secrets, ServerHello, ServerMessage, Sessions,
+    VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode, parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
 use serde::Serialize;
@@ -507,16 +506,6 @@ impl Session {
             }),
             Command::CancelPairing { id } => {
                 oracle.cancel_pairing(&id, me)?;
-                ok(Empty {})
-            }
-            Command::ListRelayHosts => ok(RelayHosts {
-                relay_hosts: oracle.relay_hosts()?,
-            }),
-            Command::AddRelayHost { host_id, label } => ok(RelayHostResult {
-                relay_host: oracle.add_relay_host(&host_id, &label, me)?,
-            }),
-            Command::RemoveRelayHost { host_id } => {
-                oracle.remove_relay_host(&host_id, me)?;
                 ok(Empty {})
             }
             Command::CreateHostPairing { ttl_secs } => {

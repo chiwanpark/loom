@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime};
 
 use loom_crypto::{Zeroizing, pairing_id};
 use loom_oracle_proto::Role;
-use loom_proto::relay::HostId;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::seal::{MasterKey, SealError, Sealer};
@@ -252,6 +251,9 @@ ALTER TABLE codespaces ADD COLUMN archive_size INTEGER;
 ALTER TABLE codespaces ADD COLUMN archive_at INTEGER;
 ALTER TABLE codespaces ADD COLUMN archive_error TEXT;
 ",
+    "
+DROP TABLE relay_hosts;
+",
 ];
 
 const KEY_CHECK: &str = "master_key_check";
@@ -301,13 +303,6 @@ pub struct PairingRow {
     pub created_at: u64,
     pub expires_at: u64,
     pub target: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelayHostRow {
-    pub host: HostId,
-    pub label: String,
-    pub added_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -737,53 +732,6 @@ impl Store {
             > 0)
     }
 
-    pub fn relay_hosts(&self) -> StoreResult<Vec<RelayHostRow>> {
-        let conn = self.conn();
-        let rows = conn
-            .prepare("SELECT host_id, label, added_at FROM relay_hosts ORDER BY added_at, host_id")?
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|(host, label, added_at)| {
-                Ok(RelayHostRow {
-                    host: host
-                        .parse()
-                        .map_err(|_| StoreError::Malformed("relay host ID"))?,
-                    label,
-                    added_at: to_u64(added_at),
-                })
-            })
-            .collect()
-    }
-
-    pub fn put_relay_host(&self, host: &HostId, label: &str) -> StoreResult<RelayHostRow> {
-        let added_at: i64 = self.conn().query_row(
-            "INSERT INTO relay_hosts (host_id, label, added_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (host_id) DO UPDATE SET label = excluded.label
-             RETURNING added_at",
-            params![host.to_string(), label, to_i64(now_unix())],
-            |row| row.get(0),
-        )?;
-        Ok(RelayHostRow {
-            host: *host,
-            label: label.to_owned(),
-            added_at: to_u64(added_at),
-        })
-    }
-
-    pub fn remove_relay_host(&self, host: &HostId) -> StoreResult<bool> {
-        Ok(self.conn().execute(
-            "DELETE FROM relay_hosts WHERE host_id = ?1",
-            [host.to_string()],
-        )? > 0)
-    }
-
     pub fn audit(&self, peer: Option<u64>, action: &str, detail: &str) -> StoreResult<()> {
         self.conn().execute(
             "INSERT INTO audit (at, peer, action, detail) VALUES (?1, ?2, ?3, ?4)",
@@ -853,10 +801,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("data/oracle.db");
         let store = Store::open(&path).unwrap();
-        store.put_relay_host(&HostId([1; 32]), "a").unwrap();
+        store.audit(None, "first", "a").unwrap();
         drop(store);
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.relay_hosts().unwrap().len(), 1);
+        assert_eq!(store.audit_log(10).unwrap().len(), 1);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         store
@@ -1000,16 +948,8 @@ mod tests {
     }
 
     #[test]
-    fn relay_hosts_and_audit() {
+    fn audit() {
         let store = store();
-        let host = HostId([7; 32]);
-        let first = store.put_relay_host(&host, "devbox").unwrap();
-        let renamed = store.put_relay_host(&host, "build").unwrap();
-        assert_eq!(renamed.added_at, first.added_at);
-        assert_eq!(store.relay_hosts().unwrap(), vec![renamed]);
-        assert!(store.remove_relay_host(&host).unwrap());
-        assert!(!store.remove_relay_host(&host).unwrap());
-
         store.audit(None, "first", "a").unwrap();
         store.audit(Some(3), "second", "b").unwrap();
         let log = store.audit_log(10).unwrap();

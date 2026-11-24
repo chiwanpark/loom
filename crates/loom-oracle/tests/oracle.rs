@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,13 +14,11 @@ use loom_client::{
     OracleEvents, pair_oracle,
 };
 use loom_config::{Dirs, OracleConfig};
-use loom_crypto::{FileResponder, HostIdentity, PairingUri, Pairings, Zeroizing};
+use loom_crypto::{FileResponder, HostIdentity};
 use loom_oracle::Oracle;
-use loom_proto::relay::AgentId;
 use loom_proto::{InstanceId, SequencedEvent, SessionEvent};
 use loom_transport::{
-    AgentLinkOptions, IncomingChannel, LinkState, RelayEndpoint, connect_relay, pair_relay,
-    spawn_agent_link,
+    AgentLinkOptions, IncomingChannel, LinkState, RelayEndpoint, spawn_agent_link,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -388,9 +385,7 @@ async fn unknown_and_malformed_requests_get_errors() {
 
 struct TestAgent {
     _dir: tempfile::TempDir,
-    data: PathBuf,
     host: Arc<HostIdentity>,
-    instance: InstanceId,
     state: watch::Receiver<LinkState>,
     shutdown: CancellationToken,
 }
@@ -405,7 +400,7 @@ fn start_agent(url: &str, name: &str) -> TestAgent {
     let (_task, state) = spawn_agent_link(
         AgentLinkOptions {
             endpoint: RelayEndpoint::new(url),
-            instance: instance.clone(),
+            instance,
             host: host.clone(),
             responder: Arc::new(FileResponder::in_dir(&data)),
             push: None,
@@ -431,9 +426,7 @@ fn start_agent(url: &str, name: &str) -> TestAgent {
     });
     TestAgent {
         _dir: dir,
-        data,
         host,
-        instance,
         state,
         shutdown,
     }
@@ -451,96 +444,16 @@ async fn wait_state(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn current_agents_and_clients_use_the_oracle_as_their_relay() {
+async fn the_relay_of_the_oracle_lets_in_only_the_agents_of_codespaces() {
     let oracle = start_oracle().await;
-    let (laptop, mut events) = oracle.device("laptop").await;
-    laptop.subscribe().await.unwrap();
-
     let mut agent = start_agent(&oracle.url, "inst-1");
     let state = wait_state(&mut agent.state, |s| {
         matches!(s, LinkState::Disconnected(_))
     })
     .await;
     assert!(
-        matches!(&state, LinkState::Disconnected(m) if m.contains("not a relay host")),
+        matches!(&state, LinkState::Disconnected(m) if m.contains("not a codespace of the oracle")),
         "{state:?}"
-    );
-    agent.shutdown.cancel();
-
-    let mut agent = start_agent(&oracle.url, "inst-1");
-    let host_id = agent.host.host_id().to_string();
-    let added = laptop.add_relay_host(&host_id, "devbox").await.unwrap();
-    assert_eq!(added.label, "devbox");
-    next_event(
-        &mut events,
-        |e| matches!(e, Event::RelayHostChanged { relay_host } if relay_host.host_id == host_id),
-    )
-    .await;
-    wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
-    let hosts = laptop.relay_hosts().await.unwrap();
-    assert_eq!(hosts.len(), 1);
-    assert_eq!(hosts[0].agents, vec!["inst-1".to_owned()]);
-
-    let endpoint = RelayEndpoint::new(&oracle.url);
-    let (_, secret) = Pairings::in_dir(&agent.data)
-        .create(Duration::from_secs(60))
-        .unwrap();
-    let uri = PairingUri {
-        relay_url: oracle.url.clone(),
-        host: agent.host.host_id(),
-        instance: agent.instance.clone(),
-        host_static: agent.host.static_public(),
-        secret: Zeroizing::new(*secret),
-    };
-    let classic = ClientIdentity::generate().unwrap();
-    pair_relay(&endpoint, &uri, &classic, "desktop")
-        .await
-        .unwrap();
-    let agent_id = AgentId {
-        host: agent.host.host_id(),
-        instance: agent.instance.clone(),
-    };
-    let mut stream = connect_relay(&endpoint, agent_id, &classic, &agent.host.static_public())
-        .await
-        .unwrap();
-    stream.send(Bytes::from_static(b"hello")).await.unwrap();
-    assert_eq!(
-        stream.recv().await.unwrap().unwrap(),
-        Bytes::from_static(b"desktop:hello")
-    );
-
-    assert_eq!(
-        code(
-            laptop
-                .add_relay_host(&oracle.oracle.identity().host_id().to_string(), "self")
-                .await
-                .unwrap_err()
-        ),
-        ErrorCode::Conflict
-    );
-    assert_eq!(
-        code(laptop.add_relay_host("abc", "x").await.unwrap_err()),
-        ErrorCode::BadRequest
-    );
-
-    laptop.remove_relay_host(&host_id).await.unwrap();
-    next_event(
-        &mut events,
-        |e| matches!(e, Event::RelayHostRemoved { host_id: h } if *h == host_id),
-    )
-    .await;
-    let state = wait_state(
-        &mut agent.state,
-        |s| matches!(s, LinkState::Disconnected(m) if m.contains("not a relay host")),
-    )
-    .await;
-    assert!(matches!(state, LinkState::Disconnected(_)));
-    let ended = tokio::time::timeout(WAIT, stream.recv()).await.unwrap();
-    assert!(!matches!(ended, Ok(Some(_))));
-    assert!(laptop.relay_hosts().await.unwrap().is_empty());
-    assert_eq!(
-        code(laptop.remove_relay_host(&host_id).await.unwrap_err()),
-        ErrorCode::NotFound
     );
     agent.shutdown.cancel();
     oracle.shutdown.cancel();
@@ -550,13 +463,6 @@ async fn current_agents_and_clients_use_the_oracle_as_their_relay() {
 async fn the_store_keeps_peers_and_needs_its_master_key() {
     let oracle = start_oracle().await;
     let (identity, endpoint) = oracle.pair(Role::Device, "laptop").await;
-    let mut agent = start_agent(&oracle.url, "inst-1");
-    oracle
-        .oracle
-        .add_relay_host(&agent.host.host_id().to_string(), "devbox", None)
-        .unwrap();
-    wait_state(&mut agent.state, |s| *s == LinkState::Registered).await;
-    agent.shutdown.cancel();
     oracle.shutdown.cancel();
     let TestOracle {
         dir,
@@ -591,7 +497,6 @@ async fn the_store_keeps_peers_and_needs_its_master_key() {
     .await
     .unwrap();
     assert_eq!(client.hello().peer.label, "laptop");
-    assert_eq!(client.relay_hosts().await.unwrap()[0].label, "devbox");
     assert_eq!(
         restarted.config.data_dir(&restarted.dirs()),
         dirs.data_home.join("loom/oracle")

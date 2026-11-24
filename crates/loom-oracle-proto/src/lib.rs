@@ -74,14 +74,6 @@ pub enum Command {
     CancelPairing {
         id: String,
     },
-    ListRelayHosts,
-    AddRelayHost {
-        host_id: String,
-        label: String,
-    },
-    RemoveRelayHost {
-        host_id: String,
-    },
     CreateHostPairing {
         #[serde(default)]
         ttl_secs: Option<u64>,
@@ -437,15 +429,6 @@ pub struct Pairing {
     pub created_by: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayHost {
-    pub host_id: String,
-    pub label: String,
-    pub added_at: u64,
-    #[serde(default)]
-    pub agents: Vec<String>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Empty {}
 
@@ -468,16 +451,6 @@ pub struct Pairings {
 pub struct PairingLink {
     pub pairing: Pairing,
     pub link: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayHosts {
-    pub relay_hosts: Vec<RelayHost>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayHostResult {
-    pub relay_host: RelayHost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,12 +487,6 @@ pub enum Event {
     PairingRemoved {
         id: String,
         used: bool,
-    },
-    RelayHostChanged {
-        relay_host: RelayHost,
-    },
-    RelayHostRemoved {
-        host_id: String,
     },
     HostChanged {
         host: Host,
