@@ -1,6 +1,6 @@
 use loom_oracle_proto::{
-    AgentAddress, CodespaceState, Environment, HostReport, InstanceVolume, Repository, Role,
-    WorkspaceVolume,
+    AgentAddress, CodespaceState, Environment, HostCheck, HostReport, InstanceVolume, Repository,
+    Role, WorkspaceVolume,
 };
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
@@ -17,6 +17,9 @@ pub struct HostRow {
     pub report: Option<HostReport>,
     pub reported_at: Option<u64>,
     pub environment: Environment,
+    pub ssh: Option<String>,
+    pub checks: Vec<HostCheck>,
+    pub checked_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,23 +132,48 @@ pub(super) fn add_host_peer(
 }
 
 const HOST_SELECT: &str = "SELECT p.id, p.role, p.label, p.pubkey, p.push_token, p.pairing, \
-     p.added_at, p.last_seen, h.report, h.reported_at, h.environment \
+     p.added_at, p.last_seen, h.report, h.reported_at, h.environment, h.ssh, h.checks, \
+     h.checked_at \
      FROM hosts h JOIN peers p ON p.id = h.peer";
 
-type RawHost = (PeerRow, Option<String>, Option<i64>, String);
-
-fn raw_host(row: &Row<'_>) -> rusqlite::Result<RawHost> {
-    Ok((peer_row(row)?, row.get(8)?, row.get(9)?, row.get(10)?))
+struct RawHost {
+    peer: PeerRow,
+    report: Option<String>,
+    reported_at: Option<i64>,
+    environment: String,
+    ssh: Option<String>,
+    checks: Option<String>,
+    checked_at: Option<i64>,
 }
 
-fn host_row((peer, report, reported_at, environment): RawHost) -> StoreResult<HostRow> {
+fn raw_host(row: &Row<'_>) -> rusqlite::Result<RawHost> {
+    Ok(RawHost {
+        peer: peer_row(row)?,
+        report: row.get(8)?,
+        reported_at: row.get(9)?,
+        environment: row.get(10)?,
+        ssh: row.get(11)?,
+        checks: row.get(12)?,
+        checked_at: row.get(13)?,
+    })
+}
+
+fn host_row(raw: RawHost) -> StoreResult<HostRow> {
     Ok(HostRow {
-        peer,
-        report: report
+        peer: raw.peer,
+        report: raw
+            .report
             .map(|text| from_json(&text, "host report"))
             .transpose()?,
-        reported_at: reported_at.map(to_u64),
-        environment: from_json(&environment, "host environment")?,
+        reported_at: raw.reported_at.map(to_u64),
+        environment: from_json(&raw.environment, "host environment")?,
+        ssh: raw.ssh,
+        checks: raw
+            .checks
+            .map(|text| from_json(&text, "host checks"))
+            .transpose()?
+            .unwrap_or_default(),
+        checked_at: raw.checked_at.map(to_u64),
     })
 }
 
@@ -301,11 +329,33 @@ impl Store {
     }
 
     pub fn set_host_report(&self, peer: u64, report: &HostReport) -> StoreResult<()> {
-        self.conn().execute(
+        let mut report = report.clone();
+        let checks = std::mem::take(&mut report.checks);
+        let now = to_i64(now_unix());
+        let conn = self.conn();
+        conn.execute(
             "UPDATE hosts SET report = ?1, reported_at = ?2 WHERE peer = ?3",
-            params![to_json(report), to_i64(now_unix()), to_i64(peer)],
+            params![to_json(&report), now, to_i64(peer)],
         )?;
+        if !checks.is_empty() {
+            drop(conn);
+            self.set_host_checks(peer, &checks)?;
+        }
         Ok(())
+    }
+
+    pub fn set_host_checks(&self, peer: u64, checks: &[HostCheck]) -> StoreResult<bool> {
+        Ok(self.conn().execute(
+            "UPDATE hosts SET checks = ?1, checked_at = ?2 WHERE peer = ?3",
+            params![to_json(&checks), to_i64(now_unix()), to_i64(peer)],
+        )? > 0)
+    }
+
+    pub fn set_host_ssh(&self, peer: u64, ssh: Option<&str>) -> StoreResult<bool> {
+        Ok(self.conn().execute(
+            "UPDATE hosts SET ssh = ?1 WHERE peer = ?2",
+            params![ssh, to_i64(peer)],
+        )? > 0)
     }
 
     pub fn set_host_environment(&self, peer: u64, environment: &Environment) -> StoreResult<bool> {

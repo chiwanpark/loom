@@ -49,6 +49,77 @@ pub struct HostReport {
     pub max_codespaces: Option<u32>,
     #[serde(default)]
     pub connection_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<HostCheck>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostCheckStatus {
+    Ok,
+    Warning,
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
+impl HostCheckStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warning => "warning",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for HostCheckStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostCheck {
+    pub name: String,
+    pub status: HostCheckStatus,
+    #[serde(default)]
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostChecks {
+    #[serde(default)]
+    pub checks: Vec<HostCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeUsage {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeUsages {
+    #[serde(default)]
+    pub volumes: Vec<VolumeUsage>,
+}
+
+pub const MAX_SSH_DESTINATION: usize = 200;
+
+pub fn valid_ssh_destination(destination: &str) -> bool {
+    !destination.is_empty()
+        && destination.len() <= MAX_SSH_DESTINATION
+        && !destination.starts_with('-')
+        && !destination
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '\'' | '"' | '`' | '\\'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +139,12 @@ pub struct Host {
     pub codespaces: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reach: Vec<CheckResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<HostCheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +332,13 @@ pub enum HostCall {
     DeleteVolume {
         volume: String,
     },
+    Check {
+        #[serde(default)]
+        docker: bool,
+    },
+    VolumeUsage {
+        volumes: Vec<String>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -341,6 +425,22 @@ mod tests {
         }
         for name in ["", "Web", "1st", "a_b", "a-", "a--b", &"a".repeat(41)] {
             assert!(!valid_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn ssh_destinations_are_one_safe_word() {
+        for ok in ["host", "dev@host.example.com", "ssh://dev@10.0.0.2:2222"] {
+            assert!(valid_ssh_destination(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "-oProxyCommand=x",
+            "dev@host extra",
+            "a\"b",
+            &"h".repeat(201),
+        ] {
+            assert!(!valid_ssh_destination(bad), "{bad}");
         }
     }
 

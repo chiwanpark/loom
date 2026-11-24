@@ -152,6 +152,20 @@ pub struct StorageVolume {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct StorageVolumeUsage {
+    #[serde(default)]
+    pub used: u64,
+    #[serde(default)]
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct StorageVolumeState {
+    #[serde(default)]
+    pub usage: Option<StorageVolumeUsage>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct Network {
     pub name: String,
     #[serde(default, rename = "type")]

@@ -98,6 +98,25 @@ enum Command {
     RemoveHost {
         name: String,
     },
+    CheckHost {
+        name: String,
+        #[arg(long, help = "Also test Docker in a test instance")]
+        docker: bool,
+    },
+    SetSsh {
+        host: String,
+        #[arg(help = "The SSH destination, such as user@host")]
+        destination: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "destination",
+            help = "Remove the SSH destination"
+        )]
+        clear: bool,
+    },
+    HostVolumes {
+        name: String,
+    },
     SetEnvironment {
         host: String,
         #[arg(long)]
@@ -820,6 +839,17 @@ fn print_host(host: &Host) {
             Some(error) => format!("cannot reach {}: {error}", reach.name),
         });
     }
+    if let Some(ssh) = &host.ssh {
+        marks.push(format!("ssh {ssh}"));
+    }
+    let problems = host
+        .checks
+        .iter()
+        .filter(|c| c.status != loom_client::oracle_proto::HostCheckStatus::Ok)
+        .count();
+    if problems > 0 {
+        marks.push(format!("{problems} check problems"));
+    }
     println!("{}\t{}", host.name, marks.join(", "));
 }
 
@@ -1285,6 +1315,48 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             client.remove_host(&name).await?;
             if !json {
                 println!("removed host {name}");
+            }
+        }
+        Command::CheckHost { name, docker } => {
+            let host = client.check_host(&name, docker).await?;
+            if json {
+                return print_json(&host.checks);
+            }
+            for check in &host.checks {
+                println!("{}\t{}\t{}", check.status, check.name, check.detail);
+            }
+        }
+        Command::SetSsh {
+            host,
+            destination,
+            clear,
+        } => {
+            if destination.is_none() && !clear {
+                bail!("give an SSH destination, or --clear to remove it");
+            }
+            let host = client.set_host_ssh(&host, destination.as_deref()).await?;
+            if json {
+                return print_json(&host);
+            }
+            match &host.ssh {
+                Some(ssh) => println!("the host {} has the SSH destination {ssh}", host.name),
+                None => println!("the host {} has no SSH destination", host.name),
+            }
+        }
+        Command::HostVolumes { name } => {
+            let volumes = client.host_volumes(&name).await?;
+            if json {
+                return print_json(&volumes);
+            }
+            for volume in &volumes {
+                let mib = |bytes: u64| format!("{:.1} MiB", bytes as f64 / 1_048_576.0);
+                let size = match (volume.used_bytes, volume.total_bytes, &volume.error) {
+                    (_, _, Some(error)) => format!("error: {error}"),
+                    (Some(used), Some(total), _) => format!("{} of {}", mib(used), mib(total)),
+                    (Some(used), None, _) => mib(used),
+                    (None, _, None) => "unknown".to_owned(),
+                };
+                println!("{}\t{size}", volume.name);
             }
         }
         Command::SetEnvironment {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use loom_client::oracle_proto::{
-    Bootstrap, CreateInstance, Environment, InstanceReport, InstanceVolume, VolumeKind,
+    Bootstrap, CreateInstance, Environment, InstanceReport, InstanceVolume, VolumeKind, VolumeUsage,
 };
 use loom_config::HostRules;
 use loom_incus::{Exec, FileOwner, Incus, IncusError, Project, StateAction, StoragePool};
@@ -905,6 +905,52 @@ impl Driver for IncusDriver {
 
     fn local(&self) -> bool {
         self.incus.is_local()
+    }
+
+    async fn volume_usage(&self, oracle: &str, volumes: &[String]) -> Vec<VolumeUsage> {
+        let mut usages = Vec::with_capacity(volumes.len());
+        for volume in volumes {
+            let result: anyhow::Result<Option<(u64, Option<u64>)>> = async {
+                let name = incus_volume(volume)?;
+                let Some(found) = self
+                    .incus
+                    .storage_volume(&self.pool, &name)
+                    .await
+                    .map_err(incus_error)?
+                else {
+                    return Ok(None);
+                };
+                if found.config.get(KEY_ORACLE).map(String::as_str) != Some(oracle) {
+                    bail!("the storage volume {name} does not belong to this oracle");
+                }
+                let state = self
+                    .incus
+                    .storage_volume_state(&self.pool, &name)
+                    .await
+                    .map_err(incus_error)?;
+                Ok(state.and_then(|s| s.usage).map(|usage| {
+                    let total = u64::try_from(usage.total).ok().filter(|t| *t > 0);
+                    (usage.used, total)
+                }))
+            }
+            .await;
+            let (used_bytes, total_bytes, error) = match result {
+                Ok(Some((used, total))) => (Some(used), total, None),
+                Ok(None) => (
+                    None,
+                    None,
+                    Some("the volume is not on this host".to_owned()),
+                ),
+                Err(err) => (None, None, Some(format!("{err:#}"))),
+            };
+            usages.push(VolumeUsage {
+                name: volume.clone(),
+                used_bytes,
+                total_bytes,
+                error,
+            });
+        }
+        usages
     }
 
     async fn delete_volume(&self, oracle: &str, volume: &str) -> anyhow::Result<()> {
