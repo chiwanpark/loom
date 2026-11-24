@@ -196,7 +196,7 @@ async fn serve_main(config: OracleConfig, dirs: Dirs) -> anyhow::Result<()> {
             .await
             .with_context(|| format!("cannot listen on {addr}"))?;
         tracing::info!(%addr, "serving metrics");
-        let app = oracle.relay().metrics_router();
+        let app = loom_oracle::metrics_router(oracle.clone());
         tokio::spawn(async move {
             if let Err(err) = axum::serve(listener, app).await {
                 tracing::error!(error = %err, "the metrics server stopped");

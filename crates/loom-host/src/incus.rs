@@ -8,12 +8,12 @@ use loom_client::oracle_proto::{
     Bootstrap, CreateInstance, Environment, InstanceReport, InstanceVolume, VolumeKind, VolumeUsage,
 };
 use loom_config::HostRules;
-use loom_incus::{Exec, FileOwner, Incus, IncusError, Project, StateAction, StoragePool};
+use loom_incus::{Exec, FileOwner, Incus, IncusError, Instance, Project, StateAction, StoragePool};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::driver::{
-    Agent, CheckItem, CheckStatus, Driver, DriverReport, Progress, valid_instance,
+    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, valid_instance,
 };
 use crate::volumes::{DEV_GID, DEV_UID, idmap, incus_volume, prepare_mounts};
 
@@ -32,6 +32,7 @@ const UNIT_PATH: &str = "/etc/systemd/system/loom-agent.service";
 const UNIT_LINK: &str = "/etc/systemd/system/multi-user.target.wants/loom-agent.service";
 const BOOTSTRAP_PATH: &str = "/home/dev/.config/loom/bootstrap.json";
 const WORKSPACES: &str = "/workspaces";
+const DEV_HOME: &str = "/home/dev";
 const DEV: u32 = 1000;
 const CREATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(45 * 60);
@@ -163,6 +164,21 @@ fn incus_error(err: IncusError) -> anyhow::Error {
     anyhow::anyhow!("{}", err.message())
 }
 
+pub fn stdio_exec() -> Exec {
+    Exec {
+        command: vec![AGENT_PATH.into(), "stdio".into(), "--managed".into()],
+        environment: BTreeMap::from([
+            ("HOME".to_owned(), DEV_HOME.to_owned()),
+            ("USER".to_owned(), "dev".to_owned()),
+            ("PATH".to_owned(), PATH.to_owned()),
+            ("LANG".to_owned(), "C.UTF-8".to_owned()),
+        ]),
+        user: DEV,
+        group: DEV,
+        cwd: Some(DEV_HOME.into()),
+    }
+}
+
 impl IncusDriver {
     pub fn new(incus: Incus, pool: String, network: String, rules: HostRules) -> Self {
         Self {
@@ -267,6 +283,22 @@ impl IncusDriver {
                 .map_err(incus_error)?;
         }
         self.incus.delete_instance(name).await.map_err(incus_error)
+    }
+
+    async fn owned(&self, oracle: &str, instance: &str) -> anyhow::Result<Instance> {
+        if !valid_instance(instance) {
+            bail!("{instance:?} is not an instance name of Loom");
+        }
+        let found = self
+            .incus
+            .instance(instance)
+            .await
+            .map_err(incus_error)?
+            .with_context(|| format!("the instance {instance} is not there"))?;
+        if found.config.get(KEY_ORACLE).map(String::as_str) != Some(oracle) {
+            bail!("the instance {instance} does not belong to this oracle");
+        }
+        Ok(found)
     }
 
     async fn wait_network(&self, name: &str) -> anyhow::Result<()> {
@@ -884,6 +916,51 @@ impl Driver for IncusDriver {
             bail!("the instance {instance} does not belong to this oracle");
         }
         self.remove(instance).await
+    }
+
+    async fn stop(&self, oracle: &str, instance: &str) -> anyhow::Result<()> {
+        if !self.owned(oracle, instance).await?.running() {
+            return Ok(());
+        }
+        if let Err(err) = self
+            .incus
+            .set_state(instance, StateAction::Stop, false)
+            .await
+        {
+            tracing::warn!(%instance, error = %err, "the instance did not stop in time; forcing it");
+            self.incus
+                .set_state(instance, StateAction::Stop, true)
+                .await
+                .map_err(incus_error)?;
+        }
+        Ok(())
+    }
+
+    async fn start(&self, oracle: &str, instance: &str) -> anyhow::Result<()> {
+        if self.owned(oracle, instance).await?.running() {
+            return Ok(());
+        }
+        self.incus
+            .set_state(instance, StateAction::Start, false)
+            .await
+            .map_err(incus_error)
+    }
+
+    async fn stdio(
+        &self,
+        oracle: &str,
+        instance: &str,
+        input: Input,
+        output: Output,
+        errors: Output,
+    ) -> anyhow::Result<i32> {
+        if !self.owned(oracle, instance).await?.running() {
+            bail!("the instance {instance} is stopped; resume the codespace first");
+        }
+        self.incus
+            .exec_stream(instance, &stdio_exec(), input, output, errors)
+            .await
+            .map_err(incus_error)
     }
 
     async fn list(&self, oracle: &str) -> anyhow::Result<Vec<InstanceReport>> {

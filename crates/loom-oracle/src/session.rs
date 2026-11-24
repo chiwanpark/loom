@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use loom_oracle_proto::{
-    ClientMessage, CodespaceResult, Codespaces, Command, DeviceResult, Devices, Empty, ErrorCode,
-    Event, FirstMessageResult, GitCredentialResult, GitCredentials, GitProviderResult,
-    GitProviders, HostResult, Hosts, InvalidMessage, ModelAccountResult, ModelAccounts,
-    OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets, RelayHostResult,
-    RelayHosts, Request, Response, Role, SecretResult, Secrets, ServerHello, ServerMessage,
-    Sessions, VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode,
+    ClientMessage, CodespaceConnections, CodespaceResult, Codespaces, Command, DeviceResult,
+    Devices, Empty, ErrorCode, Event, FirstMessageResult, GitCredentialResult, GitCredentials,
+    GitProviderResult, GitProviders, HostResult, Hosts, InvalidMessage, ModelAccountResult,
+    ModelAccounts, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets,
+    RelayHostResult, RelayHosts, Request, Response, Role, SecretResult, Secrets, ServerHello,
+    ServerMessage, Sessions, VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode,
     parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
@@ -470,6 +470,10 @@ impl Session {
             Command::TakeFirstMessage => ok(FirstMessageResult {
                 message: self.oracle.take_first_message(me)?,
             }),
+            Command::CodespaceActivity { active, metrics } => {
+                self.oracle.codespace_activity(me, active, metrics)?;
+                ok(Empty {})
+            }
             _ => Err(forbidden(self.peer.role, "devices")),
         }
     }
@@ -541,6 +545,21 @@ impl Session {
                 codespace: oracle.close_codespace(&id, me)?,
                 warnings: Vec::new(),
             }),
+            Command::StopCodespace { id } => ok(CodespaceResult {
+                codespace: oracle.stop_codespace(&id, me)?,
+                warnings: Vec::new(),
+            }),
+            Command::ResumeCodespace { id } => ok(CodespaceResult {
+                codespace: oracle.resume_codespace(&id, me)?,
+                warnings: Vec::new(),
+            }),
+            Command::CodespaceConnections { id, types } => ok(CodespaceConnections {
+                connections: oracle.codespace_connections(&id, &types)?,
+            }),
+            Command::SetHostLimits { name, limits } => ok(HostResult {
+                host: oracle.set_host_limits(&name, &limits, me)?,
+            }),
+            Command::ListAudit { limit, before } => ok(oracle.audit_entries(limit, before)?),
             Command::CodespaceWarnings { workspace, preset } => ok(Warnings {
                 warnings: oracle.codespace_warnings(&workspace, preset.as_deref())?,
             }),

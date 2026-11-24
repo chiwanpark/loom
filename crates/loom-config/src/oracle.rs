@@ -10,6 +10,7 @@ use crate::load::parse_yaml;
 use crate::relay_server::{
     AccessVerifyConfig, PushConfig, RelayLimits, RelayServerConfig, TlsConfig,
 };
+use crate::units::HumanDuration;
 
 pub const ORACLE_CONFIG_FILE: &str = "oracle.yaml";
 pub const ORACLE_CONFIG_ENV: &str = "LOOM_ORACLE_CONFIG";
@@ -32,7 +33,28 @@ pub struct OracleConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub master_key: Option<PathBuf>,
     pub limits: RelayLimits,
+    pub codespaces: CodespaceLifecycle,
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CodespaceLifecycle {
+    pub idle_stop: HumanDuration,
+    pub retention: HumanDuration,
+    pub closed_retention: HumanDuration,
+    pub check_interval: HumanDuration,
+}
+
+impl Default for CodespaceLifecycle {
+    fn default() -> Self {
+        Self {
+            idle_stop: HumanDuration::from_secs(30 * 60),
+            retention: HumanDuration::from_secs(30 * 24 * 3600),
+            closed_retention: HumanDuration::from_secs(7 * 24 * 3600),
+            check_interval: HumanDuration::from_secs(60),
+        }
+    }
 }
 
 impl Default for OracleConfig {
@@ -48,6 +70,7 @@ impl Default for OracleConfig {
             data_dir: None,
             master_key: None,
             limits: RelayLimits::default(),
+            codespaces: CodespaceLifecycle::default(),
             logging: LoggingConfig::default(),
         }
     }
@@ -163,6 +186,12 @@ impl OracleConfig {
                 return Err(invalid(field, "expected an absolute path or a path in ~"));
             }
         }
+        if self.codespaces.check_interval.as_duration().as_secs() < 1 {
+            return Err(invalid(
+                "codespaces.check_interval",
+                "must be one second or more",
+            ));
+        }
         self.relay_config().validate(origin)
     }
 }
@@ -204,6 +233,10 @@ mod tests {
             PathBuf::from("/run/credentials/loom-oracle.service/master.key")
         );
         assert_eq!(config.limits.max_frame, ByteSize::kib(256));
+        assert_eq!(
+            config.codespaces.retention,
+            HumanDuration::from_secs(30 * 24 * 3600)
+        );
         let relay = config.relay_config();
         assert!(relay.allowed_hosts.is_empty());
         assert_eq!(relay.listen, "127.0.0.1:8090");
@@ -238,6 +271,10 @@ mod tests {
             ("master_key: key\n", "master_key"),
             ("listen: nope\n", "listen"),
             ("limits:\n  burst: 1\n", "limits.burst"),
+            (
+                "codespaces:\n  check_interval: 0s\n",
+                "codespaces.check_interval",
+            ),
         ] {
             match OracleConfig::parse(text, "oracle.yaml", &dirs()) {
                 Err(ConfigError::Invalid { field: actual, .. }) => assert_eq!(actual, field),
@@ -251,7 +288,14 @@ mod tests {
     fn schema_describes_the_sections() {
         let schema = oracle_config_schema();
         let properties = schema["properties"].as_object().unwrap();
-        for section in ["url", "listen", "data_dir", "master_key", "limits"] {
+        for section in [
+            "url",
+            "listen",
+            "data_dir",
+            "master_key",
+            "limits",
+            "codespaces",
+        ] {
             assert!(properties.contains_key(section), "missing {section}");
         }
         assert!(!properties.contains_key("allowed_hosts"));

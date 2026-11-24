@@ -125,6 +125,42 @@ async fn instances_go_through_their_life() {
         .unwrap();
     assert_eq!(failed.code, 1);
 
+    let input: Vec<u8> = (0..=255u8).cycle().take(200_000).collect();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = incus
+        .exec_stream(
+            "loom-c1",
+            &Exec::new(["cat"]),
+            input.as_slice(),
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(stdout, input);
+    assert!(stderr.is_empty());
+    fake.state().stream = Some(Box::new(|_, command, stdin| {
+        (7, stdin.to_vec(), command.join(" ").into_bytes())
+    }));
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = incus
+        .exec_stream(
+            "loom-c1",
+            &Exec::new(["sh", "-c", "x"]),
+            &b"hi"[..],
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (code, stdout.as_slice(), stderr.as_slice()),
+        (7, &b"hi"[..], &b"sh -c x"[..])
+    );
+
     assert!(incus.delete_instance("loom-c1").await.is_err());
     incus
         .set_state("loom-c1", StateAction::Stop, true)

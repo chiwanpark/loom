@@ -17,6 +17,20 @@ pub use oracle::{
 pub use seal::{MasterKey, SealError, Sealer};
 pub use store::{Store, StoreError};
 
+pub fn metrics_router(oracle: Arc<Oracle>) -> axum::Router {
+    axum::Router::new().route(
+        "/metrics",
+        axum::routing::get(move || {
+            let oracle = oracle.clone();
+            async move {
+                tokio::task::spawn_blocking(move || oracle.metrics_text())
+                    .await
+                    .unwrap_or_default()
+            }
+        }),
+    )
+}
+
 pub async fn serve(
     oracle: Arc<Oracle>,
     listener: TcpListener,

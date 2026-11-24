@@ -1,6 +1,6 @@
 use loom_oracle_proto::{
-    AgentAddress, CodespaceState, Environment, HostCheck, HostReport, InstanceVolume, Repository,
-    Role, WorkspaceVolume,
+    AgentAddress, CodespaceMetrics, CodespaceState, Environment, HostCheck, HostLimits, HostReport,
+    InstanceVolume, Repository, Role, WorkspaceVolume,
 };
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
@@ -20,6 +20,7 @@ pub struct HostRow {
     pub ssh: Option<String>,
     pub checks: Vec<HostCheck>,
     pub checked_at: Option<u64>,
+    pub limits: HostLimits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,10 @@ pub struct CodespaceRow {
     pub first_message: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    pub stopped_at: Option<u64>,
+    pub active: Option<bool>,
+    pub active_at: Option<u64>,
+    pub metrics: Option<CodespaceMetrics>,
 }
 
 fn to_json<T: Serialize>(value: &T) -> String {
@@ -133,7 +138,7 @@ pub(super) fn add_host_peer(
 
 const HOST_SELECT: &str = "SELECT p.id, p.role, p.label, p.pubkey, p.push_token, p.pairing, \
      p.added_at, p.last_seen, h.report, h.reported_at, h.environment, h.ssh, h.checks, \
-     h.checked_at \
+     h.checked_at, h.limits \
      FROM hosts h JOIN peers p ON p.id = h.peer";
 
 struct RawHost {
@@ -144,6 +149,7 @@ struct RawHost {
     ssh: Option<String>,
     checks: Option<String>,
     checked_at: Option<i64>,
+    limits: String,
 }
 
 fn raw_host(row: &Row<'_>) -> rusqlite::Result<RawHost> {
@@ -155,6 +161,7 @@ fn raw_host(row: &Row<'_>) -> rusqlite::Result<RawHost> {
         ssh: row.get(11)?,
         checks: row.get(12)?,
         checked_at: row.get(13)?,
+        limits: row.get(14)?,
     })
 }
 
@@ -174,17 +181,18 @@ fn host_row(raw: RawHost) -> StoreResult<HostRow> {
             .transpose()?
             .unwrap_or_default(),
         checked_at: raw.checked_at.map(to_u64),
+        limits: from_json(&raw.limits, "host limits")?,
     })
 }
 
 const CODESPACE_SELECT: &str = "SELECT c.id, c.workspace, w.name, c.host, p.label, c.peer, \
      c.state, c.cpus, c.memory_mib, c.instance, c.branch, c.base_branch, c.client_version, \
      c.agent, c.step, c.error, c.created_at, c.updated_at, c.preset, s.name, c.repositories, \
-     c.first_message \
+     c.first_message, c.stopped_at, c.active, c.active_at, c.metrics \
      FROM codespaces c JOIN workspaces w ON w.id = c.workspace JOIN peers p ON p.id = c.host \
      LEFT JOIN presets s ON s.id = c.preset";
 
-type RawCodespace = (CodespaceRow, Option<String>, String);
+type RawCodespace = (CodespaceRow, Option<String>, String, Option<String>);
 
 fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
     Ok((
@@ -211,17 +219,27 @@ fn raw_codespace(row: &Row<'_>) -> rusqlite::Result<RawCodespace> {
             first_message: row.get(21)?,
             created_at: to_u64(row.get(16)?),
             updated_at: to_u64(row.get(17)?),
+            stopped_at: row.get::<_, Option<i64>>(22)?.map(to_u64),
+            active: row.get::<_, Option<i64>>(23)?.map(|v| v != 0),
+            active_at: row.get::<_, Option<i64>>(24)?.map(to_u64),
+            metrics: None,
         },
         row.get(13)?,
         row.get(20)?,
+        row.get(25)?,
     ))
 }
 
-fn codespace_row((mut row, agent, repositories): RawCodespace) -> StoreResult<CodespaceRow> {
+fn codespace_row(
+    (mut row, agent, repositories, metrics): RawCodespace,
+) -> StoreResult<CodespaceRow> {
     row.agent = agent
         .map(|text| from_json(&text, "codespace agent"))
         .transpose()?;
     row.repositories = from_json(&repositories, "codespace repositories")?;
+    row.metrics = metrics
+        .map(|text| from_json(&text, "codespace metrics"))
+        .transpose()?;
     Ok(row)
 }
 
@@ -355,6 +373,13 @@ impl Store {
         Ok(self.conn().execute(
             "UPDATE hosts SET ssh = ?1 WHERE peer = ?2",
             params![ssh, to_i64(peer)],
+        )? > 0)
+    }
+
+    pub fn set_host_limits(&self, peer: u64, limits: &HostLimits) -> StoreResult<bool> {
+        Ok(self.conn().execute(
+            "UPDATE hosts SET limits = ?1 WHERE peer = ?2",
+            params![to_json(limits), to_i64(peer)],
         )? > 0)
     }
 
@@ -588,6 +613,20 @@ impl Store {
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    pub fn count_running_codespaces(&self, host: u64) -> StoreResult<u32> {
+        let count: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM codespaces WHERE host = ?1 AND state IN (?2, ?3, ?4)",
+            params![
+                to_i64(host),
+                CodespaceState::Provisioning.as_str(),
+                CodespaceState::Starting.as_str(),
+                CodespaceState::Ready.as_str(),
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     pub fn insert_codespace(
         &self,
         row: &CodespaceRow,
@@ -630,7 +669,8 @@ impl Store {
     pub fn save_codespace(&self, row: &CodespaceRow) -> StoreResult<()> {
         self.conn().execute(
             "UPDATE codespaces SET peer = ?1, state = ?2, agent = ?3, step = ?4, error = ?5,
-                 updated_at = ?6 WHERE id = ?7",
+                 updated_at = ?6, stopped_at = ?8, active = ?9, active_at = ?10, metrics = ?11
+             WHERE id = ?7",
             params![
                 row.peer.map(to_i64),
                 row.state.as_str(),
@@ -639,9 +679,25 @@ impl Store {
                 row.error,
                 to_i64(row.updated_at),
                 row.id,
+                row.stopped_at.map(to_i64),
+                row.active.map(i64::from),
+                row.active_at.map(to_i64),
+                row.metrics.as_ref().map(to_json),
             ],
         )?;
         Ok(())
+    }
+
+    pub fn delete_closed_codespaces(&self, before: u64) -> StoreResult<Vec<String>> {
+        let conn = self.conn();
+        let ids = conn
+            .prepare("DELETE FROM codespaces WHERE state = ?1 AND updated_at < ?2 RETURNING id")?
+            .query_map(
+                params![CodespaceState::Closed.as_str(), to_i64(before)],
+                |row| row.get(0),
+            )?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
     }
 
     pub fn cancel_pairings_for(&self, target: &str) -> StoreResult<Vec<String>> {
@@ -691,6 +747,10 @@ mod tests {
             first_message: None,
             created_at: 1,
             updated_at: 1,
+            stopped_at: None,
+            active: None,
+            active_at: None,
+            metrics: None,
         }
     }
 

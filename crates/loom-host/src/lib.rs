@@ -13,11 +13,12 @@ use loom_config::{Dirs, HostConfig, HostDriver};
 
 pub use agents::{AgentCache, AgentSource};
 pub use driver::{
-    Agent, CheckItem, CheckStatus, Driver, DriverReport, Progress, cpus, memory_mib, valid_instance,
+    Agent, CheckItem, CheckStatus, Driver, DriverReport, Input, Output, Progress, cpus, memory_mib,
+    valid_instance,
 };
 pub use incus::{
     AGENT_UNIT, BASE_SCRIPT, DEFAULT_BASE_IMAGE, IMAGE_PREFIX, IncusDriver, KEY_CODESPACE,
-    KEY_ORACLE, SetupResult, environment_file, environment_hash, image_source,
+    KEY_ORACLE, SetupResult, environment_file, environment_hash, image_source, stdio_exec,
 };
 pub use link::{
     CLIENT_NAME, Host, IDENTITY_FILE, JoinOptions, JoinedOracle, ORACLE_FILE, identity, join,
@@ -91,4 +92,26 @@ pub fn host(config: HostConfig, dirs: &Dirs) -> anyhow::Result<Host> {
         identity,
         http: loom_github::Http::new()?,
     })
+}
+
+pub async fn stdio(
+    driver: &dyn Driver,
+    oracle: &str,
+    codespace: &str,
+    input: Input,
+    output: Output,
+    errors: Output,
+) -> anyhow::Result<i32> {
+    let instance = driver
+        .list(oracle)
+        .await?
+        .into_iter()
+        .find(|instance| instance.codespace == codespace)
+        .with_context(|| format!("this host has no codespace {codespace}"))?;
+    if !instance.running {
+        anyhow::bail!("the codespace {codespace} is stopped; resume it first");
+    }
+    driver
+        .stdio(oracle, &instance.instance, input, output, errors)
+        .await
 }

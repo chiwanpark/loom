@@ -29,5 +29,11 @@ limits:
   handshake_timeout: 10s
   queue_frames: 256
 
+codespaces:
+  idle_stop: 30m
+  retention: 30days
+  closed_retention: 7days
+  check_interval: 1m
+
 logging:
   level: info

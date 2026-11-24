@@ -145,6 +145,44 @@ async fn codespaces_are_instances_of_a_built_image() {
     assert!(listed[0].running);
     assert!(driver.list("other").await.unwrap().is_empty());
 
+    let (writer, mut reader) = tokio::io::duplex(1024);
+    let code = loom_host::stdio(
+        &driver,
+        ORACLE,
+        "c1",
+        Box::new(&b"{\"hello\":1}\n"[..]),
+        Box::new(writer),
+        Box::new(tokio::io::sink()),
+    )
+    .await
+    .unwrap();
+    let mut echoed = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut echoed)
+        .await
+        .unwrap();
+    assert_eq!((code, echoed.as_slice()), (0, &b"{\"hello\":1}\n"[..]));
+    assert_eq!(
+        fake.state().instances["loom-c1"].execs.last().unwrap(),
+        &loom_host::stdio_exec().command
+    );
+    assert!(driver.stop("other", "loom-c1").await.is_err());
+    driver.stop(ORACLE, "loom-c1").await.unwrap();
+    assert!(!fake.state().instances["loom-c1"].instance.running());
+    driver.stop(ORACLE, "loom-c1").await.unwrap();
+    let err = loom_host::stdio(
+        &driver,
+        ORACLE,
+        "c1",
+        Box::new(tokio::io::empty()),
+        Box::new(tokio::io::sink()),
+        Box::new(tokio::io::sink()),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("stopped"), "{err}");
+    driver.start(ORACLE, "loom-c1").await.unwrap();
+    assert!(fake.state().instances["loom-c1"].instance.running());
+
     let (progress, mut rx) = steps();
     driver
         .create(

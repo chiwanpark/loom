@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use loom_crypto::decode_key;
 use loom_oracle_proto::{
-    AgentAddress, Bootstrap, Bundle, CONNECTION_RELAY, Codespace, CodespaceState, CreateInstance,
-    DEFAULT_CPUS, DEFAULT_MEMORY_MIB, DeviceKey, Environment, ErrorCode, Event, FirstMessage, Host,
-    HostCall, HostChecks, HostReport, InstanceReport, OracleError, Reply, Repository, Role,
-    ServerMessage, VolumeKind, VolumeUsage, VolumeUsages, Workspace, WorkspaceVolume, valid_name,
-    valid_ssh_destination,
+    AgentAddress, Bootstrap, Bundle, CONNECTION_RELAY, CONNECTION_SSH, Codespace, CodespaceState,
+    CreateInstance, DEFAULT_CPUS, DEFAULT_MEMORY_MIB, DeviceKey, Environment, ErrorCode, Event,
+    FirstMessage, Host, HostCall, HostChecks, HostReport, InstanceReport, OracleError, Reply,
+    Repository, Role, ServerMessage, VolumeKind, VolumeUsage, VolumeUsages, Workspace,
+    WorkspaceVolume, valid_name, valid_ssh_destination,
 };
 use loom_proto::relay::HostId;
 use serde_json::Value;
@@ -36,7 +36,7 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const DOCKER_CHECK_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 const CALL_QUEUE: usize = 32;
-const LOST_GRACE_SECS: u64 = 60;
+pub(super) const LOST_GRACE_SECS: u64 = 60;
 const MIN_MEMORY_MIB: u64 = 256;
 const MAX_SCRIPT: usize = 256 * 1024;
 const MAX_VALUE: usize = 4096;
@@ -55,11 +55,11 @@ fn unavailable(message: impl Into<String>) -> OracleError {
     OracleError::new(ErrorCode::Unavailable, message)
 }
 
-fn conflict(message: impl Into<String>) -> OracleError {
+pub(super) fn conflict(message: impl Into<String>) -> OracleError {
     OracleError::new(ErrorCode::Conflict, message)
 }
 
-fn forbidden(message: impl Into<String>) -> OracleError {
+pub(super) fn forbidden(message: impl Into<String>) -> OracleError {
     OracleError::new(ErrorCode::Forbidden, message)
 }
 
@@ -188,6 +188,12 @@ pub(super) fn codespace(row: &CodespaceRow) -> Codespace {
         first_message: row.first_message.is_some(),
         created_at: row.created_at,
         updated_at: row.updated_at,
+        active: row.active,
+        active_at: row.active_at,
+        metrics: row.metrics.clone(),
+        stopped_at: row.stopped_at,
+        stop_at: None,
+        delete_at: None,
     }
 }
 
@@ -284,15 +290,27 @@ impl Oracle {
     }
 
     fn host(&self, row: &HostRow) -> Host {
+        let mut report = row.report.clone();
+        if let Some(report) = &mut report
+            && row.ssh.is_some()
+            && !report.connection_types.iter().any(|t| t == CONNECTION_SSH)
+        {
+            report.connection_types.push(CONNECTION_SSH.into());
+        }
         Host {
             id: row.peer.id,
             name: row.peer.label.clone(),
             added_at: row.peer.added_at,
             connected: self.host_connected(row.peer.id),
-            report: row.report.clone(),
+            report,
             reported_at: row.reported_at,
             environment: row.environment.clone(),
             codespaces: self.store.count_open_codespaces(row.peer.id).unwrap_or(0),
+            running: self
+                .store
+                .count_running_codespaces(row.peer.id)
+                .unwrap_or(0),
+            limits: row.limits,
             reach: self.host_reach(row.peer.id),
             ssh: row.ssh.clone(),
             checks: row.checks.clone(),
@@ -571,12 +589,26 @@ impl Oracle {
     }
 
     pub fn codespaces(&self) -> Result<Vec<Codespace>, OracleError> {
-        Ok(self.store.codespaces()?.iter().map(codespace).collect())
+        let rows = self.store.codespaces()?;
+        let limits = self.lifecycle_limits()?;
+        Ok(rows
+            .iter()
+            .map(|row| self.view_with(row, &limits))
+            .collect())
     }
 
-    fn update_codespace(
+    pub(super) fn update_codespace(
         &self,
         id: &str,
+        change: impl FnOnce(&mut CodespaceRow) -> bool,
+    ) -> Result<Option<CodespaceRow>, OracleError> {
+        self.change_codespace(id, true, change)
+    }
+
+    pub(super) fn change_codespace(
+        &self,
+        id: &str,
+        touch: bool,
         change: impl FnOnce(&mut CodespaceRow) -> bool,
     ) -> Result<Option<CodespaceRow>, OracleError> {
         let row = {
@@ -590,12 +622,14 @@ impl Oracle {
             if !change(&mut row) {
                 return Ok(Some(row));
             }
-            row.updated_at = now_unix();
+            if touch {
+                row.updated_at = now_unix();
+            }
             self.store.save_codespace(&row)?;
             row
         };
         self.emit(Event::CodespaceChanged {
-            codespace: codespace(&row),
+            codespace: self.view(&row),
         });
         Ok(Some(row))
     }
@@ -673,13 +707,7 @@ impl Oracle {
             .codespace_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some(max) = report.max_codespaces
-            && self.store.count_open_codespaces(host.peer.id)? >= max
-        {
-            return Err(conflict(format!(
-                "the host {name} has its maximum of {max} codespaces"
-            )));
-        }
+        self.check_host_room(&host, true)?;
         let mut id = new_codespace_id();
         while self.store.codespace(&id)?.is_some() {
             id = new_codespace_id();
@@ -708,6 +736,10 @@ impl Oracle {
             first_message,
             created_at: now,
             updated_at: now,
+            stopped_at: None,
+            active: None,
+            active_at: None,
+            metrics: None,
         };
         let (_, secret) =
             self.store
@@ -727,7 +759,7 @@ impl Oracle {
             ),
         );
         tracing::info!(codespace = %id, workspace = %workspace.name, host = %name, "creating a codespace");
-        let created = codespace(&row);
+        let created = self.view(&row);
         self.emit(Event::CodespaceChanged {
             codespace: created.clone(),
         });
@@ -798,6 +830,15 @@ impl Oracle {
         id: &str,
         by: Option<u64>,
     ) -> Result<Codespace, OracleError> {
+        self.close_with(id, by, "codespace_closed")
+    }
+
+    pub(super) fn close_with(
+        self: &Arc<Self>,
+        id: &str,
+        by: Option<u64>,
+        action: &str,
+    ) -> Result<Codespace, OracleError> {
         let mut start = false;
         let row = self
             .update_codespace(id, |row| match row.state {
@@ -805,18 +846,19 @@ impl Oracle {
                 _ => {
                     row.state = CodespaceState::Closing;
                     row.error = None;
+                    row.active = None;
                     start = true;
                     true
                 }
             })?
             .ok_or_else(|| not_found(format!("no codespace has the ID {id}")))?;
         if start {
-            self.audit(by, "codespace_closed", &format!("codespace {id}"));
+            self.audit(by, action, &format!("codespace {id}"));
             tracing::info!(codespace = %id, "closing a codespace");
             self.revoke_codespace(&row);
             tokio::spawn(self.clone().delete_instance(row.clone()));
         }
-        Ok(codespace(&row))
+        Ok(self.view(&row))
     }
 
     fn revoke_codespace(&self, row: &CodespaceRow) {
@@ -934,25 +976,39 @@ impl Oracle {
                     first_message: None,
                     created_at: 0,
                     updated_at: 0,
+                    stopped_at: None,
+                    active: None,
+                    active_at: None,
+                    metrics: None,
                 });
                 tokio::spawn(self.clone().delete_instance(row));
             }
         }
         let now = now_unix();
         for row in rows.values() {
-            if reported.contains_key(&row.id) {
+            let settled = now.saturating_sub(row.updated_at) >= LOST_GRACE_SECS;
+            if let Some(instance) = reported.get(&row.id) {
+                if settled && !self.in_transition(&row.id) {
+                    self.instance_running(row, instance.running);
+                }
                 continue;
             }
-            let settled = now.saturating_sub(row.updated_at) >= LOST_GRACE_SECS;
             let result = match row.state {
-                CodespaceState::Starting | CodespaceState::Ready if settled => {
+                CodespaceState::Starting | CodespaceState::Ready | CodespaceState::Stopped
+                    if settled && !self.in_transition(&row.id) =>
+                {
                     tracing::warn!(codespace = %row.id, "the host does not have the instance of a codespace");
                     self.update_codespace(&row.id, |row| {
-                        let open =
-                            matches!(row.state, CodespaceState::Starting | CodespaceState::Ready);
+                        let open = matches!(
+                            row.state,
+                            CodespaceState::Starting
+                                | CodespaceState::Ready
+                                | CodespaceState::Stopped
+                        );
                         if open {
                             row.state = CodespaceState::Lost;
                             row.error = Some("the host does not have the instance".into());
+                            row.active = None;
                         }
                         open
                     })
@@ -1110,6 +1166,8 @@ impl Oracle {
                 row.state = CodespaceState::Ready;
                 row.error = None;
                 row.step = None;
+                row.stopped_at = None;
+                row.active_at = Some(now_unix());
                 true
             }
             CodespaceState::Ready => {
