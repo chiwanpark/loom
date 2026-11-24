@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use loom_client::oracle_proto::{
     Bootstrap, CreateInstance, Environment, InstanceVolume, VolumeKind,
 };
-use loom_config::{HostRules, HostUser};
+use loom_config::{AclAction, HostRules, HostUser, NetworkRules};
 use loom_host::{
     AGENT_UNIT, Agent, CheckStatus, Driver, IMAGE_PREFIX, IncusDriver, KEY_CODESPACE, KEY_ORACLE,
     Progress, SetupResult, environment_hash,
@@ -117,6 +117,10 @@ async fn codespaces_are_instances_of_a_built_image() {
         assert!(instance.instance.profiles.is_empty());
         assert_eq!(instance.instance.devices["root"]["pool"], "default");
         assert_eq!(instance.instance.devices["eth0"]["network"], "incusbr0");
+        let nic = &instance.instance.devices["eth0"];
+        assert_eq!(nic["security.port_isolation"], "true");
+        assert_eq!(nic["security.ipv4_filtering"], "true");
+        assert!(nic.get("security.acls").is_none());
         let files = &instance.files;
         assert_eq!(files["/usr/local/bin/loom-agent"].content, b"agent");
         assert_eq!(files["/usr/local/bin/loom-agent"].mode, "0755");
@@ -259,6 +263,67 @@ async fn codespaces_are_instances_of_a_built_image() {
             .keys()
             .all(|name| !name.starts_with("loom-check-"))
     );
+}
+
+#[tokio::test]
+async fn network_rules_go_to_the_network_interface() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeIncus::start(dir.path()).await;
+    let rules = HostRules {
+        network: NetworkRules {
+            isolate: false,
+            acls: vec!["loom-codespaces".into(), "loom-extra".into()],
+            default_egress: AclAction::Reject,
+            default_ingress: AclAction::Drop,
+        },
+        ..HostRules::default()
+    };
+    let driver = IncusDriver::new(
+        fake.client(Some("loom")),
+        "default".into(),
+        "incusbr0".into(),
+        rules,
+    );
+    let binary = dir.path().join("loom-agent");
+    std::fs::write(&binary, b"agent").unwrap();
+    let agent = Agent {
+        path: binary,
+        version: None,
+    };
+    driver
+        .create(
+            &request("n1", Environment::default()),
+            ORACLE,
+            &agent,
+            &Progress::none(),
+        )
+        .await
+        .unwrap();
+    {
+        let state = fake.state();
+        let nic = &state.instances["loom-n1"].instance.devices["eth0"];
+        assert!(nic.get("security.port_isolation").is_none());
+        assert_eq!(nic["security.acls"], "loom-codespaces,loom-extra");
+        assert_eq!(nic["security.acls.default.egress.action"], "reject");
+        assert_eq!(nic["security.acls.default.ingress.action"], "drop");
+    }
+
+    let network = |items: Vec<loom_host::CheckItem>| {
+        items
+            .into_iter()
+            .find(|item| item.name == "network")
+            .unwrap()
+    };
+    let item = network(driver.check(false).await);
+    assert_eq!(item.status, CheckStatus::Failed, "{item:?}");
+    assert!(
+        item.detail.contains("loom-codespaces does not exist"),
+        "{item:?}"
+    );
+    fake.state().acls = vec!["loom-codespaces".into(), "loom-extra".into()];
+    let item = network(driver.check(false).await);
+    assert_eq!(item.status, CheckStatus::Ok, "{item:?}");
+    assert!(item.detail.contains("default egress reject"), "{item:?}");
 }
 
 #[tokio::test]

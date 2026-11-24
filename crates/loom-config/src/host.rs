@@ -86,6 +86,54 @@ pub struct HostRules {
     pub directories: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_user: Option<HostUser>,
+    #[serde(skip_serializing_if = "NetworkRules::is_default")]
+    pub network: NetworkRules,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AclAction {
+    #[default]
+    Allow,
+    Reject,
+    Drop,
+}
+
+impl AclAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Reject => "reject",
+            Self::Drop => "drop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkRules {
+    pub isolate: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub acls: Vec<String>,
+    pub default_egress: AclAction,
+    pub default_ingress: AclAction,
+}
+
+impl Default for NetworkRules {
+    fn default() -> Self {
+        Self {
+            isolate: true,
+            acls: Vec::new(),
+            default_egress: AclAction::Allow,
+            default_ingress: AclAction::Allow,
+        }
+    }
+}
+
+impl NetworkRules {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -278,6 +326,30 @@ impl HostConfig {
                 ));
             }
         }
+        let network = &self.rules.network;
+        for acl in &network.acls {
+            let valid = !acl.is_empty()
+                && acl.len() <= 63
+                && acl
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && !acl.starts_with('-');
+            if !valid || network.acls.iter().filter(|a| *a == acl).count() > 1 {
+                return Err(invalid(
+                    "rules.network.acls",
+                    "expected different names of Incus network ACLs",
+                ));
+            }
+        }
+        if network.acls.is_empty()
+            && (network.default_egress != AclAction::Allow
+                || network.default_ingress != AclAction::Allow)
+        {
+            return Err(invalid(
+                "rules.network.acls",
+                "the default actions apply only with network ACLs; name at least one",
+            ));
+        }
         if self.report_interval.as_duration().as_secs() < 5 {
             return Err(invalid("report_interval", "must be 5s or more"));
         }
@@ -336,6 +408,8 @@ mod tests {
                 gid: 1000
             })
         );
+        assert!(config.rules.network.isolate);
+        assert_eq!(config.rules.network.acls, vec!["loom-codespaces"]);
         assert_eq!(
             config.incus.url.as_deref(),
             Some("https://incus.example.com:8443")
@@ -354,6 +428,7 @@ mod tests {
         let empty = HostConfig::parse("", "host.yaml", &dirs()).unwrap();
         assert_eq!(empty, HostConfig::default());
         assert_eq!(empty.incus.project, DEFAULT_INCUS_PROJECT);
+        assert!(empty.rules.network.isolate);
         assert_eq!(
             empty.data_dir(&dirs()),
             PathBuf::from("/home/u/.local/share/loom/host")
@@ -386,6 +461,18 @@ mod tests {
             ("incus:\n  project: a/b\n", "incus.project"),
             ("incus:\n  pool: ''\n", "incus.pool"),
             ("incus:\n  client_key: key.pem\n", "incus.client_key"),
+            (
+                "rules:\n  network:\n    acls: [a, a]\n",
+                "rules.network.acls",
+            ),
+            (
+                "rules:\n  network:\n    acls: ['a b']\n",
+                "rules.network.acls",
+            ),
+            (
+                "rules:\n  network:\n    default_egress: reject\n",
+                "rules.network.acls",
+            ),
         ] {
             match HostConfig::parse(text, "host.yaml", &dirs()) {
                 Err(ConfigError::Invalid { field: actual, .. }) => assert_eq!(actual, field),

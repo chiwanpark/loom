@@ -100,6 +100,10 @@ The members of `incus-admin` have full control of Incus. If you do not want this
 | `rules.max_codespaces` | The maximum number of codespaces on this host. The oracle cannot change this rule. |
 | `rules.directories` | The allowed absolute paths for host directory volumes. Each path allows that directory and its descendants. |
 | `rules.host_user` | The non-root host `uid` and `gid` that Incus maps to `dev` (1000:1000). |
+| `rules.network.isolate` | If `true`, codespaces cannot reach each other and cannot use other MAC or IP addresses. The default is `true`. See [Network rules](#network-rules). |
+| `rules.network.acls` | The names of Incus network ACLs for the network interface of each codespace. The default is no ACL. |
+| `rules.network.default_egress` | The action for outgoing traffic that no ACL rule matches: `allow`, `reject`, or `drop`. The default is `allow`. It needs `rules.network.acls`. |
+| `rules.network.default_ingress` | The action for incoming traffic that no ACL rule matches. The default is `allow`. It needs `rules.network.acls`. |
 | `report_interval` | How often the host sends its instances to the oracle. The default is `60s`. |
 | `logging.level` | The log level. |
 
@@ -129,8 +133,43 @@ Each codespace is the container `loom-<codespace>`:
 
 - It has the limits of the codespace (`limits.cpu`, `limits.memory`) and `security.nesting=true` for Docker.
 - It has no profiles. Its root disk is on `incus.pool`, and its network interface is on `incus.network`.
+- Its network interface has the network rules of the host. See [Network rules](#network-rules).
 - The keys `user.loom.oracle` and `user.loom.codespace` name its oracle and its codespace. `loom-host` changes only the containers with the key of its oracle.
 - Before the start, `loom-host` puts in the `loom-agent` binary, the systemd unit of the agent, and the bootstrap file.
+
+## Network rules
+
+Without rules, a container can reach all addresses that its host can reach. This includes the other codespaces on the bridge and the Incus API of the host. The network rules in `host.yaml` limit this. The oracle cannot change them.
+
+`rules.network.isolate` is `true` by default. Then `loom-host` sets these options on the network interface of each container that it makes:
+
+| Option | Effect |
+| --- | --- |
+| `security.port_isolation` | The container cannot reach the other containers with this option. Thus, codespaces cannot reach each other. Other instances on the bridge, such as the instance of `loom-host` on IncusOS, stay reachable. |
+| `security.mac_filtering` | The container cannot send frames from a different MAC address. |
+| `security.ipv4_filtering`, `security.ipv6_filtering` | The container cannot send packets from a different IP address. |
+
+Docker in the container continues to work, because Docker uses the address of the container for its traffic. These options need a bridge network. For a different network type, set `isolate: false`.
+
+Isolation does not stop the traffic to the host and to other networks. For that, use Incus network ACLs:
+
+```yaml
+rules:
+  network:
+    acls: [loom-codespaces]
+```
+
+`loom-host` adds the ACLs to the network interface of each container. `default_egress` and `default_ingress` set the action for traffic that no rule of the ACLs matches. The default is `allow`, so the ACLs list only the traffic to stop. Incus applies `drop` and `reject` rules before `allow` rules. To permit only some destinations, set `default_egress: reject` and add `allow` rules.
+
+Make the ACLs with the `incus` CLI as an administrator. A restricted certificate cannot make them. With a shared bridge, the ACLs are in the `default` project. This example stops the traffic from codespaces to the Incus API of the host at `10.0.0.1`. The commands come from the Incus documentation and were not tested:
+
+```sh
+incus network acl create loom-codespaces
+incus network acl rule add loom-codespaces egress action=reject protocol=tcp \
+  destination=10.0.0.1/32 destination_port=8443
+```
+
+`loom-host check` reports the isolation and the ACLs. If an ACL does not exist, the check fails. The rules apply to the containers that `loom-host` makes after a change. The containers that run keep their rules.
 
 ## Persistent volumes
 

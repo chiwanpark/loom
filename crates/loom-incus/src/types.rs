@@ -174,6 +174,17 @@ pub struct Network {
     pub managed: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct NetworkAcl {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub egress: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub ingress: Vec<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
