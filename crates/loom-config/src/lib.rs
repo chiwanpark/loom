@@ -30,8 +30,8 @@ pub use host::{
 };
 pub use load::{MANAGED_SECTIONS, ManagedSettings, strip_managed_sections};
 pub use oracle::{
-    ORACLE_CONFIG_ENV, ORACLE_CONFIG_FILE, ORACLE_DATA_DIR, ORACLE_MASTER_KEY_FILE, OracleConfig,
-    oracle_config_schema,
+    CodespaceLifecycle, ORACLE_CONFIG_ENV, ORACLE_CONFIG_FILE, ORACLE_DATA_DIR,
+    ORACLE_MASTER_KEY_FILE, OracleConfig, oracle_config_schema,
 };
 pub use relay_server::{
     AccessVerifyConfig, FCM_API_URL, FcmConfig, PushConfig, RELAY_CONFIG_ENV, RELAY_CONFIG_FILE,

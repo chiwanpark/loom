@@ -4900,6 +4900,7 @@ version = "0.5.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -4913,6 +4914,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
  "tracing",
 ]
 

@@ -12,6 +12,10 @@ use crate::{
 pub const DEFAULT_CPUS: u32 = 2;
 pub const DEFAULT_MEMORY_MIB: u64 = 4096;
 pub const CONNECTION_RELAY: &str = "relay";
+pub const CONNECTION_SSH: &str = "ssh";
+pub const HOST_BINARY: &str = "loom-host";
+pub const DEFAULT_IDLE_STOP_SECS: u64 = 30 * 60;
+pub const DEFAULT_RETENTION_SECS: u64 = 30 * 24 * 3600;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerSettings {
@@ -122,6 +126,18 @@ pub fn valid_ssh_destination(destination: &str) -> bool {
             .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '\'' | '"' | '`' | '\\'))
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_codespaces: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_running: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_stop_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Host {
     pub id: u64,
@@ -137,6 +153,10 @@ pub struct Host {
     pub environment: Environment,
     #[serde(default)]
     pub codespaces: u32,
+    #[serde(default)]
+    pub running: u32,
+    #[serde(default)]
+    pub limits: HostLimits,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reach: Vec<CheckResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,12 +198,13 @@ pub enum CodespaceState {
     Closed,
     Failed,
     Lost,
+    Stopped,
     #[serde(other)]
     Unknown,
 }
 
 impl CodespaceState {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Provisioning,
         Self::Starting,
         Self::Ready,
@@ -191,6 +212,7 @@ impl CodespaceState {
         Self::Closed,
         Self::Failed,
         Self::Lost,
+        Self::Stopped,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -202,6 +224,7 @@ impl CodespaceState {
             Self::Closed => "closed",
             Self::Failed => "failed",
             Self::Lost => "lost",
+            Self::Stopped => "stopped",
             Self::Unknown => "unknown",
         }
     }
@@ -215,6 +238,10 @@ impl CodespaceState {
 
     pub fn is_open(self) -> bool {
         !matches!(self, Self::Closed)
+    }
+
+    pub fn is_running(self) -> bool {
+        matches!(self, Self::Provisioning | Self::Starting | Self::Ready)
     }
 }
 
@@ -230,6 +257,30 @@ pub struct AgentAddress {
     pub host_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodespaceMetrics {
+    #[serde(default)]
+    pub uptime_secs: u64,
+    #[serde(default)]
+    pub sessions: u64,
+    #[serde(default)]
+    pub busy_sessions: u64,
+    #[serde(default)]
+    pub connections: u64,
+    #[serde(default)]
+    pub terminals: u64,
+    #[serde(default)]
+    pub turns_completed: u64,
+    #[serde(default)]
+    pub turns_failed: u64,
+    #[serde(default)]
+    pub tool_calls: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +309,44 @@ pub struct Codespace {
     pub first_message: bool,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<CodespaceMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CodespaceConnection {
+    Ssh {
+        destination: String,
+        command: Vec<String>,
+    },
+    Relay {
+        address: AgentAddress,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodespaceConnections {
+    #[serde(default)]
+    pub connections: Vec<CodespaceConnection>,
+}
+
+pub fn ssh_command(codespace: &str) -> Vec<String> {
+    [HOST_BINARY, "stdio", "--codespace", codespace]
+        .map(str::to_owned)
+        .to_vec()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +412,14 @@ pub struct InstanceReport {
 pub enum HostCall {
     CreateInstance(Box<CreateInstance>),
     DeleteInstance {
+        codespace: String,
+        instance: String,
+    },
+    StopInstance {
+        codespace: String,
+        instance: String,
+    },
+    StartInstance {
         codespace: String,
         instance: String,
     },
@@ -471,7 +568,7 @@ mod tests {
             );
         }
         assert_eq!(
-            serde_json::from_str::<CodespaceState>("\"stopped\"").unwrap(),
+            serde_json::from_str::<CodespaceState>("\"hibernated\"").unwrap(),
             CodespaceState::Unknown
         );
     }
@@ -479,7 +576,7 @@ mod tests {
     #[test]
     fn hosts_skip_calls_that_they_do_not_know() {
         let call: HostCall =
-            serde_json::from_str(r#"{"type":"stop_instance","name":"x"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"snapshot_instance","name":"x"}"#).unwrap();
         assert_eq!(call, HostCall::Unknown);
         let call: HostCall = serde_json::from_str(
             r#"{"type":"delete_instance","codespace":"c","instance":"loom-c","force":true}"#,
@@ -492,5 +589,37 @@ mod tests {
                 instance: "loom-c".into()
             }
         );
+    }
+
+    #[test]
+    fn connections_name_their_type() {
+        let ssh = CodespaceConnection::Ssh {
+            destination: "dev@box".into(),
+            command: ssh_command("c1"),
+        };
+        assert_eq!(
+            serde_json::to_value(&ssh).unwrap(),
+            serde_json::json!({
+                "type": "ssh",
+                "destination": "dev@box",
+                "command": ["loom-host", "stdio", "--codespace", "c1"],
+            })
+        );
+        let unknown: CodespaceConnection =
+            serde_json::from_str(r#"{"type":"quic","port":1}"#).unwrap();
+        assert_eq!(unknown, CodespaceConnection::Unknown);
+        assert!(CodespaceState::Ready.is_running());
+        assert!(!CodespaceState::Stopped.is_running());
+        assert!(CodespaceState::Stopped.is_open());
+    }
+
+    #[test]
+    fn host_limits_are_optional() {
+        let limits: HostLimits = serde_json::from_str("{}").unwrap();
+        assert_eq!(limits, HostLimits::default());
+        let limits: HostLimits =
+            serde_json::from_str(r#"{"max_running":2,"idle_stop_secs":0}"#).unwrap();
+        assert_eq!(limits.max_running, Some(2));
+        assert_eq!(limits.idle_stop_secs, Some(0));
     }
 }

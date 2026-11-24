@@ -1,3 +1,4 @@
+mod stream;
 mod tls;
 mod types;
 
@@ -68,6 +69,10 @@ impl IncusError {
 }
 
 pub type Result<T, E = IncusError> = std::result::Result<T, E>;
+
+trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
 #[derive(Clone)]
 enum Transport {
@@ -214,6 +219,46 @@ impl Incus {
         matches!(&*self.transport, Transport::Unix(_))
     }
 
+    async fn connect(&self) -> Result<Box<dyn Io>> {
+        match &*self.transport {
+            Transport::Unix(path) => {
+                let stream = tokio::net::UnixStream::connect(path)
+                    .await
+                    .map_err(|source| IncusError::Connect {
+                        target: path.display().to_string(),
+                        source,
+                    })?;
+                Ok(Box::new(stream))
+            }
+            Transport::Tls {
+                host,
+                port,
+                name,
+                connector,
+            } => {
+                let target = format!("{host}:{port}");
+                let tcp = tokio::net::TcpStream::connect((host.as_str(), *port))
+                    .await
+                    .map_err(|source| IncusError::Connect {
+                        target: target.clone(),
+                        source,
+                    })?;
+                let stream = connector
+                    .connect(name.clone(), tcp)
+                    .await
+                    .map_err(|err| IncusError::Tls(format!("{target}: {err}")))?;
+                Ok(Box::new(stream))
+            }
+        }
+    }
+
+    fn authority(&self) -> String {
+        match &*self.transport {
+            Transport::Unix(_) => "incus".to_owned(),
+            Transport::Tls { host, port, .. } => format!("{host}:{port}"),
+        }
+    }
+
     fn uri(&self, path: &str, project: bool) -> String {
         match (&self.project, project) {
             (Some(name), true) => {
@@ -232,14 +277,10 @@ impl Incus {
         headers: &[(&str, String)],
         timeout: Duration,
     ) -> Result<(StatusCode, Bytes)> {
-        let host = match &*self.transport {
-            Transport::Unix(_) => "incus".to_owned(),
-            Transport::Tls { host, port, .. } => format!("{host}:{port}"),
-        };
         let mut builder = Request::builder()
             .method(method.clone())
             .uri(uri)
-            .header(hyper::header::HOST, host)
+            .header(hyper::header::HOST, self.authority())
             .header(hyper::header::USER_AGENT, "loom-incus");
         for (name, value) in headers {
             builder = builder.header(*name, value);
@@ -248,38 +289,7 @@ impl Incus {
             .body(Full::new(body))
             .map_err(|err| IncusError::Http(err.to_string()))?;
         let what = format!("{method} {uri}");
-        let send = async {
-            match &*self.transport {
-                Transport::Unix(path) => {
-                    let stream = tokio::net::UnixStream::connect(path)
-                        .await
-                        .map_err(|source| IncusError::Connect {
-                            target: path.display().to_string(),
-                            source,
-                        })?;
-                    exchange(stream, request).await
-                }
-                Transport::Tls {
-                    host,
-                    port,
-                    name,
-                    connector,
-                } => {
-                    let target = format!("{host}:{port}");
-                    let tcp = tokio::net::TcpStream::connect((host.as_str(), *port))
-                        .await
-                        .map_err(|source| IncusError::Connect {
-                            target: target.clone(),
-                            source,
-                        })?;
-                    let stream = connector
-                        .connect(name.clone(), tcp)
-                        .await
-                        .map_err(|err| IncusError::Tls(format!("{target}: {err}")))?;
-                    exchange(stream, request).await
-                }
-            }
-        };
+        let send = async { exchange(self.connect().await?, request).await };
         tokio::time::timeout(timeout, send)
             .await
             .map_err(|_| IncusError::Timeout(what))?
