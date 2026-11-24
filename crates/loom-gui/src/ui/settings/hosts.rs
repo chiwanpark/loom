@@ -4,10 +4,13 @@ use gpui::{
 };
 use gpui_component::button::ButtonVariants;
 use gpui_component::{ActiveTheme, Disableable, h_flex, v_flex};
-use loom_client::oracle_proto::{DockerSettings, Environment, Host, HostCheckStatus, Role};
+use loom_client::oracle_proto::{
+    DockerSettings, Environment, Host, HostCheckStatus, HostLimits, Role,
+};
 use loom_view_model::codespaces::format_memory;
 use loom_view_model::settings::{
-    age, check_problems, parse_variables, split_certificates, usage_label, variables_text,
+    age, check_problems, limit_duration_field, limits_line, parse_limit_count,
+    parse_limit_duration, parse_variables, split_certificates, usage_label, variables_text,
     volume_label, volumes_on_host,
 };
 
@@ -226,6 +229,57 @@ impl SettingsView {
         );
     }
 
+    fn edit_limits(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
+        let link = self.link.clone();
+        let name = host.name.clone();
+        let current = host.limits;
+        let count = |n: Option<u32>| n.map(|n| n.to_string()).unwrap_or_default();
+        form::open(
+            format!("Limits of {name}"),
+            Some("Leave a field empty for no maximum, or for the default of the oracle. The limits apply to new codespaces and to the next check of the oracle.".to_owned()),
+            vec![
+                Field::text("Maximum codespaces")
+                    .placeholder("no maximum")
+                    .value(count(current.max_codespaces))
+                    .help("Open codespaces, running or stopped."),
+                Field::text("Maximum running codespaces")
+                    .placeholder("no maximum")
+                    .value(count(current.max_running))
+                    .help("Stop or close a codespace to create or resume another one."),
+                Field::text("Idle stop")
+                    .placeholder("default of the oracle")
+                    .value(limit_duration_field(current.idle_stop_secs))
+                    .help("Stop a codespace after this time without clients, turns, or terminals, such as 30m or 2h. 'never' turns it off."),
+                Field::text("Retention")
+                    .placeholder("default of the oracle")
+                    .value(limit_duration_field(current.retention_secs))
+                    .help("Delete a codespace after it is stopped for this time, such as 30d. 'never' keeps stopped codespaces."),
+            ],
+            "Save",
+            move |values, done, window, cx| {
+                let parsed = (|| {
+                    Ok::<_, String>(HostLimits {
+                        max_codespaces: parse_limit_count(&values.raw(0))?,
+                        max_running: parse_limit_count(&values.raw(1))?,
+                        idle_stop_secs: parse_limit_duration(&values.raw(2))?,
+                        retention_secs: parse_limit_duration(&values.raw(3))?,
+                    })
+                })();
+                let limits = match parsed {
+                    Ok(limits) => limits,
+                    Err(err) => return done.fail(err, window, cx),
+                };
+                let host = name.clone();
+                let task = super::call(&link, cx, move |client| async move {
+                    client.set_host_limits(&host, limits).await
+                });
+                done.wait(task, |_, _, _| {}, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
     fn remove_host(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm_then(
             format!("Remove the host {name}?"),
@@ -386,6 +440,13 @@ impl SettingsView {
                         )
                     })
                     .child({
+                        let host = host.clone();
+                        small_button(SharedString::from(format!("limits-{ix}")), "Limits…")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_limits(&host, window, cx)
+                            }))
+                    })
+                    .child({
                         let name = name.clone();
                         small_button(SharedString::from(format!("remove-host-{ix}")), "Remove…")
                             .danger()
@@ -401,11 +462,13 @@ impl SettingsView {
             facts.push("No report yet. The host sends one when it connects.".to_owned());
         }
         facts.push(format!(
-            "{} open codespace{} · added {}",
+            "{} open codespace{} · {} running · added {}",
             host.codespaces,
             if host.codespaces == 1 { "" } else { "s" },
+            host.running,
             age(now, host.added_at)
         ));
+        facts.push(format!("Limits: {}", limits_line(&host.limits)));
         facts.push(match &host.ssh {
             Some(ssh) => format!("SSH destination {ssh}"),
             None => "No SSH destination".to_owned(),

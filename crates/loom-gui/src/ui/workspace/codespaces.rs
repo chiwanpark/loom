@@ -9,15 +9,16 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::NewCodespace;
-use loom_client::oracle_proto::{Codespace, CodespaceState};
+use loom_client::oracle_proto::{Codespace, CodespaceState, ssh_command};
 use loom_client::proto::{PushRepositories, SessionInfo};
 use loom_config::HostEntry;
 use loom_view_model::codespaces::{
-    directories, is_starting, new_codespace_defaults, session_info, short_id, state_label, title,
+    can_stop, directories, is_starting, new_codespace_defaults, session_info, short_id,
+    state_label, title,
 };
 
 use super::{AgentConnection, LinkStatus, Workspace, notify};
-use crate::connection::{AgentSummary, Target};
+use crate::connection::{AgentSummary, CodespaceRoute, SshRoute, Target};
 use crate::oracle::{OracleEvent, OracleLink, OracleStatus};
 use crate::ui::close_codespace;
 use crate::ui::new_codespace::{self, NewCodespaceForm, NewCodespaceRequest};
@@ -89,7 +90,7 @@ impl Workspace {
         };
         let name = host.entry.name().to_owned();
         let link = link.read(cx);
-        let mut addresses = Vec::new();
+        let mut routes = Vec::new();
         let mut agents = Vec::new();
         for codespace in link.agents() {
             let Some(address) = codespace.agent.clone() else {
@@ -103,14 +104,23 @@ impl Workspace {
                 workspace: Some(format!("{} · {}", codespace.workspace, codespace.branch).into()),
                 pid: None,
             });
-            addresses.push(address);
+            let ssh = link
+                .hosts
+                .iter()
+                .find(|host| host.name == codespace.host)
+                .and_then(|host| host.ssh.clone())
+                .map(|destination| SshRoute {
+                    destination,
+                    command: ssh_command(&codespace.id),
+                });
+            routes.push(CodespaceRoute { address, ssh });
         }
         let loading = link.is_connecting();
         let error = match &link.status {
             OracleStatus::Offline(reason) => Some(reason.clone()),
             _ => None,
         };
-        self.env.codespaces.set(&name, addresses);
+        self.env.codespaces.set(&name, routes);
         let gone: Vec<String> = self.hosts[ix]
             .agents
             .iter()
@@ -512,6 +522,10 @@ impl Workspace {
             .and_then(|a| a.instance.clone())
             .filter(|_| state == CodespaceState::Ready);
         let Some(instance) = instance else {
+            if state == CodespaceState::Stopped {
+                self.resume_codespace(link.clone(), id, window, cx);
+                return;
+            }
             notify::info(
                 window,
                 cx,
@@ -532,6 +546,78 @@ impl Workspace {
         }
         self.oracle_agents(host_ix, window, cx);
         self.connect_then(host_ix, Target::Instance(instance), then, window, cx);
+    }
+
+    fn stop_codespace(
+        &mut self,
+        link: Entity<OracleLink>,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(codespace) = link.read(cx).codespace(id).cloned() else {
+            return;
+        };
+        let stop_link = link.clone();
+        let stop_id = codespace.id.clone();
+        super::dialogs::confirm(
+            "Stop codespace",
+            format!(
+                "Stop the codespace {}? Its sessions and terminals end. The files stay, and you can resume it later.",
+                title(&codespace)
+            ),
+            "Stop codespace",
+            move |window, cx| {
+                change_state(stop_link.clone(), stop_id.clone(), Change::Stop, window, cx)
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn resume_codespace(
+        &mut self,
+        link: Entity<OracleLink>,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(codespace) = link.read(cx).codespace(id).cloned() else {
+            return;
+        };
+        let resume_link = link.clone();
+        let resume_id = codespace.id.clone();
+        let this = cx.entity().downgrade();
+        let deletion = codespace
+            .delete_at
+            .map(|at| {
+                format!(
+                    " The oracle deletes it {} if it stays stopped.",
+                    loom_view_model::settings::in_time(crate::ui::settings::now_unix(), at)
+                )
+            })
+            .unwrap_or_default();
+        super::dialogs::confirm(
+            "Resume codespace",
+            format!(
+                "The codespace {} is stopped. Start it again?{deletion}",
+                title(&codespace)
+            ),
+            "Resume",
+            move |window, cx| {
+                change_state(
+                    resume_link.clone(),
+                    resume_id.clone(),
+                    Change::Resume,
+                    window,
+                    cx,
+                );
+                let (link, id) = (resume_link.clone(), resume_id.clone());
+                let _ = this.update(cx, |ws, cx| ws.show_progress(link, id, window, cx));
+            },
+            window,
+            cx,
+        );
     }
 
     fn open_codespace(
@@ -922,9 +1008,10 @@ impl Workspace {
             CodespaceState::Ready => theme.success,
             CodespaceState::Failed => theme.danger,
             CodespaceState::Provisioning | CodespaceState::Starting => theme.info,
+            CodespaceState::Stopped | CodespaceState::Lost => theme.warning,
             _ => theme.muted_foreground,
         };
-        let indicator: AnyElement = if is_starting(codespace.state) {
+        let indicator: AnyElement = if is_starting(codespace.state) || codespace.step.is_some() {
             super::spinner(theme.info)
         } else {
             super::dot(color)
@@ -935,17 +1022,33 @@ impl Workspace {
             state_label(codespace),
             if sessions == 1 { "" } else { "s" }
         );
-        let tooltip = SharedString::from(format!(
+        let now = crate::ui::settings::now_unix();
+        let mut tooltip = format!(
             "{}\nCodespace {} · {} CPUs · {}\nPreset {}",
             title(codespace),
             short_id(&codespace.id),
             codespace.cpus,
             loom_view_model::codespaces::format_memory(codespace.memory_mib),
             codespace.preset.as_deref().unwrap_or("none")
-        ));
+        );
+        if let Some(at) = codespace.stop_at {
+            tooltip.push_str(&format!(
+                "\nStops when idle {}",
+                loom_view_model::settings::in_time(now, at)
+            ));
+        }
+        if let Some(at) = codespace.delete_at {
+            tooltip.push_str(&format!(
+                "\nThe oracle deletes it {}",
+                loom_view_model::settings::in_time(now, at)
+            ));
+        }
+        let tooltip = SharedString::from(tooltip);
         let id = codespace.id.clone();
         let click_link = link.clone();
         let ready = codespace.state == CodespaceState::Ready;
+        let stopped = codespace.state == CodespaceState::Stopped;
+        let stoppable = can_stop(codespace);
         let starting = is_starting(codespace.state) || codespace.state == CodespaceState::Failed;
         h_flex()
             .id(SharedString::from(format!("codespace-{hix}-{wix}-{cix}")))
@@ -963,6 +1066,8 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 if ready {
                     this.open_codespace(click_link.clone(), &id, window, cx)
+                } else if stopped {
+                    this.resume_codespace(click_link.clone(), &id, window, cx)
                 } else {
                     this.show_progress(click_link.clone(), id.clone(), window, cx)
                 }
@@ -998,8 +1103,12 @@ impl Workspace {
                 link.clone(),
                 codespace.id.clone(),
                 (hix, wix, cix),
-                ready,
-                starting,
+                MenuState {
+                    ready,
+                    starting,
+                    stopped,
+                    stoppable,
+                },
                 cx,
             ))
             .into_any_element()
@@ -1010,10 +1119,15 @@ impl Workspace {
         link: Entity<OracleLink>,
         id: String,
         (hix, wix, cix): (usize, usize, usize),
-        ready: bool,
-        starting: bool,
+        state: MenuState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let MenuState {
+            ready,
+            starting,
+            stopped,
+            stoppable,
+        } = state;
         let this = cx.entity().downgrade();
         Button::new(SharedString::from(format!(
             "codespace-menu-{hix}-{wix}-{cix}"
@@ -1056,11 +1170,72 @@ impl Workspace {
             )
             .separator()
             .item(
+                PopupMenuItem::new("Stop codespace…")
+                    .disabled(!stoppable)
+                    .on_click(action(Workspace::stop_codespace)),
+            )
+            .item(
+                PopupMenuItem::new("Resume codespace…")
+                    .disabled(!stopped)
+                    .on_click(action(Workspace::resume_codespace)),
+            )
+            .item(
                 PopupMenuItem::new("Close codespace…").on_click(action(Workspace::close_codespace)),
             )
         })
         .into_any_element()
     }
+}
+
+#[derive(Clone, Copy)]
+struct MenuState {
+    ready: bool,
+    starting: bool,
+    stopped: bool,
+    stoppable: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Change {
+    Stop,
+    Resume,
+}
+
+fn change_state(
+    link: Entity<OracleLink>,
+    id: String,
+    change: Change,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let read = link.read(cx);
+    let Some(client) = read.client() else {
+        notify::error(window, cx, "The client is not connected to the oracle.");
+        return;
+    };
+    let task = read.backend().run(async move {
+        match change {
+            Change::Stop => client.stop_codespace(&id).await,
+            Change::Resume => client.resume_codespace(&id).await,
+        }
+    });
+    window
+        .spawn(cx, async move |cx: &mut AsyncWindowContext| {
+            let result = task.await;
+            let _ = cx.update(|window, cx| match result {
+                Some(Ok(codespace)) => {
+                    link.update(cx, |link, cx| {
+                        if matches!(change, Change::Resume) {
+                            link.progress.remove(&codespace.id);
+                        }
+                        link.upsert_codespace(codespace, cx)
+                    });
+                }
+                Some(Err(err)) => notify::error(window, cx, err.to_string()),
+                None => {}
+            });
+        })
+        .detach();
 }
 
 fn open_pull_requests(

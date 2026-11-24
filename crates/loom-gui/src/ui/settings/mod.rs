@@ -1,3 +1,4 @@
+mod audit;
 mod devices;
 mod editor;
 mod form;
@@ -36,10 +37,11 @@ pub enum Page {
     Secrets,
     Presets,
     Workspaces,
+    Audit,
 }
 
 impl Page {
-    pub const ALL: [Page; 7] = [
+    pub const ALL: [Page; 8] = [
         Page::Devices,
         Page::Hosts,
         Page::GitProviders,
@@ -47,6 +49,7 @@ impl Page {
         Page::Secrets,
         Page::Presets,
         Page::Workspaces,
+        Page::Audit,
     ];
 
     pub fn label(self) -> &'static str {
@@ -58,6 +61,7 @@ impl Page {
             Page::Secrets => "Secrets",
             Page::Presets => "Presets",
             Page::Workspaces => "Workspaces",
+            Page::Audit => "Audit log",
         }
     }
 
@@ -70,6 +74,7 @@ impl Page {
             Page::Secrets => "settings-page-secrets",
             Page::Presets => "settings-page-presets",
             Page::Workspaces => "settings-page-workspaces",
+            Page::Audit => "settings-page-audit",
         }
     }
 }
@@ -86,6 +91,7 @@ pub struct SettingsView {
     login: Option<models::PendingLogin>,
     preset: Option<presets::PresetDraft>,
     workspace: Option<workspaces::WorkspaceDraft>,
+    audit: audit::AuditState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,6 +158,7 @@ impl SettingsView {
             login: None,
             preset: None,
             workspace: None,
+            audit: audit::AuditState::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -172,6 +179,9 @@ impl SettingsView {
         self.page = page;
         if page == Page::Hosts {
             self.load_host_sizes(window, cx);
+        }
+        if page == Page::Audit {
+            self.load_audit(false, window, cx);
         }
         cx.notify();
     }
@@ -408,6 +418,7 @@ impl Render for SettingsView {
             Page::Secrets => self.render_secrets(window, cx),
             Page::Presets => self.render_presets(window, cx),
             Page::Workspaces => self.render_workspaces(window, cx),
+            Page::Audit => self.render_audit(window, cx),
         };
         h_flex()
             .id("settings")

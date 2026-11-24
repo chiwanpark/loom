@@ -23,7 +23,8 @@ pub use loom_crypto::{ClientIdentity, PairingUri};
 pub use loom_oracle_proto as oracle_proto;
 pub use loom_proto as proto;
 pub use loom_transport::{
-    AccessToken, AgentEntry, FrameStream, Registry, RelayError, SshTarget, memory_pair,
+    AccessToken, AgentEntry, FrameStream, Registry, RelayError, SshTarget, connect_command,
+    memory_pair,
 };
 pub use oracle::{
     NewCodespace, OracleCalls, OracleClient, OracleEndpoint, OracleEvents, pair_oracle,
