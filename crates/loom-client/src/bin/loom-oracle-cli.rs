@@ -1936,7 +1936,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             device_code,
         } => {
             client.subscribe().await?;
-            let method = if device_code {
+            let method = if device_code || provider == "github-copilot" {
                 ModelLoginMethod::DeviceCode
             } else {
                 ModelLoginMethod::Browser { redirect_uri: None }

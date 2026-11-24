@@ -232,6 +232,11 @@ impl SettingsView {
                 methods.push(format!("{provider}: sign in with a device code"));
             }
         }
+        for provider in DEVICE_CODE_PROVIDERS {
+            if !SIGN_IN_PROVIDERS.contains(provider) {
+                methods.push(format!("{provider}: sign in with a device code"));
+            }
+        }
         methods.push("API key".to_owned());
         form::open(
             "Add model account",
@@ -241,7 +246,7 @@ impl SettingsView {
                 Field::choice("Method", methods),
                 Field::text("Provider")
                     .placeholder("openrouter")
-                    .help("Only for an API key: the provider of the key, for example anthropic, openai, or a provider from llm.providers of a preset."),
+                    .help("Only for an API key: the provider of the key, for example openai, opencode-go, or a provider from llm.providers of a preset."),
                 Field::secret("API key").help("Only for an API key."),
             ],
             "Add",
