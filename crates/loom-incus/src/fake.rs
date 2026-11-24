@@ -53,6 +53,7 @@ pub struct FakeState {
     pub pools: BTreeMap<String, String>,
     pub volumes: BTreeMap<String, Value>,
     pub networks: Vec<String>,
+    pub acls: Vec<String>,
     pub requests: Vec<String>,
     pub certificates: Vec<String>,
     pub reject_zstd: bool,
@@ -74,6 +75,7 @@ impl Default for FakeState {
             pools: BTreeMap::from([("default".to_owned(), "dir".to_owned())]),
             volumes: BTreeMap::new(),
             networks: vec!["incusbr0".to_owned()],
+            acls: Vec::new(),
             requests: Vec::new(),
             certificates: Vec::new(),
             reject_zstd: false,
@@ -193,6 +195,13 @@ impl FakeState {
                     sync(json!({"name": name, "type": "bridge", "managed": true}))
                 } else {
                     error(StatusCode::NOT_FOUND, "Network not found")
+                }
+            }
+            (Method::GET, ["1.0", "network-acls", name]) => {
+                if self.acls.iter().any(|n| n == name) {
+                    sync(json!({"name": name, "egress": [], "ingress": []}))
+                } else {
+                    error(StatusCode::NOT_FOUND, "Network ACL not found")
                 }
             }
             (Method::GET, ["1.0", "projects", name]) => match self.projects.get(*name) {
