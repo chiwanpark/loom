@@ -1,8 +1,7 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use loom_agent_core::{Agent, Connection, Flow, HostKeys, Repositories, Supervisor};
+use loom_agent_core::{Agent, Connection, Flow, Repositories};
 use loom_proto::{
     AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode,
     undecodable_request_id,
@@ -19,9 +18,7 @@ const FLUSH_GRACE: Duration = Duration::from_millis(500);
 pub struct ServerContext {
     pub agent: Agent,
     pub info: AgentInfo,
-    pub supervisor: Option<Arc<dyn Supervisor>>,
-    pub host_keys: Option<Arc<dyn HostKeys>>,
-    pub repositories: Option<Arc<dyn Repositories>>,
+    pub repositories: Option<std::sync::Arc<dyn Repositories>>,
 }
 
 impl ServerContext {
@@ -29,8 +26,6 @@ impl ServerContext {
         Self {
             agent,
             info,
-            supervisor: None,
-            host_keys: None,
             repositories: None,
         }
     }
@@ -58,14 +53,7 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
     });
 
     let mut connection = Connection::new(ctx.agent, ctx.info, out)
-        .with_supervisor(ctx.supervisor)
-        .with_host_keys(ctx.host_keys)
         .with_repositories(ctx.repositories)
-        .relayed(matches!(peer, PeerInfo::Relay { .. }))
-        .with_client_key(match &peer {
-            PeerInfo::Relay { pubkey, .. } => Some(*pubkey),
-            _ => None,
-        })
         .with_client_label(match &peer {
             PeerInfo::Relay { label, .. } => Some(label.clone()),
             _ => None,

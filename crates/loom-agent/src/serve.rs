@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -21,9 +20,9 @@ use tokio_util::sync::CancellationToken;
 use crate::push::PushObserver;
 use crate::relay::{LocalHostKeys, relay_endpoint, start_relay, wait_registered};
 use crate::server::{ServerContext, run_listener};
-use crate::spawn::EXIT_ALREADY_RUNNING;
-use crate::supervisor::LocalSupervisor;
 use crate::workspace::resolve_workspace;
+
+pub const EXIT_ALREADY_RUNNING: i32 = 3;
 
 pub struct ServeOptions {
     pub workspace: Option<PathBuf>,
@@ -43,15 +42,6 @@ pub struct Started {
     pub agent: Agent,
 }
 
-/// How an agent ended.
-pub enum Served {
-    /// The agent stopped; the process exits with this code.
-    Exit(i32),
-    /// The agent stopped to start again with the binary at this path, as
-    /// after an update.
-    Restart(PathBuf),
-}
-
 pub fn new_instance_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -63,7 +53,7 @@ fn now_unix() -> u64 {
         .unwrap_or_default()
 }
 
-pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
+pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
     let ServeOptions {
         workspace,
         config_path,
@@ -82,7 +72,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         Ok(registration) => registration,
         Err(RegistryError::AlreadyRunning(path)) => {
             eprintln!("an agent is already running for {}", path.display());
-            return Ok(Served::Exit(EXIT_ALREADY_RUNNING));
+            return Ok(EXIT_ALREADY_RUNNING);
         }
         Err(err) => return Err(err).context("could not register the agent"),
     };
@@ -98,7 +88,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
     let identity = Arc::new(
         HostIdentity::load_or_create(&data_dir).context("could not load the host identity")?,
     );
-    let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir, &config));
+    let host_keys = Arc::new(LocalHostKeys::new(identity, &data_dir));
     let store = credentials
         .clone()
         .unwrap_or_else(|| CredentialStore::in_dir(&data_dir));
@@ -154,24 +144,9 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         default_model: None,
     };
     let shutdown = CancellationToken::new();
-    let restart = Arc::new(AtomicBool::new(false));
-    let exe = std::env::current_exe().context("cannot locate the loom-agent binary")?;
-    let supervisor = LocalSupervisor {
-        agent: agent.clone(),
-        registry: registry.clone(),
-        exe: exe.clone(),
-        config_path,
-        dirs,
-        instance: info.instance.clone(),
-        shutdown: shutdown.clone(),
-        restart: restart.clone(),
-        updating: tokio::sync::Mutex::new(()),
-    };
     let ctx = ServerContext {
         agent: agent.clone(),
         info,
-        supervisor: Some(Arc::new(supervisor)),
-        host_keys: Some(host_keys.clone()),
         repositories,
     };
     let mut relay_state = None;
@@ -192,8 +167,6 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
     }
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
-    // Before the agent is listed, where an update finds it to restart it.
-    let mut usr1 = signal(SignalKind::user_defined1())?;
     registration.publish(entry)?;
     tracing::info!(%instance, workspace = %workspace.display(), socket = %socket.display(), "agent ready");
     if let Some(ready) = ready {
@@ -204,15 +177,10 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         });
     }
     let signals = shutdown.clone();
-    let restart_signal = restart.clone();
     tokio::spawn(async move {
         tokio::select! {
             _ = term.recv() => tracing::info!("received SIGTERM"),
             _ = int.recv() => tracing::info!("received SIGINT"),
-            _ = usr1.recv() => {
-                tracing::info!("received SIGUSR1; restarting");
-                restart_signal.store(true, Ordering::SeqCst);
-            }
         }
         signals.cancel();
     });
@@ -223,12 +191,8 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<Served> {
         // Flushing blocks while the exporters send what is left.
         let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
     }
-    if restart.load(Ordering::SeqCst) {
-        tracing::info!(exe = %exe.display(), "agent stopped; starting it again");
-        return Ok(Served::Restart(exe));
-    }
     tracing::info!("agent stopped");
-    Ok(Served::Exit(0))
+    Ok(0)
 }
 
 /// The running exporter, if any, and what clients are told about it.

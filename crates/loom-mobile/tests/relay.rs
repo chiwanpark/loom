@@ -165,9 +165,8 @@ impl Host {
             version: "test".into(),
             default_model: Some(format!("{PROVIDER}/m")),
         };
-        let keys = Arc::new(LocalHostKeys::new(identity.clone(), &data, &config));
-        let mut ctx = ServerContext::new(agent, info);
-        ctx.host_keys = Some(keys.clone());
+        let keys = Arc::new(LocalHostKeys::new(identity.clone(), &data));
+        let ctx = ServerContext::new(agent, info);
         let agent_link = CancellationToken::new();
         let endpoint = relay_endpoint(&config).unwrap().unwrap();
         let mut handle = start_relay(

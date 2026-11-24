@@ -25,7 +25,7 @@ use crate::codespace_agent::{
 use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
 use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
 use crate::codespace_setup::{SETUP_TIMEOUT, SetupClone, SetupContext, SetupProgress, run_setup};
-use crate::serve::{ServeOptions, Served, Started, serve};
+use crate::serve::{ServeOptions, Started, serve};
 
 pub const BOOTSTRAP_FILE: &str = "bootstrap.json";
 pub const MANAGED_FILE: &str = "managed.json";
@@ -526,7 +526,7 @@ async fn setup_repositories(
     }
 }
 
-pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
+pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<i32> {
     let ManagedOptions {
         bootstrap,
         config_path,
@@ -570,7 +570,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
             let message = format!("{err:#}");
             tracing::error!(error = %message, "cannot plan the clones");
             client.codespace_failed(&message).await?;
-            return Ok(Served::Exit(0));
+            return Ok(0);
         }
     };
     let clones = layout.managed();
@@ -589,7 +589,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
         tracing::error!(error = %message, "cannot prepare the workspace");
         client.codespace_failed(&message).await?;
         helper.abort();
-        return Ok(Served::Exit(0));
+        return Ok(0);
     }
     setup_repositories(&layout, &bundle, &data_dir, &client).await;
     let workspace = layout.root.clone();
@@ -620,7 +620,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<Served> {
             tracing::error!(error = %message, "cannot set up the agent");
             client.codespace_failed(&message).await?;
             helper.abort();
-            return Ok(Served::Exit(0));
+            return Ok(0);
         }
     };
     let loader: loom_agent_core::ConfigLoader =
