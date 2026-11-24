@@ -32,7 +32,6 @@ use crate::runtime::{Runtime, RuntimeCell};
 use crate::skills::{Catalog, SKILL_TOOL};
 use crate::store::{EventStore, SessionState as StoredState, StoredSession, UsedModel, now_unix};
 use crate::tasks::TaskList;
-use crate::worktree::Worktree;
 use loom_config::{CommentGuardMode, PolicyAction};
 
 const CHARS_PER_TOKEN: usize = 4;
@@ -60,8 +59,6 @@ struct State {
     pending: Vec<PendingMessage>,
     /// The ID of the next waiting message.
     next_pending: u64,
-    /// The git worktree that the session works in.
-    worktree: Option<Worktree>,
     comment_guard: bool,
 }
 
@@ -84,10 +81,8 @@ struct Core {
     hub: EventHub,
     state: Mutex<State>,
     runtime: RuntimeCell,
-    /// Where the session works: its worktree, or the agent's workspace.
-    workspace: Mutex<Arc<Workspace>>,
     /// The agent's workspace.
-    main_workspace: Arc<Workspace>,
+    workspace: Arc<Workspace>,
     files: Arc<FileTracker>,
     system_agents_md: PathBuf,
     repository_dirs: Arc<Vec<PathBuf>>,
@@ -137,10 +132,7 @@ impl Core {
     }
 
     fn workspace(&self) -> Arc<Workspace> {
-        self.workspace
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.workspace.clone()
     }
 
     fn emit(&self, event: SessionEvent) {
@@ -162,7 +154,6 @@ impl Core {
                     title: state.title.clone(),
                     last_used: state.last_used.clone(),
                     pending: state.pending.clone(),
-                    worktree: state.worktree.clone(),
                     comment_guard: state.comment_guard,
                 },
             );
@@ -371,7 +362,7 @@ impl Session {
         tasks: TaskList,
     ) -> Self {
         let hub = EventHub::restore(params.store.clone().map(|s| (s, id.clone())), events);
-        let session = Self {
+        Self {
             core: Arc::new(Core {
                 id,
                 created_at,
@@ -393,12 +384,10 @@ impl Session {
                     tasks,
                     next_pending: state.pending.iter().map(|m| m.id + 1).max().unwrap_or(1),
                     pending: state.pending,
-                    worktree: None,
                     comment_guard: state.comment_guard,
                 }),
                 runtime: params.runtime,
-                workspace: Mutex::new(params.workspace.clone()),
-                main_workspace: params.workspace,
+                workspace: params.workspace,
                 files: Arc::new(FileTracker::default()),
                 system_agents_md: params.system_agents_md,
                 repository_dirs: params.repository_dirs,
@@ -407,9 +396,7 @@ impl Session {
                 notices: params.notices,
                 environment: params.environment,
             }),
-        };
-        session.use_worktree(state.worktree);
-        session
+        }
     }
 
     pub fn created_at(&self) -> u64 {
@@ -421,7 +408,7 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        let (model, reasoning, policy_default, comment_guard, title, archived, worktree) = {
+        let (model, reasoning, policy_default, comment_guard, title, archived) = {
             let state = self.core.lock();
             (
                 state.model.as_ref().map(|m| m.to_string()),
@@ -430,7 +417,6 @@ impl Session {
                 state.comment_guard,
                 state.title.clone().or_else(|| title(&state.history)),
                 state.archived,
-                state.worktree.as_ref().map(Worktree::info),
             )
         };
         SessionInfo {
@@ -444,42 +430,7 @@ impl Session {
             archived,
             state: self.core.hub.state(),
             last_seq: self.core.hub.last_seq(),
-            worktree,
         }
-    }
-
-    /// Where the session works: its worktree, or the agent's workspace.
-    pub fn workspace(&self) -> Arc<Workspace> {
-        self.core.workspace()
-    }
-
-    pub fn worktree(&self) -> Option<Worktree> {
-        self.core.lock().worktree.clone()
-    }
-
-    /// Makes the session work in `worktree`, or in the agent's workspace
-    /// with `None`, and saves it. A missing worktree keeps the agent's
-    /// workspace, but the session does not start turns in it.
-    pub fn set_worktree(&self, worktree: Option<Worktree>) {
-        self.use_worktree(worktree);
-        self.core.persist();
-    }
-
-    /// Like [`Session::set_worktree`], without saving.
-    fn use_worktree(&self, worktree: Option<Worktree>) {
-        let workspace = worktree
-            .as_ref()
-            .and_then(|w| Workspace::new(&w.root).ok())
-            .map(Arc::new)
-            .unwrap_or_else(|| self.core.main_workspace.clone());
-        *self
-            .core
-            .workspace
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = workspace;
-        // What the session read was in the other root.
-        self.core.files.clear();
-        self.core.lock().worktree = worktree;
     }
 
     pub fn subscribe(&self, since_seq: Option<u64>) -> Subscription {
@@ -599,13 +550,6 @@ impl Session {
         let runtime = self.core.runtime.current();
         let model = self.core.model()?;
         runtime.providers.get(&model.provider)?;
-        if let Some(worktree) = &self.core.lock().worktree
-            && !worktree.path.is_dir()
-        {
-            return Err(CoreError::WorktreeMissing(
-                worktree.path.display().to_string(),
-            ));
-        }
         let mut state = self.core.lock();
         if state.turn.is_none() {
             self.core.start_turn(&mut state, content);
@@ -933,13 +877,7 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         specs.retain(|spec| spec.name != SKILL_TOOL);
     }
     let environment = core.environment.snapshot(&runtime.config.environment);
-    let (worktree, comment_guard) = {
-        let state = core.lock();
-        (
-            state.worktree.as_ref().map(Worktree::info),
-            state.comment_guard,
-        )
-    };
+    let comment_guard = core.lock().comment_guard;
     let prompt = build_system_prompt(&PromptInputs {
         base: runtime.config.instructions.system_prompt.as_deref(),
         system_agents_md: &core.system_agents_md,
@@ -949,7 +887,6 @@ async fn prompt_and_tools(core: &Core, runtime: &Runtime) -> (SystemPrompt, Vec<
         tools: &specs,
         skills: Some(&catalog),
         environment: Some(&environment),
-        worktree: worktree.as_ref(),
         allowed_dirs: &runtime.config.tools.allowed_dirs,
         comment_guard,
     })
@@ -1379,13 +1316,8 @@ async fn run_tool_call(
             .map(|dir| loom_tools::canonical_dir(dir))
             .collect(),
     );
-    let (writable, comment_guard) = {
-        let state = core.lock();
-        let writable = state.worktree.as_ref().and_then(|w| w.git_dir.clone());
-        (writable.into_iter().collect(), state.comment_guard)
-    };
+    let comment_guard = core.lock().comment_guard;
     let ctx = ToolContext::new(core.workspace())
-        .with_writable(writable)
         .with_comment_guard(Some(comment_guard))
         .with_notes(core.notes.access(core.id.clone()))
         .with_tasks(Arc::new(SessionTasks(core.clone())))

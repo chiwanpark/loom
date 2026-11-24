@@ -1040,11 +1040,7 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
     std::fs::write(ws.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
     let (_dir, _loom, conn) = phone(&host).await;
 
-    let root = conn
-        .clone()
-        .list_directory(String::new(), None)
-        .await
-        .unwrap();
+    let root = conn.clone().list_directory(String::new()).await.unwrap();
     assert_eq!(root.path, "");
     let names: Vec<_> = root
         .entries
@@ -1059,19 +1055,11 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
             ("README", EntryKind::File)
         ]
     );
-    let src = conn
-        .clone()
-        .list_directory("src".into(), None)
-        .await
-        .unwrap();
+    let src = conn.clone().list_directory("src".into()).await.unwrap();
     assert_eq!(src.entries[0].path, "src/main.rs");
     assert_eq!(src.entries[0].size, 24);
 
-    let file = conn
-        .clone()
-        .read_file("src/main.rs".into(), None)
-        .await
-        .unwrap();
+    let file = conn.clone().read_file("src/main.rs".into()).await.unwrap();
     assert_eq!(file.language.as_deref(), Some("Rust"));
     let texts: Vec<_> = file.lines.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(texts, ["fn main() {", "    // hi", "}"]);
@@ -1083,25 +1071,17 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
             highlight: Highlight::Comment
         }]
     );
-    let plain = conn.clone().read_file("README".into(), None).await.unwrap();
+    let plain = conn.clone().read_file("README".into()).await.unwrap();
     assert!(plain.language.is_none() && plain.lines[0].spans.is_empty());
-    let blob = conn
-        .clone()
-        .read_file("blob.bin".into(), None)
-        .await
-        .unwrap();
+    let blob = conn.clone().read_file("blob.bin".into()).await.unwrap();
     assert!(blob.binary && blob.lines.is_empty());
 
-    let missing = conn
-        .clone()
-        .read_file("nope.rs".into(), None)
-        .await
-        .unwrap_err();
+    let missing = conn.clone().read_file("nope.rs".into()).await.unwrap_err();
     assert!(
         matches!(&missing, LoomError::Api { code, .. } if code == "NotFound"),
         "{missing:?}"
     );
-    let outside = conn.clone().list_directory("../..".into(), None).await;
+    let outside = conn.clone().list_directory("../..".into()).await;
     assert!(matches!(outside, Err(LoomError::Invalid { .. })));
 
     // Images and PDF files are copied whole to the phone for its viewers,
@@ -1110,7 +1090,7 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
     let dest = saved.display().to_string();
     let size = conn
         .clone()
-        .save_file("blob.bin".into(), dest.clone(), 4, None)
+        .save_file("blob.bin".into(), dest.clone(), 4)
         .await
         .unwrap();
     assert_eq!(size, 4);
@@ -1118,7 +1098,7 @@ async fn a_phone_browses_the_workspace_and_reads_highlighted_files() {
     std::fs::remove_file(&saved).unwrap();
     let large = conn
         .clone()
-        .save_file("blob.bin".into(), dest, 3, None)
+        .save_file("blob.bin".into(), dest, 3)
         .await
         .unwrap_err();
     assert!(matches!(large, LoomError::Invalid { .. }), "{large:?}");
@@ -1174,12 +1154,7 @@ async fn a_phone_sees_uncommitted_changes_and_what_a_session_changed() {
     })
     .await;
 
-    // A session without a worktree sees the workspace.
-    let changes = conn
-        .clone()
-        .git_changes(Some(session.id.clone()))
-        .await
-        .unwrap();
+    let changes = conn.clone().git_changes().await.unwrap();
     assert!(changes.repository);
     assert_eq!(changes.branch.as_deref(), Some("main"));
     let files: Vec<_> = changes
@@ -1200,7 +1175,7 @@ async fn a_phone_sees_uncommitted_changes_and_what_a_session_changed() {
 
     let diff = conn
         .clone()
-        .git_diff("src/lib.rs".into(), None, None)
+        .git_diff("src/lib.rs".into(), None)
         .await
         .unwrap();
     assert_eq!((diff.added, diff.removed), (1, 1));
@@ -1219,11 +1194,7 @@ async fn a_phone_sees_uncommitted_changes_and_what_a_session_changed() {
             (DiffKind::Note, "\\ No newline at end of file")
         ]
     );
-    let untracked = conn
-        .clone()
-        .git_diff("new.py".into(), None, None)
-        .await
-        .unwrap();
+    let untracked = conn.clone().git_diff("new.py".into(), None).await.unwrap();
     assert_eq!(untracked.added, 1);
     assert!(
         untracked.rows.iter().any(|r| r.kind == DiffKind::Added
@@ -1255,47 +1226,6 @@ async fn a_phone_sees_uncommitted_changes_and_what_a_session_changed() {
             .await
             .is_err()
     );
-
-    // A session in a worktree sees its own files and changes.
-    let worktree = conn
-        .clone()
-        .create_worktree_session(Some("feature/phone".into()), Some(" ".into()))
-        .await
-        .unwrap();
-    let info = worktree.worktree.clone().unwrap();
-    assert_eq!(
-        (info.branch.as_str(), info.base.as_str()),
-        ("feature/phone", "main")
-    );
-    let names: Vec<_> = conn
-        .clone()
-        .list_directory(String::new(), Some(worktree.id.clone()))
-        .await
-        .unwrap()
-        .entries
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-    assert!(names.contains(&"README.md".to_owned()), "{names:?}");
-    assert!(!names.contains(&"new.py".to_owned()), "{names:?}");
-    let changes = conn
-        .clone()
-        .git_changes(Some(worktree.id.clone()))
-        .await
-        .unwrap();
-    assert_eq!(changes.branch.as_deref(), Some("feature/phone"));
-    assert!(changes.files.is_empty(), "{:?}", changes.files);
-    let status = conn
-        .clone()
-        .worktree_status(worktree.id.clone())
-        .await
-        .unwrap();
-    assert!(status.merged && !status.dirty);
-    conn.clone()
-        .remove_worktree(worktree.id.clone(), false)
-        .await
-        .unwrap();
-    assert!(!std::path::Path::new(&info.path).exists());
 }
 
 /// A frame's text, a line per row, as the app would draw it.

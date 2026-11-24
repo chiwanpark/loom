@@ -403,56 +403,6 @@ pub struct SessionInfo {
     pub created_at: u64,
     pub title: Option<String>,
     pub archived: bool,
-    /// The git worktree the session works in; `None` for a session in the
-    /// workspace.
-    pub worktree: Option<WorktreeInfo>,
-}
-
-/// The git worktree of a session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorktreeInfo {
-    pub branch: String,
-    /// The branch that the worktree started from, and that merges go into.
-    pub base: String,
-    /// The session's root in the worktree.
-    pub path: String,
-    /// The URL of the pull request of the branch, once there is one.
-    pub pull_request: Option<String>,
-}
-
-/// How to make the worktree of a new session.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorktreeOptions {
-    /// The new branch; `None` makes `loom/<session>`.
-    pub branch: Option<String>,
-    /// The branch or commit to start from; `None` takes the branch that the
-    /// workspace has checked out.
-    pub base: Option<String>,
-}
-
-/// Where the branch of a worktree is against its base.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorktreeStatus {
-    /// Commits of the branch that the base does not have.
-    pub ahead: u32,
-    /// Commits of the base that the branch does not have.
-    pub behind: u32,
-    /// The worktree has uncommitted changes.
-    pub dirty: bool,
-    /// The worktree's directory is gone.
-    pub missing: bool,
-    /// The base has all of the branch's commits, or the branch did not
-    /// change since its last merge.
-    pub merged: bool,
-}
-
-/// How [`Command::MergeWorktree`](crate::Command::MergeWorktree) merges.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MergeStrategy {
-    /// A merge commit that keeps the commits of the branch.
-    Merge,
-    /// One new commit with the changes of the branch, and this message.
-    Squash { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

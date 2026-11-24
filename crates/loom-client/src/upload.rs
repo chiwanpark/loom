@@ -79,7 +79,6 @@ impl Client {
                     path: path.to_owned(),
                     offset,
                     data,
-                    session: self.scope.clone(),
                 };
                 in_flight.push_back((len, Box::pin(self.submit(command).await?)));
                 offset += len;
@@ -99,7 +98,6 @@ impl Client {
             upload: pending.upload,
             size: offset,
             overwrite,
-            session: self.scope.clone(),
         };
         match self.request(command).await? {
             Payload::Ok => {}

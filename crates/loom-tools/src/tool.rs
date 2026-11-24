@@ -87,9 +87,6 @@ pub struct ToolContext {
     /// The environment of the commands the call runs, and what to hide from
     /// the model; `None` runs commands with the agent's own environment.
     pub env: Option<Arc<CommandEnv>>,
-    /// More directories that sandboxed commands may write, such as the git
-    /// directory of a worktree's repository.
-    pub writable: Vec<PathBuf>,
     pub comment_guard: Option<bool>,
 }
 
@@ -105,7 +102,6 @@ impl ToolContext {
             readable: Arc::default(),
             allowed: Arc::default(),
             env: None,
-            writable: Vec::new(),
             comment_guard: None,
         }
     }
@@ -132,11 +128,6 @@ impl ToolContext {
 
     pub fn with_env(mut self, env: Arc<CommandEnv>) -> Self {
         self.env = Some(env);
-        self
-    }
-
-    pub fn with_writable(mut self, writable: Vec<PathBuf>) -> Self {
-        self.writable = writable;
         self
     }
 

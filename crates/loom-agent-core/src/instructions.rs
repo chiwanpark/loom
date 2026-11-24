@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loom_config::AGENTS_MD;
-use loom_proto::WorktreeInfo;
 use loom_tools::ToolSpec;
 
 use crate::environment::EnvSnapshot;
@@ -46,9 +45,6 @@ pub struct PromptInputs<'a> {
     /// The environment of commands, whose variable names the prompt lists
     /// and whose problems it reports.
     pub environment: Option<&'a EnvSnapshot>,
-    /// The git worktree that the session works in, which the prompt names
-    /// with its branch.
-    pub worktree: Option<&'a WorktreeInfo>,
     /// The directories outside the workspace that the file tools may read
     /// and change.
     pub allowed_dirs: &'a [PathBuf],
@@ -123,11 +119,7 @@ pub async fn build_system_prompt(inputs: &PromptInputs<'_>) -> SystemPrompt {
             sections.push(section);
         }
     }
-    sections.push(runtime_section(
-        inputs.workspace_root,
-        inputs.worktree,
-        inputs.allowed_dirs,
-    ));
+    sections.push(runtime_section(inputs.workspace_root, inputs.allowed_dirs));
     SystemPrompt {
         text: sections.join("\n\n"),
         warnings,
@@ -180,19 +172,7 @@ async fn read_capped(path: &PathBuf, max_bytes: usize) -> std::io::Result<Option
     Ok(Some((text, truncated)))
 }
 
-fn runtime_section(
-    workspace_root: &Path,
-    worktree: Option<&WorktreeInfo>,
-    allowed_dirs: &[PathBuf],
-) -> String {
-    let worktree = worktree
-        .map(|w| {
-            format!(
-                "\n- Git worktree: the workspace is a git worktree on the branch `{}`, made from `{}`. Commit your changes on this branch. The user merges it or opens a pull request.",
-                w.branch, w.base
-            )
-        })
-        .unwrap_or_default();
+fn runtime_section(workspace_root: &Path, allowed_dirs: &[PathBuf]) -> String {
     let allowed = if allowed_dirs.is_empty() {
         String::new()
     } else {
@@ -206,7 +186,7 @@ fn runtime_section(
         )
     };
     format!(
-        "# Environment\n\n- Date: {}\n- Workspace: {}{worktree}{allowed}\n- OS: {}",
+        "# Environment\n\n- Date: {}\n- Workspace: {}{allowed}\n- OS: {}",
         today(),
         workspace_root.display(),
         os_description(),
@@ -285,7 +265,6 @@ mod tests {
                     tools: &tools,
                     skills: None,
                     environment: None,
-                    worktree: None,
                     allowed_dirs: &[],
                     comment_guard: false,
                 })
@@ -322,7 +301,6 @@ mod tests {
                     tools: &tools,
                     skills: None,
                     environment: None,
-                    worktree: None,
                     allowed_dirs: &[],
                     comment_guard,
                 })
@@ -388,12 +366,6 @@ mod tests {
             tools: &tools,
             skills: Some(&catalog),
             environment: Some(&environment),
-            worktree: Some(&WorktreeInfo {
-                branch: "loom/abc".into(),
-                base: "main".into(),
-                path: "/w".into(),
-                pull_request: None,
-            }),
             allowed_dirs: &[PathBuf::from("/srv/notes"), PathBuf::from("/tmp/x")],
             comment_guard: false,
         })
@@ -417,7 +389,6 @@ mod tests {
         assert!(text.contains("- Not secret: `AWS_REGION`."));
         assert!(text.contains("\n- pdf: PDF files."));
         assert!(!text.contains("- Tools:"));
-        assert!(text.contains("on the branch `loom/abc`, made from `main`"));
         assert!(text.contains("\n- Allowed directories: `/srv/notes`, `/tmp/x`. "));
         let mut warnings = catalog.warnings.clone();
         warnings.extend(environment.warnings.clone());
@@ -433,7 +404,6 @@ mod tests {
             tools: &tools,
             skills,
             environment: None,
-            worktree: None,
             allowed_dirs: &[],
             comment_guard: false,
         };
@@ -457,7 +427,6 @@ mod tests {
             tools: &tools,
             skills: None,
             environment: None,
-            worktree: None,
             allowed_dirs: &[],
             comment_guard: false,
         })
@@ -483,7 +452,6 @@ mod tests {
             tools: &tools,
             skills: None,
             environment: None,
-            worktree: None,
             allowed_dirs: &[],
             comment_guard: false,
         })

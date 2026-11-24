@@ -7,7 +7,6 @@ use loom_proto::{
     ModelInfo, Notice, PROTOCOL_VERSION, Payload, RequestId, SequencedEvent, ServerHello,
     ServerMessage, SessionId, TerminalClient, TerminalOwner,
 };
-use loom_tools::Workspace;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -244,19 +243,6 @@ impl Connection {
         }));
     }
 
-    /// Where the file commands of `session` act: its worktree, or the
-    /// workspace.
-    fn workspace_of(&self, session: Option<&SessionId>) -> Result<Arc<Workspace>, ApiError> {
-        match session {
-            None => Ok(self.agent.workspace().clone()),
-            Some(id) => self
-                .agent
-                .session(id)
-                .map(|session| session.workspace())
-                .map_err(|e| convert::api_error(&e)),
-        }
-    }
-
     async fn request(&mut self, id: RequestId, command: Command) {
         match command {
             Command::ListAgents | Command::SpawnAgent { .. } | Command::StopAgent { .. } => {
@@ -321,102 +307,28 @@ impl Connection {
                     let _ = out.send(ServerMessage::Response { id, result }).await;
                 }));
             }
-            Command::CreateSession {
-                model,
-                worktree: Some(options),
-            } => {
-                let agent = self.agent.clone();
-                self.spawn_reply(id, async move {
-                    let options = crate::worktree::CreateOptions {
-                        branch: options.branch,
-                        base: options.base,
-                    };
-                    agent
-                        .create_worktree_session(model.as_deref(), options)
-                        .await
-                        .map(|s| Payload::Session(s.info()))
-                });
-            }
             Command::DeleteSession { session } => {
                 let agent = self.agent.clone();
                 self.spawn_reply(id, async move {
                     agent
-                        .delete_session_and_worktree(&session)
-                        .await
+                        .delete_session(&session)
                         .map(|()| Payload::Ok)
+                        .map_err(|e| convert::api_error(&e))
                 });
             }
-            Command::GetWorktreeStatus { session } => {
-                let agent = self.agent.clone();
-                self.spawn_reply(id, async move {
-                    agent
-                        .worktree_status(&session)
-                        .await
-                        .map(Payload::WorktreeStatus)
-                });
-            }
-            Command::MergeWorktree {
-                session,
-                strategy,
-                remove,
-            } => {
-                let agent = self.agent.clone();
-                self.spawn_reply(id, async move {
-                    agent
-                        .merge_worktree(&session, strategy, remove)
-                        .await
-                        .map(Payload::Merged)
-                });
-            }
-            Command::OpenPullRequest {
-                session,
-                title,
-                body,
-                draft,
-            } => {
-                let agent = self.agent.clone();
-                self.spawn_reply(id, async move {
-                    agent
-                        .open_pull_request(&session, &title, &body, draft)
-                        .await
-                        .map(Payload::PullRequest)
-                });
-            }
-            Command::RemoveWorktree { session, force } => {
-                let agent = self.agent.clone();
-                self.spawn_reply(id, async move {
-                    agent
-                        .remove_worktree(&session, force)
-                        .await
-                        .map(|()| Payload::Ok)
-                });
-            }
-            Command::GetWorkspaceChanges { .. }
+            Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
             | Command::ReadFile { .. }
             | Command::ReadFileChunk { .. }
             | Command::WriteFile { .. } => {
-                let workspace = match self.workspace_of(file_session(&command)) {
-                    Ok(workspace) => workspace,
-                    Err(err) => return self.respond(id, Err(err)).await,
-                };
+                let workspace = self.agent.workspace().clone();
                 let root = workspace.root().to_path_buf();
-                // The commits of a session's worktree are compared with its
-                // base branch, others with the upstream branch.
-                let worktree = file_session(&command)
-                    .and_then(|id| self.agent.session(id).ok())
-                    .and_then(|session| session.worktree());
-                let codespace = self.repositories.is_some() && worktree.is_none();
+                let codespace = self.repositories.is_some();
                 self.spawn_reply(id, async move {
-                    let base = crate::git::CommitBase {
-                        branch: worktree.as_ref().map(|w| w.base.as_str()),
-                        merged_head: worktree.as_ref().and_then(|w| w.merged_head.as_deref()),
-                    };
+                    let base = crate::git::CommitBase::default();
                     let nested = match &command {
-                        Command::GetWorkspaceChanges { .. } | Command::GetFileDiff { .. }
-                            if codespace =>
-                        {
+                        Command::GetWorkspaceChanges | Command::GetFileDiff { .. } if codespace => {
                             crate::git::nested_repositories(&root).await
                         }
                         _ => Vec::new(),
@@ -480,12 +392,8 @@ impl Connection {
                 path,
                 offset,
                 data,
-                session,
             } => {
-                let workspace = match self.workspace_of(session.as_ref()) {
-                    Ok(workspace) => workspace,
-                    Err(err) => return self.respond(id, Err(err)).await,
-                };
+                let workspace = self.agent.workspace().clone();
                 let uploads = self.uploads.clone();
                 self.reply_later(id, async move {
                     uploads
@@ -497,12 +405,8 @@ impl Connection {
                 upload,
                 size,
                 overwrite,
-                session,
             } => {
-                let workspace = match self.workspace_of(session.as_ref()) {
-                    Ok(workspace) => workspace,
-                    Err(err) => return self.respond(id, Err(err)).await,
-                };
+                let workspace = self.agent.workspace().clone();
                 let uploads = self.uploads.clone();
                 self.reply_later(id, async move {
                     uploads.finish(&workspace, upload, size, overwrite).await
@@ -591,16 +495,8 @@ impl Connection {
                 };
                 self.respond(id, result).await;
             }
-            Command::OpenTerminal {
-                cols,
-                rows,
-                owner,
-                session,
-            } => {
-                let workspace = match self.workspace_of(session.as_ref()) {
-                    Ok(workspace) => workspace,
-                    Err(err) => return self.respond(id, Err(err)).await,
-                };
+            Command::OpenTerminal { cols, rows, owner } => {
+                let workspace = self.agent.workspace().clone();
                 let config = self.agent.config();
                 let shell = config
                     .terminal
@@ -763,10 +659,7 @@ impl Connection {
                 Ok(Payload::Ok)
             }
             Command::ListSessions => Ok(Payload::Sessions(agent.list_sessions())),
-            Command::CreateSession {
-                model,
-                worktree: None,
-            } => agent
+            Command::CreateSession { model } => agent
                 .create_session(model.as_deref())
                 .map(|s| Payload::Session(s.info()))
                 .map_err(|e| convert::api_error(&e)),
@@ -915,14 +808,7 @@ impl Connection {
             | Command::PushRepositories(_)
             | Command::OpenPullRequests { .. }
             | Command::DeleteSession { .. }
-            | Command::CreateSession {
-                worktree: Some(_), ..
-            }
-            | Command::GetWorktreeStatus { .. }
-            | Command::MergeWorktree { .. }
-            | Command::OpenPullRequest { .. }
-            | Command::RemoveWorktree { .. }
-            | Command::GetWorkspaceChanges { .. }
+            | Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
             | Command::ReadFile { .. }
@@ -937,19 +823,6 @@ impl Connection {
                 "command routed to the wrong handler",
             )),
         }
-    }
-}
-
-/// The session that a file command acts in.
-fn file_session(command: &Command) -> Option<&SessionId> {
-    match command {
-        Command::GetWorkspaceChanges { session }
-        | Command::GetFileDiff { session, .. }
-        | Command::ListDirectory { session, .. }
-        | Command::ReadFile { session, .. }
-        | Command::ReadFileChunk { session, .. }
-        | Command::WriteFile { session, .. } => session.as_ref(),
-        _ => None,
     }
 }
 

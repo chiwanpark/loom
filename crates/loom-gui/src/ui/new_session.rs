@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, WindowExt, h_flex, v_flex};
 
 /// The workspace of an agent that the host runs.
 #[derive(Debug, Clone)]
@@ -25,9 +25,8 @@ pub struct WorkspaceChoice {
 /// Where the user chose to start the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
-    /// In the workspace of a running agent, in a new worktree with
-    /// `worktree`.
-    Agent { instance: String, worktree: bool },
+    /// In the workspace of a running agent.
+    Agent { instance: String },
     /// In a directory, for which a new agent starts.
     Directory(PathBuf),
 }
@@ -68,7 +67,6 @@ impl Render for NewSessionView {
         let heading = |text: &'static str| div().text_sm().child(text);
         let choices = self.choices.iter().enumerate().map(|(ix, choice)| {
             let open = choice.instance.clone();
-            let worktree = choice.instance.clone();
             h_flex()
                 .id(("workspace-choice", ix))
                 .debug_selector(move || format!("workspace-choice-{ix}"))
@@ -82,7 +80,6 @@ impl Render for NewSessionView {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let pick = Pick::Agent {
                         instance: open.clone(),
-                        worktree: false,
                     };
                     this.pick(pick, window, cx)
                 }))
@@ -106,25 +103,6 @@ impl Render for NewSessionView {
                                     .child(detail),
                             )
                         }),
-                )
-                .child(
-                    // The row must not see the button's clicks.
-                    div()
-                        .debug_selector(move || format!("worktree-choice-{ix}"))
-                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            Button::new(("worktree-choice", ix))
-                                .ghost()
-                                .xsmall()
-                                .label("In a worktree…")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let pick = Pick::Agent {
-                                        instance: worktree.clone(),
-                                        worktree: true,
-                                    };
-                                    this.pick(pick, window, cx)
-                                })),
-                        ),
                 )
         });
         let has_choices = !self.choices.is_empty();

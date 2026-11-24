@@ -70,9 +70,6 @@ pub struct Client {
     next_id: Arc<AtomicU64>,
     pub(crate) tunnels: TunnelRoutes,
     pub(crate) next_tunnel: Arc<AtomicU64>,
-    /// The session whose root the file and terminal commands of this handle
-    /// act in; `None` for the workspace. See [`Client::in_session`].
-    pub(crate) scope: Option<SessionId>,
 }
 
 pub struct Notifications {
@@ -246,7 +243,6 @@ impl Client {
                 next_id: Arc::new(AtomicU64::new(1)),
                 tunnels,
                 next_tunnel: Arc::new(AtomicU64::new(1)),
-                scope: None,
             },
             Notifications { rx },
         ))
@@ -415,37 +411,8 @@ impl Client {
     pub async fn create_session(&self, model: Option<&str>) -> Result<SessionInfo> {
         self.session(Command::CreateSession {
             model: model.map(str::to_owned),
-            worktree: None,
         })
         .await
-    }
-
-    /// Creates a session that works in a new git worktree of its own.
-    pub async fn create_worktree_session(
-        &self,
-        model: Option<&str>,
-        worktree: loom_proto::WorktreeOptions,
-    ) -> Result<SessionInfo> {
-        self.session(Command::CreateSession {
-            model: model.map(str::to_owned),
-            worktree: Some(worktree),
-        })
-        .await
-    }
-
-    /// A handle on the same connection whose file, change, upload, download,
-    /// and terminal commands act in the root of `session`, such as its
-    /// worktree; `None` acts in the workspace.
-    pub fn in_session(&self, session: Option<SessionId>) -> Client {
-        Client {
-            scope: session,
-            ..self.clone()
-        }
-    }
-
-    /// The session that this handle's file commands act in.
-    pub fn scope(&self) -> Option<&SessionId> {
-        self.scope.as_ref()
     }
 
     /// Follows a session's events, which come as [`Notification::Events`];
@@ -677,7 +644,6 @@ impl Client {
     pub async fn list_directory(&self, path: &str) -> Result<loom_proto::DirectoryListing> {
         let command = Command::ListDirectory {
             path: path.to_string(),
-            session: self.scope.clone(),
         };
         match self.request(command).await? {
             Payload::Directory(listing) => Ok(listing),
@@ -688,7 +654,6 @@ impl Client {
     pub async fn read_file(&self, path: &str) -> Result<loom_proto::FileContent> {
         let command = Command::ReadFile {
             path: path.to_string(),
-            session: self.scope.clone(),
         };
         match self.request(command).await? {
             Payload::FileContent(content) => Ok(content),
@@ -708,7 +673,6 @@ impl Client {
             path: path.to_string(),
             text,
             expected,
-            session: self.scope.clone(),
         };
         match self.request(command).await? {
             Payload::FileWritten(version) => Ok(version),
@@ -717,9 +681,7 @@ impl Client {
     }
 
     pub async fn workspace_changes(&self) -> Result<loom_proto::WorkspaceChanges> {
-        let command = Command::GetWorkspaceChanges {
-            session: self.scope.clone(),
-        };
+        let command = Command::GetWorkspaceChanges;
         match self.request(command).await? {
             Payload::WorkspaceChanges(changes) => Ok(changes),
             other => Err(unexpected(other)),
@@ -737,7 +699,6 @@ impl Client {
         let command = Command::GetFileDiff {
             path: path.to_string(),
             old_path: old_path.map(str::to_string),
-            session: self.scope.clone(),
             committed,
         };
         match self.request(command).await? {
@@ -793,12 +754,7 @@ impl Client {
         owner: TerminalOwner,
     ) -> Result<TerminalId> {
         match self
-            .request(Command::OpenTerminal {
-                cols,
-                rows,
-                owner,
-                session: self.scope.clone(),
-            })
+            .request(Command::OpenTerminal { cols, rows, owner })
             .await?
         {
             Payload::Terminal(id) => Ok(id),
@@ -856,17 +812,6 @@ impl Client {
         }
     }
 
-    /// Where the branch of a session's worktree is against its base.
-    pub async fn worktree_status(&self, session: &SessionId) -> Result<loom_proto::WorktreeStatus> {
-        let command = Command::GetWorktreeStatus {
-            session: session.clone(),
-        };
-        match self.request(command).await? {
-            Payload::WorktreeStatus(status) => Ok(status),
-            other => Err(unexpected(other)),
-        }
-    }
-
     pub async fn repositories(&self) -> Result<Vec<loom_proto::RepositoryStatus>> {
         match self.request(Command::ListRepositories).await? {
             Payload::Repositories(statuses) => Ok(statuses),
@@ -899,56 +844,6 @@ impl Client {
             Payload::PullRequests(results) => Ok(results),
             other => Err(unexpected(other)),
         }
-    }
-
-    /// Merges the branch of a session's worktree into its base, and returns
-    /// the new commit. With `remove`, removes the worktree after the merge.
-    pub async fn merge_worktree(
-        &self,
-        session: &SessionId,
-        strategy: loom_proto::MergeStrategy,
-        remove: bool,
-    ) -> Result<String> {
-        let command = Command::MergeWorktree {
-            session: session.clone(),
-            strategy,
-            remove,
-        };
-        match self.request(command).await? {
-            Payload::Merged(commit) => Ok(commit),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    /// Pushes the branch of a session's worktree and opens a pull request,
-    /// and returns its URL.
-    pub async fn open_pull_request(
-        &self,
-        session: &SessionId,
-        title: &str,
-        body: &str,
-        draft: bool,
-    ) -> Result<String> {
-        let command = Command::OpenPullRequest {
-            session: session.clone(),
-            title: title.to_owned(),
-            body: body.to_owned(),
-            draft,
-        };
-        match self.request(command).await? {
-            Payload::PullRequest(url) => Ok(url),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    /// Removes a session's worktree and its branch. Without `force`, fails
-    /// with `Conflict` when it has changes that were not merged.
-    pub async fn remove_worktree(&self, session: &SessionId, force: bool) -> Result<()> {
-        self.ok(Command::RemoveWorktree {
-            session: session.clone(),
-            force,
-        })
-        .await
     }
 
     /// Tells the agent that the user saw a session, so that a completed

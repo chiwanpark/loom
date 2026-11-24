@@ -58,8 +58,6 @@ pub struct FileTreeView {
     marks: GitMarks,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
-    /// Counts the roots the tree showed, so that a listing of an old root is dropped.
-    root_generation: u64,
     _subscription: Subscription,
 }
 
@@ -99,7 +97,6 @@ impl FileTreeView {
             marks: GitMarks::default(),
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
-            root_generation: 0,
             _subscription: subscription,
         };
         this.load(String::new(), cx);
@@ -123,18 +120,6 @@ impl FileTreeView {
         for path in paths {
             self.load(path, cx);
         }
-    }
-
-    /// Forgets the tree and lists the top folder again, after the agent's
-    /// files show another root, such as the worktree of another session.
-    pub fn reset(&mut self, cx: &mut Context<Self>) {
-        self.root_generation += 1;
-        self.dirs.clear();
-        self.expanded.clear();
-        self.selected = None;
-        self.marks = GitMarks::default();
-        self.load(String::new(), cx);
-        cx.notify();
     }
 
     pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
@@ -186,13 +171,9 @@ impl FileTreeView {
         }
         state.loading = true;
         let task = self.connection.read(cx).list_directory(path.clone());
-        let generation = self.root_generation;
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
-                if this.root_generation != generation {
-                    return;
-                }
                 let state = this.dirs.entry(path).or_default();
                 state.loading = false;
                 match result {

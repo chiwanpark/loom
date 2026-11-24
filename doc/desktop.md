@@ -78,7 +78,6 @@ Each color must have the format `#rrggbb`. A host without a color has no mark.
 1. Click **+** next to a host. The **New session** dialog shows the workspaces of the agents on the host.
 2. Do one of these steps:
    - Click a workspace to start a session there.
-   - Click **In a worktree…** to start a session in a new worktree. See [Sessions in a worktree](sessions.md#sessions-in-a-worktree).
    - Type a different directory and click **Start**. The host starts an agent for the directory. The session opens when the client connects to the agent.
 
 ### Open and close a session
@@ -210,8 +209,7 @@ Uploads work over all connections, also through a relay. The Android app cannot 
 
 The **Changes** panel shows the uncommitted changes in git. It also shows the commits that the base branch does not have, and the files that these commits change.
 
-- For a session in a worktree, the base is the base branch of the worktree.
-- For other sessions, the base is the upstream branch of the current branch, for example `origin/main`. If there is no upstream branch, the panel shows no commits.
+The base is the upstream branch of the current branch, for example `origin/main`. If there is no upstream branch, the panel shows no commits.
 
 To see the diff of a file from the base to `HEAD`, click the file under **Committed since**. The diff opens in a new tab.
 

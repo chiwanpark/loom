@@ -77,53 +77,6 @@ Problems with the instructions show above the prompt. An example is an `AGENTS.m
 
 The refresh button reads the prompt again. For example, use it after you change an `AGENTS.md` file.
 
-## Sessions in a worktree
-
-A session can work in its own git worktree. Its changes then stay away from the workspace and from other sessions until you merge them. The workspace must be in a git repository.
-
-### Start a session in a worktree
-
-- On the desktop, click **+** next to the host, and then click **In a worktree…** next to the workspace.
-- Or, on the desktop, choose **New session in a worktree…** in the menu of an agent under **Remotes**.
-- In the Android app, press the branch button next to the agent when you start a session.
-
-Type a branch name and a base, or keep the defaults. The default branch is `loom/<session>`. The default base is the branch of the workspace.
-
-### How a worktree session works
-
-The agent adds the worktree in `<worktrees.dir>/<workspace-hash>/<session>`. The directories have mode 0700.
-
-- The tools, the shell commands, `AGENTS.md`, and the skills of the session use the worktree.
-- The system prompt tells the branch to the model.
-- The Files and Changes panels and new terminals use the worktree of the active session.
-- The Changes panel also shows the commits of the branch that are not in its base.
-- The Sessions panel and the Android app show the branch after the title of the session.
-- All sessions of the agent use the same notes. This also applies to sessions in worktrees.
-- Shell commands in a worktree get the env file of the workspace, with the same redaction. See [Environment variables and secrets](environment.md).
-- With the sandbox on, commands can also write the git directory of the repository. Thus, they can commit.
-
-### Finish the work
-
-Use the menu of the session. On the desktop, this menu is in the Sessions panel. On Android, it is the menu of the conversation.
-
-- **Merge worktree** merges the branch into its base in the workspace.
-  - The workspace must have the base checked out. Tracked files must have no uncommitted changes.
-  - With a commit message, the agent squashes the branch into one commit. Without a commit message, it makes a merge commit that keeps the commits of the branch.
-  - If the merge has conflicts, the workspace does not change, and the error shows the files. Resolve the conflicts in the worktree, for example: merge the base into the branch there. Then merge again.
-- **Open pull request** pushes the branch to the remote of the base. If the base has no remote, it uses `origin`. Then it runs `gh pr create` with your title, description, and draft selection.
-  - The [GitHub CLI](https://cli.github.com/) (`gh`) must be installed and signed in on the agent host.
-  - The session keeps the URL of the pull request. After this, the menu pushes new commits to the pull request and opens it in the browser.
-- **Remove worktree** removes the worktree, its branch, and the session. A session cannot continue without its worktree. If the worktree has uncommitted changes or commits that are not merged, the dialog tells you that you lose them.
-
-Other effects:
-
-- When you delete a session, the agent also removes its worktree and its branch.
-- When you archive a session, the worktree and the branch stay.
-- After a merge or a pull request, the worktree and the session stay. You can continue to work in them.
-- If the worktree directory is not there, the session cannot start turns. To delete the session, remove the worktree.
-
-Worktrees are full checkouts of your repository. If a dotfile manager or a backup tool synchronizes `~/.config`, exclude `~/.config/loom/worktrees`. Or set `worktrees.dir` to a different directory.
-
 ## Notes and tasks
 
 Each agent has notes, and each session has a task list. The agent uses them for its work.

@@ -11,7 +11,6 @@ pub const MANAGED_SECTIONS: &[&str] = &[
     "socket",
     "storage",
     "lifecycle",
-    "worktrees",
     "relay.enabled",
     "relay.url",
     "environment.env_file",
@@ -287,10 +286,6 @@ mod tests {
         assert_eq!(
             environment.redaction.allow,
             ["AWS_REGION", "RUST_BACKTRACE"]
-        );
-        assert_eq!(
-            config.worktrees.dir,
-            Some(PathBuf::from("/home/u/.config/loom/worktrees"))
         );
     }
 

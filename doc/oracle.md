@@ -296,7 +296,7 @@ environment:
 
 All names must exist when you save the preset. The oracle refuses to delete a model account, a Git credential, or a secret while a preset uses it.
 
-The agent sets some sections itself: `allowed_roots`, `socket`, `storage`, `lifecycle`, `worktrees`, `relay.enabled`, `relay.url`, and `environment.env_file`. A preset with one of these sections is not valid. In a preset, the default of `policy.default` is `allow`, because the codespace is the sandbox. The file can set `policy.default: ask`.
+The agent sets some sections itself: `allowed_roots`, `socket`, `storage`, `lifecycle`, `relay.enabled`, `relay.url`, and `environment.env_file`. A preset with one of these sections is not valid. In a preset, the default of `policy.default` is `allow`, because the codespace is the sandbox. The file can set `policy.default: ask`.
 
 The skills are files in skill directories, for example `skills/review/SKILL.md` and `skills/review/scripts/run.sh`. Each skill directory must have a `SKILL.md` file. A preset has up to 200 skill files with up to 512KiB together.
 

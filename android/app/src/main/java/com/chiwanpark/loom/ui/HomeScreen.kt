@@ -98,7 +98,6 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
     var showArchived by remember { mutableStateOf(false) }
     var choosingAgent by remember { mutableStateOf(false) }
     var choosingDirectory by remember { mutableStateOf(false) }
-    var worktreeFor by remember { mutableStateOf<AgentLink?>(null) }
     var renaming by remember { mutableStateOf<Row?>(null) }
     var deleting by remember { mutableStateOf<Row?>(null) }
     var choosingWorkspace by remember { mutableStateOf(false) }
@@ -272,27 +271,11 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
                 choosingAgent = false
                 newSession(link)
             },
-            onWorktree = { link ->
-                choosingAgent = false
-                worktreeFor = link
-            },
             onDirectory = {
                 choosingAgent = false
                 choosingDirectory = true
             },
             onDismiss = { choosingAgent = false },
-        )
-    }
-    worktreeFor?.let { link ->
-        WorktreeSessionDialog(
-            onCreate = { branch, base ->
-                scope.attempt(snackbar) {
-                    val session = link.connection()
-                        .createWorktreeSession(branch.ifEmpty { null }, base.ifEmpty { null })
-                    app.navigator.push(Screen.Conversation(link.host, link.instance, session.id))
-                }
-            },
-            onDismiss = { worktreeFor = null },
         )
     }
     if (choosingDirectory) {
@@ -347,20 +330,13 @@ fun HomeScreen(app: LoomApplication, loom: Loom) {
         )
     }
     deleting?.let { row -> row.summary?.let { row to it } }?.let { (row, session) ->
-        val worktree = session.worktree
         ConfirmDialog(
             title = "Delete “${session.title}”?",
-            text = "The session and its conversation are deleted on the agent for good." +
-                (worktree?.let { " Its worktree and the branch ${it.branch} are removed too, also changes that were not merged." } ?: ""),
+            text = "The session and its conversation are deleted on the agent for good.",
             confirm = "Delete",
             onConfirm = {
                 scope.attempt(snackbar) {
-                    val connection = connectionOf(row)
-                    if (worktree != null) {
-                        connection.removeWorktree(session.id, true)
-                    } else {
-                        connection.deleteSession(session.id)
-                    }
+                    connectionOf(row).deleteSession(session.id)
                 }
             },
             onDismiss = { deleting = null },
@@ -464,7 +440,7 @@ private fun SessionRow(
         leadingContent = { SessionStatusIcon(session.status) },
         headlineContent = {
             Text(
-                session.worktree?.let { "${session.title} · ${it.branch}" } ?: session.title,
+                session.title,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )

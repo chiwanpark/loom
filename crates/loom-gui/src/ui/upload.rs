@@ -211,7 +211,7 @@ pub fn start(
     let key = format!("upload-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let (client, backend) = {
         let conn = conn.read(cx);
-        (conn.files_client(), conn.backend.clone())
+        (conn.client.clone(), conn.backend.clone())
     };
     let (abort, registration) = AbortHandle::new_pair();
     let upload = cx.new(|_| Upload {

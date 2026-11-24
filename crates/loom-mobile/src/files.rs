@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use loom_client::proto::{self, SessionId};
+use loom_client::proto;
 
 use crate::agent::{AgentConnection, with_client};
 use crate::error::{LoomError, Result};
@@ -140,35 +140,22 @@ fn checked_path(path: String) -> Result<String> {
 
 #[uniffi::export]
 impl AgentConnection {
-    /// A directory of the agent's workspace, or of the worktree of
-    /// `session`; an empty `path` lists the top folder.
-    pub async fn list_directory(
-        self: Arc<Self>,
-        path: String,
-        session: Option<String>,
-    ) -> Result<DirectoryListing> {
+    /// A directory of the agent's workspace; an empty `path` lists the top
+    /// folder.
+    pub async fn list_directory(self: Arc<Self>, path: String) -> Result<DirectoryListing> {
         let path = checked_path(path)?;
         with_client(&self.shared, move |client| async move {
-            let client = client.in_session(session.map(SessionId));
             Ok(client.list_directory(&path).await?.into())
         })
         .await
     }
 
-    /// A file of the agent's workspace, or of the worktree of `session`,
-    /// highlighted for its language. The agent reads at most the first
-    /// 2 MiB of a file.
-    pub async fn read_file(
-        self: Arc<Self>,
-        path: String,
-        session: Option<String>,
-    ) -> Result<FileView> {
+    /// A file of the agent's workspace, highlighted for its language. The
+    /// agent reads at most the first 2 MiB of a file.
+    pub async fn read_file(self: Arc<Self>, path: String) -> Result<FileView> {
         let path = checked_path(path)?;
         with_client(&self.shared, move |client| async move {
-            let content = client
-                .in_session(session.map(SessionId))
-                .read_file(&path)
-                .await?;
+            let content = client.read_file(&path).await?;
             // Highlighting a large file takes a while; it should not hold up
             // the runtime's other work.
             tokio::task::spawn_blocking(move || FileView::from(content))
@@ -178,22 +165,14 @@ impl AgentConnection {
         .await
     }
 
-    /// Copies a file of the agent's workspace, or of the worktree of
-    /// `session`, to `dest` on this device, as for a viewer of images and
-    /// PDF files, and returns its size. Fails before anything is written
-    /// when the file has more than `max` bytes.
-    pub async fn save_file(
-        self: Arc<Self>,
-        path: String,
-        dest: String,
-        max: u64,
-        session: Option<String>,
-    ) -> Result<u64> {
+    /// Copies a file of the agent's workspace to `dest` on this device, as
+    /// for a viewer of images and PDF files, and returns its size. Fails
+    /// before anything is written when the file has more than `max` bytes.
+    pub async fn save_file(self: Arc<Self>, path: String, dest: String, max: u64) -> Result<u64> {
         let path = checked_path(path)?;
         with_client(&self.shared, move |client| async move {
             let dest = std::path::PathBuf::from(dest);
             Ok(client
-                .in_session(session.map(SessionId))
                 .download_file_within(&path, &dest, max, |_, _| {})
                 .await?)
         })
