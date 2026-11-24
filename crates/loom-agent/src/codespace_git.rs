@@ -126,18 +126,7 @@ pub fn include_text(paths: &GitPaths, setup: &GitSetup) -> anyhow::Result<String
     let mut text = String::new();
     for provider in &setup.providers {
         let url = quoted(&provider.web_url);
-        if let Some(proxy) = &provider.proxy_url {
-            text.push_str(&format!(
-                "[url {}]\n\tinsteadOf = {}\n",
-                quoted(&format!("{proxy}/")),
-                quoted(&format!("{}/", provider.web_url))
-            ));
-            text.push_str(&format!(
-                "[credential {}]\n\thelper =\n\thelper = {}\n\tuseHttpPath = true\n",
-                quoted(proxy),
-                quoted(&helper)
-            ));
-        } else if provider.credentials {
+        if provider.credentials {
             text.push_str(&format!(
                 "[credential {url}]\n\thelper =\n\thelper = {}\n\tuseHttpPath = true\n",
                 quoted(&helper)
@@ -504,7 +493,6 @@ mod tests {
             git_email: None,
             credentials,
             gh: None,
-            proxy_url: None,
         }
     }
 
@@ -532,16 +520,6 @@ mod tests {
         assert_eq!(
             identity_text(&setup.providers[0]),
             "[user]\n\tname = \"Dev \\\"D\\\"\"\n"
-        );
-        let mut proxied = provider("github", "https://github.com", true);
-        proxied.proxy_url = Some("http://10.0.0.1:7440/github".into());
-        let setup = GitSetup {
-            providers: vec![proxied],
-        };
-        let text = include_text(&paths(dir), &setup).unwrap();
-        assert_eq!(
-            text,
-            "[url \"http://10.0.0.1:7440/github/\"]\n\tinsteadOf = \"https://github.com/\"\n[credential \"http://10.0.0.1:7440/github\"]\n\thelper =\n\thelper = \"!'/usr/bin/loom-agent' git-credential --socket '/home/dev/.local/share/loom/git/credential.sock'\"\n\tuseHttpPath = true\n"
         );
     }
 

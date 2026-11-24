@@ -97,14 +97,6 @@ pub trait Driver: Send + Sync {
 
     async fn list(&self, oracle: &str) -> anyhow::Result<Vec<InstanceReport>>;
 
-    async fn addresses(
-        &self,
-        _oracle: &str,
-        _codespace: &str,
-    ) -> anyhow::Result<Vec<std::net::IpAddr>> {
-        Ok(Vec::new())
-    }
-
     async fn check(&self, deep: bool) -> Vec<CheckItem>;
 
     fn local(&self) -> bool {

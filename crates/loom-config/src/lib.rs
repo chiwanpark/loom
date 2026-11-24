@@ -24,10 +24,9 @@ pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, 
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
 pub use error::ConfigError;
 pub use host::{
-    AclAction, DEFAULT_INCUS_NETWORK, DEFAULT_INCUS_POOL, DEFAULT_INCUS_PROJECT, GitProxyConfig,
-    HOST_CONFIG_ENV, HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver,
-    HostRules, HostUser, IncusCertificates, IncusDriverConfig, NetworkRules, ProcessDriverConfig,
-    host_config_schema,
+    AclAction, DEFAULT_INCUS_NETWORK, DEFAULT_INCUS_POOL, DEFAULT_INCUS_PROJECT, HOST_CONFIG_ENV,
+    HOST_CONFIG_FILE, HOST_DATA_DIR, HostAgentConfig, HostConfig, HostDriver, HostRules, HostUser,
+    IncusCertificates, IncusDriverConfig, NetworkRules, ProcessDriverConfig, host_config_schema,
 };
 pub use load::{MANAGED_SECTIONS, ManagedSettings, strip_managed_sections};
 pub use oracle::{

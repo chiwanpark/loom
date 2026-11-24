@@ -7,19 +7,18 @@ use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
     AgentAddress, AuditLog, Branches, Bundle, ClientHello, ClientMessage, Codespace,
-    CodespaceApiRequest, CodespaceConnection, CodespaceConnections, CodespaceMetrics,
-    CodespaceResult, CodespaceSession, Codespaces, Command, Device, DeviceResult, Devices, Empty,
-    Environment, Event, FirstMessage, FirstMessageResult, GitCredential, GitCredentialInput,
-    GitCredentialResult, GitCredentials, GitProvider, GitProviderInput, GitProviderResult,
-    GitProviders, GitProxyAccess, GitProxyRequest, GitTokenResult, Host, HostCall, HostLimits,
-    HostReport, HostResult, Hosts, InstanceReport, ModelAccount, ModelAccountResult, ModelAccounts,
-    ModelCredentials, ModelLogin, ModelLoginInput, ModelLoginMethod, Models, ORACLE_INSTANCE,
-    OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings, Preset,
-    PresetDetail, PresetFile, PresetResult, Presets, RelayHost, RelayHostResult, RelayHosts, Reply,
-    Repository, RepositorySearch, Request, Secret, SecretInfo, SecretResult, Secrets, ServerHello,
-    ServerMessage, SessionSummary, Sessions, Volume, VolumeInput, VolumeResult, VolumeUsage,
-    VolumeUsages, Volumes, Warnings, Workspace, WorkspaceNotes, WorkspaceResult, WorkspaceVolume,
-    Workspaces, encode, parse_server_message,
+    CodespaceConnection, CodespaceConnections, CodespaceMetrics, CodespaceResult, CodespaceSession,
+    Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment, Event, FirstMessage,
+    FirstMessageResult, GitCredential, GitCredentialInput, GitCredentialResult, GitCredentials,
+    GitProvider, GitProviderInput, GitProviderResult, GitProviders, GitTokenResult, Host, HostCall,
+    HostLimits, HostReport, HostResult, Hosts, InstanceReport, ModelAccount, ModelAccountResult,
+    ModelAccounts, ModelCredentials, ModelLogin, ModelLoginInput, ModelLoginMethod, Models,
+    ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings,
+    Preset, PresetDetail, PresetFile, PresetResult, Presets, RelayHost, RelayHostResult,
+    RelayHosts, Reply, Repository, RepositorySearch, Request, Secret, SecretInfo, SecretResult,
+    Secrets, ServerHello, ServerMessage, SessionSummary, Sessions, Volume, VolumeInput,
+    VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings, Workspace, WorkspaceNotes,
+    WorkspaceResult, WorkspaceVolume, Workspaces, encode, parse_server_message,
 };
 use loom_proto::InstanceId;
 use loom_proto::relay::{AgentId, HostId};
@@ -907,14 +906,6 @@ impl OracleClient {
     pub async fn git_credential(&self, url: &str) -> Result<GitTokenResult> {
         let url = url.to_owned();
         self.call(Command::GitCredential { url }).await
-    }
-
-    pub async fn git_proxy_access(&self, request: GitProxyRequest) -> Result<GitProxyAccess> {
-        self.call(Command::GitProxyAccess(request)).await
-    }
-
-    pub async fn codespace_api_request(&self, request: CodespaceApiRequest) -> Result<Value> {
-        self.call(Command::CodespaceApiRequest(request)).await
     }
 
     pub async fn volumes(&self) -> Result<Vec<Volume>> {

@@ -269,18 +269,6 @@ impl Session {
                 Command::ModelCredentials => Ok(Box::pin(async move {
                     ok(oracle.model_credentials(peer).await?)
                 })),
-                Command::CodespaceApiRequest(request) => Ok(Box::pin(async move {
-                    oracle.codespace_api_request(peer, &request).await
-                })),
-                other => Err(Box::new(other)),
-            };
-        }
-        if self.peer.role == Role::Host {
-            let peer = self.peer.id;
-            return match command {
-                Command::GitProxyAccess(request) => Ok(Box::pin(async move {
-                    ok(oracle.git_proxy_access(peer, &request).await?)
-                })),
                 other => Err(Box::new(other)),
             };
         }
@@ -650,8 +638,7 @@ impl Session {
             }),
             Command::HostReport { .. }
             | Command::HostInstances { .. }
-            | Command::InstanceProgress { .. }
-            | Command::GitProxyAccess(_) => Err(forbidden(self.peer.role, "hosts")),
+            | Command::InstanceProgress { .. } => Err(forbidden(self.peer.role, "hosts")),
             _ => Err(forbidden(self.peer.role, "codespaces")),
         }
     }
