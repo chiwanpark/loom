@@ -18,7 +18,7 @@ use loom_view_model::codespaces::{
 };
 
 use super::{AgentConnection, LinkStatus, Workspace, notify};
-use crate::connection::{AgentSummary, CodespaceRoute, SshRoute, Target};
+use crate::connection::{AgentSummary, CodespaceRoute, SshRoute};
 use crate::oracle::{OracleEvent, OracleLink, OracleStatus};
 use crate::ui::close_codespace;
 use crate::ui::new_codespace::{self, NewCodespaceForm, NewCodespaceRequest};
@@ -27,18 +27,11 @@ use crate::ui::settings::{Page, SettingsView};
 
 type WorkspaceRow = (String, String, Vec<(Codespace, usize)>);
 
-pub(super) fn is_oracle(entry: &HostEntry) -> bool {
-    matches!(entry, HostEntry::Oracle { .. })
-}
-
 impl Workspace {
     pub(super) fn sync_oracle(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.hosts.get_mut(ix) else {
             return;
         };
-        if !is_oracle(&host.entry) {
-            return;
-        }
         if host.oracle.is_none() {
             let entry = host.entry.clone();
             let env = self.env.clone();
@@ -173,9 +166,6 @@ impl Workspace {
     }
 
     fn oracle_of(&self, conn: &AgentConnection) -> Option<Entity<OracleLink>> {
-        if !is_oracle(&conn.host) {
-            return None;
-        }
         self.hosts
             .iter()
             .find(|h| h.entry.name() == conn.host.name())
@@ -546,7 +536,7 @@ impl Workspace {
             return;
         }
         self.oracle_agents(host_ix, window, cx);
-        self.connect_then(host_ix, Target::Instance(instance), then, window, cx);
+        self.connect_then(host_ix, instance, then, window, cx);
     }
 
     fn stop_codespace(

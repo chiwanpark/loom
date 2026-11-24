@@ -11,6 +11,8 @@ use crate::load::parse_yaml;
 
 pub const CLIENT_CONFIG_FILE: &str = "client.yaml";
 
+const REMOVED_HOST_KINDS: &[&str] = &["local", "ssh", "relay"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClientConfig {
@@ -21,6 +23,9 @@ pub struct ClientConfig {
     /// Whether the desktop client looks for a newer release when it starts.
     #[serde(skip_serializing_if = "is_true")]
     pub check_for_updates: bool,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub removed_hosts: Vec<String>,
 }
 
 fn is_true(value: &bool) -> bool {
@@ -31,12 +36,11 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             version: crate::CONFIG_VERSION,
-            hosts: vec![HostEntry::Local {
-                name: "local".into(),
-            }],
+            hosts: Vec::new(),
             appearance: AppearanceConfig::default(),
             keymap: BTreeMap::new(),
             check_for_updates: true,
+            removed_hosts: Vec::new(),
         }
     }
 }
@@ -44,25 +48,6 @@ impl Default for ClientConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostEntry {
-    Local {
-        name: String,
-    },
-    Ssh {
-        name: String,
-        destination: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        remote_bin: Option<String>,
-    },
-    Relay {
-        name: String,
-        url: String,
-        host_id: String,
-        host_key: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        instance: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cloudflare_access: Option<CloudflareAccessConfig>,
-    },
     Oracle {
         name: String,
         url: String,
@@ -76,10 +61,7 @@ pub enum HostEntry {
 impl HostEntry {
     pub fn name(&self) -> &str {
         match self {
-            Self::Local { name }
-            | Self::Ssh { name, .. }
-            | Self::Relay { name, .. }
-            | Self::Oracle { name, .. } => name,
+            Self::Oracle { name, .. } => name,
         }
     }
 }
@@ -152,8 +134,10 @@ impl ClientConfig {
     }
 
     pub fn parse(text: &str, origin: &str) -> Result<Self, ConfigError> {
-        let config: Self = parse_yaml(text, origin)?;
+        let (text, removed_hosts) = remove_classic_hosts(text, origin)?;
+        let mut config: Self = parse_yaml(&text, origin)?;
         config.validate(origin)?;
+        config.removed_hosts = removed_hosts;
         Ok(config)
     }
 
@@ -171,38 +155,20 @@ impl ClientConfig {
             if !names.insert(host.name()) {
                 return Err(invalid(field("name"), "is used by another host"));
             }
-            match host {
-                HostEntry::Local { .. } => {}
-                HostEntry::Ssh { destination, .. } => {
-                    if destination.trim().is_empty() || destination.starts_with('-') {
-                        return Err(invalid(
-                            field("destination"),
-                            "is not a valid SSH destination",
-                        ));
-                    }
-                }
-                HostEntry::Relay {
-                    url,
-                    host_id,
-                    host_key,
-                    ..
-                }
-                | HostEntry::Oracle {
-                    url,
-                    host_id,
-                    host_key,
-                    ..
-                } => {
-                    if !(url.starts_with("wss://") || url.starts_with("ws://")) {
-                        return Err(invalid(field("url"), "must start with wss:// or ws://"));
-                    }
-                    if host_id.len() != 64 || !host_id.chars().all(|c| c.is_ascii_hexdigit()) {
-                        return Err(invalid(field("host_id"), "expected a 64 character host ID"));
-                    }
-                    if host_key.len() != 43 {
-                        return Err(invalid(field("host_key"), "expected a base64url key"));
-                    }
-                }
+            let HostEntry::Oracle {
+                url,
+                host_id,
+                host_key,
+                ..
+            } = host;
+            if !(url.starts_with("wss://") || url.starts_with("ws://")) {
+                return Err(invalid(field("url"), "must start with wss:// or ws://"));
+            }
+            if host_id.len() != 64 || !host_id.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(invalid(field("host_id"), "expected a 64 character host ID"));
+            }
+            if host_key.len() != 43 {
+                return Err(invalid(field("host_key"), "expected a base64url key"));
             }
         }
         let sizes = [
@@ -247,6 +213,36 @@ impl ClientConfig {
     }
 }
 
+fn remove_classic_hosts(text: &str, origin: &str) -> Result<(String, Vec<String>), ConfigError> {
+    let parse_error = |message: String| ConfigError::Parse {
+        origin: origin.to_string(),
+        message,
+    };
+    let mut document: serde_json::Value =
+        serde_saphyr::from_str(text).map_err(|err| parse_error(err.to_string()))?;
+    let Some(hosts) = document
+        .get_mut("hosts")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok((text.to_owned(), Vec::new()));
+    };
+    let mut removed = Vec::new();
+    hosts.retain(|host| {
+        let kind = host.get("kind").and_then(serde_json::Value::as_str);
+        if !kind.is_some_and(|kind| REMOVED_HOST_KINDS.contains(&kind)) {
+            return true;
+        }
+        let name = host.get("name").and_then(serde_json::Value::as_str);
+        removed.push(name.unwrap_or_default().to_owned());
+        false
+    });
+    if removed.is_empty() {
+        return Ok((text.to_owned(), removed));
+    }
+    let yaml = serde_saphyr::to_string(&document).map_err(|err| parse_error(err.to_string()))?;
+    Ok((yaml, removed))
+}
+
 /// Whether `color` is a `#rrggbb` color.
 pub fn is_hex_color(color: &str) -> bool {
     color
@@ -261,17 +257,16 @@ mod tests {
     #[test]
     fn parses_and_round_trips_hosts() {
         let text = format!(
-            "hosts:\n- kind: local\n  name: here\n- kind: ssh\n  name: box\n  destination: me@box\n- kind: relay\n  name: home\n  url: wss://relay.example.com\n  host_id: {}\n  host_key: {}\n  cloudflare_access:\n    client_id_env: ID\n    client_secret_env: SECRET\n- kind: oracle\n  name: next\n  url: wss://oracle.example.com\n  host_id: {}\n  host_key: {}\nappearance:\n  theme: light\n  theme_name: Gruvbox Light\n",
+            "hosts:\n- kind: oracle\n  name: home\n  url: wss://oracle.example.com\n  host_id: {}\n  host_key: {}\n  cloudflare_access:\n    client_id_env: ID\n    client_secret_env: SECRET\n- kind: oracle\n  name: next\n  url: wss://next.example.com\n  host_id: {}\n  host_key: {}\nappearance:\n  theme: light\n  theme_name: Gruvbox Light\n",
             "a".repeat(64),
             "b".repeat(43),
             "c".repeat(64),
             "d".repeat(43)
         );
         let config = ClientConfig::parse(&text, "client.yaml").unwrap();
-        assert_eq!(config.hosts.len(), 4);
-        assert_eq!(config.hosts[1].name(), "box");
-        assert_eq!(config.hosts[3].name(), "next");
-        assert!(matches!(config.hosts[3], HostEntry::Oracle { .. }));
+        assert_eq!(config.hosts.len(), 2);
+        assert_eq!(config.hosts[1].name(), "next");
+        assert!(config.removed_hosts.is_empty());
         assert_eq!(config.appearance.theme, Theme::Light);
         assert_eq!(
             config.appearance.theme_name.as_deref(),
@@ -287,6 +282,21 @@ mod tests {
             ClientConfig::load(&dir.path().join("missing.yaml")).unwrap(),
             ClientConfig::default()
         );
+    }
+
+    #[test]
+    fn drops_the_hosts_of_the_classic_modes() {
+        let text = format!(
+            "hosts:\n- kind: local\n  name: here\n- kind: ssh\n  name: box\n  destination: me@box\n- kind: relay\n  name: home\n  url: wss://relay.example.com\n  host_id: {}\n  host_key: {}\n  instance: abc\n- kind: oracle\n  name: next\n  url: wss://oracle.example.com\n  host_id: {}\n  host_key: {}\n",
+            "a".repeat(64),
+            "b".repeat(43),
+            "c".repeat(64),
+            "d".repeat(43)
+        );
+        let config = ClientConfig::parse(&text, "client.yaml").unwrap();
+        assert_eq!(config.hosts.len(), 1);
+        assert_eq!(config.hosts[0].name(), "next");
+        assert_eq!(config.removed_hosts, ["here", "box", "home"]);
     }
 
     #[test]
@@ -347,9 +357,7 @@ mod tests {
     #[test]
     fn rejects_bad_hosts() {
         for text in [
-            "hosts:\n- kind: local\n  name: a\n- kind: local\n  name: a\n",
-            "hosts:\n- kind: ssh\n  name: a\n  destination: -oProxyCommand=x\n",
-            "hosts:\n- kind: relay\n  name: a\n  url: https://x\n  host_id: x\n  host_key: y\n",
+            "hosts:\n- kind: oracle\n  name: a\n  url: https://x\n  host_id: x\n  host_key: y\n",
             "hosts:\n- kind: oracle\n  name: a\n  url: wss://x\n  host_id: x\n  host_key: y\n",
             "hosts:\n- kind: telnet\n  name: a\n",
             "appearance:\n  ui_font_size: 2\n",

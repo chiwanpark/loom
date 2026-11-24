@@ -29,7 +29,6 @@ import com.chiwanpark.loom.core.TerminalSummary
 import com.chiwanpark.loom.core.WaitingMessage
 import kotlin.math.min
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -187,11 +186,8 @@ class AgentLink(
     private val app: LoomApplication,
     private val loom: Loom,
     val host: String,
-    initialInstance: String,
+    val instance: String,
 ) {
-    /** The agent's instance on its host; it changes when the agent is restarted. */
-    var instance by mutableStateOf(initialInstance)
-        private set
     var state by mutableStateOf<LinkState>(LinkState.Connecting)
         private set
     var agent by mutableStateOf<Agent?>(null)
@@ -246,18 +242,13 @@ class AgentLink(
         retry.tryEmit(Unit)
     }
 
-    /**
-     * Ends the link. Its forwards end with it, unless `keepForwards`: then
-     * they start again when the link starts again, as after [moveTo].
-     */
-    fun stop(keepForwards: Boolean = false) {
+    /** Ends the link and its forwards. */
+    fun stop() {
         job?.cancel()
         job = null
         forwards.forEach { it.close() }
-        if (!keepForwards) {
-            forwards.clear()
-            app.forwarding.update()
-        }
+        forwards.clear()
+        app.forwarding.update()
         closeTerminals()
         agentTerminals = emptyList()
         connection?.disconnect()
@@ -291,18 +282,6 @@ class AgentLink(
             is LinkState.Down -> if (!current.fatal) retryNow()
             LinkState.Connecting -> {}
         }
-    }
-
-    /** Follows the agent to the instance it runs as after a restart. */
-    fun moveTo(newInstance: String) {
-        if (newInstance == instance) return
-        stop(keepForwards = true)
-        instance = newInstance
-        agent = null
-        // The new connection follows no session yet; the screens open theirs again.
-        opened.clear()
-        state = LinkState.Connecting
-        start()
     }
 
     /** The connection, or an error the screens can show. */
@@ -345,7 +324,7 @@ class AgentLink(
         forward.error = null
     }
 
-    /** Starts the forwards that do not listen, as after the link moved to a restarted agent. */
+    /** Starts the forwards that do not listen, as after the link was lost. */
     private suspend fun restoreForwards() {
         for (forward in forwards.filter { it.forward == null }) {
             try {
@@ -467,7 +446,6 @@ class AgentLink(
                 }
                 state = LinkState.Connected
                 wait = 1_000L
-                app.push.linked(this)
                 restoreForwards()
                 // Following the updates until the link is lost or closed.
                 if (!pump(connection!!)) return
@@ -476,7 +454,7 @@ class AgentLink(
                 fatal = e is LoomException.VersionMismatch || e is LoomException.Rejected ||
                     e is LoomException.Invalid
                 state = LinkState.Down(e.message ?: e.toString(), fatal)
-                // It may run as another instance now; the host's list says.
+                // It may run as another instance now; the oracle's list says.
                 if (e is LoomException.Offline) app.directory.refreshHost(loom, host)
             }
             if (fatal) {
@@ -515,28 +493,22 @@ class AgentLink(
 }
 
 /**
- * The links the app has made, one per agent, kept while the app runs. A
- * link moves to the instance of its agent's workspace when the agent is
- * restarted, and the screens that name the old instance find it there.
+ * The links the app has made, one per agent, kept while the app runs.
  */
 class AgentLinks(private val app: LoomApplication) {
     private val links = mutableStateMapOf<Pair<String, String>, AgentLink>()
-
-    /** Old instances and the ones their agents run as now, by host. */
-    private val moved = mutableMapOf<Pair<String, String>, String>()
 
     /** Every link, in a stable order; reading it in a composable follows changes. */
     val all: List<AgentLink> get() = links.values.sortedWith(compareBy({ it.host }, { it.workspace }))
 
     fun get(loom: Loom, host: String, instance: String): AgentLink {
-        val key = resolve(host to instance)
-        return links.getOrPut(key) { AgentLink(app, loom, host, key.second) }.also { it.start() }
+        val key = host to instance
+        return links.getOrPut(key) { AgentLink(app, loom, host, instance) }.also { it.start() }
     }
 
     /**
-     * Links to an agent that a notification named, with its workspace: when
-     * the agent was restarted since, the link moves to the instance of that
-     * workspace (see [retain]), also before it ever connected.
+     * Links to an agent that a notification named, with its workspace,
+     * which the screens show before the link connects.
      */
     fun expect(loom: Loom, host: String, instance: String, workspace: String?) {
         val link = get(loom, host, instance)
@@ -558,42 +530,11 @@ class AgentLinks(private val app: LoomApplication) {
     /** Ends the links to a host's agents, as when it is renamed or removed. */
     fun forget(host: String) {
         links.keys.filter { it.first == host }.forEach { key -> links.remove(key)?.stop() }
-        moved.keys.removeAll { it.first == host }
-    }
-
-    /**
-     * Takes in the agents the host's relay lists now. A link to an instance
-     * that is gone moves to the listed agent of its workspace, which is the
-     * same agent restarted; without one, it stays (offline) while a screen
-     * shows it and ends otherwise.
-     */
-    fun retain(host: String, agents: List<Agent>) {
-        val listed = agents.map { it.instance }.toSet()
-        for ((key, link) in links.filter { it.key.first == host && it.key.second !in listed }) {
-            val successor = link.workspace?.let { workspace ->
-                agents.firstOrNull { it.workspace == workspace }
-            }
-            when {
-                successor != null -> {
-                    val target = host to successor.instance
-                    links.remove(key)
-                    moved[key] = successor.instance
-                    if (target in links) {
-                        link.stop()
-                    } else {
-                        link.moveTo(successor.instance)
-                        links[target] = link
-                    }
-                }
-                !inUse(key) && link.forwards.isEmpty() -> links.remove(key)?.stop()
-            }
-        }
     }
 
     /** Ends the links to hosts that are not paired any more. */
     fun retainHosts(hosts: Collection<String>) {
         links.keys.filter { it.first !in hosts }.forEach { key -> links.remove(key)?.stop() }
-        moved.keys.removeAll { it.first !in hosts }
     }
 
     fun retainInstances(host: String, instances: Set<String>) {
@@ -603,99 +544,32 @@ class AgentLinks(private val app: LoomApplication) {
         }
     }
 
-    /** The instance an agent runs as now, following its restarts. */
-    private fun resolve(key: Pair<String, String>): Pair<String, String> {
-        var current = key
-        val seen = mutableSetOf(current)
-        while (true) {
-            val next = current.first to (moved[current] ?: return current)
-            if (!seen.add(next)) return current
-            current = next
-        }
-    }
-
     /** Whether a screen on the back stack shows the agent. */
     private fun inUse(key: Pair<String, String>): Boolean = app.navigator.stack.any { screen ->
-        screen is AgentScreen && resolve(screen.host to screen.instance) == key
+        screen is AgentScreen && (screen.host to screen.instance) == key
     }
-}
-
-/** What the app knows of the agents on a host. */
-sealed interface HostAgents {
-    data object Loading : HostAgents
-
-    data class Loaded(val agents: List<Agent>) : HostAgents
-
-    data class Failed(val message: String) : HostAgents
 }
 
 /**
- * The paired hosts and the agents on them. Refreshing it asks each host's
- * relay which agents are there and links to each of them.
+ * The paired oracles. Refreshing it asks each oracle for its codespaces
+ * again.
  */
 class Directory(private val app: LoomApplication) {
     var hosts by mutableStateOf<List<Host>>(emptyList())
         private set
-    val agents = mutableStateMapOf<String, HostAgents>()
-    var refreshing by mutableStateOf(false)
-        private set
-    private var job: Job? = null
-    private val loading = mutableSetOf<String>()
 
     fun refresh(loom: Loom) {
         hosts = loom.hosts()
-        app.oracles.retainHosts(hosts.filter { it.oracle }.map { it.name })
         val names = hosts.map { it.name }
-        agents.keys.retainAll(names.toSet())
+        app.oracles.retainHosts(names)
         app.links.retainHosts(names)
-        job?.cancel()
-        job = app.scope.launch {
-            refreshing = true
-            try {
-                coroutineScope {
-                    hosts.forEach { host ->
-                        if (host.oracle) {
-                            app.oracles.get(loom, host.name).retryNow()
-                        } else {
-                            launch { load(loom, host.name) }
-                        }
-                    }
-                }
-            } finally {
-                refreshing = false
-            }
-        }
+        hosts.forEach { host -> app.oracles.get(loom, host.name).retryNow() }
     }
 
-    /** Asks one host's relay for its agents again, as when one went offline. */
+    /** Asks one oracle for its codespaces again, as when an agent went offline. */
     fun refreshHost(loom: Loom, host: String) {
-        val known = hosts.firstOrNull { it.name == host } ?: return
-        if (known.oracle) {
-            app.oracles.find(host)?.retryNow()
-            return
-        }
-        app.scope.launch { load(loom, host) }
-    }
-
-    private suspend fun load(loom: Loom, host: String) {
-        if (!loading.add(host)) return
-        try {
-            loadAgents(loom, host)
-        } finally {
-            loading.remove(host)
-        }
-    }
-
-    private suspend fun loadAgents(loom: Loom, host: String) {
-        if (agents[host] !is HostAgents.Loaded) agents[host] = HostAgents.Loading
-        try {
-            val list = loom.listAgents(host)
-            agents[host] = HostAgents.Loaded(list)
-            app.links.retain(host, list)
-            list.forEach { agent -> app.links.get(loom, host, agent.instance).listed = agent }
-        } catch (e: LoomException) {
-            agents[host] = HostAgents.Failed(e.userMessage())
-        }
+        if (hosts.none { it.name == host }) return
+        app.oracles.find(host)?.retryNow()
     }
 }
 

@@ -20,9 +20,6 @@ pub struct TestAgent {
     pub workspace: PathBuf,
     pub backend: Backend,
     pub info: AgentInfo,
-    /// The agent's configuration file, which it reloads on request; it
-    /// does not exist until a test writes it.
-    pub config_path: PathBuf,
     agent: Agent,
 }
 
@@ -40,9 +37,8 @@ impl TestAgent {
             runtime_dir: None,
         };
         let backend = Backend::new().unwrap();
-        let config_path = root.join("agent.yaml");
         let mut options = AgentOptions::new(&workspace, AgentConfig::default(), dirs);
-        options.config_path = Some(config_path.clone());
+        options.config_path = Some(root.join("agent.yaml"));
         let agent = futures::executor::block_on(backend.run(async move { Agent::new(options) }))
             .unwrap()
             .unwrap();
@@ -59,7 +55,6 @@ impl TestAgent {
             workspace,
             backend,
             info,
-            config_path,
             agent,
         }
     }
@@ -67,8 +62,12 @@ impl TestAgent {
     /// A connection to the agent, the way the workspace makes one.
     pub fn connect(&self, cx: &mut TestAppContext) -> Entity<AgentConnection> {
         self.connect_as(
-            HostEntry::Local {
+            HostEntry::Oracle {
                 name: "local".into(),
+                url: "ws://127.0.0.1:1".into(),
+                host_id: "0".repeat(64),
+                host_key: "A".repeat(43),
+                cloudflare_access: None,
             },
             cx,
         )
@@ -102,11 +101,6 @@ impl TestAgent {
         future: impl Future<Output = T> + Send + 'static,
     ) -> T {
         futures::executor::block_on(self.backend.run(future)).unwrap()
-    }
-
-    /// The configuration the agent is using.
-    pub fn config(&self) -> std::sync::Arc<AgentConfig> {
-        self.agent.config()
     }
 
     pub fn write(&self, path: &str, content: impl AsRef<[u8]>) {

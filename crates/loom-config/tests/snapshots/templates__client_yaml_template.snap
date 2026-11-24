@@ -3,9 +3,7 @@ source: crates/loom-config/tests/templates.rs
 expression: "ClientConfig::default().to_yaml()"
 ---
 version: 1
-hosts:
-- kind: local
-  name: local
+hosts: []
 appearance:
   theme: dark
   ui_font_size: 15.0

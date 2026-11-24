@@ -668,35 +668,6 @@ impl AgentConnection {
         .await
     }
 
-    /// Tells the host's agents where to send this device's notifications: a
-    /// Firebase Cloud Messaging registration token, or none to stop them.
-    /// The token belongs to this device's key, so one agent of a host is
-    /// enough.
-    pub async fn set_push_token(self: Arc<Self>, token: Option<String>) -> Result<()> {
-        with_client(&self.shared, move |client| async move {
-            Ok(client.set_push_token(token.as_deref()).await?)
-        })
-        .await
-    }
-
-    /// Starts an agent for another directory on the agent's host, or finds
-    /// the one that runs there already. `workspace` is a path on the host;
-    /// `~` stands for the home directory there. The host's agent
-    /// configuration decides which directories are allowed
-    /// (`allowed_roots`). A new agent joins the relay as it starts, so the
-    /// app may need to retry connecting to it for a moment.
-    pub async fn spawn_agent(self: Arc<Self>, workspace: String) -> Result<Agent> {
-        let workspace = workspace.trim().to_owned();
-        if workspace.is_empty() {
-            return Err(LoomError::invalid("Enter a directory on the host."));
-        }
-        with_client(&self.shared, move |client| async move {
-            let info = client.spawn_agent(workspace).await?;
-            Ok(Agent::from(&info))
-        })
-        .await
-    }
-
     /// Follows a session's conversation; its updates then come from
     /// `next_updates`, the first with every item.
     pub async fn open_session(self: Arc<Self>, session: String) -> Result<()> {

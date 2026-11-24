@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// The most bytes of a tool's output sent to the app, from its end.
 pub const MAX_OUTPUT: usize = 32 * 1024;
 
-/// A host paired through a relay; every agent on it is reachable.
+/// An oracle that the app paired with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct Host {
     /// The name the app shows; unique among the hosts.
@@ -23,13 +23,9 @@ pub struct Host {
     pub relay_url: String,
     pub host_id: String,
     pub host_key: String,
-    /// The agent the pairing link was for.
-    pub instance: Option<String>,
     /// The color that marks the host's sessions, as `#rrggbb`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub oracle: bool,
 }
 
 /// A color that the app offers for hosts.
@@ -635,32 +631,6 @@ impl From<NotesContent> for Notes {
 
 pub fn version_text(version: &proto::FileVersion) -> String {
     version.0.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// What an agent update installed, and which agents restart.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct AgentUpdateInfo {
-    /// What the replaced binary printed for `--version`.
-    pub previous: String,
-    /// What the new binary prints for `--version`.
-    pub version: String,
-    /// Where the binary is on the agent's host.
-    pub path: String,
-    pub restarting: Vec<Agent>,
-    /// The agents of another build that keep their version.
-    pub not_restarted: Vec<Agent>,
-}
-
-impl From<proto::AgentUpdate> for AgentUpdateInfo {
-    fn from(update: proto::AgentUpdate) -> Self {
-        Self {
-            previous: update.previous,
-            version: update.version,
-            path: update.path,
-            restarting: update.restarting.iter().map(Agent::from).collect(),
-            not_restarted: update.not_restarted.iter().map(Agent::from).collect(),
-        }
-    }
 }
 
 /// What a session sends to the model besides the conversation.

@@ -49,9 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.chiwanpark.loom.AgentLink
 import com.chiwanpark.loom.LoomApplication
-import com.chiwanpark.loom.LinkState
 import com.chiwanpark.loom.Screen
 import com.chiwanpark.loom.core.Host
 import com.chiwanpark.loom.core.HostColor
@@ -62,7 +60,7 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.launch
 
-/** The paired hosts. */
+/** The paired oracles. */
 @Composable
 fun HostsScreen(app: LoomApplication, loom: Loom) {
     var hosts by remember { mutableStateOf(loom.hosts()) }
@@ -70,7 +68,6 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Host?>(null) }
     var removing by remember { mutableStateOf<Host?>(null) }
-    var updating by remember { mutableStateOf<Host?>(null) }
     var coloring by remember { mutableStateOf<Host?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -87,7 +84,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
         },
         floatingActionButton = {
             FloatingActionButton(onClick = { app.navigator.push(Screen.Pair()) }) {
-                LoomIcon(LoomIcons.Plus, "Pair with a host")
+                LoomIcon(LoomIcons.Plus, "Pair with an oracle")
             }
         },
         snackbarHost = { LoomSnackbarHost(snackbar) },
@@ -95,7 +92,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
         if (hosts.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding).padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "No hosts yet. Run `loom-agent pair` on a host whose agents use a relay, " +
+                    "No oracles yet. Run `loom-oracle-cli pair-device` on an oracle, " +
                         "then pair with the QR code or link it prints.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -109,7 +106,6 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
                         onRename = { renaming = host },
                         onColor = { coloring = host },
                         onRemove = { removing = host },
-                        onUpdate = { updating = host },
                     )
                     HorizontalDivider()
                 }
@@ -155,8 +151,8 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
     removing?.let { host ->
         ConfirmDialog(
             title = "Remove ${host.name}?",
-            text = "This device forgets the host. The host still lists it until you run " +
-                "`loom-agent clients revoke` there.",
+            text = "This device forgets the oracle. The oracle still lists it until you remove it " +
+                "on the Devices page of the oracle settings in the desktop client.",
             confirm = "Remove",
             onConfirm = {
                 scope.attempt(snackbar) {
@@ -170,26 +166,6 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
             onDismiss = { removing = null },
         )
     }
-    updating?.let { host ->
-        val links = app.links.all.filter { it.host == host.name && it.state == LinkState.Connected }
-        UpdateAgentsDialog(
-            host = host.name,
-            links = links,
-            onConfirm = { version ->
-                scope.attempt(snackbar) {
-                    val update = loom.updateAgents(host.name, version)
-                    val count = update.restarting.size
-                    var message = "Installed ${update.version}; " +
-                        if (count == 1) "1 agent restarts." else "$count agents restart."
-                    if (update.notRestarted.isNotEmpty()) {
-                        message += " ${update.notRestarted.size} of another build keep their version."
-                    }
-                    snackbar.showSnackbar(message)
-                }
-            },
-            onDismiss = { updating = null },
-        )
-    }
 }
 
 @Composable
@@ -198,7 +174,6 @@ private fun HostRow(
     onRename: () -> Unit,
     onColor: () -> Unit,
     onRemove: () -> Unit,
-    onUpdate: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
     CompactListItem(
@@ -206,8 +181,7 @@ private fun HostRow(
         leadingContent = { ColorDot(hostColor(host.color)) },
         headlineContent = { Text(host.name, color = hostColor(host.color) ?: Color.Unspecified) },
         supportingContent = {
-            val address = host.relayUrl.substringAfter("://")
-            Text(if (host.oracle) "Oracle · $address" else address)
+            Text("Oracle · " + host.relayUrl.substringAfter("://"))
         },
         trailingContent = {
             Box {
@@ -216,7 +190,6 @@ private fun HostRow(
                     val close = { menu = false }
                     MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
                     MenuEntry("Color…", LoomIcons.Palette, close, onColor)
-                    if (!host.oracle) MenuEntry("Update agents…", LoomIcons.Download, close, onUpdate)
                     MenuEntry("Remove", LoomIcons.Trash, close, onRemove)
                 }
             }
@@ -285,58 +258,6 @@ private fun ColorChoice(name: String, color: Color?, selected: Boolean, onClick:
     }
 }
 
-/**
- * Asks for the release of loom-agent to install on a host. Empty means the
- * latest release; the default is the app's own version.
- */
-@Composable
-private fun UpdateAgentsDialog(
-    host: String,
-    links: List<AgentLink>,
-    onConfirm: (String?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    val appVersion = remember {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
-    }
-    var version by remember { mutableStateOf(appVersion) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Update agents on $host") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "All agents on $host that run the replaced binary restart at once. " +
-                        "Their running turns stop.",
-                )
-                links.forEach { link ->
-                    Text(
-                        "${link.workspace ?: link.instance}: ${link.agent?.version ?: "unknown"}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                OutlinedTextField(
-                    value = version,
-                    onValueChange = { version = it },
-                    label = { Text("Version") },
-                    supportingText = { Text("Leave empty for the latest release") },
-                    singleLine = true,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    onDismiss()
-                    onConfirm(version.trim().ifEmpty { null })
-                },
-            ) { Text("Update") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
 @Composable
 private fun DeviceKeyDialog(key: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
@@ -345,7 +266,7 @@ private fun DeviceKeyDialog(key: String, onDismiss: () -> Unit) {
         title = { Text("This device's key") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Hosts list this device by its key in `loom-agent clients list`.")
+                Text("The Devices page of the oracle settings lists this device by its key.")
                 SelectionContainer {
                     Text(key, fontFamily = LoomFonts.code)
                 }
@@ -358,7 +279,7 @@ private fun DeviceKeyDialog(key: String, onDismiss: () -> Unit) {
     )
 }
 
-/** Pairing with a host by the link `loom-agent pair` prints, scanned or pasted. */
+/** Pairing with an oracle by the link `loom-oracle-cli pair-device` prints, scanned or pasted. */
 @Composable
 fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
     val context = LocalContext.current
@@ -369,7 +290,7 @@ fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    Scaffold(topBar = { LoomTopBar("Pair with a host", onBack = { app.navigator.pop() }) }) { padding ->
+    Scaffold(topBar = { LoomTopBar("Pair with an oracle", onBack = { app.navigator.pop() }) }) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
@@ -380,7 +301,7 @@ fun PairScreen(app: LoomApplication, loom: Loom, initialLink: String) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                "On the host, run `loom-agent pair`. For an oracle, run `loom-oracle-cli pair-device`. " +
+                "On the oracle, run `loom-oracle-cli pair-device`, or make a link on the Devices page of the desktop client. " +
                     "Scan the QR code it prints, or paste its loom:// link. The link works once, for 10 minutes.",
                 style = MaterialTheme.typography.bodyMedium,
             )
