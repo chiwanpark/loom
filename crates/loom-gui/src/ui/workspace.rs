@@ -1,3 +1,4 @@
+mod archives;
 mod codespaces;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -645,6 +646,8 @@ pub struct Workspace {
     ports: HashMap<EntityId, Entity<PortsView>>,
     settings: HashMap<String, Entity<SettingsView>>,
     shown_settings: Option<Entity<SettingsView>>,
+    shown_archive: Option<Entity<crate::ui::archive_view::ArchiveView>>,
+    open_archives: HashSet<(String, String)>,
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_right: bool,
@@ -724,6 +727,8 @@ impl Workspace {
             ports: HashMap::new(),
             settings: HashMap::new(),
             shown_settings: None,
+            shown_archive: None,
+            open_archives: HashSet::new(),
         };
         cx.on_app_quit(|this, cx| {
             this.save_layout(cx);
@@ -1841,6 +1846,7 @@ impl Workspace {
         };
         self.active_group = Some(ix);
         self.shown_settings = None;
+        self.shown_archive = None;
         self.active_connection = Some(group.connection.clone());
         self.focus_active_panel(window, cx);
         self.see_active_session(window, cx);
@@ -4996,6 +5002,9 @@ impl Workspace {
         if let Some(settings) = self.shown_settings.clone() {
             return self.render_settings(settings, cx);
         }
+        if let Some(archive) = self.shown_archive.clone() {
+            return self.render_archive(archive, cx);
+        }
         let Some(group) = self.active_group() else {
             return v_flex()
                 .size_full()
@@ -5975,6 +5984,140 @@ mod tests {
         ws.update_in(cx, |ws, window, cx| ws.close_settings(window, cx));
         assert!(ws.read_with(cx, |ws, _| ws.shown_settings.is_none()));
         assert!(ws.read_with(cx, |ws, _| ws.settings.len() == 1));
+    }
+
+    #[gpui::test]
+    fn an_oracle_shows_the_archive_of_closed_codespaces_read_only(cx: &mut TestAppContext) {
+        use crate::oracle::tests::{TestOracle, wait};
+        use loom_client::oracle_proto::{CodespaceState, Role, SessionSummary};
+        use loom_client::proto::{ContentPart, SequencedEvent, SessionEvent};
+        use loom_oracle::store::{ArchiveRow, CodespaceRow};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let test = TestOracle::start(&root);
+        let _host = test.pair_host("box");
+        let store = test.oracle.store();
+        let host = store.peers(Some(Role::Host)).unwrap()[0].id;
+        let workspace = store.create_workspace("acme", host, &[], &[]).unwrap();
+        let mut row = CodespaceRow {
+            id: "k3x9".into(),
+            workspace: workspace.id,
+            workspace_name: "acme".into(),
+            host,
+            host_name: "box".into(),
+            preset: None,
+            preset_name: None,
+            peer: None,
+            state: CodespaceState::Provisioning,
+            cpus: 2,
+            memory_mib: 4096,
+            instance: "loom-k3x9".into(),
+            branch: "loom/k3x9".into(),
+            base_branch: None,
+            repositories: Vec::new(),
+            client_version: None,
+            agent: None,
+            step: None,
+            error: None,
+            first_message: None,
+            created_at: 1,
+            updated_at: 1,
+            stopped_at: None,
+            active: None,
+            active_at: None,
+            metrics: None,
+            archive: None,
+        };
+        store.insert_codespace(&row, &[]).unwrap();
+        row.state = CodespaceState::Closed;
+        row.archive = Some(ArchiveRow {
+            size: 4096,
+            saved_at: Some(loom_oracle::store::now_unix()),
+            error: None,
+        });
+        store.save_codespace(&row).unwrap();
+        let summary = SessionSummary {
+            id: "s1".into(),
+            title: Some("Fix the build".into()),
+            state: "running".into(),
+            archived: false,
+            model: None,
+            created_at: 1,
+            updated_at: 2,
+        };
+        store
+            .put_sessions("k3x9", std::slice::from_ref(&summary), &[], true)
+            .unwrap();
+        let archive = root.join("oracle/data/loom/oracle/archive/k3x9");
+        std::fs::create_dir_all(&archive).unwrap();
+        let conn = rusqlite::Connection::open(archive.join("0a.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY);
+             CREATE TABLE events (session_id TEXT, seq INTEGER, event BLOB);
+             INSERT INTO sessions VALUES ('s1');",
+        )
+        .unwrap();
+        let event = SequencedEvent {
+            seq: 0,
+            event: SessionEvent::UserMessage {
+                content: vec![ContentPart::text("Please fix the build")],
+            },
+        };
+        conn.execute(
+            "INSERT INTO events VALUES ('s1', 0, ?1)",
+            [loom_client::proto::encode(&event).unwrap()],
+        )
+        .unwrap();
+        drop(conn);
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::ui::bind_keys(&Default::default(), cx);
+        });
+        let config = ClientConfig {
+            hosts: vec![test.entry.clone()],
+            ..Default::default()
+        };
+        let (env, backend) = (test.env.clone(), test.backend.clone());
+        let slot = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let config_path = root.join("client.yaml");
+            move |window, cx| {
+                let ws = cx.new(|cx| Workspace::new(backend, env, config, config_path, window, cx));
+                *slot.borrow_mut() = Some(ws.clone());
+                Root::new(ws, window, cx)
+            }
+        });
+        let ws: Entity<Workspace> = slot.borrow_mut().take().unwrap();
+        wait(cx, |cx| {
+            ws.read(cx).hosts[0].oracle.as_ref().is_some_and(|link| {
+                let link = link.read(cx);
+                !link.archived_codespaces("acme").is_empty() && !link.sessions.is_empty()
+            })
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("archives-0-0").is_some());
+        assert!(cx.debug_bounds("archived-0-0-0").is_none());
+        click("archives-0-0", cx);
+        assert!(cx.debug_bounds("archived-0-0-0").is_some());
+        click("archived-0-0-0", cx);
+        wait(cx, |cx| {
+            ws.read(cx)
+                .shown_archive
+                .as_ref()
+                .is_some_and(|view| view.read(cx).is_loaded())
+        });
+        let (busy, items) = ws.read_with(cx, |ws, cx| {
+            let view = ws.shown_archive.clone().unwrap();
+            let conversation = view.read(cx).conversation().read(cx);
+            (conversation.is_busy(), conversation.item_keys().len())
+        });
+        assert!(!busy && items > 0);
+        assert!(cx.debug_bounds("archive-view").is_some());
+        ws.update_in(cx, |ws, window, cx| ws.close_archive(window, cx));
+        assert!(ws.read_with(cx, |ws, _| ws.shown_archive.is_none()));
     }
 
     #[test]

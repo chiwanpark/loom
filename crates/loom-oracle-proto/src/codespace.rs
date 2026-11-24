@@ -321,6 +321,20 @@ pub struct Codespace {
     pub stop_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<CodespaceArchive>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodespaceArchive {
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,8 +450,63 @@ pub enum HostCall {
     VolumeUsage {
         volumes: Vec<String>,
     },
+    ArchiveFiles {
+        codespace: String,
+        instance: String,
+        #[serde(default)]
+        max_size: Option<u64>,
+    },
+    ArchiveChunk {
+        codespace: String,
+        name: String,
+        #[serde(default)]
+        offset: u64,
+    },
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveFile {
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveFiles {
+    #[serde(default)]
+    pub files: Vec<ArchiveFile>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveChunk {
+    #[serde(default)]
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivePage {
+    #[serde(default)]
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub last: Option<u64>,
+    #[serde(default)]
+    pub more: bool,
+}
+
+pub const ARCHIVE_CHUNK: usize = 1024 * 1024;
+
+pub fn valid_archive_file(name: &str) -> bool {
+    let stem = name
+        .strip_suffix(".sqlite-wal")
+        .or_else(|| name.strip_suffix(".sqlite"));
+    stem.is_some_and(|stem| {
+        (1..=64).contains(&stem.len())
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

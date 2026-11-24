@@ -454,6 +454,27 @@ impl FakeState {
                 }
                 sync(Value::Null)
             }
+            (Method::GET, ["files"]) => {
+                let Some(path) = query.get("path") else {
+                    return error(StatusCode::BAD_REQUEST, "no path");
+                };
+                let files = &self.instances[name].files;
+                if let Some(file) = files.get(path).filter(|file| file.kind != "directory") {
+                    return (StatusCode::OK, Bytes::from(file.content.clone()));
+                }
+                let prefix = format!("{}/", path.trim_end_matches('/'));
+                let children: std::collections::BTreeSet<String> = files
+                    .keys()
+                    .filter_map(|key| key.strip_prefix(&prefix))
+                    .filter_map(|rest| rest.split('/').next())
+                    .filter(|child| !child.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if children.is_empty() && !files.contains_key(path) {
+                    return error(StatusCode::NOT_FOUND, "not found");
+                }
+                sync(json!(children))
+            }
             (Method::POST, ["exec"]) => {
                 let request = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
                 let command: Vec<String> =

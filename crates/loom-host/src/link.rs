@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -133,6 +133,7 @@ pub struct Host {
     pub driver: Arc<dyn Driver>,
     pub agents: Arc<dyn AgentSource>,
     pub http: loom_github::Http,
+    pub archive_dir: PathBuf,
 }
 
 fn internal(err: anyhow::Error) -> OracleError {
@@ -254,11 +255,15 @@ impl Host {
     async fn handle(&self, client: &OracleClient, call: HostCall) -> Result<Value, OracleError> {
         match call {
             HostCall::CreateInstance(request) => self.create(client, &request).await,
-            HostCall::DeleteInstance { instance, .. } => {
+            HostCall::DeleteInstance {
+                codespace,
+                instance,
+            } => {
                 self.driver
                     .delete(&self.oracle.host_id, &instance)
                     .await
                     .map_err(internal)?;
+                crate::archive::remove(&self.archive_dir, &codespace);
                 tracing::info!(%instance, "deleted a codespace instance");
                 Ok(Value::Object(Default::default()))
             }
@@ -328,6 +333,31 @@ impl Host {
                     .volume_usage(&self.oracle.host_id, &volumes)
                     .await,
             }),
+            HostCall::ArchiveFiles {
+                codespace,
+                instance,
+                max_size,
+            } => to_value(
+                crate::archive::files(
+                    self.driver.as_ref(),
+                    &self.oracle.host_id,
+                    &self.archive_dir,
+                    &codespace,
+                    &instance,
+                    max_size,
+                )
+                .await?,
+            ),
+            HostCall::ArchiveChunk {
+                codespace,
+                name,
+                offset,
+            } => to_value(crate::archive::chunk(
+                &self.archive_dir,
+                &codespace,
+                &name,
+                offset,
+            )?),
             HostCall::Unknown => Err(OracleError::new(
                 ErrorCode::UnknownCommand,
                 "this host does not know the call; update loom-host",

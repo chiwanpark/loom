@@ -721,6 +721,16 @@ async fn volumes_require_host_confirmation_and_stay_reserved_until_close() {
         laptop.close_codespace(&codespace.id).await.unwrap();
         let (id, call) = host_call(calls).await;
         assert!(
+            matches!(call, HostCall::StopInstance { codespace: closed, .. } if closed == codespace.id)
+        );
+        client.reply(id, Ok(json!({}))).await.unwrap();
+        let (id, call) = host_call(calls).await;
+        assert!(
+            matches!(call, HostCall::ArchiveFiles { codespace: closed, .. } if closed == codespace.id)
+        );
+        client.reply(id, Ok(json!({"files": []}))).await.unwrap();
+        let (id, call) = host_call(calls).await;
+        assert!(
             matches!(call, HostCall::DeleteInstance { codespace: closed, .. } if closed == codespace.id)
         );
         client.reply(id, Ok(json!({}))).await.unwrap();

@@ -296,6 +296,7 @@ impl Workspace {
         }
         gpui::Focusable::focus_handle(view.read(cx), cx).focus(window, cx);
         self.shown_settings = Some(view);
+        self.shown_archive = None;
         cx.notify();
     }
 
@@ -942,6 +943,7 @@ impl Workspace {
             for (wix, (workspace, repositories, codespaces)) in workspaces.into_iter().enumerate() {
                 let new_link = link.clone();
                 let name = workspace.clone();
+                let workspace_name = workspace.clone();
                 section = section.child(
                     h_flex()
                         .id(SharedString::from(format!("oracle-workspace-{hix}-{wix}")))
@@ -981,6 +983,7 @@ impl Workspace {
                                 })),
                         ),
                 );
+                let archives_for = workspace_name.clone();
                 for (cix, (codespace, sessions)) in codespaces.into_iter().enumerate() {
                     section = section.child(self.render_codespace(
                         &link,
@@ -989,6 +992,9 @@ impl Workspace {
                         sessions,
                         cx,
                     ));
+                }
+                if let Some(archives) = self.render_archives(&link, (hix, wix), &archives_for, cx) {
+                    section = section.child(archives);
                 }
             }
         }
