@@ -199,6 +199,33 @@ pub struct GitTokenResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitProxyRequest {
+    pub codespace: String,
+    pub secret: Secret,
+    pub provider: String,
+    pub owner: String,
+    pub repository: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitProxyAccess {
+    pub upstream: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<GitToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodespaceApiRequest {
+    pub url: String,
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhLogin {
     pub user: String,
     pub token: Secret,
@@ -217,6 +244,8 @@ pub struct GitProviderSetup {
     pub credentials: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gh: Option<GhLogin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

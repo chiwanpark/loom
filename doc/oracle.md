@@ -454,9 +454,10 @@ Commands of hosts:
 
 | Command | Fields | Use |
 | --- | --- | --- |
-| `host_report` | `report`: version, driver, CPUs, memory, and optional storage driver, Incus version, architecture, maximum number of codespaces, and `checks` | The host sends it after each connection. The checks are the results of `loom-host check` without the Docker test. |
+| `host_report` | `report`: version, driver, CPUs, memory, and optional storage driver, Incus version, architecture, maximum number of codespaces, `checks`, and `git_proxy` | The host sends it after each connection. The checks are the results of `loom-host check` without the Docker test. `git_proxy` is the URL of the Git proxy of the host. |
 | `host_instances` | `instances`: codespace, instance, oracle, running | The oracle deletes the instances that have no open codespace. It marks a codespace `lost` when its instance is missing. |
 | `instance_progress` | `codespace`, `step` | A step of `create_instance`, for example the image build. |
+| `git_proxy_access` | `codespace`, `secret`, `provider`, `owner`, `repository` | `upstream`, the URL of the repository, and an optional `token`. The oracle refuses a secret that is not valid and a codespace of a different host. |
 
 Calls to hosts:
 
@@ -478,7 +479,8 @@ Commands of codespace agents:
 | `codespace_progress` | `step` | |
 | `codespace_ready` | | |
 | `codespace_failed` | `error` | |
-| `git_credential` | `url` | `token` with `username`, `password`, and `expires_at`, or no token |
+| `git_credential` | `url` | `token` with `username`, `password`, and `expires_at`, or no token. On a host with a Git proxy, the token is the proxy secret for URLs of the proxy, and there is no token for other URLs. |
+| `codespace_api_request` | `url`, `method`, `path`, `query`, `body` | The answer of the provider. The oracle permits only the pull request calls for the repository of `url`. |
 | `model_credentials` | | `sections` (the credential of each provider, without refresh tokens), `accounts`, `valid_secs`, `errors` |
 | `codespace_notes` | `text` | |
 | `session_summaries` | `sessions`, `removed`, `full` | With `full`, the oracle removes the sessions that are not in the list. |

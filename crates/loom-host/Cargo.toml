@@ -13,7 +13,13 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+base64 = "0.22.1"
+bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 loom-client = { path = "../loom-client", default-features = false }
 loom-config = { path = "../loom-config" }
 loom-crypto = { path = "../loom-crypto" }
@@ -24,6 +30,7 @@ loom-update = { path = "../loom-update" }
 loom-version = { path = "../loom-version" }
 nix = { version = "0.31.3", features = ["signal"] }
 rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
