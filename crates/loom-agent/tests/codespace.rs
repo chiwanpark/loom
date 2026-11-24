@@ -581,6 +581,7 @@ async fn a_codespace_pushes_and_opens_pull_requests_with_the_credentials_of_its_
             owner: None,
             repository: None,
             token: Some(Secret::new("secret-token")),
+            app_id: None,
         })
         .await
         .unwrap();

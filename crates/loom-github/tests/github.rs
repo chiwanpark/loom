@@ -1,6 +1,6 @@
 use loom_github::{
-    ApiRequest, GitHub, GitHubError, Http, Method, NewPullRequest, default_api_url,
-    parse_expiration, repository_path, valid_path,
+    ApiRequest, GitHub, GitHubError, Http, Method, NewPullRequest, app_jwt, default_api_url,
+    parse_expiration, parse_timestamp, repository_path, valid_path,
 };
 use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path, query_param};
@@ -277,4 +277,110 @@ async fn raw_requests_keep_the_status_and_the_reach_test_needs_any_answer() {
     ));
     assert_eq!(Method::parse("patch"), Some(Method::Patch));
     assert_eq!(Method::parse("DELETE"), None);
+}
+
+pub fn rsa_key() -> String {
+    rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+        .unwrap()
+        .serialize_pem()
+}
+
+fn claims(jwt: &str) -> serde_json::Value {
+    use base64::Engine;
+    let part = jwt.split('.').nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(part)
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn an_app_makes_tokens_for_its_installations() {
+    let key = rsa_key();
+    let jwt = app_jwt(42, &key, 1_000_000).unwrap();
+    let claims = claims(&jwt);
+    assert_eq!(claims["iss"], "42");
+    assert_eq!(claims["iat"], 1_000_000 - 60);
+    assert_eq!(claims["exp"], 1_000_000 + 540);
+    assert!(matches!(
+        app_jwt(42, "not a key", 0),
+        Err(GitHubError::Route(_))
+    ));
+
+    let server = MockServer::start().await;
+    let bearer = format!("Bearer {jwt}");
+    Mock::given(method("GET"))
+        .and(path("/app"))
+        .and(header("authorization", bearer.as_str()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"id": 42, "slug": "loom-bot", "name": "Loom"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/orgs/someone/installation"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users/someone/installation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 7})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/installation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 8})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/8/access_tokens"))
+        .and(body_json(json!({"repositories": ["server"]})))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({"token": "ghs_one", "expires_at": "2000-03-01T01:00:00Z"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/8/access_tokens"))
+        .and(body_json(json!({})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"token": "ghs_all"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/installation/repositories"))
+        .and(header("authorization", "Bearer ghs_all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"total_count": 1, "repositories": [repo("acme", "server", true)]}),
+        ))
+        .mount(&server)
+        .await;
+
+    let http = Http::new().unwrap();
+    let app = GitHub::direct(http.clone(), &server.uri(), Some(jwt));
+    assert_eq!(app.app().await.unwrap().slug, "loom-bot");
+    assert_eq!(app.installation("someone").await.unwrap(), 7);
+    assert_eq!(app.installation("acme").await.unwrap(), 8);
+    let one = app
+        .installation_token(8, &["server".to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(one.token, "ghs_one");
+    assert_eq!(one.expires_at, Some(951_868_800 + 3600));
+    assert!(
+        app.installation_token(8, &["a/b".to_owned()])
+            .await
+            .is_err()
+    );
+    let all = app.installation_token(8, &[]).await.unwrap();
+    assert_eq!(all.expires_at, None);
+    let installation = GitHub::direct(http, &server.uri(), Some(all.token));
+    let page = installation.installation_repositories(100).await.unwrap();
+    assert_eq!(page.items[0].name, "server");
+    assert_eq!(
+        parse_timestamp("2000-03-01T00:00:00.123Z"),
+        Some(951_868_800)
+    );
+    assert_eq!(parse_timestamp("2000-03-01"), None);
 }

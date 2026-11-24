@@ -4827,6 +4827,9 @@ name = "loom-github"
 version = "0.5.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "jsonwebtoken",
+ "rcgen",
  "reqwest",
  "serde",
  "serde_json",
@@ -5000,6 +5003,7 @@ dependencies = [
  "loom-version",
  "qrcode",
  "rand 0.10.3",
+ "rcgen",
  "rusqlite",
  "serde",
  "serde_json",
