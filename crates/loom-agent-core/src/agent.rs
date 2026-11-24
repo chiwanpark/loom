@@ -638,6 +638,10 @@ impl Agent {
         &self.inner.metrics
     }
 
+    pub fn open_terminals(&self) -> u64 {
+        self.terminals().count() as u64
+    }
+
     pub fn telemetry_status(&self) -> loom_proto::TelemetryStatus {
         self.inner
             .telemetry
