@@ -108,12 +108,13 @@ class OracleLink(private val app: LoomApplication, private val loom: Loom, val h
                 CodespaceStatus.FAILED -> noticeFlow.tryEmit(
                     "The codespace ${codespaceTitle(codespace)} did not start: ${codespace.error ?: "no reason"}",
                 )
+                CodespaceStatus.STOPPED -> noticeFlow.tryEmit("The codespace ${codespaceTitle(codespace)} is stopped.")
                 else -> {}
             }
         }
         lists = next
         val instances = next.codespaces
-            .filter { it.status != CodespaceStatus.CLOSING && it.status != CodespaceStatus.CLOSED }
+            .filter { it.status != CodespaceStatus.CLOSING && it.status != CodespaceStatus.CLOSED && it.status != CodespaceStatus.STOPPED }
             .mapNotNull { it.instance }
             .toSet()
         app.links.retainInstances(host, instances)
