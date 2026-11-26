@@ -110,6 +110,10 @@ async fn pair_shows_a_link_for_the_first_device_and_waits() {
     let (ok, _, err) = output(home, &["pair", "--no-wait", "--ttl", "30d"]).await;
     assert!(!ok);
     assert!(err.contains("seconds"), "{err}");
+    let (ok, out, _) = output(home, &["pair", "--host", "--no-wait", "--no-qr"]).await;
+    assert!(ok);
+    assert!(out.contains("This link pairs one host."), "{out}");
+    assert_eq!(oracle.store().pairings().unwrap().len(), 2);
 
     let mut pair = oracle_cmd(home)
         .args(["pair", "--no-qr"])
@@ -139,13 +143,70 @@ async fn pair_shows_a_link_for_the_first_device_and_waits() {
         .await
         .unwrap();
     assert_eq!(client.hello().peer.role, Role::Device);
-    assert_eq!(client.pairings().await.unwrap().len(), 1);
+    assert_eq!(client.pairings().await.unwrap().len(), 2);
     let log = oracle.store().audit_log(10).unwrap();
     assert!(
         log.iter()
             .any(|row| row.detail.contains("loom-oracle pair"))
     );
     shutdown.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_waits_until_the_configuration_is_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let config_path = home.join(".config/loom/oracle.yaml");
+    let mut serve = oracle_cmd(home)
+        .args(["serve", "--wait"])
+        .env("NO_COLOR", "1")
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(serve.stderr.take().unwrap()).lines();
+    let mut next = async || {
+        tokio::time::timeout(WAIT, lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    };
+    let line = next().await;
+    assert!(
+        line.contains("waiting") && line.contains("config init"),
+        "{line}"
+    );
+
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, format!("listen: {addr}\n")).unwrap();
+    let line = next().await;
+    assert!(line.contains("set url"), "{line}");
+
+    let keys = home.join("keys");
+    std::fs::write(
+        &config_path,
+        format!(
+            "listen: {addr}\nurl: ws://{addr}\nmaster_key: {}\n",
+            keys.join("master.key").display()
+        ),
+    )
+    .unwrap();
+    let line = next().await;
+    assert!(line.contains("of the master key is not there"), "{line}");
+    std::fs::create_dir(&keys).unwrap();
+    loop {
+        let line = next().await;
+        if line.contains("listening") {
+            break;
+        }
+    }
+    assert!(tokio::net::TcpStream::connect(addr).await.is_ok());
+    assert!(keys.join("master.key").exists());
+    serve.kill().await.unwrap();
 }
 
 #[test]
