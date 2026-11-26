@@ -77,55 +77,7 @@ The members of `incus-admin` have full control of Incus. If you do not want this
 
 ### Run `loom-host` in a container on IncusOS
 
-On IncusOS, `loom-host` can run in a system container from an Incus image. The image has Alpine Linux, and `loom-host` and `loom-agent` of the same build. The build script is `contrib/incus/build-image.py`.
-
-There is no published image yet, and you do not need a registry. Each CI build has the artifact `incus-loom-host`. It has a metadata tarball and a rootfs tarball for `amd64` and for `arm64`. Import the two files of the architecture of the host into the image store of each host.
-
-In the container, these paths are in `/var/lib/loom-host`:
-
-| Path | Contents |
-| --- | --- |
-| `config/loom/host.yaml` | The configuration. |
-| `data/loom/host/` | The data directory: the key, the address of the oracle, the Incus certificates, the agent binaries, and the copies of the sessions of a closing codespace. |
-
-`/root/.config`, `/root/.local/share`, and `/root/.local/state` are links to `config`, `data`, and `state` in `/var/lib/loom-host`. Thus, `incus exec` and the service use the same files.
-
-Keep `/var/lib/loom-host` on a custom volume, so that it stays when you rebuild the container from a newer image. Use a project other than the project of the codespaces:
-
-```sh
-incus image import loom-host-amd64.metadata.tar.xz loom-host-amd64.rootfs.tar.xz --alias loom-host
-incus storage volume create <pool> loom-host-data
-incus create loom-host loom-host
-incus storage volume attach <pool> loom-host-data loom-host /var/lib/loom-host
-incus start loom-host
-incus exec loom-host -- loom-host config init
-incus file edit loom-host/var/lib/loom-host/config/loom/host.yaml
-```
-
-In `host.yaml`, set `incus.url` to the address of Incus that the instance reaches, `incus.project`, `incus.pool`, `incus.network`, and `agent.path: /usr/local/bin/loom-agent`. Then prepare the host:
-
-```sh
-incus exec loom-host -- loom-host trust '<token>'
-incus exec loom-host -- loom-host join '<link>' --name <name>
-incus exec loom-host -- loom-host check --docker
-```
-
-The container gets its IPv4 address with DHCP and starts `loom-host serve --wait`. It waits until the configuration is valid and the host has joined an oracle, and then it serves. Until then, it writes what is missing to the log and checks again every 5 seconds. `incus console loom-host --show-log` shows the log. If `loom-host` stops, the container starts it again after 5 seconds.
-
-For a Git provider with a company CA, put a file with all CA certificates on the volume, and set `environment.SSL_CERT_FILE` of the instance to its path.
-
-To update `loom-host`, import the new image and rebuild the container. The volume stays:
-
-```sh
-incus image import loom-host-amd64.metadata.tar.xz loom-host-amd64.rootfs.tar.xz --alias loom-host --reuse
-incus stop loom-host
-incus rebuild loom-host loom-host
-incus start loom-host
-```
-
-A different host can copy the image from a host that has it: `incus image copy <remote>:loom-host local: --alias loom-host`.
-
-The test on an IncusOS host used the Incus API, not the `incus` client: import, start, DHCP, HTTPS to github.com, `config init` with `incus exec`, a rebuild with the volume, and a stop of 3 seconds. `trust` and `join` in the container are not tested yet.
+`loom-host` can run in a system container from the Incus image of the release, with SSH for the desktop clients. The oracle can run in a container too. See [Incus deployment](incus.md).
 
 ## `host.yaml`
 
@@ -288,6 +240,8 @@ ssh <destination> loom-host stdio --codespace <id>
 ```
 
 `loom-host stdio` finds the instance of the codespace and runs `loom-agent stdio --managed` in it. With the `incus` driver, it uses the exec API of Incus with WebSockets. The command needs the `host.yaml` and the join state of the `loom-host` service. Thus, the SSH user must be the user of the `loom-host` service, and `loom-host` must be on the `PATH` of this user.
+
+The Incus image of `loom-host` has its own SSH server for this command. See [SSH connections](incus.md#ssh-connections) in the Incus deployment.
 
 The desktop app tries SSH first when the host has an SSH destination. It uses `BatchMode=yes`, so SSH must not ask for a password. If SSH fails, the app uses the relay and does not try SSH again for 10 minutes.
 
