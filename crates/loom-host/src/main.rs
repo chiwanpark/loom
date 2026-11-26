@@ -61,6 +61,8 @@ enum Command {
         #[arg(long)]
         codespace: String,
     },
+    #[command(name = "ssh-command", hide = true)]
+    ForcedSsh,
     #[command(subcommand)]
     Config(ConfigCommand),
 }
@@ -197,8 +199,35 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             init_logging(LogLevel::Warn);
             return runtime()?.block_on(stdio(config, dirs, &codespace));
         }
+        Command::ForcedSsh => {
+            let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+            let Some(codespace) = ssh_codespace(&original) else {
+                bail!("this SSH key can only run `loom-host stdio --codespace <id>`");
+            };
+            let config = HostConfig::load(&path, &dirs)?;
+            init_logging(LogLevel::Warn);
+            return runtime()?.block_on(stdio(config, dirs, codespace));
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn ssh_codespace(command: &str) -> Option<&str> {
+    let words: Vec<&str> = command.split_ascii_whitespace().collect();
+    let [
+        "loom-host" | "/usr/local/bin/loom-host",
+        "stdio",
+        "--codespace",
+        codespace,
+    ] = words[..]
+    else {
+        return None;
+    };
+    let valid = codespace.len() <= 64
+        && codespace
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    (!codespace.is_empty() && valid).then_some(codespace)
 }
 
 fn not_ready(path: &Path, dirs: &Dirs) -> Option<String> {
@@ -492,6 +521,33 @@ async fn serve(config: HostConfig, dirs: Dirs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ssh_command_allows_only_stdio_of_a_codespace() {
+        assert_eq!(ssh_codespace("loom-host stdio --codespace c1"), Some("c1"));
+        assert_eq!(
+            ssh_codespace("/usr/local/bin/loom-host stdio --codespace a-b_9"),
+            Some("a-b_9")
+        );
+        for bad in [
+            "",
+            "sh",
+            "loom-host stdio",
+            "loom-host stdio --codespace",
+            "loom-host stdio --codespace c1 extra",
+            "loom-host stdio --codespace 'c1'",
+            "loom-host stdio --codespace c1;sh",
+            "loom-host stdio --codespace $(id)",
+            "loom-host join x",
+            "./loom-host stdio --codespace c1",
+        ] {
+            assert_eq!(ssh_codespace(bad), None, "{bad}");
+        }
+        assert_eq!(
+            ssh_codespace(&format!("loom-host stdio --codespace {}", "a".repeat(65))),
+            None
+        );
+    }
 
     #[test]
     fn admin_setup_lists_the_project_keys() {

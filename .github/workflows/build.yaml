@@ -103,7 +103,7 @@ jobs:
         retention-days: ${{ inputs.retention-days }}
 
   image:
-    name: Incus image of loom-host
+    name: Incus images
     needs: build
     runs-on: ubuntu-24.04
     steps:
@@ -120,16 +120,25 @@ jobs:
           arch=${pair%%=*}
           target=${pair#*=}
           mkdir -p "bin/$arch"
-          for name in loom-host loom-agent; do
+          for name in loom-host loom-agent loom-oracle; do
             tar -xzf dist/"$name"-*-"$target".tar.gz -C "bin/$arch" \
               --strip-components=1 --wildcards "*/$name"
           done
-          python3 contrib/incus/build-image.py --arch "$arch" --bin-dir "bin/$arch" \
-            --output image --version "$version-${GITHUB_SHA::12}"
+          for component in host oracle; do
+            python3 contrib/incus/build-image.py --component "$component" --arch "$arch" \
+              --bin-dir "bin/$arch" --output image --version "$version-${GITHUB_SHA::12}" \
+              --name "loom-$component-$version-incus-$arch"
+          done
         done
+        tar -tJf "image/loom-host-$version-incus-amd64.rootfs.tar.xz" | grep -qx 'usr/sbin/dropbear'
+        tar -tJf "image/loom-oracle-$version-incus-arm64.rootfs.tar.xz" | grep -qx 'usr/local/bin/loom-oracle'
+        mkdir check
+        tar -xJf "image/loom-host-$version-incus-amd64.rootfs.tar.xz" -C check usr/local/lib/loom-host
+        tar -xJf "image/loom-oracle-$version-incus-amd64.rootfs.tar.xz" -C check usr/local/lib/loom-oracle
+        shellcheck --shell=sh check/usr/local/lib/*/*
     - uses: actions/upload-artifact@v7
       with:
-        name: incus-loom-host
+        name: dist-incus
         path: image/*.tar.xz
         if-no-files-found: error
         retention-days: ${{ inputs.retention-days }}

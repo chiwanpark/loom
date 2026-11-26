@@ -4,8 +4,15 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ## Unreleased
 
+### Upgrade notes
+
+- **Incus images in the release.** The Incus images of `loom-host` and `loom-oracle` are now release assets. The CI artifact `incus-loom-host` is now `dist-incus`, and it has versioned file names.
+- **Logs of the `loom-host` image.** The image now writes the log of `loom-host` to `log/loom-host.log` on its volume, not to the console. The container waits until a volume is attached at `/var/lib/loom-host`.
+
 ### New features
 
+- **Incus image of the oracle.** The release has an Incus image of `loom-oracle` for amd64 and arm64. Run the oracle as a container, and keep its data on custom volumes. See [Incus deployment](doc/incus.md).
+- **SSH to a `loom-host` container.** The Incus image of `loom-host` has an SSH server. Desktop clients can connect to codespaces over SSH also when `loom-host` runs in a container. The SSH keys can only run `loom-host stdio`. See [Incus deployment](doc/incus.md#ssh-connections).
 - **Host links from the oracle machine.** `loom-oracle pair --host` makes a one-time link for a host. You do not need the desktop app for it.
 - **`loom-oracle serve --wait`.** The oracle waits until `oracle.yaml` is ready and the master key can be used. Until then, it logs what is missing. See [Oracle](doc/oracle.md#set-up-an-oracle).
 - **Host directories over HTTPS.** `loom-host` can now mount host directories, such as an NFS mount, also when it uses the HTTPS API of Incus. Incus enforces the paths and the ID mapping of the project. See [Host directories](doc/host.md#host-directories).
