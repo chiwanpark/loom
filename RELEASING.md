@@ -11,8 +11,12 @@ Loom's binaries are published as archives on [GitHub releases](https://github.co
 | `loom-agent-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-agent` | any arm64 Linux; statically linked |
 | `loom-oracle-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-oracle` and its systemd unit | any arm64 Linux; statically linked |
 | `loom-host-<version>-aarch64-unknown-linux-musl.tar.gz` | `loom-host` and its systemd unit | any arm64 Linux; statically linked |
+| `loom-host-<version>-incus-<arch>.metadata.tar.xz` and `.rootfs.tar.xz` | Incus image of `loom-host` with `loom-agent` and dropbear; `<arch>` is `amd64` or `arm64` | Incus 6.0 or newer |
+| `loom-oracle-<version>-incus-<arch>.metadata.tar.xz` and `.rootfs.tar.xz` | Incus image of `loom-oracle` | Incus 6.0 or newer |
 
 Each architecture is built natively, the arm64 archives on GitHub's `ubuntu-24.04-arm` runners.
+
+The Incus images come from `contrib/incus/build-image.py`. It puts the musl binaries of the release into an Alpine Linux minirootfs, and adds dropbear from the Alpine package repository. It checks the signature of the package index with the Alpine keys of the minirootfs, and the checksum of each package. See [Incus deployment](doc/incus.md).
 
 `scripts/install.sh`, `loom-host` (for the agent of a codespace), and the desktop client's update download the archives and `SHA256SUMS` from the latest published release, so keep those names and the layout of the archives when changing the build. Drafts are not visible to them, and until a release is published `scripts/install.sh` can only build from source (`--source`).
 
@@ -72,7 +76,16 @@ scripts/package-release.sh aarch64-unknown-linux-musl loom-agent loom-agent
 scripts/package-release.sh aarch64-unknown-linux-musl loom-oracle loom-oracle
 scripts/package-release.sh aarch64-unknown-linux-musl loom-host loom-host
 
-(cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
+# The Incus images, from the musl binaries of both architectures. Copy the
+# arm64 binaries into target/aarch64-unknown-linux-musl/release here first.
+for arch in amd64:x86_64 arm64:aarch64; do
+  for component in host oracle; do
+    python3 contrib/incus/build-image.py --component $component --arch ${arch%%:*} \
+      --bin-dir target/${arch#*:}-unknown-linux-musl/release --output dist --version X.Y.Z \
+      --name loom-$component-X.Y.Z-incus-${arch%%:*}
+  done
+done
+(cd dist && sha256sum -- *.tar.gz *.tar.xz > SHA256SUMS)
 gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file <(sed -n '/^## X.Y.Z$/,/^## /{//!p}' CHANGELOG.md) dist/*
 ```
 

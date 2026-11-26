@@ -108,7 +108,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         VERSION: ${{ needs.state.outputs.version }}
       run: |
-        (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
+        (cd dist && sha256sum -- *.tar.gz *.tar.xz > SHA256SUMS)
         awk -v version="$VERSION" '
           $0 == "## " version { found = 1; next }
           found && /^## / { exit }
