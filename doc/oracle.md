@@ -27,6 +27,10 @@ cargo build --release --bin loom-oracle
 
 After this, the first device makes the links for the other devices on the **Devices** page of the oracle settings in the desktop client. You do all other configuration in the desktop client too. See [Oracle settings](desktop.md#oracle-settings).
 
+`loom-oracle pair --host` makes a one-time link for a host, as **Add host…** on the **Hosts** page does. Give it to `loom-host join`.
+
+`loom-oracle serve --wait` waits until `oracle.yaml` exists, is valid, and sets `url`. If `master_key` is set, it also waits until the directory of the key exists. If the store exists, it waits until the key exists. Until then, it writes what is missing to its log and checks again every 5 seconds. The [Incus image](incus.md) uses this mode.
+
 `loom-oracle config check` validates `oracle.yaml`. `loom-oracle config schema` shows its JSON Schema. `--config` or `LOOM_ORACLE_CONFIG` selects a different file.
 
 ## `oracle.yaml`
@@ -292,7 +296,7 @@ The control service is an agent with the instance name `oracle` on the relay of 
 Each paired peer has a role: `device`, `host`, or `codespace`. Each role has its own commands. All roles can call `oracle_info`.
 
 - A device pairs with a link from `loom-oracle pair` or `create_device_pairing`.
-- A host pairs with a link from `create_host_pairing`. If a host with the same label pairs again, it gets the new key and keeps its workspaces.
+- A host pairs with a link from `loom-oracle pair --host` or `create_host_pairing`. If a host with the same label pairs again, it gets the new key and keeps its workspaces.
 - A codespace agent pairs with the link in its bootstrap file. The link works only for its codespace, and the label of the peer is the ID of the codespace.
 
 The messages are JSON. Receivers ignore fields and events that they do not know. The client and the oracle do not need the same version.

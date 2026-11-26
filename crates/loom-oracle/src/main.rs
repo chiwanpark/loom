@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,10 @@ use loom_config::{
     Dirs, HumanDuration, LogLevel, ORACLE_CONFIG_ENV, OracleConfig, oracle_config_schema,
 };
 use loom_crypto::HostIdentity;
-use loom_oracle::{Oracle, open_store, pairing_link, pairing_ttl, serve, serve_tls};
+use loom_oracle::{
+    CREDENTIALS_ENV, Oracle, STORE_FILE, master_key_path, open_store, pairing_link, pairing_ttl,
+    serve, serve_tls,
+};
 use loom_oracle_proto::Role;
 use loom_relay::{TlsListener, load_tls};
 use tokio_util::sync::CancellationToken;
@@ -25,7 +28,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Serve,
+    Serve {
+        #[arg(
+            long,
+            help = "Wait until oracle.yaml exists, is valid, and sets url, and the master key can be used"
+        )]
+        wait: bool,
+    },
     #[command(subcommand)]
     Config(ConfigCommand),
     Pair {
@@ -35,6 +44,8 @@ enum Command {
         no_wait: bool,
         #[arg(long)]
         no_qr: bool,
+        #[arg(long, help = "Make a link for a host, not for a device")]
+        host: bool,
     },
 }
 
@@ -72,7 +83,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         .config
         .map(|p| dirs.expand(&p))
         .unwrap_or_else(|| OracleConfig::default_path(&dirs));
-    match cli.command.unwrap_or(Command::Serve) {
+    match cli.command.unwrap_or(Command::Serve { wait: false }) {
         Command::Config(ConfigCommand::Path) => println!("{}", path.display()),
         Command::Config(ConfigCommand::Schema) => {
             println!("{}", serde_json::to_string_pretty(&oracle_config_schema())?)
@@ -95,21 +106,81 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ttl,
             no_wait,
             no_qr,
+            host,
         } => {
             let config = OracleConfig::load(&path, &dirs)?;
             init_logging(LogLevel::Warn);
-            return pair(&config, &dirs, ttl, no_wait, no_qr);
+            let role = if host { Role::Host } else { Role::Device };
+            return pair(&config, &dirs, role, ttl, no_wait, no_qr);
         }
-        Command::Serve => {
+        Command::Serve { wait } => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            if wait && !runtime.block_on(wait_until_ready(&path, &dirs)) {
+                return Ok(ExitCode::SUCCESS);
+            }
             let config = OracleConfig::load(&path, &dirs)?;
             init_logging(config.logging.level);
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?
-                .block_on(serve_main(config, dirs))?;
+            runtime.block_on(serve_main(config, dirs))?;
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn not_ready(path: &Path, dirs: &Dirs, credentials: Option<&Path>) -> Option<String> {
+    if !path.exists() {
+        return Some(format!(
+            "{} is not there; run `loom-oracle config init`",
+            path.display()
+        ));
+    }
+    let config = match OracleConfig::load(path, dirs) {
+        Ok(config) => config,
+        Err(err) => return Some(format!("{err}")),
+    };
+    if config.url.is_none() {
+        return Some(format!("set url in {}", path.display()));
+    }
+    let key = master_key_path(&config, dirs, credentials);
+    if config.master_key.is_some()
+        && let Some(parent) = key.parent()
+        && !parent.is_dir()
+    {
+        return Some(format!(
+            "the directory {} of the master key is not there",
+            parent.display()
+        ));
+    }
+    let store = config.data_dir(dirs).join(STORE_FILE);
+    if store.exists() && !key.exists() {
+        return Some(format!(
+            "the master key {} is missing; the store {} needs it",
+            key.display(),
+            store.display()
+        ));
+    }
+    None
+}
+
+async fn wait_until_ready(path: &Path, dirs: &Dirs) -> bool {
+    let credentials = std::env::var_os(CREDENTIALS_ENV).map(PathBuf::from);
+    let mut last = None;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    loop {
+        let Some(reason) = not_ready(path, dirs, credentials.as_deref()) else {
+            return true;
+        };
+        if last.as_ref() != Some(&reason) {
+            eprintln!("loom-oracle: waiting: {reason}");
+            last = Some(reason);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            _ = tokio::signal::ctrl_c() => return false,
+            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending().await } } => return false,
+        }
+    }
 }
 
 fn init_logging(level: LogLevel) {
@@ -125,6 +196,7 @@ fn init_logging(level: LogLevel) {
 fn pair(
     config: &OracleConfig,
     dirs: &Dirs,
+    role: Role,
     ttl: Duration,
     no_wait: bool,
     no_qr: bool,
@@ -140,11 +212,11 @@ fn pair(
             config.public_url()
         );
     }
-    let (row, secret) = store.create_pairing(Role::Device, ttl, None)?;
+    let (row, secret) = store.create_pairing(role, ttl, None)?;
     store.audit(
         None,
         "pairing_created",
-        &format!("device pairing {} from loom-oracle pair", row.id),
+        &format!("{role} pairing {} from loom-oracle pair", row.id),
     )?;
     let link = pairing_link(&config.public_url(), &identity, &secret);
     if !no_qr && let Ok(code) = qrcode::QrCode::new(link.as_bytes()) {
@@ -156,7 +228,7 @@ fn pair(
     }
     println!("{link}");
     println!(
-        "This link pairs one device. It works once and expires in {}.",
+        "This link pairs one {role}. It works once and expires in {}.",
         HumanDuration(ttl)
     );
     if no_wait {
