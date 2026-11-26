@@ -64,16 +64,8 @@ The members of `incus-admin` have full control of Incus. If you do not want this
 
 `loom-host` can run on a different machine and use the HTTPS API of Incus with a restricted client certificate. This is the setup for IncusOS.
 
-1. On a machine that controls Incus, make the project and a trust token for this project only:
-
-   ```sh
-   incus project create loom -c restricted=true -c restricted.containers.nesting=allow \
-     -c restricted.networks.access=incusbr0 -c features.images=true \
-     -c features.profiles=true -c features.storage.volumes=true
-   incus config trust add loom-host --restricted --projects loom
-   ```
-
-2. On the machine of `loom-host`, set `driver: incus` and `incus.url`, for example `https://incus.example.com:8443`, in `host.yaml`. Also set `incus.pool` and `incus.network`.
+1. On the machine of `loom-host`, set `driver: incus` and `incus.url`, for example `https://incus.example.com:8443`, in `host.yaml`. Also set `incus.project`, `incus.pool`, `incus.network`, and the `rules`.
+2. Run `loom-host setup`. With `incus.url`, it does not change Incus. It shows the commands for the Incus administrator: the project with all its keys, the lines for `/etc/subuid` and `/etc/subgid` if you mount host directories, and a trust token for this project only. Run these commands on a machine that controls Incus.
 3. Run `loom-host trust '<token>'`. It does these steps:
    - It connects to the URL, and compares the server certificate with the fingerprint in the token.
    - It makes a client key and certificate in `incus/` in the data directory.
@@ -233,7 +225,7 @@ If you specify a size limit, `loom-host check` reports pool support and checks f
 
 ### Host directories
 
-To mount an existing directory, use the local Incus socket. Do not use the HTTPS API for this setup.
+You can mount an existing directory of the Incus host, for example an NFS mount. This works with the local Incus socket and with the HTTPS API.
 List only directories that the host administrator intends to share. Use canonical paths. Keep the directories and their ancestors under administrator control.
 
 ```yaml
@@ -246,7 +238,9 @@ rules:
 
 1. Set the UID and GID to those of a dedicated host user and group with access to the shared data.
 2. As an administrator, make sure that `/etc/subuid` and `/etc/subgid` allow `root` to map these IDs. For this example, add `root:12000:1` to each file if its ranges do not already include the ID. Restart Incus after you change the ranges.
-3. Run `loom-host setup` to apply the disk path and ID mapping rules to the Incus project. Then run `loom-host check`.
+3. Run `loom-host setup` to apply the disk path and ID mapping rules to the Incus project. With `incus.url`, `loom-host setup` shows the commands for the Incus administrator. Then run `loom-host check`.
+
+With the local socket, `loom-host` makes sure that each path is in `rules.directories`, is a directory, and has no link that leads out. With `incus.url`, `loom-host` cannot see the files of the Incus host, so it only compares the path with `rules.directories`. Incus then mounts only the paths in `restricted.devices.disk.paths` of the project, and maps only the IDs in `restricted.idmap.uid` and `restricted.idmap.gid`. A restricted certificate cannot change these keys.
 
 The mapping applies to all new codespaces on the host. A read-only mount cannot be used to write to the directory.
 The process driver uses symlinks and permits mount paths only below `/workspaces/`. It does not apply quotas, read-only marks, or UID/GID mappings.

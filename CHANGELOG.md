@@ -2,6 +2,16 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### New features
+
+- **Host directories over HTTPS.** `loom-host` can now mount host directories, such as an NFS mount, also when it uses the HTTPS API of Incus. Incus enforces the paths and the ID mapping of the project. See [Host directories](doc/host.md#host-directories).
+
+### Changes
+
+- **`loom-host setup` with a certificate.** With `incus.url`, `loom-host setup` no longer fails. It shows the `incus` commands for the administrator: the project, the ID ranges, and the trust token.
+
 ## 0.6.0
 
 ### Upgrade notes

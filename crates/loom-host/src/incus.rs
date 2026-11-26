@@ -58,6 +58,40 @@ pub enum SetupResult {
     Unchanged,
 }
 
+fn volume_keys(rules: &HostRules) -> BTreeMap<String, String> {
+    let mut keys = BTreeMap::new();
+    if !rules.directories.is_empty() {
+        let paths: Vec<String> = rules
+            .directories
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        keys.insert("restricted.devices.disk".to_owned(), "allow".to_owned());
+        keys.insert("restricted.devices.disk.paths".to_owned(), paths.join(","));
+    }
+    if let Some(user) = rules.host_user {
+        keys.insert("restricted.idmap.uid".to_owned(), user.uid.to_string());
+        keys.insert("restricted.idmap.gid".to_owned(), user.gid.to_string());
+    }
+    keys
+}
+
+pub fn project_config(network: &str, rules: &HostRules) -> BTreeMap<String, String> {
+    let mut config = BTreeMap::from([
+        ("features.images".to_owned(), "true".to_owned()),
+        ("features.profiles".to_owned(), "true".to_owned()),
+        ("features.storage.volumes".to_owned(), "true".to_owned()),
+        ("restricted".to_owned(), "true".to_owned()),
+        (
+            "restricted.containers.nesting".to_owned(),
+            "allow".to_owned(),
+        ),
+        ("restricted.networks.access".to_owned(), network.to_owned()),
+    ]);
+    config.extend(volume_keys(rules));
+    config
+}
+
 fn subordinate_entry(file: &str, id: u32) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else {
         return false;
@@ -560,22 +594,7 @@ impl IncusDriver {
     }
 
     fn volume_keys(&self) -> BTreeMap<String, String> {
-        let mut keys = BTreeMap::new();
-        if !self.rules.directories.is_empty() {
-            let paths: Vec<String> = self
-                .rules
-                .directories
-                .iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect();
-            keys.insert("restricted.devices.disk".to_owned(), "allow".to_owned());
-            keys.insert("restricted.devices.disk.paths".to_owned(), paths.join(","));
-        }
-        if let Some(user) = self.rules.host_user {
-            keys.insert("restricted.idmap.uid".to_owned(), user.uid.to_string());
-            keys.insert("restricted.idmap.gid".to_owned(), user.gid.to_string());
-        }
-        keys
+        volume_keys(&self.rules)
     }
 
     pub async fn setup_project(&self) -> anyhow::Result<SetupResult> {
@@ -603,26 +622,11 @@ impl IncusDriver {
             Err(err) if err.is_not_found() => {}
             Err(err) => return Err(incus_error(err)),
         }
-        let mut config = BTreeMap::from([
-            ("features.images".to_owned(), "true".to_owned()),
-            ("features.profiles".to_owned(), "true".to_owned()),
-            ("features.storage.volumes".to_owned(), "true".to_owned()),
-            ("restricted".to_owned(), "true".to_owned()),
-            (
-                "restricted.containers.nesting".to_owned(),
-                "allow".to_owned(),
-            ),
-            (
-                "restricted.networks.access".to_owned(),
-                self.network.clone(),
-            ),
-        ]);
-        config.extend(keys);
         self.incus
             .create_project(&Project {
                 name: project,
                 description: "Loom codespaces".into(),
-                config,
+                config: project_config(&self.network, &self.rules),
             })
             .await
             .map_err(incus_error)?;
@@ -647,10 +651,12 @@ impl IncusDriver {
                 .map(|(key, _)| key)
                 .collect();
             if !missing.is_empty() {
-                problems.push(format!(
-                    "the project lacks {}; run `loom-host setup`",
-                    missing.join(", ")
-                ));
+                let fix = if self.incus.is_local() {
+                    "run `loom-host setup`"
+                } else {
+                    "`loom-host setup` shows the command for the Incus administrator"
+                };
+                problems.push(format!("the project lacks {}; {fix}", missing.join(", ")));
             }
             if config.get("features.storage.volumes").map(String::as_str) != Some("true") {
                 problems.push("set features.storage.volumes=true for this project".to_owned());
@@ -664,19 +670,24 @@ impl IncusDriver {
                     }
                 }
             } else {
-                notes.push("cannot check /etc/subuid and /etc/subgid of a remote Incus".to_owned());
+                notes.push(format!(
+                    "cannot check the Incus host; it needs root:{}:1 in /etc/subuid and root:{}:1 in /etc/subgid",
+                    user.uid, user.gid
+                ));
             }
         }
-        for directory in &self.rules.directories {
-            if !self.incus.is_local() {
-                problems.push("host directories need the local Incus socket".to_owned());
-                break;
+        if self.incus.is_local() {
+            for directory in &self.rules.directories {
+                if let Err(err) =
+                    crate::volumes::host_directory(&self.rules, &directory.to_string_lossy())
+                {
+                    problems.push(err);
+                }
             }
-            if let Err(err) =
-                crate::volumes::host_directory(&self.rules, &directory.to_string_lossy())
-            {
-                problems.push(err);
-            }
+        } else if !self.rules.directories.is_empty() {
+            notes.push(
+                "cannot see the host directories; Incus allows only the paths in restricted.devices.disk.paths".to_owned(),
+            );
         }
         if !self.rules.directories.is_empty() && self.rules.host_user.is_none() {
             problems.push("set rules.host_user to mount host directories".to_owned());
