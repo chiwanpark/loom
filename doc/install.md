@@ -10,8 +10,10 @@ The [releases page](https://github.com/chiwanpark/loom/releases) has prebuilt ar
 | `loom-agent-<version>-<arch>-unknown-linux-musl.tar.gz` | `loom-agent`, statically linked. | Any Linux. |
 | `loom-oracle-<version>-<arch>-unknown-linux-musl.tar.gz` | `loom-oracle`, statically linked. | Any Linux. |
 | `loom-host-<version>-<arch>-unknown-linux-musl.tar.gz` | `loom-host`, statically linked. | Any Linux. |
+| `loom-oracle-<version>-incus-<image arch>.*.tar.xz`, `loom-host-<version>-incus-<image arch>.*.tar.xz` | Incus images of `loom-oracle` and `loom-host`. See [Incus deployment](incus.md). | Incus. |
 
 `<arch>` is `x86_64` for x86-64 and `aarch64` for arm64.
+`<image arch>` is `amd64` or `arm64`.
 
 To install an archive manually:
 

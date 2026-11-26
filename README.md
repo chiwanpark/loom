@@ -31,7 +31,7 @@ Install the desktop client on your machine:
 curl -fsSL https://raw.githubusercontent.com/chiwanpark/loom/main/scripts/install.sh | sh -s desktop
 ```
 
-The prebuilt binaries of the oracle, `loom-host`, and the agent are on the [releases page](https://github.com/chiwanpark/loom/releases). For other options, updates, and builds from source, see [Installation and updates](doc/install.md).
+The prebuilt binaries of the oracle, `loom-host`, and the agent are on the [releases page](https://github.com/chiwanpark/loom/releases). The page also has Incus images of the oracle and `loom-host`. See [Incus deployment](doc/incus.md). For other options, updates, and builds from source, see [Installation and updates](doc/install.md).
 
 ## Get started
 
@@ -48,8 +48,9 @@ Loom no longer has local agents, agents over SSH, `loom-relay`, or sessions in a
 | Document | Contents |
 | --- | --- |
 | [Installation and updates](doc/install.md) | Release archives, the install script, updates, and builds from source. |
+| [Incus deployment](doc/incus.md) | The oracle and `loom-host` as Incus containers, SSH to a `loom-host` container, and updates. |
 | [Oracle](doc/oracle.md) | The oracle, its relay and control service, presets, model accounts, secrets, and notifications. |
-| [Hosts and codespaces](doc/host.md) | `loom-host`, its Incus image, network rules, Git workspaces, repository setup, and persistent volumes. |
+| [Hosts and codespaces](doc/host.md) | `loom-host`, network rules, Git workspaces, repository setup, and persistent volumes. |
 | [Agent configuration](doc/configuration.md) | `agent.yaml`, model providers, reload, and agent commands. |
 | [Policy and harmful tool calls](doc/policy.md) | Tool approval rules and the harmful check. |
 | [Environment variables and secrets](doc/environment.md) | The environment of commands, the env file, and redaction. |
