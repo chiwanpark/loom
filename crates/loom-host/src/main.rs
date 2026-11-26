@@ -393,13 +393,19 @@ async fn trust(
 }
 
 async fn setup(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<()> {
-    let driver = loom_host::incus_driver(config, dirs)?;
-    if !driver.incus().is_local() {
-        bail!(
-            "`loom-host setup` needs the local Incus socket; with a certificate, make the project with the incus CLI"
-        );
-    }
     let project = &config.incus.project;
+    if config.incus.url.is_some() {
+        print!(
+            "{}",
+            admin_setup(
+                project,
+                &loom_host::project_config(&config.incus.network, &config.rules),
+                &config.rules
+            )
+        );
+        return Ok(());
+    }
+    let driver = loom_host::incus_driver(config, dirs)?;
     match driver.setup_project().await? {
         SetupResult::Created => println!("made the restricted Incus project {project}"),
         SetupResult::Updated(keys) => {
@@ -410,6 +416,41 @@ async fn setup(config: &HostConfig, dirs: &Dirs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn admin_setup(
+    project: &str,
+    keys: &std::collections::BTreeMap<String, String>,
+    rules: &loom_config::HostRules,
+) -> String {
+    let mut text = format!(
+        "loom-host uses a restricted certificate, so it cannot change the Incus project.\n\
+         Ask the Incus administrator to make the project {project}:\n\n\
+         incus project create {project}"
+    );
+    for (key, value) in keys {
+        text.push_str(&format!(" \\\n  -c {key}={value}"));
+    }
+    text.push_str(&format!(
+        "\n\nIf the project exists, set the same keys with `incus project set {project} <key>=<value>`.\n"
+    ));
+    if let Some(user) = rules.host_user {
+        text.push_str(&format!(
+            "\nThe Incus host needs these lines, then a restart of Incus:\n\n\
+             /etc/subuid: root:{}:1\n/etc/subgid: root:{}:1\n",
+            user.uid, user.gid
+        ));
+    }
+    for name in &rules.network.acls {
+        text.push_str(&format!(
+            "\nThe network ACL {name} must exist in the project of the network.\n"
+        ));
+    }
+    text.push_str(&format!(
+        "\nThen make a trust token for loom-host:\n\n\
+         incus config trust add loom-host --restricted --projects {project}\n"
+    ));
+    text
 }
 
 async fn stdio(config: HostConfig, dirs: Dirs, codespace: &str) -> anyhow::Result<ExitCode> {
@@ -446,4 +487,32 @@ async fn serve(config: HostConfig, dirs: Dirs) -> anyhow::Result<()> {
         signal.cancel();
     });
     host.run(shutdown).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_setup_lists_the_project_keys() {
+        let rules = loom_config::HostRules {
+            directories: vec![PathBuf::from("/srv/data")],
+            host_user: Some(loom_config::HostUser {
+                uid: 12000,
+                gid: 12001,
+            }),
+            ..Default::default()
+        };
+        let text = admin_setup(
+            "loom",
+            &loom_host::project_config("loombr0", &rules),
+            &rules,
+        );
+        assert!(text.contains("incus project create loom \\\n  -c features.images=true"));
+        assert!(text.contains("-c restricted.networks.access=loombr0"));
+        assert!(text.contains("-c restricted.devices.disk.paths=/srv/data"));
+        assert!(text.contains("-c restricted.idmap.uid=12000"));
+        assert!(text.contains("/etc/subgid: root:12001:1"));
+        assert!(text.contains("incus config trust add loom-host --restricted --projects loom"));
+    }
 }

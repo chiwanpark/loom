@@ -19,7 +19,8 @@ pub use driver::{
 };
 pub use incus::{
     AGENT_UNIT, BASE_SCRIPT, DEFAULT_BASE_IMAGE, IMAGE_PREFIX, IncusDriver, KEY_CODESPACE,
-    KEY_ORACLE, SetupResult, environment_file, environment_hash, image_source, stdio_exec,
+    KEY_ORACLE, SetupResult, environment_file, environment_hash, image_source, project_config,
+    stdio_exec,
 };
 pub use link::{
     CLIENT_NAME, Host, IDENTITY_FILE, JoinOptions, JoinedOracle, ORACLE_FILE, identity, join,

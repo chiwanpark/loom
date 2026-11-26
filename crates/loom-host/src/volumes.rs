@@ -62,16 +62,28 @@ pub fn check_directories(
 }
 
 fn mount_source(rules: &HostRules, local: bool, path: &str) -> Result<PathBuf, String> {
-    if !local {
-        return Err(
-            "host directories need a local driver: the process driver or the local Incus socket"
-                .into(),
-        );
-    }
     if rules.host_user.is_none() {
         return Err("set rules.host_user in host.yaml to mount host directories".into());
     }
-    host_directory(rules, path)
+    if local {
+        host_directory(rules, path)
+    } else {
+        remote_directory(rules, path)
+    }
+}
+
+fn remote_directory(rules: &HostRules, path: &str) -> Result<PathBuf, String> {
+    if !valid_absolute_path(path) || path == "/" {
+        return Err(format!("{path:?} is not a normalized directory path"));
+    }
+    let path = Path::new(path);
+    if !rules.directories.iter().any(|root| path.starts_with(root)) {
+        return Err(format!(
+            "{} is not in rules.directories of host.yaml",
+            path.display()
+        ));
+    }
+    Ok(path.to_path_buf())
 }
 
 pub fn prepare_mounts(
@@ -150,13 +162,28 @@ mod tests {
             assert!(host_directory(&rules, &path(bad)).is_err(), "{bad}");
         }
         assert!(host_directory(&rules, &path("allowedx")).is_err());
-        let checked = check_directories(&rules, false, &[path("allowed/project")]);
+        let remote = HostRules {
+            directories: vec![PathBuf::from("/srv/data")],
+            ..rules.clone()
+        };
+        let checked = check_directories(
+            &remote,
+            false,
+            &["/srv/data/team".into(), "/srv/data".into()],
+        );
+        assert!(checked.iter().all(|item| item.error.is_none()));
+        for bad in ["/srv/datax", "/srv", "/srv/data/../x", "/srv/data/", "data"] {
+            let checked = check_directories(&remote, false, &[bad.into()]);
+            assert!(checked[0].error.is_some(), "{bad}");
+        }
+        let remote_no_user = HostRules {
+            host_user: None,
+            ..remote.clone()
+        };
         assert!(
-            checked[0]
+            check_directories(&remote_no_user, false, &["/srv/data".into()])[0]
                 .error
-                .as_deref()
-                .unwrap()
-                .contains("local driver")
+                .is_some()
         );
         let no_user = HostRules {
             host_user: None,
