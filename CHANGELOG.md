@@ -2,6 +2,12 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### New features
+
+- **Preset form.** The desktop app shows the `agent.yaml` of a preset in a form. You can set the model, the policy rules, the tools, the environment, the Git credentials, the secrets, and the other settings without YAML. **YAML** opens the text editor. See [Preset form](doc/desktop.md#preset-form).
+
 ## 0.7.1
 
 ### Fixes

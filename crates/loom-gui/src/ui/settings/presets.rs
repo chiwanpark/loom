@@ -1,16 +1,18 @@
 use gpui::{
-    AnyElement, App, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div, prelude::FluentBuilder,
+    AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    SharedString, Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_component::button::ButtonVariants;
 use gpui_component::{Disableable, Selectable, h_flex, v_flex};
 use loom_client::import_local_preset;
 use loom_client::oracle_proto::{PresetDetail, PresetFile, SKILLS_DIR, valid_name};
+use loom_config::AgentConfig;
 use loom_view_model::settings::{age, copy_name};
 
+use super::agent_form::AgentForm;
 use super::editor::TextFile;
 use super::form::{self, Field};
-use super::{SettingsView, card, detail, empty, header, now_unix, small_button, warning};
+use super::{SettingsView, card, danger, detail, empty, header, now_unix, small_button, warning};
 use crate::ui::notify;
 
 pub(super) const AGENT_YAML: &str = "agent.yaml";
@@ -23,6 +25,8 @@ pub struct PresetDraft {
     pub removed: Vec<String>,
     pub selected: usize,
     pub notice: Option<String>,
+    pub form: Entity<AgentForm>,
+    pub yaml_view: bool,
 }
 
 impl PresetDraft {
@@ -91,6 +95,8 @@ impl SettingsView {
         for file in &mut texts {
             file.saved = saved(&file.saved);
         }
+        let (link, yaml) = (self.link.clone(), texts[0].editor.clone());
+        let form = cx.new(|cx| AgentForm::new(link, yaml, window, cx));
         self.preset = Some(PresetDraft {
             name,
             new,
@@ -98,7 +104,26 @@ impl SettingsView {
             removed: Vec::new(),
             selected: 0,
             notice,
+            form,
+            yaml_view: false,
         });
+        cx.notify();
+    }
+
+    pub(super) fn show_agent_yaml(
+        &mut self,
+        yaml: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(draft) = &mut self.preset else {
+            return;
+        };
+        draft.yaml_view = yaml;
+        if !yaml {
+            let form = draft.form.clone();
+            form.update(cx, |form, cx| form.reload(window, cx));
+        }
         cx.notify();
     }
 
@@ -492,7 +517,41 @@ impl SettingsView {
             ),
             names(link.config.secrets.iter().map(|s| s.name.clone()).collect()),
         );
-        let editor = draft.files.get(draft.selected).map(|f| f.render(420.));
+        let agent_yaml = draft.selected == 0;
+        let form_view = agent_yaml && !draft.yaml_view;
+        let modes = agent_yaml.then(|| {
+            h_flex()
+                .gap_1()
+                .child(
+                    small_button("preset-agent-form", "Form")
+                        .selected(!draft.yaml_view)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_agent_yaml(false, window, cx)
+                        })),
+                )
+                .child(
+                    small_button("preset-agent-yaml", "YAML")
+                        .selected(draft.yaml_view)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_agent_yaml(true, window, cx)
+                        })),
+                )
+        });
+        let editor = if form_view {
+            Some(draft.form.clone().into_any_element())
+        } else {
+            draft
+                .files
+                .get(draft.selected)
+                .map(|f| f.render(420.).into_any_element())
+        };
+        let problem = agent_yaml
+            .then(|| {
+                AgentConfig::parse_preset(&draft.text_of(AGENT_YAML, cx), AGENT_YAML, &self.dirs)
+                    .err()
+            })
+            .flatten()
+            .map(|error| danger(error.to_string(), cx));
         Some(
             card(cx)
                 .debug_selector(|| "settings-preset-editor".into())
@@ -518,12 +577,16 @@ impl SettingsView {
                 )
                 .when_some(draft.notice.clone(), |el, notice| el.child(warning(notice, cx)))
                 .child(tabs)
+                .children(modes)
                 .children(editor)
-                .child(detail(
-                    "agent.yaml can name the oracle's model accounts in llm.accounts, Git credentials in git.credentials, and secrets in environment.secrets. The oracle checks the preset when you save it.",
-                    cx,
-                ))
-                .child(detail(hint, cx))
+                .children(problem)
+                .when(!form_view, |el| {
+                    el.child(detail(
+                        "agent.yaml can name the oracle's model accounts in llm.accounts, Git credentials in git.credentials, and secrets in environment.secrets. The oracle checks the preset when you save it.",
+                        cx,
+                    ))
+                    .child(detail(hint, cx))
+                })
                 .into_any_element(),
         )
     }

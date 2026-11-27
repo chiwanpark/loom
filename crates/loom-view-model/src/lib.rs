@@ -6,6 +6,7 @@
 //! picks how it holds a conversation's images.
 
 pub mod agent_list;
+pub mod agent_settings;
 pub mod changes;
 pub mod codespaces;
 pub mod conversation;

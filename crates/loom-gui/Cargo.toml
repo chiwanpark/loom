@@ -27,7 +27,7 @@ loom-view-model = { path = "../loom-view-model" }
 loom-vt = { path = "../loom-vt" }
 qrcode = { version = "0.14.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.44"

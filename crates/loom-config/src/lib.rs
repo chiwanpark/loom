@@ -2,6 +2,7 @@ mod agent;
 mod claude_code;
 mod client;
 mod dirs;
+mod document;
 mod error;
 mod host;
 mod load;
@@ -22,6 +23,7 @@ pub use agent::{
 pub use claude_code::{ImportedTelemetry, telemetry_from_claude_code};
 pub use client::{AppearanceConfig, CLIENT_CONFIG_FILE, ClientConfig, HostEntry, Theme};
 pub use dirs::{AGENT_CONFIG_FILE, AGENTS_MD, APP_DIR, CONFIG_ENV, Dirs, expand_home};
+pub use document::ConfigDocument;
 pub use error::ConfigError;
 pub use host::{
     AclAction, DEFAULT_INCUS_NETWORK, DEFAULT_INCUS_POOL, DEFAULT_INCUS_PROJECT, HOST_CONFIG_ENV,

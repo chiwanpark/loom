@@ -1,3 +1,4 @@
+mod agent_form;
 mod audit;
 mod devices;
 mod editor;
@@ -451,6 +452,7 @@ mod tests {
     use gpui_component::{Root, WindowExt};
     use loom_client::oracle_proto::{HostCall, HostReport, Role, VolumeInput, VolumeKind};
     use loom_client::{ClientIdentity, OracleClient, pair_oracle};
+    use loom_config::AgentConfig;
     use serde_json::json;
 
     use super::*;
@@ -584,6 +586,92 @@ mod tests {
         assert!(!draft.2.contains("socket"), "{}", draft.2);
         assert_eq!(draft.3, 3);
         assert!(view.read_with(cx, |view, cx| view.has_unsaved(cx)));
+
+        assert!(cx.debug_bounds("settings-agent-form").is_some());
+        let form = view.read_with(cx, |view, _| view.preset.as_ref().unwrap().form.clone());
+        for ix in (0..loom_view_model::agent_settings::SECTIONS.len()).rev() {
+            form.update(cx, |form, cx| form.show_section(ix, cx));
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("settings-agent-form").is_some());
+        }
+        form.update_in(cx, |form, window, cx| {
+            form.set_text("tools.read.max_lines", "100", window, cx);
+            form.set_text("environment.set", "RUST_BACKTRACE=1\nbroken", window, cx);
+            form.set("tools.shell.pty", Some(json!(true)), window, cx);
+            form.set("policy.default", Some(json!("allow")), window, cx);
+        });
+        let yaml = view.read_with(cx, |view, cx| {
+            view.preset
+                .as_ref()
+                .unwrap()
+                .text_of(presets::AGENT_YAML, cx)
+        });
+        let doc = loom_config::ConfigDocument::parse(&yaml, "agent.yaml").unwrap();
+        assert_eq!(doc.get("tools.read.max_lines"), Some(&json!(100)), "{yaml}");
+        assert_eq!(doc.get("tools.shell.pty"), Some(&json!(true)), "{yaml}");
+        assert_eq!(doc.get("policy"), None, "the default of a preset is allow");
+        assert_eq!(
+            doc.get("environment"),
+            None,
+            "a broken line keeps the variables"
+        );
+        assert!(form.read_with(cx, |form, _| form.error("environment.set").is_some()));
+        form.update_in(cx, |form, window, cx| {
+            form.set_text("tools.read.max_lines", "many", window, cx);
+        });
+        assert!(cx.debug_bounds("settings-agent-form").is_some());
+        let problem = view.read_with(cx, |view, cx| {
+            let text = view
+                .preset
+                .as_ref()
+                .unwrap()
+                .text_of(presets::AGENT_YAML, cx);
+            AgentConfig::parse_preset(&text, "agent.yaml", &view.dirs).is_err()
+        });
+        assert!(problem, "the form keeps the text that is not valid");
+        form.update_in(cx, |form, window, cx| {
+            form.set_text("tools.read.max_lines", "100", window, cx);
+        });
+
+        view.update_in(cx, |view, window, cx| {
+            view.show_agent_yaml(true, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("settings-agent-form").is_none());
+        let editor = view.read_with(cx, |view, _| {
+            view.preset.as_ref().unwrap().files[0].editor.clone()
+        });
+        editor.update_in(cx, |editor, window, cx| {
+            editor.set_value(
+                format!("{yaml}# keep\nlogging:\n  level: debug\n"),
+                window,
+                cx,
+            )
+        });
+        view.update_in(cx, |view, window, cx| {
+            view.show_agent_yaml(false, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("settings-agent-form").is_some());
+        let level = form.read_with(cx, |form, _| {
+            form.document()
+                .and_then(|doc| doc.get("logging.level").cloned())
+        });
+        assert_eq!(level, Some(json!("debug")));
+        form.update_in(cx, |form, window, cx| {
+            form.set("logging.level", Some(json!("info")), window, cx);
+        });
+        let yaml = view.read_with(cx, |view, cx| {
+            view.preset
+                .as_ref()
+                .unwrap()
+                .text_of(presets::AGENT_YAML, cx)
+        });
+        assert!(
+            !yaml.contains("logging") && yaml.contains("max_lines: 100"),
+            "{yaml}"
+        );
+
         view.update_in(cx, |view, window, cx| view.save_preset(window, cx));
         wait(cx, |cx| {
             link.read(cx).presets.iter().any(|p| p.name == "local")
@@ -592,6 +680,11 @@ mod tests {
         let preset = test.oracle.preset_detail("local").unwrap();
         assert_eq!(preset.preset.agents_md, "Be brief.\n");
         assert_eq!(preset.files[0].path, "skills/review/SKILL.md");
+        assert!(
+            preset.preset.yaml.contains("max_lines: 100"),
+            "{}",
+            preset.preset.yaml
+        );
 
         click("settings-page-secrets", cx);
         view.update_in(cx, |view, window, cx| view.edit_secret(None, window, cx));
