@@ -63,8 +63,8 @@ These paths are in `/var/lib/<component>`, on the volume:
 
    ```sh
    incus create loom-oracle loom-oracle
-   incus storage volume attach <pool> loom-oracle-data loom-oracle /var/lib/loom-oracle
-   incus storage volume attach <pool> loom-oracle-key loom-oracle /var/lib/loom-oracle-key
+   incus storage volume attach <pool> loom-oracle-data loom-oracle loom-oracle-data /var/lib/loom-oracle
+   incus storage volume attach <pool> loom-oracle-key loom-oracle loom-oracle-key /var/lib/loom-oracle-key
    incus config set loom-oracle boot.autostart=true
    incus start loom-oracle
    ```
@@ -144,7 +144,7 @@ Do these steps as the Incus administrator on each machine with codespaces.
    ```sh
    incus storage volume create <pool> loom-host-data
    incus create loom-host loom-host
-   incus storage volume attach <pool> loom-host-data loom-host /var/lib/loom-host
+   incus storage volume attach <pool> loom-host-data loom-host loom-host-data /var/lib/loom-host
    incus config set loom-host boot.autostart=true
    incus start loom-host
    ```

@@ -2,6 +2,13 @@
 
 All notable changes to Loom are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org). While Loom is on 0.x, a minor version may include breaking changes.
 
+## Unreleased
+
+### Fixes
+
+- **Incus images on `dir` pools.** The images of `loom-host` and `loom-oracle` did not find a volume from a `dir` storage pool, and waited forever. The images now look for the mount in `/proc/self/mountinfo`.
+- **Volume commands in the Incus guide.** The `incus storage volume attach` commands in [Incus deployment](doc/incus.md) did not give a device name, so Incus did not accept the path. The commands now give the device name.
+
 ## 0.7.0
 
 ### Upgrade notes
