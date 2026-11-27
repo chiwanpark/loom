@@ -5145,6 +5145,7 @@ version = "0.7.1"
 name = "loom-view-model"
 version = "0.7.1"
 dependencies = [
+ "loom-config",
  "loom-oracle-proto",
  "loom-proto",
  "serde_json",

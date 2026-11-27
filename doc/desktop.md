@@ -142,13 +142,27 @@ You do all configuration of an oracle in the desktop client. Click the gear butt
 | Git providers | The URLs, the Git name and email, and the route of each provider. The Git credentials of each provider with their scope, login, and expiry date. You can check a token and replace it. The page shows a warning for a token that expires in 14 days or less. |
 | Models | The model accounts with their provider, kind, email, and organization. **Add account…** signs in with the browser or a device code, or adds an API key. The client catches the redirect of the browser when the provider uses a local URL. Otherwise, paste the code or the URL. |
 | Secrets | The names of the secrets, and the presets and variables that use each secret. You can set, replace, and delete a value. You cannot read a value. |
-| Presets | The presets and the credentials that each names. **Edit** opens `agent.yaml`, `AGENTS.md`, and the skill files in a text editor. **Import from this computer…** reads `agent.yaml`, `AGENTS.md`, and the skills in `~/.config/loom`, and removes the sections that a codespace sets itself. **Duplicate…** copies a preset with a new name. |
+| Presets | The presets and the credentials that each names. **Edit** opens `agent.yaml`, `AGENTS.md`, and the skill files. `AGENTS.md` and the skill files open in a text editor. `agent.yaml` opens in a form. **Form** and **YAML** select the form or the text editor. See [Preset form](#preset-form). **Import from this computer…** reads `agent.yaml`, `AGENTS.md`, and the skills in `~/.config/loom`, and removes the sections that a codespace sets itself. **Duplicate…** copies a preset with a new name. |
 | Workspaces | The repositories, the volumes, and the host of each workspace, and the volumes of the oracle. **New workspace…** opens the repository search of a Git provider. When you select a repository, the name of the workspace comes from it. Add more repositories and volumes, select the host, and click **Create**. **Edit** changes the host, the repositories, and the volumes. |
 | Audit log | The changes that devices, hosts, and the oracle made, newest first. **Show older entries** loads more. |
 
 - The oracle validates each change when you save it. If it refuses the change, the form or a notification shows the reason.
 - The local rules of a host are not in the client. They stay in the file on the host.
 - The first device pairs with the link of `loom-oracle pair` on the oracle machine. After that, add the other devices on the **Devices** page.
+
+### Preset form
+
+The form shows the settings of `agent.yaml` in groups, such as **Model**, **Policy**, **Tools**, **Environment**, and **Telemetry**. Select a group on the left side of the form.
+
+- An empty field uses the default value. The field shows the default value or an example in gray.
+- When you set a value that is equal to the default, the form removes the setting from the file.
+- **Model accounts**, **Git credentials**, and **Secrets** show the accounts, credentials, and secrets of the oracle. Select them in the lists.
+- **Rules** of the policy show each rule. You can add, edit, move, and remove rules.
+- Lists have one item on each line. Variables, headers, and attributes have one `name=value` pair on each line.
+- The form and the text editor change the same file. When you change a value in the form, the form writes the file again. The file then has no comments.
+- `llm.providers` and `relay.cloudflare_access` are not in the form. Use the YAML view for these settings.
+
+The client checks the file while you change it, and shows the first problem below the form. The oracle also checks the names of the accounts, credentials, and secrets when you save the preset.
 
 ## Terminals
 
