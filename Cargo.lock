@@ -4694,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "loom-agent"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4736,7 +4736,7 @@ dependencies = [
 
 [[package]]
 name = "loom-agent-core"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4762,7 +4762,7 @@ dependencies = [
 
 [[package]]
 name = "loom-client"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4782,7 +4782,7 @@ dependencies = [
 
 [[package]]
 name = "loom-config"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "humantime",
  "insta",
@@ -4797,7 +4797,7 @@ dependencies = [
 
 [[package]]
 name = "loom-crypto"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -4818,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "loom-github"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4831,7 +4831,7 @@ dependencies = [
 
 [[package]]
 name = "loom-gui"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -4866,7 +4866,7 @@ dependencies = [
 
 [[package]]
 name = "loom-host"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4894,7 +4894,7 @@ dependencies = [
 
 [[package]]
 name = "loom-incus"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4918,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "loom-llm"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4944,7 +4944,7 @@ dependencies = [
 
 [[package]]
 name = "loom-mobile"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -4976,7 +4976,7 @@ dependencies = [
 
 [[package]]
 name = "loom-oracle"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5013,7 +5013,7 @@ dependencies = [
 
 [[package]]
 name = "loom-oracle-proto"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5022,7 +5022,7 @@ dependencies = [
 
 [[package]]
 name = "loom-proto"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "postcard",
  "serde",
@@ -5031,7 +5031,7 @@ dependencies = [
 
 [[package]]
 name = "loom-relay"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5061,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "loom-telemetry"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "http",
  "humantime",
@@ -5080,7 +5080,7 @@ dependencies = [
 
 [[package]]
 name = "loom-tools"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -5104,7 +5104,7 @@ dependencies = [
 
 [[package]]
 name = "loom-transport"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "futures",
@@ -5125,7 +5125,7 @@ dependencies = [
 
 [[package]]
 name = "loom-update"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "flate2",
  "reqwest",
@@ -5140,11 +5140,11 @@ dependencies = [
 
 [[package]]
 name = "loom-version"
-version = "0.7.1"
+version = "0.8.0"
 
 [[package]]
 name = "loom-view-model"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "loom-config",
  "loom-oracle-proto",
@@ -5154,7 +5154,7 @@ dependencies = [
 
 [[package]]
 name = "loom-vt"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "alacritty_terminal",
 ]
