@@ -52,7 +52,7 @@ udhcpc -b -i eth0 -x hostname:"$(hostname)" >/dev/console 2>&1
 
 
 def volume_check(data: str) -> str:
-    return f"""if ! mountpoint -q {data}; then
+    return f"""if ! awk -v path={data} '$5 == path {{ found = 1 }} END {{ exit !found }}' /proc/self/mountinfo; then
     echo "$0: waiting: attach a volume at {data}" >/dev/console
     sleep 30
     exit 0
