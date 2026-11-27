@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use futures::StreamExt;
@@ -74,6 +75,7 @@ pub enum Sent {
 struct Core {
     id: SessionId,
     created_at: u64,
+    updated_at: AtomicU64,
     store: Option<EventStore>,
     /// The agent's notes, which the session shares with the others.
     notes: Arc<AgentNotes>,
@@ -141,6 +143,7 @@ impl Core {
     }
 
     fn persist_state(&self, state: &State) {
+        self.updated_at.store(now_unix(), Ordering::Relaxed);
         if let Some(store) = &self.store {
             store.save_session(
                 &self.id,
@@ -291,14 +294,8 @@ impl Session {
             comment_guard: config.tools.comment_guard.mode != CommentGuardMode::Off,
             ..StoredState::default()
         };
-        let session = Self::build(
-            params,
-            id,
-            now_unix(),
-            state,
-            Vec::new(),
-            TaskList::default(),
-        );
+        let now = now_unix();
+        let session = Self::build(params, id, now, now, state, Vec::new(), TaskList::default());
         session.core.persist();
         session.observe(observer);
         session
@@ -308,6 +305,7 @@ impl Session {
         let StoredSession {
             id,
             created_at,
+            updated_at,
             mut state,
             events,
             tasks,
@@ -325,7 +323,7 @@ impl Session {
             });
         }
         let observer = params.observer.clone();
-        let session = Self::build(params, id, created_at, state, events, tasks);
+        let session = Self::build(params, id, created_at, updated_at, state, events, tasks);
         if let Some(model) = model {
             session.core.lock().model = Some(model);
         }
@@ -357,6 +355,7 @@ impl Session {
         params: SessionParams,
         id: SessionId,
         created_at: u64,
+        updated_at: u64,
         state: StoredState,
         events: Vec<SequencedEvent>,
         tasks: TaskList,
@@ -366,6 +365,7 @@ impl Session {
             core: Arc::new(Core {
                 id,
                 created_at,
+                updated_at: AtomicU64::new(updated_at),
                 store: params.store,
                 notes: params.notes,
                 metrics: params.metrics,
@@ -401,6 +401,15 @@ impl Session {
 
     pub fn created_at(&self) -> u64 {
         self.core.created_at
+    }
+
+    pub fn updated_at(&self) -> u64 {
+        self.core.updated_at.load(Ordering::Relaxed)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        let state = self.core.lock();
+        state.history.is_empty() && state.pending.is_empty()
     }
 
     pub fn id(&self) -> &SessionId {

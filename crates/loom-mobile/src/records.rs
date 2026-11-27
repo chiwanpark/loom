@@ -203,6 +203,37 @@ impl PushNotice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ArchivedSession {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub codespace: Option<String>,
+    pub updated_at: u64,
+}
+
+impl ArchivedSession {
+    pub(crate) fn of(now: u64, session: &proto::ArchivedSessionInfo) -> Self {
+        use loom_view_model::codespace_list::{
+            archived_codespace, archived_detail, archived_title,
+        };
+        Self {
+            id: session.id.0.clone(),
+            title: archived_title(session),
+            detail: archived_detail(now, session),
+            codespace: archived_codespace(session),
+            updated_at: session.updated_at,
+        }
+    }
+}
+
+pub(crate) fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SessionSummary {
     pub id: String,
     /// The title, or the start of the session ID while it has none.

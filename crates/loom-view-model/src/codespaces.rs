@@ -48,14 +48,6 @@ pub fn is_listed(codespace: &Codespace) -> bool {
     codespace.state != CodespaceState::Closed
 }
 
-pub fn has_archive(codespace: &Codespace) -> bool {
-    codespace.state == CodespaceState::Closed
-        && codespace
-            .archive
-            .as_ref()
-            .is_some_and(|archive| archive.saved_at.is_some())
-}
-
 pub fn directory(repository: &Repository) -> String {
     repository
         .directory
@@ -213,27 +205,6 @@ mod tests {
             delete_at: None,
             archive: None,
         }
-    }
-
-    #[test]
-    fn only_closed_codespaces_with_a_saved_archive_have_an_archive() {
-        let mut closed = codespace("a", "acme", 1);
-        closed.state = CodespaceState::Closed;
-        assert!(!has_archive(&closed));
-        closed.archive = Some(loom_oracle_proto::CodespaceArchive {
-            error: Some("too large".into()),
-            ..Default::default()
-        });
-        assert!(!has_archive(&closed));
-        closed.archive = Some(loom_oracle_proto::CodespaceArchive {
-            size: 10,
-            saved_at: Some(5),
-            ..Default::default()
-        });
-        assert!(has_archive(&closed));
-        let mut open = closed.clone();
-        open.state = CodespaceState::Closing;
-        assert!(!has_archive(&open));
     }
 
     #[test]

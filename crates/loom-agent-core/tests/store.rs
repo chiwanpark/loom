@@ -170,10 +170,12 @@ async fn persistence_can_be_disabled() {
 #[tokio::test]
 async fn archived_sessions_stay_archived_and_are_announced() {
     let config = test_config(PolicyAction::Allow);
-    let h = Harness::new(config.clone(), vec![]);
-    let mut notices = h.agent.notices();
+    let h = Harness::new(config.clone(), vec![text("hello")]);
     let kept = h.agent.create_session(Some(MODEL_REF)).unwrap();
     let archived = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let mut sub = archived.subscribe(None);
+    run_turn(&archived, &mut sub, "hi").await;
+    let mut notices = h.agent.notices();
     let info = h.agent.set_archived(archived.id(), true).unwrap();
     assert!(info.archived);
     let mut announced = Vec::new();
@@ -182,13 +184,20 @@ async fn archived_sessions_stay_archived_and_are_announced() {
             announced.push((info.id.clone(), info.archived));
         }
     }
+    assert_eq!(announced, vec![(archived.id().clone(), true)]);
+    let listed: Vec<_> = h
+        .agent
+        .archived_sessions()
+        .into_iter()
+        .map(|s| (s.id, s.title, s.location))
+        .collect();
     assert_eq!(
-        announced,
-        vec![
-            (kept.id().clone(), false),
-            (archived.id().clone(), false),
-            (archived.id().clone(), true),
-        ]
+        listed,
+        vec![(
+            archived.id().clone(),
+            Some("hi".to_owned()),
+            loom_proto::ArchivedLocation::Agent
+        )]
     );
     h.agent.shutdown().await;
 
@@ -203,6 +212,75 @@ async fn archived_sessions_stay_archived_and_are_announced() {
     assert!(flags.contains(&(archived.id().clone(), true)));
     let restored = agent.set_archived(archived.id(), false).unwrap();
     assert!(!restored.archived);
+    assert!(agent.archived_sessions().is_empty());
+}
+
+#[tokio::test]
+async fn an_empty_session_is_deleted_when_it_is_archived() {
+    let config = test_config(PolicyAction::Allow);
+    let h = Harness::new(config.clone(), vec![]);
+    let empty = h.agent.create_session(Some(MODEL_REF)).unwrap();
+    let mut notices = h.agent.notices();
+    let info = h.agent.set_archived(empty.id(), true).unwrap();
+    assert!(info.archived);
+    assert_eq!(
+        notices.try_recv().unwrap(),
+        loom_agent_core::AgentNotice::SessionRemoved(empty.id().clone())
+    );
+    assert!(h.agent.session(empty.id()).is_err());
+    assert!(h.agent.archived_sessions().is_empty());
+    h.agent.shutdown().await;
+
+    let (agent, _) = h.reopen(config, vec![]);
+    assert!(agent.list_sessions().is_empty());
+}
+
+#[tokio::test]
+async fn an_imported_session_keeps_its_conversation_and_tasks() {
+    let config = test_config(PolicyAction::Allow);
+    let source = Harness::new(config.clone(), vec![text("hello")]);
+    let session = source.agent.create_session(Some(MODEL_REF)).unwrap();
+    let mut sub = session.subscribe(None);
+    run_turn(&session, &mut sub, "Fix the parser").await;
+    session
+        .update_tasks(vec![loom_proto::TaskChange::Add {
+            text: "write tests".into(),
+            status: loom_proto::TaskStatus::InProgress,
+        }])
+        .unwrap();
+    source.agent.set_archived(session.id(), true).unwrap();
+    source.agent.shutdown().await;
+    let path = loom_agent_core::store::store_path(
+        &loom_agent_core::data_dir(&config, &source.dirs),
+        &source.workspace.canonicalize().unwrap(),
+    );
+    let (_, stored) = loom_agent_core::store::EventStore::open(&path, &source.workspace).unwrap();
+    let stored = stored.sessions.into_iter().next().unwrap();
+    assert!(stored.state.archived);
+
+    let target = Harness::new(config.clone(), vec![text("again")]);
+    let info = target.agent.import_session(stored.clone()).unwrap();
+    assert_eq!(info.id, *session.id());
+    assert!(!info.archived);
+    assert_eq!(info.title.as_deref(), Some("Fix the parser"));
+    let imported = target.agent.session(&info.id).unwrap();
+    assert_eq!(imported.history(), session.history());
+    assert_eq!(imported.tasks(), session.tasks());
+    let events = imported.subscribe(None).backlog;
+    assert_eq!(kinds(&events), kinds(&stored.events));
+    let again = target.agent.import_session(stored).unwrap();
+    assert_ne!(again.id, info.id);
+    let mut sub = imported.subscribe(None);
+    sub.backlog.clear();
+    let events = run_turn(&imported, &mut sub, "Go on").await;
+    assert_eq!(common::outcome(&events), Some(TurnOutcome::Completed));
+    target.agent.shutdown().await;
+
+    let (agent, _) = target.reopen(config, vec![]);
+    let reopened = agent.session(&info.id).unwrap();
+    assert!(!reopened.is_archived());
+    assert_eq!(reopened.tasks().len(), 1);
+    assert_eq!(reopened.history().len(), 4);
 }
 
 #[tokio::test]

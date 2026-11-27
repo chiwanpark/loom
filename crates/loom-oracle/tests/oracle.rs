@@ -1016,7 +1016,51 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
     assert!(archive.size > 0);
     let saved_at = archive.saved_at.unwrap();
     assert_eq!(archive.delete_at, Some(saved_at + 90 * 24 * 3600));
-    let events = laptop.archived_events(&created.id, "s1").await.unwrap();
+    assert_eq!(
+        code(laptop.archived_sessions().await.unwrap_err()),
+        ErrorCode::Forbidden
+    );
+
+    let next = laptop
+        .create_codespace(NewCodespace {
+            workspace: "acme".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let (call_id, call) = next_call(&mut calls).await;
+    let HostCall::CreateInstance(create) = call else {
+        panic!("expected a create call, got {call:?}");
+    };
+    host.reply(call_id, Ok(serde_json::json!({})))
+        .await
+        .unwrap();
+    let next_key = ClientIdentity::generate().unwrap();
+    let next_endpoint = pair_oracle(&create.bootstrap.link, &next_key, "agent", None)
+        .await
+        .unwrap();
+    let (next_agent, _next_events) = OracleClient::connect(&next_endpoint, &next_key, "test-agent")
+        .await
+        .unwrap();
+    next_agent.codespace_ready().await.unwrap();
+    wait_codespace(&laptop, &next.id, |c| c.state == CodespaceState::Ready).await;
+    let sessions = next_agent.archived_sessions().await.unwrap();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0].codespace, created.id);
+    assert_eq!(sessions[0].branch, closed.branch);
+    assert_eq!(sessions[0].id, "s1");
+    assert_eq!(sessions[0].title.as_deref(), Some("Fix the parser"));
+    assert_eq!(sessions[0].model.as_deref(), Some("openai/gpt-5"));
+    assert_eq!(sessions[0].updated_at, 7);
+    let data = next_agent
+        .archived_session(&created.id, "s1")
+        .await
+        .unwrap();
+    assert_eq!(data.session, sessions[0]);
+    let state: serde_json::Value = serde_json::from_slice(&data.state).unwrap();
+    assert_eq!(state["model"], "openai/gpt-5");
+    assert_eq!(data.tasks.as_deref(), Some(r#"{"tasks":[],"next_id":4}"#));
+    let events = next_agent.archived_events(&created.id, "s1").await.unwrap();
     let texts: Vec<String> = events
         .iter()
         .filter_map(|e| match &e.event {
@@ -1025,17 +1069,68 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
         })
         .collect();
     assert_eq!(texts, vec!["first", "second", large.as_str(), "last"]);
-    let page = laptop
+    let page = next_agent
         .archive_page(&created.id, "s1", Some(0))
         .await
         .unwrap();
     assert_eq!(page.events.len(), 2);
     assert_eq!(page.last, Some(2));
     assert!(page.more);
+    for missing in [
+        next_agent.archived_events(&created.id, "s2").await,
+        next_agent.archived_events(&next.id, "s1").await,
+        next_agent.archived_events("nothing", "s1").await,
+    ] {
+        assert_eq!(code(missing.unwrap_err()), ErrorCode::NotFound);
+    }
     assert_eq!(
-        code(laptop.archived_events(&created.id, "s2").await.unwrap_err()),
+        code(
+            next_agent
+                .archived_session(&created.id, "empty")
+                .await
+                .unwrap_err()
+        ),
         ErrorCode::NotFound
     );
+    assert_eq!(
+        code(
+            laptop
+                .archive_page(&created.id, "s1", None)
+                .await
+                .unwrap_err()
+        ),
+        ErrorCode::Forbidden
+    );
+    next_agent
+        .mark_session_resumed(&created.id, "s1")
+        .await
+        .unwrap();
+    assert!(next_agent.archived_sessions().await.unwrap().is_empty());
+
+    laptop.close_codespace(&next.id).await.unwrap();
+    let stop_next = HostCall::StopInstance {
+        codespace: next.id.clone(),
+        instance: next.instance.clone(),
+    };
+    reply_ok(&host, &mut calls, stop_next).await;
+    let (call_id, call) = next_call(&mut calls).await;
+    assert!(
+        matches!(&call, HostCall::ArchiveFiles { codespace, .. } if *codespace == next.id),
+        "{call:?}"
+    );
+    host.reply(call_id, Ok(serde_json::json!({ "files": [] })))
+        .await
+        .unwrap();
+    reply_ok(
+        &host,
+        &mut calls,
+        HostCall::DeleteInstance {
+            codespace: next.id.clone(),
+            instance: next.instance.clone(),
+        },
+    )
+    .await;
+    wait_codespace(&laptop, &next.id, |c| c.state == CodespaceState::Closed).await;
     oracle
         .oracle
         .check_lifecycle(closed.updated_at + 8 * 24 * 3600);
@@ -1054,21 +1149,7 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
         .join("loom/oracle/archive")
         .join(&created.id);
     assert!(archive_dir.join("0a1b.sqlite").is_file());
-    assert_eq!(
-        code(laptop.delete_archive("nothing").await.unwrap_err()),
-        ErrorCode::NotFound
-    );
-    laptop.delete_archive(&created.id).await.unwrap();
-    assert!(!archive_dir.exists());
-    let without = wait_codespace(&laptop, &created.id, |c| c.archive.is_none()).await;
-    assert_eq!(without.updated_at, closed.updated_at);
-    assert_eq!(
-        code(laptop.archived_events(&created.id, "s1").await.unwrap_err()),
-        ErrorCode::NotFound
-    );
-    oracle
-        .oracle
-        .check_lifecycle(closed.updated_at + 8 * 24 * 3600);
+    oracle.oracle.check_lifecycle(saved_at + 90 * 24 * 3600 + 1);
     for _ in 0..100 {
         if !laptop
             .codespaces()
@@ -1089,6 +1170,7 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
             .iter()
             .any(|c| c.id == created.id)
     );
+    assert!(!archive_dir.exists());
 
     let audit = laptop.audit(Some(50), None).await.unwrap();
     let actions: Vec<&str> = audit.entries.iter().map(|e| e.action.as_str()).collect();
@@ -1097,7 +1179,7 @@ async fn codespaces_stop_when_idle_resume_and_expire() {
         "codespace_resumed",
         "codespace_stopped",
         "codespace_expired",
-        "archive_deleted",
+        "session_resumed",
         "host_limits_set",
     ] {
         assert!(actions.contains(&action), "{action} not in {actions:?}");
@@ -1132,11 +1214,26 @@ fn archive_store(dir: &std::path::Path, session: &str, texts: &[&str]) -> Vec<u8
         "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL, state TEXT NOT NULL);
          CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL,
-             event BLOB NOT NULL, PRIMARY KEY (session_id, seq));",
+             event BLOB NOT NULL, PRIMARY KEY (session_id, seq));
+         CREATE TABLE tasks (session_id TEXT PRIMARY KEY, list TEXT NOT NULL,
+             updated_at INTEGER NOT NULL);
+         INSERT INTO sessions VALUES ('empty', 1, 9, '{\"history\":[]}');",
     )
     .unwrap();
-    conn.execute("INSERT INTO sessions VALUES (?1, 1, 1, '{}')", [session])
-        .unwrap();
+    let state = serde_json::json!({
+        "model": "openai/gpt-5",
+        "history": [{"role": "user", "content": [{"type": "text", "text": "\nFix the parser\nplease"}]}],
+    });
+    conn.execute(
+        "INSERT INTO sessions VALUES (?1, 1, 7, ?2)",
+        rusqlite::params![session, state.to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks VALUES (?1, '{\"tasks\":[],\"next_id\":4}', 7)",
+        [session],
+    )
+    .unwrap();
     for (seq, text) in texts.iter().enumerate() {
         let event = SequencedEvent {
             seq: seq as u64,

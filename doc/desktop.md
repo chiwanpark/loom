@@ -24,14 +24,14 @@ The client reads `~/.config/loom/client.yaml`. It has these sections:
 | `ctrl-alt-o` | Find an agent |
 | `ctrl-shift-m` | Select the model |
 | `` ctrl-` `` | New terminal |
-| `ctrl-b` | Show or hide the Sessions panel |
-| `ctrl-shift-b` / `ctrl-shift-n` / `ctrl-shift-t` | Sessions panel / notes of the agent / tasks of the session |
+| `ctrl-b` | Show or hide the Codespaces panel |
+| `ctrl-shift-b` / `ctrl-shift-n` / `ctrl-shift-t` | Codespaces panel / notes of the agent / tasks of the session |
 | `enter` / `ctrl-enter` during a turn | Queue the message for the next turn / steer the running turn with it |
 | `ctrl-shift-e` / `ctrl-shift-g` | Workspace files / git changes |
 | `ctrl-tab` / `ctrl-shift-tab` (or `ctrl-pagedown` / `ctrl-pageup`) | Next / previous tab in the pane |
 | `alt-1` … `alt-8` / `alt-9` | Tab 1 to 8 / the last tab in the pane |
 | `ctrl-shift-pagedown` / `ctrl-shift-pageup` | Move the tab right / left |
-| `ctrl-w` | Close the tab. You cannot close the conversation of the session or the terminal of a different client. |
+| `ctrl-w` | Close the tab. Closing the tab of a session archives the session. You cannot close the terminal of a different client. |
 | `ctrl-k` then an arrow | Split the pane |
 | `ctrl-k ctrl-t` | Select a theme |
 | `ctrl-s` | Save the file in a file view, or the notes in the Notes tab |
@@ -39,26 +39,28 @@ The client reads `~/.config/loom/client.yaml`. It has these sections:
 
 The tab and panel keys also work in terminals. Thus, a terminal program does not get them, for example `alt-1` in readline. `ctrl-w`, `ctrl-b`, and `ctrl-p` go to the terminal.
 
-## Sessions panel
+The actions `loom::ToggleSessions`, `loom::ShowSessions`, and `loom::CloseSession` in a keymap still work. They are now `loom::ToggleCodespaces`, `loom::ShowCodespaces`, and `loom::ArchiveSession`.
 
-The Sessions panel puts the sessions of the codespaces into groups by [state](sessions.md#session-states):
+## Codespaces panel
 
-- **Needs approval**: waiting for approval.
-- **Working**: thinking, responding, or running a tool.
-- **Completed**.
-- **Idle**.
-- **Archived**.
+The Codespaces panel shows one row for each codespace of the paired oracles. A closed codespace does not show. Each row shows:
 
-Under **Workspaces**, the panel shows each oracle with its workspaces and their codespaces. See [Codespaces](#codespaces).
+- The workspace and the branch.
+- The oracle, the preset, the status, and the number of open sessions.
+- An icon for what the sessions do, in this order: **needs approval**, **working**, **completed**. Without one of these, the icon shows the status of the codespace.
+
+Click a codespace to show its tabs. The row of the codespace with the tabs that show is highlighted. See [Tabs of a codespace](#tabs-of-a-codespace).
+
+Under **Oracles**, the panel shows each oracle and its status. See [Codespaces](#codespaces).
 
 ### Host colors
 
-You can give each oracle a color. The color helps you to identify the sessions of each oracle.
+You can give each oracle a color. The color helps you to identify the codespaces of each oracle.
 
-1. Under **Workspaces**, click the palette button of the oracle.
+1. Under **Oracles**, click the palette button of the oracle.
 2. Select a color.
 
-The panel then shows the name of the oracle in this color. The name shows in each session of the oracle and under **Workspaces**. The client keeps the colors in `appearance.host_colors` of `client.yaml`.
+The panel then shows the name of the oracle in this color. The name shows in each codespace of the oracle and under **Oracles**. The client keeps the colors in `appearance.host_colors` of `client.yaml`.
 
 ```yaml
 appearance:
@@ -68,13 +70,28 @@ appearance:
 
 Each color must have the format `#rrggbb`. An oracle without a color has no mark.
 
-### Open and close a session
+### Tabs of a codespace
 
-The conversation tab of a session stays while the session is open. To close a session and all its tabs, use **session: close** in the command palette. The session stays on the agent, and you can open it again.
+Each codespace has one group of tabs: a tab for each open session, and the tabs of its terminals, files, and diffs. When you open a codespace, each session that is not archived gets a tab. When a session starts on a different client, it gets a tab too, but the focus does not move to it.
+
+The icon of a session tab shows what the session does. The Changes, Tasks, and status bar items follow the session tab that is active, or the session tab that was active last.
+
+The **+** button of a pane opens a menu with **New session** and **New terminal**. The context menu of a session tab has **Rename…**, **System prompt**, and **Archive**.
+
+Closing the tab of a session archives the session on the agent, and all clients close its tab. An empty session is deleted instead. To open an archived session again, see [Resume a session](#resume-a-session).
+
+The client keeps the tabs and the panes of each codespace when it restarts. It does not read the layout of an earlier version; then it starts with no open tabs.
 
 When you open a session, the client loads its latest 50 messages and tool calls. When you scroll to the top, it loads earlier items. The **Changes** panel loads the full session, to show all files that the session changed.
 
 Each code block in an answer has a copy button. It copies the code without the fences. Each table has a copy button below it. It copies the table as Markdown. The Android app has the same buttons.
+
+### Resume a session
+
+1. Click **Resume** below the prompt box, or run **session: resume** from the command palette.
+2. Select a session. You can type to find a session by its title.
+
+The list shows the archived sessions of the codespace, and the sessions of the closed codespaces of the same workspace, newest first. Each item shows when the session last changed and where it is. When you select a session of a closed codespace, the agent copies it with its conversation and tasks into the current codespace. The session then leaves the list. See [Session archive](oracle.md#session-archive).
 
 ## Codespaces
 
@@ -83,7 +100,7 @@ An oracle keeps workspaces, presets, and codespaces. Each session runs in a code
 ### Add an oracle
 
 1. Get a pairing link. For the first device, run `loom-oracle pair` on the oracle machine. For other devices, click **Add device…** on the **Devices** page of the oracle settings on a paired device.
-2. In the desktop client, click the **Pair with an oracle** button in the header of the Sessions tab, or run the command `hosts: pair with an oracle` from the command palette.
+2. In the desktop client, click the **Pair with an oracle** button in the header of the Codespaces tab, or run the command `hosts: pair with an oracle` from the command palette.
 3. Type a name and paste the link.
 
 The client keeps the oracle in `client.yaml` as a host of the kind `oracle`. It is the only kind of host:
@@ -99,18 +116,18 @@ hosts:
 
 Loom no longer has the hosts of the kinds `local`, `ssh`, and `relay`. The client ignores them in `client.yaml` and writes a warning to its log. It removes them from the file when it saves the file.
 
-The client then shows the oracle under **Workspaces**. For each workspace, it shows the host, the repositories, and the codespaces. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The lists come from the oracle. The client connects to the agent of a codespace only when you open a session.
+The client then shows the oracle under **Oracles**, and its codespaces in the Codespaces panel. The lists come from the oracle. The client connects to the agent of a codespace only when you open the codespace.
 
 ### New codespace
 
-1. Click **+** next to a workspace. Or press `ctrl-alt-n` and select a workspace. If no agent is connected, `ctrl-n` also opens the list of workspaces.
+1. Click **+** in the header of the Codespaces tab, or press `ctrl-alt-n`, and select a workspace. If no agent is connected, `ctrl-n` also opens the list of workspaces.
 2. Select the preset. The dialog starts with the preset and the limits of the last codespace of the workspace. It shows the host of the workspace and the model accounts of the preset. It shows a warning for each repository that has no Git credential in the preset.
 3. Set the CPU limit and the memory limit, for example `4 GiB`.
 4. Optional: type a base branch for each repository. An empty field uses the base branch of the workspace, or the default branch of the repository.
 5. Optional: type the first message and select its model. The agent starts a session with this message when the codespace is ready.
 6. Click **Create**.
 
-A progress view shows the steps of the start. When the codespace is ready, click **Open**. The client opens the newest session of the codespace, or a new session.
+A progress view shows the steps of the start. When the codespace is ready, click **Open**. The client shows the tabs of the codespace. If the codespace has no open session, the client starts a new session.
 
 ### Codespace menu
 
@@ -133,7 +150,7 @@ When the host of a codespace has an SSH destination, the client connects to the 
 
 ### Oracle settings
 
-You do all configuration of an oracle in the desktop client. Click the gear button next to the oracle under **Workspaces**, or run **oracle: settings** in the command palette. The settings replace the panes until you open a session or click the close button. Unsaved changes stay when you close the settings.
+You do all configuration of an oracle in the desktop client. Click the gear button next to the oracle under **Oracles**, or run **oracle: settings** in the command palette. The settings replace the panes until you open a codespace or click the close button. Unsaved changes stay when you close the settings.
 
 | Page | Contents |
 | --- | --- |

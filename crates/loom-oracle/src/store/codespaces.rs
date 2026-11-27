@@ -735,6 +735,31 @@ impl Store {
         Ok(ids)
     }
 
+    pub fn mark_session_resumed(
+        &self,
+        codespace: &str,
+        session: &str,
+        by: &str,
+    ) -> StoreResult<()> {
+        self.conn().execute(
+            "INSERT INTO resumed_sessions (codespace, session, resumed_by, resumed_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (codespace, session) DO UPDATE SET resumed_by = excluded.resumed_by,
+                 resumed_at = excluded.resumed_at",
+            params![codespace, session, by, to_i64(now_unix())],
+        )?;
+        Ok(())
+    }
+
+    pub fn resumed_sessions(&self, codespace: &str) -> StoreResult<Vec<String>> {
+        let conn = self.conn();
+        let ids = conn
+            .prepare("SELECT session FROM resumed_sessions WHERE codespace = ?1")?
+            .query_map([codespace], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn cancel_pairings_for(&self, target: &str) -> StoreResult<Vec<String>> {
         let conn = self.conn();
         let ids = conn

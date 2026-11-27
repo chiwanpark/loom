@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use loom_agent_core::{
-    Agent, AgentOptions, ConfigLoader, Observers, Repositories, SessionObserver, TelemetryReport,
-    watch_config,
+    Agent, AgentOptions, ConfigLoader, Observers, Repositories, SessionArchive, SessionObserver,
+    TelemetryReport, watch_config,
 };
 use loom_config::{AgentConfig, Dirs};
 use loom_crypto::HostIdentity;
@@ -31,6 +31,7 @@ pub struct ServeOptions {
     pub dirs: Dirs,
     pub ready: Option<oneshot::Sender<Started>>,
     pub repositories: Option<Arc<dyn Repositories>>,
+    pub archive: Option<Arc<dyn SessionArchive>>,
     pub credentials: Option<CredentialStore>,
     pub config_loader: Option<ConfigLoader>,
     pub repository_dirs: Vec<PathBuf>,
@@ -61,6 +62,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         dirs,
         ready,
         repositories,
+        archive,
         credentials,
         config_loader,
         repository_dirs,
@@ -148,6 +150,7 @@ pub async fn serve(options: ServeOptions) -> anyhow::Result<i32> {
         agent: agent.clone(),
         info,
         repositories,
+        archive,
     };
     let mut relay_state = None;
     if let Some(endpoint) = relay_endpoint {

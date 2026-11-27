@@ -5,12 +5,13 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use loom_oracle_proto::{
-    ClientMessage, CodespaceConnections, CodespaceResult, Codespaces, Command, DeviceResult,
-    Devices, Empty, ErrorCode, Event, FirstMessageResult, GitCredentialResult, GitCredentials,
-    GitProviderResult, GitProviders, HostResult, Hosts, InvalidMessage, ModelAccountResult,
-    ModelAccounts, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo, PresetResult, Presets,
-    Request, Response, Role, SecretResult, Secrets, ServerHello, ServerMessage, Sessions,
-    VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode, parse_client_message,
+    ArchivedSessions, ClientMessage, CodespaceConnections, CodespaceResult, Codespaces, Command,
+    DeviceResult, Devices, Empty, ErrorCode, Event, FirstMessageResult, GitCredentialResult,
+    GitCredentials, GitProviderResult, GitProviders, HostResult, Hosts, InvalidMessage,
+    ModelAccountResult, ModelAccounts, OracleError, PROTOCOL_VERSION, Pairings, PeerInfo,
+    PresetResult, Presets, Request, Response, Role, SecretResult, Secrets, ServerHello,
+    ServerMessage, Sessions, VolumeResult, Volumes, Warnings, WorkspaceResult, Workspaces, encode,
+    parse_client_message,
 };
 use loom_transport::{FrameReceiver, FrameStream};
 use serde::Serialize;
@@ -473,6 +474,27 @@ impl Session {
                 self.oracle.codespace_activity(me, active, metrics)?;
                 ok(Empty {})
             }
+            Command::ListArchivedSessions => ok(ArchivedSessions {
+                sessions: self.oracle.archived_sessions(me)?,
+            }),
+            Command::GetArchivedSession {
+                codespace,
+                session,
+                offset,
+            } => ok(self
+                .oracle
+                .archived_session(me, &codespace, &session, offset)?),
+            Command::ArchiveEvents {
+                codespace,
+                session,
+                after,
+            } => ok(self
+                .oracle
+                .archive_events(me, &codespace, &session, after)?),
+            Command::MarkSessionResumed { codespace, session } => {
+                self.oracle.mark_session_resumed(me, &codespace, &session)?;
+                ok(Empty {})
+            }
             _ => Err(forbidden(self.peer.role, "devices")),
         }
     }
@@ -549,15 +571,6 @@ impl Session {
                 host: oracle.set_host_limits(&name, &limits, me)?,
             }),
             Command::ListAudit { limit, before } => ok(oracle.audit_entries(limit, before)?),
-            Command::ArchiveEvents {
-                codespace,
-                session,
-                after,
-            } => ok(oracle.archive_events(&codespace, &session, after)?),
-            Command::DeleteArchive { codespace } => {
-                oracle.delete_archive(&codespace, me)?;
-                ok(Empty {})
-            }
             Command::CodespaceWarnings { workspace, preset } => ok(Warnings {
                 warnings: oracle.codespace_warnings(&workspace, preset.as_deref())?,
             }),

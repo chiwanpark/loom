@@ -4,12 +4,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Task, WeakEntity};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Task, WeakEntity};
 use loom_client::proto::{
-    AgentInfo, ApiError, Command, DirectoryListing, ErrorCode, FileContent, FileDiff, FileVersion,
-    ListeningPort, NotesContent, Notice, PolicyAction, ReasoningEffort, SessionId, SessionInfo,
-    SessionState, TaskChange, TasksContent, TelemetryStatus, TerminalHolder, TerminalId,
-    TerminalInfo, TerminalOwner, UsageLimits, WorkspaceChanges,
+    AgentInfo, ApiError, ArchivedSessionInfo, Command, DirectoryListing, ErrorCode, FileContent,
+    FileDiff, FileVersion, ListeningPort, NotesContent, Notice, PolicyAction, ReasoningEffort,
+    SessionId, SessionInfo, SessionState, TaskChange, TasksContent, TelemetryStatus,
+    TerminalHolder, TerminalId, TerminalInfo, TerminalOwner, UsageLimits, WorkspaceChanges,
 };
 use loom_client::{Client, Notification, Notifications, PortForward, terminal_owner};
 use loom_config::HostEntry;
@@ -41,6 +41,7 @@ pub enum ConnectionEvent {
     },
     /// The session list arrived (after connecting or reconnecting).
     SessionsLoaded,
+    SessionChanged(SessionId),
     /// The agent's terminals changed: one opened, closed, or moved. The
     /// views of those that closed on another client are in `closed`.
     TerminalsChanged {
@@ -530,6 +531,7 @@ impl AgentConnection {
     }
 
     pub fn update_session_info(&mut self, info: SessionInfo, cx: &mut Context<Self>) {
+        let id = info.id.clone();
         if let Some(conv) = self.conversations.get(&info.id) {
             conv.update(cx, |conv, cx| {
                 conv.info.model = info.model.clone();
@@ -559,25 +561,38 @@ impl AgentConnection {
                     existing.title = info.title;
                 }
             }
-            None => self.sessions.insert(0, info),
+            None if !info.archived => self.sessions.insert(0, info),
+            None => {}
         }
+        cx.emit(ConnectionEvent::SessionChanged(id));
         cx.notify();
     }
 
-    pub fn delete_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+    pub fn list_archived_sessions(
+        &self,
+    ) -> impl Future<Output = Option<loom_client::Result<Vec<ArchivedSessionInfo>>>> + 'static {
         let client = self.client.clone();
-        let session = id.clone();
+        self.backend
+            .run(async move { client.list_archived_sessions().await })
+    }
+
+    pub fn resume_session(
+        &mut self,
+        id: SessionId,
+        codespace: Option<String>,
+        then: impl FnOnce(SessionInfo, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let client = self.client.clone();
         let task = self
             .backend
-            .run(async move { client.delete_session(&session).await });
+            .run(async move { client.resume_session(&id, codespace).await });
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| match result {
-                Some(Ok(())) => {
-                    this.sessions.retain(|s| s.id != id);
-                    this.conversations.remove(&id);
-                    cx.emit(ConnectionEvent::SessionRemoved(id));
-                    cx.notify();
+                Some(Ok(info)) => {
+                    this.update_session_info(info.clone(), cx);
+                    cx.defer(move |cx| then(info, cx));
                 }
                 Some(Err(err)) => cx.emit(ConnectionEvent::Failed(err.to_string())),
                 None => {}

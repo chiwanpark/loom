@@ -300,8 +300,16 @@ pub enum Command {
         #[serde(default)]
         after: Option<u64>,
     },
-    DeleteArchive {
+    ListArchivedSessions,
+    GetArchivedSession {
         codespace: String,
+        session: String,
+        #[serde(default)]
+        offset: u64,
+    },
+    MarkSessionResumed {
+        codespace: String,
+        session: String,
     },
 }
 

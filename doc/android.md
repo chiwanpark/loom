@@ -65,11 +65,11 @@ The app removes the hosts that it paired with before Loom-Next, because Loom no 
 
 An oracle keeps workspaces, presets, and codespaces. Each session runs in a codespace. See [Oracle](oracle.md) and [Hosts and codespaces](host.md).
 
-Under **Workspaces**, the start screen shows each oracle with its workspaces and their codespaces. For each workspace, it shows the host and the repositories. For each codespace, it shows the branch, the preset, the status, and the number of sessions. The sessions of the codespaces come from the oracle, and the start screen puts them into groups with the other sessions. The app connects to the agent of a codespace only when you open a session.
+The start screen shows the codespaces of the paired oracles. A closed codespace does not show. For each codespace, it shows the workspace and the branch, the oracle, the preset, the status, and the number of open sessions. Its icon shows what the sessions do: needs approval, working, or completed. The app connects to the agent of a codespace only when you open the codespace.
 
 ### New codespace
 
-1. Press **+** next to a workspace. Or press **+** on the start screen and select a workspace.
+1. Press **+** on the start screen and select a workspace.
 2. Select the preset. The screen starts with the preset and the limits of the last codespace of the workspace. It shows the host of the workspace and the model accounts of the preset. It shows a warning for each repository that has no Git credential in the preset.
 3. Set the CPU limit and the memory limit, for example `4 GiB`.
 4. Optional: type a base branch for each repository.
@@ -95,7 +95,22 @@ The app tells the oracle where to send notifications. The oracle gives this to t
 
 ## Sessions
 
-The start screen shows all sessions of the codespaces of the paired oracles. It puts them into groups by state, as the Sessions panel of the desktop client does. On this screen, you can rename, archive, and delete sessions. A completed session becomes idle when you open it in the app.
+Tap a codespace to open it. A row of tabs at the top shows the open sessions and the terminals of the codespace. Swipe the row to see more tabs. The icon of a session tab shows what the session does. A completed session becomes idle when you open it in the app.
+
+- Press **+** at the end of the row to start a new session or a new terminal.
+- Press **×** on the tab of a session to archive the session. An empty session is deleted instead.
+- A session that starts on a different client gets a tab too.
+
+If the codespace has no open session, the app starts a new session when you open the codespace.
+
+### Resume a session
+
+1. In the menu of a session, choose **Resume a session**.
+2. Select a session. You can type to find a session by its title.
+
+The list shows the archived sessions of the codespace, and the sessions of the closed codespaces of the same workspace, newest first. See [Session archive](oracle.md#session-archive).
+
+### In a session
 
 In a session, you can do these steps:
 
@@ -106,6 +121,7 @@ In a session, you can do these steps:
 - Stop a turn.
 - Compact or clear the conversation.
 - Rewind the conversation to one of your messages. Long-press the message. See [Rewind a conversation](sessions.md#rewind-a-conversation).
+- Rename the session.
 - Edit the notes of the agent and the tasks of the session.
 
 The row above the prompt box shows the context used. It also lets you select these settings:
@@ -119,12 +135,14 @@ A new session gets these settings from the configuration of the agent, and the r
 
 ### Oracle colors
 
-You can give each oracle a color. The color helps you to identify the sessions of each oracle.
+You can give each oracle a color. The color helps you to identify the codespaces of each oracle.
 
-1. In the menu of the start screen, open **Hosts**.
+1. In the menu of the start screen, open **Oracles**.
 2. In the menu of the oracle, choose **Color…**.
 
-If you have more than one oracle, each row of the start screen then shows the name of the oracle in this color.
+Each row of the start screen then shows the name of the oracle in this color.
+
+The **Oracles** screen also shows if the app is connected to each oracle. To connect again at once, choose **Refresh** in the menu of the oracle.
 
 ## Changes and files
 
@@ -149,7 +167,7 @@ Files and diffs have syntax highlights from the grammars of [bat](https://github
 
 ## Terminal
 
-**Terminal** in the menu of a session opens a terminal on the agent host. The terminal runs your shell in the workspace of the agent.
+**Terminal** in the menu of a session, or **New terminal** in the **+** menu of the tab row, opens a terminal tab on the agent host. The terminal runs your shell in the workspace of the agent.
 
 A row above the keyboard has the keys that a phone keyboard does not have: Esc, Tab, arrows, Home, End, Page Up, Page Down, some symbols, Ctrl, and Alt. Ctrl and Alt apply to the next key. A hardware keyboard also works.
 

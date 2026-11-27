@@ -14,7 +14,7 @@ use loom_client::{
 use loom_config::{Dirs, HostConfig, OracleConfig};
 use loom_host::{AgentCache, Host, JoinOptions, ProcessDriver, join};
 use loom_oracle::Oracle;
-use loom_proto::{LoginMethod, PolicyAction, PushRepositories, SessionEvent};
+use loom_proto::{ArchivedLocation, LoginMethod, PolicyAction, PushRepositories, SessionEvent};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -1081,7 +1081,7 @@ async fn a_codespace_starts_its_first_turn_with_the_model_account_of_its_preset(
         .create_codespace(first("personal", "Hello from personal"))
         .await
         .unwrap();
-    wait_codespace(device, &other.id, |c| c.state == CodespaceState::Ready).await;
+    let other_ready = wait_codespace(device, &other.id, |c| c.state == CodespaceState::Ready).await;
     let request = model_request(&llm, "Hello from personal").await;
     assert_eq!(bearer(&request), "Bearer access-personal-1");
     let home = env.codespaces.join(&other.instance).join("home");
@@ -1109,18 +1109,35 @@ async fn a_codespace_starts_its_first_turn_with_the_model_account_of_its_preset(
     let request = model_request(&llm, "Again with personal").await;
     assert_eq!(bearer(&request), "Bearer access-personal-1");
 
-    for id in [&created.id, &other.id] {
-        device.close_codespace(id).await.unwrap();
-        let closed = wait_codespace(device, id, |c| c.state == CodespaceState::Closed).await;
-        let archive = closed.archive.expect("a closed codespace has an archive");
-        assert_eq!(archive.error, None);
-        assert!(archive.saved_at.is_some() && archive.size > 0);
-    }
-    let events = device
-        .archived_events(&created.id, &sessions[0].id.to_string())
+    device.close_codespace(&created.id).await.unwrap();
+    let closed = wait_codespace(device, &created.id, |c| c.state == CodespaceState::Closed).await;
+    let archive = closed.archive.expect("a closed codespace has an archive");
+    assert_eq!(archive.error, None);
+    assert!(archive.saved_at.is_some() && archive.size > 0);
+    let other_agent = connect_agent(url, &other_ready, laptop).await.unwrap();
+    let archived = other_agent.list_archived_sessions().await.unwrap();
+    assert_eq!(archived.len(), 1, "{archived:?}");
+    assert_eq!(archived[0].id, sessions[0].id);
+    assert_eq!(archived[0].title.as_deref(), Some("Hello from work"));
+    assert_eq!(
+        archived[0].location,
+        ArchivedLocation::Codespace {
+            codespace: created.id.clone(),
+            branch: created.branch.clone(),
+        }
+    );
+    let resumed = other_agent
+        .resume_session(&archived[0].id, Some(created.id.clone()))
         .await
         .unwrap();
-    let messages: Vec<String> = events
+    assert_eq!(resumed.id, sessions[0].id);
+    assert!(!resumed.archived);
+    let history = other_agent
+        .history(&resumed.id, resumed.last_seq + 1, 100)
+        .await
+        .unwrap();
+    let messages: Vec<String> = history
+        .events
         .iter()
         .filter_map(|e| match &e.event {
             SessionEvent::UserMessage { content } => Some(format!("{content:?}")),
@@ -1130,6 +1147,30 @@ async fn a_codespace_starts_its_first_turn_with_the_model_account_of_its_preset(
     assert_eq!(messages.len(), 2, "{messages:?}");
     assert!(messages[0].contains("Hello from work"), "{messages:?}");
     assert!(messages[1].contains("Again with personal"), "{messages:?}");
+    assert!(
+        other_agent
+            .list_archived_sessions()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let empty = other_agent.create_session(None).await.unwrap();
+    other_agent.archive_session(&empty.id, true).await.unwrap();
+    let kept: Vec<_> = other_agent
+        .list_sessions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert!(kept.contains(&resumed.id));
+    assert!(!kept.contains(&empty.id));
+    device.close_codespace(&other.id).await.unwrap();
+    let closed = wait_codespace(device, &other.id, |c| c.state == CodespaceState::Closed).await;
+    let archive = closed.archive.expect("a closed codespace has an archive");
+    assert_eq!(archive.error, None);
+    assert!(archive.saved_at.is_some() && archive.size > 0);
+
     let summaries = device.sessions(Some(&created.id)).await.unwrap();
     assert_eq!(summaries.len(), 1);
     assert!(!env.codespaces.join(&created.instance).exists());

@@ -42,7 +42,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,13 +58,13 @@ import com.chiwanpark.loom.codespaceTitle
 import com.chiwanpark.loom.core.AgentConnection
 import com.chiwanpark.loom.core.BaseBranch
 import com.chiwanpark.loom.core.Codespace
+import com.chiwanpark.loom.core.CodespaceActivity
 import com.chiwanpark.loom.core.CodespaceStatus
 import com.chiwanpark.loom.core.Loom
 import com.chiwanpark.loom.core.LoomException
 import com.chiwanpark.loom.core.NewCodespaceForm
 import com.chiwanpark.loom.core.NewCodespaceRequest
 import com.chiwanpark.loom.core.OracleModels
-import com.chiwanpark.loom.core.OracleWorkspace
 import com.chiwanpark.loom.core.RepositoryState
 import com.chiwanpark.loom.core.closePlan
 import com.chiwanpark.loom.core.inTime
@@ -97,23 +100,20 @@ fun openCodespace(
     replace: Boolean = false,
 ) = scope.attempt(snackbar) {
     val instance = codespace.instance ?: throw LoomException.Offline("The codespace has no agent yet.")
-    val newest = oracle.lists?.sessions.orEmpty()
-        .filter { it.codespace == codespace.id && !it.session.archived }
-        .maxByOrNull { it.session.createdAt }
-    val session = if (newest != null && !fresh) {
-        newest.session.id
-    } else {
+    val open = oracle.lists?.sessions.orEmpty()
+        .any { it.codespace == codespace.id && !it.session.archived }
+    val session = if (!open || fresh) {
         codespaceConnection(app, loom, oracle, codespace).createSession(null).id
+    } else {
+        null
     }
-    val screen = Screen.Conversation(oracle.host, instance, session)
+    val screen = Screen.Codespace(oracle.host, instance, session)
     if (replace) {
         app.navigator.replace(screen)
     } else {
         app.navigator.push(screen)
     }
 }
-
-private val WorkspacePadding = Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp)
 
 @Composable
 fun NewCodespaceChooser(
@@ -151,110 +151,50 @@ fun NewCodespaceChooser(
     )
 }
 
-fun LazyListScope.workspaceItems(
+fun LazyListScope.codespaceItems(
     app: LoomApplication,
     loom: Loom,
     oracles: List<OracleLink>,
+    hostColors: Map<String, Color?>,
     scope: CoroutineScope,
     snackbar: SnackbarHostState,
     onPullRequest: (OracleLink, Codespace) -> Unit,
     onClose: (OracleLink, Codespace) -> Unit,
 ) {
-    item(key = "workspaces") {
-        Text(
-            "Workspaces",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = WorkspacePadding,
-        )
-    }
     for (oracle in oracles) {
-        item(key = "oracle/${oracle.host}") {
-            val state = oracle.state
-            CompactListItem(
-                leadingContent = { LoomIcon(LoomIcons.Cloud, null, size = 20.dp) },
-                headlineContent = { Text(oracle.host) },
-                supportingContent = {
-                    Text(
-                        when (state) {
-                            LinkState.Connected -> "Oracle"
-                            LinkState.Connecting -> "Connecting…"
-                            is LinkState.Down -> state.message
-                        },
-                        color = if (state is LinkState.Down) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                trailingContent = {
-                    when (state) {
-                        LinkState.Connecting -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                        is LinkState.Down -> IconButton(onClick = oracle::retryNow) { LoomIcon(LoomIcons.Refresh, "Retry") }
-                        LinkState.Connected -> {}
-                    }
-                },
-            )
-        }
         val lists = oracle.lists ?: continue
-        if (oracle.state == LinkState.Connected && lists.workspaces.isEmpty()) {
-            item(key = "oracle/${oracle.host}/empty") {
-                Text(
-                    "No workspaces. Add one in the desktop client's oracle settings.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 44.dp, end = 12.dp, bottom = 6.dp),
+        for (codespace in lists.codespaces) {
+            item(key = "codespace/${oracle.host}/${codespace.id}") {
+                CodespaceRow(
+                    codespace,
+                    oracle = oracle.host,
+                    oracleColor = hostColors[oracle.host],
+                    onOpen = {
+                        when {
+                            codespace.status == CodespaceStatus.READY && codespace.step == null ->
+                                openCodespace(app, loom, oracle, codespace, scope, snackbar)
+                            stopped(codespace) -> resume(app, oracle, codespace, scope, snackbar)
+                            else -> app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id))
+                        }
+                    },
+                    onNewSession = { openCodespace(app, loom, oracle, codespace, scope, snackbar, fresh = true) },
+                    onProgress = { app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id)) },
+                    onPullRequest = { onPullRequest(oracle, codespace) },
+                    onStop = { scope.attempt(snackbar) { oracle.connection().stopCodespace(codespace.id) } },
+                    onResume = { resume(app, oracle, codespace, scope, snackbar) },
+                    onClose = { onClose(oracle, codespace) },
                 )
-            }
-        }
-        for (workspace in lists.workspaces) {
-            item(key = "workspace/${oracle.host}/${workspace.name}") {
-                WorkspaceRow(workspace) { app.navigator.push(Screen.NewCodespace(oracle.host, workspace.name)) }
-            }
-            for (codespace in lists.codespaces.filter { it.workspace == workspace.name }) {
-                item(key = "codespace/${oracle.host}/${codespace.id}") {
-                    CodespaceRow(
-                        codespace,
-                        onOpen = {
-                            when {
-                                codespace.status == CodespaceStatus.READY && codespace.step == null ->
-                                    openCodespace(app, loom, oracle, codespace, scope, snackbar)
-                                stopped(codespace) -> resume(app, oracle, codespace, scope, snackbar)
-                                else -> app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id))
-                            }
-                        },
-                        onNewSession = { openCodespace(app, loom, oracle, codespace, scope, snackbar, fresh = true) },
-                        onProgress = { app.navigator.push(Screen.CodespaceProgress(oracle.host, codespace.id)) },
-                        onPullRequest = { onPullRequest(oracle, codespace) },
-                        onStop = { scope.attempt(snackbar) { oracle.connection().stopCodespace(codespace.id) } },
-                        onResume = { resume(app, oracle, codespace, scope, snackbar) },
-                        onClose = { onClose(oracle, codespace) },
-                    )
-                }
+                HorizontalDivider()
             }
         }
     }
-}
-
-@Composable
-private fun WorkspaceRow(workspace: OracleWorkspace, onNew: () -> Unit) {
-    CompactListItem(
-        modifier = Modifier.padding(start = 16.dp),
-        leadingContent = { LoomIcon(LoomIcons.FolderGit, null, size = 20.dp) },
-        headlineContent = { Text(workspace.name) },
-        supportingContent = {
-            Text(
-                "${workspace.host} · " + workspace.repositories.joinToString(", ") { it.directory },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
-        trailingContent = { IconButton(onClick = onNew) { LoomIcon(LoomIcons.Plus, "New codespace") } },
-    )
 }
 
 @Composable
 private fun CodespaceRow(
     codespace: Codespace,
+    oracle: String,
+    oracleColor: Color?,
     onOpen: () -> Unit,
     onNewSession: () -> Unit,
     onProgress: () -> Unit,
@@ -267,9 +207,16 @@ private fun CodespaceRow(
     var confirmStop by remember { mutableStateOf(false) }
     val ready = codespace.status == CodespaceStatus.READY
     CompactListItem(
-        modifier = Modifier.padding(start = 32.dp).clickable(onClick = onOpen),
+        modifier = Modifier.clickable(onClick = onOpen),
         leadingContent = {
+            val activity = codespace.activity
             when {
+                activity == CodespaceActivity.NEEDS_APPROVAL ->
+                    LoomIcon(LoomIcons.TriangleAlert, "needs approval", size = 20.dp, tint = LoomColors.warning)
+                activity == CodespaceActivity.WORKING ->
+                    SpinningIcon("working", size = 20.dp, tint = MaterialTheme.colorScheme.primary)
+                activity == CodespaceActivity.COMPLETED ->
+                    LoomIcon(LoomIcons.CircleCheck, "completed", size = 20.dp, tint = LoomColors.success)
                 starting(codespace.status) || codespace.step != null ->
                     SpinningIcon(codespace.state, size = 20.dp, tint = MaterialTheme.colorScheme.primary)
                 codespace.status == CodespaceStatus.FAILED ->
@@ -279,15 +226,15 @@ private fun CodespaceRow(
                 else -> LoomIcon(LoomIcons.Container, codespace.state, size = 20.dp, tint = MaterialTheme.colorScheme.outline)
             }
         },
-        headlineContent = { Text(codespace.branch, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        headlineContent = { Text(codespace.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
-            val sessions = codespace.sessions.toInt()
             val now = System.currentTimeMillis() / 1000
             val deletion = codespace.deleteAt?.let { " · deleted ${inTime(now.toULong(), it)}" }.orEmpty()
-            val text = if (stopped(codespace)) {
-                "${codespace.preset ?: "no preset"} · ${codespace.state}$deletion"
-            } else {
-                "${codespace.preset ?: "no preset"} · ${codespace.state} · $sessions session${if (sessions == 1) "" else "s"}"
+            val text = buildAnnotatedString {
+                append(oracle)
+                if (oracleColor != null) addStyle(SpanStyle(color = oracleColor), 0, oracle.length)
+                append(" · ${codespace.detail}")
+                if (stopped(codespace)) append(deletion)
             }
             Text(
                 text,

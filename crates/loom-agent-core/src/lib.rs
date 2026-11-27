@@ -1,4 +1,5 @@
 mod agent;
+pub mod archive;
 mod compaction;
 pub mod connection;
 pub mod convert;
@@ -28,6 +29,7 @@ pub mod watcher;
 pub mod web_search;
 
 pub use agent::{Agent, AgentNotice, AgentOptions, ConfigLoader, TelemetryReport, data_dir};
+pub use archive::SessionArchive;
 pub use connection::{Connection, Flow};
 pub use error::{CoreError, Result};
 pub use events::{EventHub, Subscription};

@@ -149,8 +149,8 @@ class Push(private val app: LoomApplication) {
 
     private fun onScreen(host: String, session: String): Boolean {
         if (!app.foreground.value) return false
-        val screen = app.navigator.stack.lastOrNull() as? Screen.Conversation ?: return false
-        return screen.host == host && screen.session == session
+        val screen = app.navigator.stack.lastOrNull() as? Screen.Codespace ?: return false
+        return screen.shows(host, session)
     }
 
     private fun tag(host: String, session: String) = "$host/$session"

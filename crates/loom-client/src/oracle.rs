@@ -8,16 +8,17 @@ use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use loom_crypto::{ClientIdentity, PairingUri, decode_key, encode_key};
 use loom_oracle_proto::{
-    AgentAddress, ArchivePage, AuditLog, Branches, Bundle, ClientHello, ClientMessage, Codespace,
-    CodespaceConnection, CodespaceConnections, CodespaceMetrics, CodespaceResult, CodespaceSession,
-    Codespaces, Command, Device, DeviceResult, Devices, Empty, Environment, Event, FirstMessage,
-    FirstMessageResult, GitCredential, GitCredentialInput, GitCredentialResult, GitCredentials,
-    GitProvider, GitProviderInput, GitProviderResult, GitProviders, GitTokenResult, Host, HostCall,
-    HostLimits, HostReport, HostResult, Hosts, InstanceReport, ModelAccount, ModelAccountResult,
-    ModelAccounts, ModelCredentials, ModelLogin, ModelLoginInput, ModelLoginMethod, Models,
-    ORACLE_INSTANCE, OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings,
-    Preset, PresetDetail, PresetFile, PresetResult, Presets, Reply, Repository, RepositorySearch,
-    Request, Secret, SecretInfo, SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary,
+    AgentAddress, ArchivePage, ArchivedSession, ArchivedSessionPart, ArchivedSessions, AuditLog,
+    Branches, Bundle, ClientHello, ClientMessage, Codespace, CodespaceConnection,
+    CodespaceConnections, CodespaceMetrics, CodespaceResult, CodespaceSession, Codespaces, Command,
+    Device, DeviceResult, Devices, Empty, Environment, Event, FirstMessage, FirstMessageResult,
+    GitCredential, GitCredentialInput, GitCredentialResult, GitCredentials, GitProvider,
+    GitProviderInput, GitProviderResult, GitProviders, GitTokenResult, Host, HostCall, HostLimits,
+    HostReport, HostResult, Hosts, InstanceReport, ModelAccount, ModelAccountResult, ModelAccounts,
+    ModelCredentials, ModelLogin, ModelLoginInput, ModelLoginMethod, Models, ORACLE_INSTANCE,
+    OracleError, OracleInfo, PROTOCOL_VERSION, Pairing, PairingLink, Pairings, Preset,
+    PresetDetail, PresetFile, PresetResult, Presets, Reply, Repository, RepositorySearch, Request,
+    Secret, SecretInfo, SecretResult, Secrets, ServerHello, ServerMessage, SessionSummary,
     Sessions, Volume, VolumeInput, VolumeResult, VolumeUsage, VolumeUsages, Volumes, Warnings,
     Workspace, WorkspaceNotes, WorkspaceResult, WorkspaceVolume, Workspaces, encode,
     parse_server_message,
@@ -33,6 +34,13 @@ use crate::error::{ClientError, Result};
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_QUEUE: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedSessionData {
+    pub session: ArchivedSession,
+    pub state: Vec<u8>,
+    pub tasks: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleEndpoint {
@@ -654,10 +662,62 @@ impl OracleClient {
         }
     }
 
-    pub async fn delete_archive(&self, codespace: &str) -> Result<()> {
+    pub async fn archived_sessions(&self) -> Result<Vec<ArchivedSession>> {
+        Ok(self
+            .call::<ArchivedSessions>(Command::ListArchivedSessions)
+            .await?
+            .sessions)
+    }
+
+    pub async fn archived_session_part(
+        &self,
+        codespace: &str,
+        session: &str,
+        offset: u64,
+    ) -> Result<ArchivedSessionPart> {
+        self.call(Command::GetArchivedSession {
+            codespace: codespace.to_owned(),
+            session: session.to_owned(),
+            offset,
+        })
+        .await
+    }
+
+    pub async fn archived_session(
+        &self,
+        codespace: &str,
+        session: &str,
+    ) -> Result<ArchivedSessionData> {
+        let mut state = Vec::new();
+        loop {
+            let part = self
+                .archived_session_part(codespace, session, state.len() as u64)
+                .await?;
+            let bytes = STANDARD
+                .decode(&part.state)
+                .map_err(|err| ClientError::Protocol(format!("bad archived session: {err}")))?;
+            let done = bytes.is_empty() || state.len() + bytes.len() >= part.size as usize;
+            state.extend(bytes);
+            if done {
+                if state.len() as u64 != part.size {
+                    return Err(ClientError::Protocol(
+                        "the archived session changed while it was read".into(),
+                    ));
+                }
+                return Ok(ArchivedSessionData {
+                    session: part.session,
+                    state,
+                    tasks: part.tasks,
+                });
+            }
+        }
+    }
+
+    pub async fn mark_session_resumed(&self, codespace: &str, session: &str) -> Result<()> {
         done(
-            self.call(Command::DeleteArchive {
+            self.call(Command::MarkSessionResumed {
                 codespace: codespace.to_owned(),
+                session: session.to_owned(),
             })
             .await,
         )

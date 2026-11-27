@@ -551,6 +551,25 @@ impl Client {
         .await
     }
 
+    pub async fn list_archived_sessions(&self) -> Result<Vec<loom_proto::ArchivedSessionInfo>> {
+        match self.request(Command::ListArchivedSessions).await? {
+            Payload::ArchivedSessions(sessions) => Ok(sessions),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub async fn resume_session(
+        &self,
+        session: &SessionId,
+        codespace: Option<String>,
+    ) -> Result<SessionInfo> {
+        self.session(Command::ResumeSession {
+            session: session.clone(),
+            codespace,
+        })
+        .await
+    }
+
     pub async fn set_reasoning(
         &self,
         session: &SessionId,

@@ -36,7 +36,12 @@ fun LoomRoot(app: LoomApplication) {
     // another one is on top of it, also when two of a kind follow each other;
     // a screen's state goes when it leaves the stack.
     val states = rememberSaveableStateHolder()
-    val keys = navigator.stack.mapIndexed { depth, it -> "$depth:$it" }
+    val keys = navigator.stack.mapIndexed { depth, it ->
+        when (it) {
+            is Screen.Codespace -> "$depth:${it.stateKey}"
+            else -> "$depth:$it"
+        }
+    }
     val kept = remember { mutableSetOf<String>() }
     SideEffect {
         (kept - keys.toSet()).forEach(states::removeState)
@@ -49,10 +54,11 @@ fun LoomRoot(app: LoomApplication) {
             Screen.Hosts -> HostsScreen(app, loom)
             Screen.Font -> FontScreen(app)
             is Screen.Pair -> PairScreen(app, loom, screen.link)
-            is Screen.Conversation -> ConversationScreen(
+            is Screen.Codespace -> CodespaceScreen(
                 app,
                 app.links.get(loom, screen.host, screen.instance),
                 screen.session,
+                screen.terminal,
             )
             is Screen.Notes -> NotesScreen(app, app.links.get(loom, screen.host, screen.instance))
             is Screen.Tasks -> TasksScreen(app, app.links.get(loom, screen.host, screen.instance), screen.session)
@@ -73,7 +79,6 @@ fun LoomRoot(app: LoomApplication) {
                 screen.oldPath,
                 screen.session,
             )
-            is Screen.Terminal -> TerminalScreen(app, app.links.get(loom, screen.host, screen.instance), screen.number)
             is Screen.Ports -> PortsScreen(app, app.links.get(loom, screen.host, screen.instance))
             is Screen.NewCodespace -> NewCodespaceScreen(app, app.oracles.get(loom, screen.host), screen.workspace)
             is Screen.CodespaceProgress -> CodespaceProgressScreen(

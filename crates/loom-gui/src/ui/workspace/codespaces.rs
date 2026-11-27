@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, AppContext, AsyncWindowContext, ClickEvent, Context, Entity, FontWeight,
     InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
-    Styled, Window, div, prelude::FluentBuilder,
+    Styled, StyledText, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
@@ -11,10 +11,10 @@ use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use loom_client::NewCodespace;
 use loom_client::oracle_proto::{Codespace, CodespaceState, ssh_command};
 use loom_client::proto::{PushRepositories, SessionInfo};
-use loom_config::HostEntry;
+use loom_view_model::codespace_list::{self, Activity};
 use loom_view_model::codespaces::{
-    can_stop, directories, is_starting, new_codespace_defaults, session_info, short_id,
-    state_label, title,
+    can_stop, directories, is_listed, is_starting, new_codespace_defaults, session_info, short_id,
+    title,
 };
 
 use super::{AgentConnection, LinkStatus, Workspace, notify};
@@ -24,8 +24,6 @@ use crate::ui::close_codespace;
 use crate::ui::new_codespace::{self, NewCodespaceForm, NewCodespaceRequest};
 use crate::ui::picker::{PickerItem, open_picker};
 use crate::ui::settings::{Page, SettingsView};
-
-type WorkspaceRow = (String, String, Vec<(Codespace, usize)>);
 
 impl Workspace {
     pub(super) fn sync_oracle(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -187,31 +185,6 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    pub(super) fn codespace_sessions(
-        &self,
-        host: &HostEntry,
-        instance: &str,
-        cx: &App,
-    ) -> Vec<SessionInfo> {
-        let Some(link) = self
-            .hosts
-            .iter()
-            .find(|h| h.entry.name() == host.name())
-            .and_then(|h| h.oracle.clone())
-        else {
-            return Vec::new();
-        };
-        let link = link.read(cx);
-        let Some(codespace) = link.codespace_of_agent(instance) else {
-            return Vec::new();
-        };
-        link.sessions
-            .iter()
-            .filter(|s| s.codespace == codespace.id)
-            .map(|s| session_info(&s.session))
-            .collect()
-    }
-
     pub(super) fn on_new_codespace(
         &mut self,
         _: &super::NewCodespace,
@@ -238,7 +211,7 @@ impl Workspace {
             [] => notify::info(
                 window,
                 cx,
-                "Add an oracle first. Click the pair button of the Sessions tab and paste the pairing link of the oracle.",
+                "Add an oracle first. Click the pair button of the Codespaces tab and paste the pairing link of the oracle.",
             ),
             [ix] => self.open_settings(*ix, None, window, cx),
             _ => {
@@ -286,7 +259,6 @@ impl Workspace {
         }
         gpui::Focusable::focus_handle(view.read(cx), cx).focus(window, cx);
         self.shown_settings = Some(view);
-        self.shown_archive = None;
         cx.notify();
     }
 
@@ -342,7 +314,7 @@ impl Workspace {
             notify::info(
                 window,
                 cx,
-                "Add an oracle first. Click the pair button of the Sessions tab and paste the pairing link of the oracle.",
+                "Add an oracle first. Click the pair button of the Codespaces tab and paste the pairing link of the oracle.",
             );
             return;
         }
@@ -611,7 +583,7 @@ impl Workspace {
         );
     }
 
-    fn open_codespace(
+    pub(super) fn open_codespace(
         &mut self,
         link: Entity<OracleLink>,
         id: &str,
@@ -622,16 +594,10 @@ impl Workspace {
             &link,
             id,
             Box::new(|ws, conn, window, cx| {
-                let newest = conn
-                    .read(cx)
-                    .sessions
-                    .iter()
-                    .filter(|s| !s.archived)
-                    .max_by_key(|s| s.created_at)
-                    .cloned();
-                match newest {
-                    Some(info) => ws.open_session(conn, info, window, cx),
-                    None => ws.new_session(conn, window, cx),
+                let open = conn.read(cx).sessions.iter().any(|s| !s.archived);
+                ws.show_group(conn.clone(), window, cx);
+                if !open {
+                    ws.new_session(conn, window, cx);
                 }
             }),
             window,
@@ -791,7 +757,90 @@ impl Workspace {
         );
     }
 
-    pub(super) fn render_oracles(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn codespace_connection(
+        &self,
+        oracle: &str,
+        codespace: &Codespace,
+        cx: &App,
+    ) -> Option<Entity<AgentConnection>> {
+        let instance = codespace.agent.as_ref()?.instance.as_deref()?;
+        self.find_connection(oracle, instance, cx)
+    }
+
+    pub(super) fn codespace_session_infos(
+        &self,
+        link: &OracleLink,
+        codespace: &Codespace,
+        cx: &App,
+    ) -> Vec<SessionInfo> {
+        match self
+            .codespace_connection(link.name(), codespace, cx)
+            .filter(|c| c.read(cx).status == LinkStatus::Connected)
+        {
+            Some(conn) => conn.read(cx).sessions.clone(),
+            None => link
+                .codespace_sessions(&codespace.id)
+                .iter()
+                .map(session_info)
+                .collect(),
+        }
+    }
+
+    pub(super) fn render_codespaces_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let mut list = v_flex().w_full().gap_0p5().p_2();
+        let mut count = 0;
+        let mut oracles = 0;
+        for (hix, host) in self.hosts.iter().enumerate() {
+            let Some(link) = host.oracle.clone() else {
+                continue;
+            };
+            oracles += 1;
+            let read = link.read(cx);
+            let codespaces: Vec<(Codespace, Vec<SessionInfo>)> = read
+                .codespaces
+                .iter()
+                .filter(|c| is_listed(c))
+                .map(|c| (c.clone(), self.codespace_session_infos(read, c, cx)))
+                .collect();
+            for (codespace, sessions) in codespaces {
+                list = list.child(self.render_codespace(
+                    &link,
+                    (hix, count),
+                    &codespace,
+                    &sessions,
+                    cx,
+                ));
+                count += 1;
+            }
+        }
+        if count == 0 {
+            let hint = if oracles == 0 {
+                "No oracles. To add one, click the network button above and pair with an oracle."
+            } else {
+                "No codespaces. To start one, click + above."
+            };
+            list = list.child(
+                div()
+                    .px_1()
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .whitespace_normal()
+                    .child(hint),
+            );
+        }
+        list = list.child(self.render_oracles(cx));
+        div()
+            .id("codespaces-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(list)
+            .into_any_element()
+    }
+
+    fn render_oracles(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut section = v_flex().w_full().gap_0p5().child(
             div()
@@ -800,7 +849,7 @@ impl Workspace {
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.muted_foreground)
-                .child("Workspaces"),
+                .child("Oracles"),
         );
         for (hix, host) in self.hosts.iter().enumerate() {
             let Some(link) = host.oracle.clone() else {
@@ -809,39 +858,22 @@ impl Workspace {
             let read = link.read(cx);
             let oracle_status = read.status.clone();
             let connecting = read.is_connecting();
-            let workspaces: Vec<WorkspaceRow> = read
-                .workspaces
-                .iter()
-                .map(|workspace| {
-                    let codespaces = read
-                        .listed_codespaces(&workspace.name)
-                        .map(|c| (c.clone(), read.session_count(&c.id)))
-                        .collect();
-                    (
-                        workspace.name.clone(),
-                        format!(
-                            "{} · {}",
-                            workspace.host,
-                            directories(&workspace.repositories).join(", ")
-                        ),
-                        codespaces,
-                    )
-                })
-                .collect();
             let color = self.host_color(host.entry.name());
             let status = match &oracle_status {
                 OracleStatus::Connecting => "connecting…".to_owned(),
                 OracleStatus::Connected => {
-                    let count = workspaces.len();
+                    let count = read.workspaces.len();
                     format!(
-                        "oracle · {count} workspace{}",
+                        "connected · {count} workspace{}",
                         if count == 1 { "" } else { "s" }
                     )
                 }
-                OracleStatus::Offline(_) => "oracle · offline".to_owned(),
+                OracleStatus::Offline(_) => "offline".to_owned(),
             };
             section = section.child(
                 v_flex()
+                    .id(SharedString::from(format!("oracle-{hix}")))
+                    .debug_selector(move || format!("oracle-{hix}"))
                     .w_full()
                     .px_1()
                     .child(
@@ -920,73 +952,6 @@ impl Workspace {
                         },
                     ),
             );
-            if oracle_status == OracleStatus::Connected && workspaces.is_empty() {
-                section = section.child(
-                    div()
-                        .pl_6()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .whitespace_normal()
-                        .child("No workspaces. Add one in the oracle settings."),
-                );
-            }
-            for (wix, (workspace, repositories, codespaces)) in workspaces.into_iter().enumerate() {
-                let new_link = link.clone();
-                let name = workspace.clone();
-                let workspace_name = workspace.clone();
-                section = section.child(
-                    h_flex()
-                        .id(SharedString::from(format!("oracle-workspace-{hix}-{wix}")))
-                        .debug_selector(move || format!("oracle-workspace-{hix}-{wix}"))
-                        .w_full()
-                        .pl_4()
-                        .pr_1()
-                        .gap_1()
-                        .child(Icon::new(gpui_kit_assets::IconName::FolderGit2).xsmall())
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .items_baseline()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_sm()
-                                .child(workspace)
-                                .child(
-                                    div()
-                                        .ml_1()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(repositories),
-                                ),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("new-codespace-{hix}-{wix}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Plus)
-                                .tooltip("New codespace")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.new_codespace_dialog(new_link.clone(), &name, window, cx)
-                                })),
-                        ),
-                );
-                let archives_for = workspace_name.clone();
-                for (cix, (codespace, sessions)) in codespaces.into_iter().enumerate() {
-                    section = section.child(self.render_codespace(
-                        &link,
-                        (hix, wix, cix),
-                        &codespace,
-                        sessions,
-                        cx,
-                    ));
-                }
-                if let Some(archives) = self.render_archives(&link, (hix, wix), &archives_for, cx) {
-                    section = section.child(archives);
-                }
-            }
         }
         section.into_any_element()
     }
@@ -994,12 +959,14 @@ impl Workspace {
     fn render_codespace(
         &self,
         link: &Entity<OracleLink>,
-        (hix, wix, cix): (usize, usize, usize),
+        (hix, cix): (usize, usize),
         codespace: &Codespace,
-        sessions: usize,
+        sessions: &[SessionInfo],
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
+        let oracle = link.read(cx).name().to_owned();
+        let row = codespace_list::row(&oracle, codespace, sessions);
         let color = match codespace.state {
             CodespaceState::Ready => theme.success,
             CodespaceState::Failed => theme.danger,
@@ -1007,17 +974,21 @@ impl Workspace {
             CodespaceState::Stopped | CodespaceState::Lost => theme.warning,
             _ => theme.muted_foreground,
         };
-        let indicator: AnyElement = if is_starting(codespace.state) || codespace.step.is_some() {
-            super::spinner(theme.info)
-        } else {
-            super::dot(color)
+        let indicator: AnyElement = match row.activity {
+            Some(Activity::NeedsApproval) => Icon::new(IconName::TriangleAlert)
+                .xsmall()
+                .text_color(theme.warning)
+                .into_any_element(),
+            Some(Activity::Working) => super::spinner(theme.info),
+            Some(Activity::Completed) => Icon::new(IconName::CircleCheck)
+                .xsmall()
+                .text_color(theme.success)
+                .into_any_element(),
+            _ if is_starting(codespace.state) || codespace.step.is_some() => {
+                super::spinner(theme.info)
+            }
+            _ => super::dot(color),
         };
-        let detail = format!(
-            "{} · {} · {sessions} session{}",
-            codespace.preset.as_deref().unwrap_or("no preset"),
-            state_label(codespace),
-            if sessions == 1 { "" } else { "s" }
-        );
         let now = crate::ui::settings::now_unix();
         let mut tooltip = format!(
             "{}\nCodespace {} · {} CPUs · {}\nPreset {}",
@@ -1046,14 +1017,23 @@ impl Workspace {
         let stopped = codespace.state == CodespaceState::Stopped;
         let stoppable = can_stop(codespace);
         let starting = is_starting(codespace.state) || codespace.state == CodespaceState::Failed;
+        let active = self.active_group().is_some_and(|group| {
+            self.codespace_connection(&oracle, codespace, cx)
+                .is_some_and(|conn| group.connection == conn)
+        });
+        let host_color = self.host_color(&oracle);
+        let subtitle = row.subtitle();
+        let oracle_len = oracle.len();
         h_flex()
-            .id(SharedString::from(format!("codespace-{hix}-{wix}-{cix}")))
+            .id(SharedString::from(format!("codespace-{hix}-{cix}")))
+            .debug_selector(move || format!("codespace-{cix}"))
             .w_full()
-            .pl_6()
-            .pr_1()
-            .py_0p5()
+            .items_start()
+            .px_1()
+            .py_1()
             .gap_2()
             .rounded_md()
+            .when(active, |el| el.bg(theme.list_active))
             .hover(|s| s.bg(theme.list_hover))
             .cursor_pointer()
             .tooltip(move |window, cx| {
@@ -1068,7 +1048,7 @@ impl Workspace {
                     this.show_progress(click_link.clone(), id.clone(), window, cx)
                 }
             }))
-            .child(indicator)
+            .child(div().h(px(20.)).flex().items_center().child(indicator))
             .child(
                 v_flex()
                     .flex_1()
@@ -1079,7 +1059,7 @@ impl Workspace {
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .text_sm()
-                            .child(codespace.branch.clone()),
+                            .child(row.title.clone()),
                     )
                     .child(
                         div()
@@ -1092,13 +1072,19 @@ impl Workspace {
                             } else {
                                 theme.muted_foreground
                             })
-                            .child(detail),
+                            .child(match host_color {
+                                Some(color) => StyledText::new(subtitle).with_highlights([(
+                                    0..oracle_len,
+                                    gpui::HighlightStyle::color(color),
+                                )]),
+                                None => StyledText::new(subtitle),
+                            }),
                     ),
             )
             .child(self.render_codespace_menu(
                 link.clone(),
                 codespace.id.clone(),
-                (hix, wix, cix),
+                (hix, cix),
                 MenuState {
                     ready,
                     starting,
@@ -1114,7 +1100,7 @@ impl Workspace {
         &self,
         link: Entity<OracleLink>,
         id: String,
-        (hix, wix, cix): (usize, usize, usize),
+        (hix, cix): (usize, usize),
         state: MenuState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1125,61 +1111,65 @@ impl Workspace {
             stoppable,
         } = state;
         let this = cx.entity().downgrade();
-        Button::new(SharedString::from(format!(
-            "codespace-menu-{hix}-{wix}-{cix}"
-        )))
-        .ghost()
-        .xsmall()
-        .icon(IconName::Ellipsis)
-        .tooltip("Codespace actions")
-        .dropdown_menu(move |menu, _, _| {
-            let action = |run: fn(
-                &mut Workspace,
-                Entity<OracleLink>,
-                &str,
-                &mut Window,
-                &mut Context<Workspace>,
-            )| {
-                let this = this.clone();
-                let link = link.clone();
-                let id = id.clone();
-                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                    let _ = this.update(cx, |ws, cx| run(ws, link.clone(), &id, window, cx));
-                }
-            };
-            menu.item(
-                PopupMenuItem::new("New session")
-                    .disabled(!ready)
-                    .on_click(action(Workspace::codespace_new_session)),
+        div()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Button::new(SharedString::from(format!("codespace-menu-{hix}-{cix}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .tooltip("Codespace actions")
+                    .dropdown_menu(move |menu, _, _| {
+                        let action = |run: fn(
+                            &mut Workspace,
+                            Entity<OracleLink>,
+                            &str,
+                            &mut Window,
+                            &mut Context<Workspace>,
+                        )| {
+                            let this = this.clone();
+                            let link = link.clone();
+                            let id = id.clone();
+                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                let _ = this
+                                    .update(cx, |ws, cx| run(ws, link.clone(), &id, window, cx));
+                            }
+                        };
+                        menu.item(
+                            PopupMenuItem::new("New session")
+                                .disabled(!ready)
+                                .on_click(action(Workspace::codespace_new_session)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Open pull request…")
+                                .disabled(!ready)
+                                .on_click(action(Workspace::codespace_pull_request)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Show start progress")
+                                .disabled(!starting)
+                                .on_click(action(|ws, link, id, window, cx| {
+                                    ws.show_progress(link, id.to_owned(), window, cx)
+                                })),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new("Stop codespace…")
+                                .disabled(!stoppable)
+                                .on_click(action(Workspace::stop_codespace)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Resume codespace…")
+                                .disabled(!stopped)
+                                .on_click(action(Workspace::resume_codespace)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Close codespace…")
+                                .on_click(action(Workspace::close_codespace)),
+                        )
+                    }),
             )
-            .item(
-                PopupMenuItem::new("Open pull request…")
-                    .disabled(!ready)
-                    .on_click(action(Workspace::codespace_pull_request)),
-            )
-            .item(
-                PopupMenuItem::new("Show start progress")
-                    .disabled(!starting)
-                    .on_click(action(|ws, link, id, window, cx| {
-                        ws.show_progress(link, id.to_owned(), window, cx)
-                    })),
-            )
-            .separator()
-            .item(
-                PopupMenuItem::new("Stop codespace…")
-                    .disabled(!stoppable)
-                    .on_click(action(Workspace::stop_codespace)),
-            )
-            .item(
-                PopupMenuItem::new("Resume codespace…")
-                    .disabled(!stopped)
-                    .on_click(action(Workspace::resume_codespace)),
-            )
-            .item(
-                PopupMenuItem::new("Close codespace…").on_click(action(Workspace::close_codespace)),
-            )
-        })
-        .into_any_element()
+            .into_any_element()
     }
 }
 

@@ -39,7 +39,7 @@ The prebuilt binaries of the oracle, `loom-host`, and the agent are on the [rele
 2. Start the desktop client with `loom`. Use **Pair with an oracle** and paste the pairing link of the oracle. See [Add an oracle](doc/desktop.md#add-an-oracle).
 3. Pair a host with the oracle and start `loom-host` on it. See [Hosts and codespaces](doc/host.md).
 4. In the oracle settings of the client, add a model account, a preset, and a workspace with its repositories.
-5. Under **Workspaces**, click **+** next to the workspace to start a codespace with a first message.
+5. Click **+** in the header of the Codespaces panel, and select the workspace to start a codespace with a first message.
 
 Loom no longer has local agents, agents over SSH, `loom-relay`, or sessions in a git worktree. Each session runs in a codespace.
 

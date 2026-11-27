@@ -61,7 +61,7 @@ Limits:
 
 To see what the model gets in addition to the conversation, do one of these steps:
 
-- In the Sessions panel, choose **System prompt** in the menu of a session.
+- In the desktop client, right-click the tab of a session and choose **System prompt**.
 - In the command palette, choose **session: show system prompt**.
 - In the Android app, choose **System prompt** in the menu of a session.
 

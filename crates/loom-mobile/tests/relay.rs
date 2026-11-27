@@ -605,6 +605,33 @@ async fn a_phone_pairs_prompts_approves_and_catches_up() {
             .any(|s| s.id == session.id && s.archived)
     })
     .await;
+    let archived = conn.clone().list_archived_sessions().await.unwrap();
+    assert_eq!(archived.len(), 1, "{archived:?}");
+    assert_eq!(archived[0].id, session.id);
+    assert_eq!(archived[0].codespace, None);
+    assert!(
+        archived[0].detail.ends_with("this codespace"),
+        "{archived:?}"
+    );
+    let resumed = conn
+        .clone()
+        .resume_session(session.id.clone(), None)
+        .await
+        .unwrap();
+    assert!(!resumed.archived);
+    app.until(&conn, "the resumed session", |app| {
+        app.sessions
+            .iter()
+            .any(|s| s.id == session.id && !s.archived)
+    })
+    .await;
+    assert!(
+        conn.clone()
+            .list_archived_sessions()
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     // A cancelled wait does not take the updates of the next one.
     let waiting = tokio::spawn(conn.clone().next_updates());

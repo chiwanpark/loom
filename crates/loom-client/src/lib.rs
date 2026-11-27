@@ -23,7 +23,8 @@ pub use loom_transport::{
     memory_pair,
 };
 pub use oracle::{
-    NewCodespace, OracleCalls, OracleClient, OracleEndpoint, OracleEvents, pair_oracle,
+    ArchivedSessionData, NewCodespace, OracleCalls, OracleClient, OracleEndpoint, OracleEvents,
+    pair_oracle,
 };
 pub use preset_import::{ImportedPreset, import_local_preset, read_skills};
 pub use protocol::agent_protocol;

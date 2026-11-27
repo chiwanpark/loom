@@ -8,7 +8,7 @@ use loom_client::oracle_proto::{
     ModelAccount, Pairing, Preset, SecretInfo, SessionSummary, Volume, Workspace,
 };
 use loom_config::HostEntry;
-use loom_view_model::codespaces::{has_archive, is_listed};
+use loom_view_model::codespaces::is_listed;
 
 use crate::backend::{Backend, next};
 use crate::connection::{self, Env};
@@ -141,16 +141,6 @@ impl OracleLink {
         self.codespaces
             .iter()
             .filter(move |c| c.workspace == workspace && is_listed(c))
-    }
-
-    pub fn archived_codespaces(&self, workspace: &str) -> Vec<&Codespace> {
-        let mut archived: Vec<&Codespace> = self
-            .codespaces
-            .iter()
-            .filter(|c| c.workspace == workspace && has_archive(c))
-            .collect();
-        archived.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
-        archived
     }
 
     pub fn codespace_sessions(&self, codespace: &str) -> Vec<SessionSummary> {

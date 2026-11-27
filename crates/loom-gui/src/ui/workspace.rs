@@ -1,4 +1,3 @@
-mod archives;
 mod codespaces;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -10,11 +9,11 @@ use gpui::{
     Action, AnyElement, AnyView, App, AppContext, AsyncWindowContext, ClickEvent, Context,
     DefiniteLength, DragMoveEvent, Entity, EntityId, FocusHandle, Focusable, FontWeight,
     InteractiveElement, IntoElement, KeyBinding, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, Subscription, Window, actions, div, img,
+    StatefulInteractiveElement, Styled, Subscription, Window, actions, div, img,
     prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
@@ -22,17 +21,17 @@ use gpui_component::{
     resizable_panel, v_flex, v_resizable,
 };
 use loom_client::proto::{
-    ChangeStatus, FileChange as GitChange, Notice, SessionId, SessionInfo, TerminalHolder,
-    WorkspaceChanges,
+    ChangeStatus, FileChange as GitChange, Notice, SessionId, SessionInfo, SessionState,
+    TerminalHolder, WorkspaceChanges,
 };
 use loom_config::{ClientConfig, HostEntry};
+use loom_view_model::codespace_list::Activity;
 use loom_view_model::host_colors;
 
-use crate::agent_list::{self, AgentEntry, Group, Link};
 use crate::backend::Backend;
 use crate::changes::{FileChange, display_path, session_changes};
 use crate::connection::{self, AgentSummary, Env};
-use crate::conversation::{Activity, short_id, state_label};
+use crate::conversation::short_id;
 use crate::layout::{self, GroupKey, SavedGroup, SavedLayout, SavedPane, SavedTab};
 use crate::oracle::OracleLink;
 use crate::state::{AgentConnection, Attached, ConnectionEvent, LinkStatus, RemoteTerminal};
@@ -57,18 +56,25 @@ use crate::ui::tasks_view::TasksView;
 actions!(
     loom,
     [
-        /// Shows the Sessions tab of the right panel, or hides the panel
-        /// when it is already showing. The tab used to be the Agents tab.
-        #[action(deprecated_aliases = ["loom::ToggleLeftDock", "loom::ToggleAgents"])]
-        ToggleSessions,
+        /// Shows the Codespaces tab of the right panel, or hides the panel
+        /// when it is already showing. The tab used to be the Sessions tab,
+        /// and before that the Agents tab.
+        #[action(deprecated_aliases = [
+            "loom::ToggleSessions",
+            "loom::ToggleLeftDock",
+            "loom::ToggleAgents"
+        ])]
+        ToggleCodespaces,
         NewSession,
         NewTerminal,
         NewCodespace,
         OracleSettings,
         CloseTab,
-        /// Closes the active session's tabs; the session stays on the agent.
-        CloseSession,
+        /// Archives the current session and closes its tab. It used to be
+        /// CloseSession too.
+        #[action(deprecated_aliases = ["loom::CloseSession"])]
         ArchiveSession,
+        ResumeSession,
         NextTab,
         PreviousTab,
         /// Shows the first tab of the active pane.
@@ -114,9 +120,9 @@ actions!(
         RenameSession,
         ShowChanges,
         ShowFiles,
-        /// Shows the Sessions tab of the right panel.
-        #[action(deprecated_aliases = ["loom::ShowAgents"])]
-        ShowSessions,
+        /// Shows the Codespaces tab of the right panel.
+        #[action(deprecated_aliases = ["loom::ShowSessions", "loom::ShowAgents"])]
+        ShowCodespaces,
         /// Shows the active agent's notes in the right panel.
         ShowNotes,
         /// Shows the active session's task list in the right panel.
@@ -150,7 +156,7 @@ const DROP_TARGET_SIZE: f32 = 0.2;
 
 pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("ctrl-b", ToggleSessions, Some(OUTSIDE_TERMINAL)),
+        KeyBinding::new("ctrl-b", ToggleCodespaces, Some(OUTSIDE_TERMINAL)),
         KeyBinding::new("ctrl-alt-b", ToggleRightDock, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-e", ShowFiles, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(CONTEXT)),
@@ -177,7 +183,7 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
         KeyBinding::new("alt-9", ActivateLastTab, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-pageup", MoveTabLeft, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-pagedown", MoveTabRight, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-b", ShowSessions, Some(CONTEXT)),
+        KeyBinding::new("ctrl-shift-b", ShowCodespaces, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-n", ShowNotes, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-t", ShowTasks, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-m", ChooseModel, Some(CONTEXT)),
@@ -215,20 +221,9 @@ pub fn bind_keys(overrides: &BTreeMap<String, String>, cx: &mut App) {
     cx.bind_keys(custom);
 }
 
-/// What a row menu item does to the workspace.
-type MenuAction = dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
-
 /// What to do with a connection once the client is connected.
 pub(crate) type AfterConnect =
     Box<dyn FnOnce(&mut Workspace, Entity<AgentConnection>, &mut Window, &mut Context<Workspace>)>;
-
-/// An agent in the Sessions tab, with what it takes to act on it.
-struct PanelAgent {
-    entry: AgentEntry,
-    host_ix: Option<usize>,
-    instance: String,
-    conn: Option<Entity<AgentConnection>>,
-}
 
 struct HostNode {
     entry: HostEntry,
@@ -258,7 +253,7 @@ enum PanelKind {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightTab {
-    Sessions,
+    Codespaces,
     Changes,
     Files,
     Notes,
@@ -333,13 +328,13 @@ impl Panel {
         }
     }
 
-    /// Whether the tab can be closed. A session's conversation stays while
-    /// the session is open (close the session instead), and a terminal that
-    /// another client holds, or none does, stays until it is taken over
-    /// here, since closing a terminal ends its shell.
+    /// Whether the tab can be closed. Closing a session's tab archives the
+    /// session. A terminal that another client holds, or none does, stays
+    /// until it is taken over here, since closing a terminal ends its
+    /// shell.
     fn closable(&self, cx: &App) -> bool {
         match self {
-            Panel::Chat(_) => false,
+            Panel::Chat(_) => true,
             Panel::Terminal(view) => {
                 let view = view.read(cx);
                 view.exited().is_some() || *view.holder() == TerminalHolder::You
@@ -406,9 +401,9 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("workspace: last tab", Box::new(ActivateLastTab)),
         ("workspace: move tab left", Box::new(MoveTabLeft)),
         ("workspace: move tab right", Box::new(MoveTabRight)),
-        ("workspace: toggle sessions", Box::new(ToggleSessions)),
+        ("workspace: toggle codespaces", Box::new(ToggleCodespaces)),
         ("workspace: toggle right panel", Box::new(ToggleRightDock)),
-        ("panel: sessions", Box::new(ShowSessions)),
+        ("panel: codespaces", Box::new(ShowCodespaces)),
         ("panel: changes", Box::new(ShowChanges)),
         ("panel: files", Box::new(ShowFiles)),
         ("panel: notes", Box::new(ShowNotes)),
@@ -416,8 +411,8 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("panel: ports", Box::new(ShowPorts)),
         ("view: toggle line wrap", Box::new(ToggleLineWrap)),
         ("file: save", Box::new(Save)),
-        ("session: close", Box::new(CloseSession)),
         ("session: archive", Box::new(ArchiveSession)),
+        ("session: resume", Box::new(ResumeSession)),
         ("session: rename", Box::new(RenameSession)),
         ("session: choose model", Box::new(ChooseModel)),
         ("session: show system prompt", Box::new(ShowSystemPrompt)),
@@ -480,26 +475,83 @@ fn panel_icon(kind: PanelKind) -> Icon {
     }
 }
 
+fn session_icon(state: SessionState, theme: &gpui_component::Theme) -> AnyElement {
+    match Activity::of(state) {
+        Activity::NeedsApproval => Icon::new(IconName::TriangleAlert)
+            .xsmall()
+            .text_color(theme.warning)
+            .into_any_element(),
+        Activity::Working => spinner(theme.info),
+        Activity::Completed => Icon::new(IconName::CircleCheck)
+            .xsmall()
+            .text_color(theme.success)
+            .into_any_element(),
+        Activity::Idle => panel_icon(PanelKind::Chat).into_any_element(),
+    }
+}
+
+fn session_tab_menu(
+    menu: gpui_component::menu::PopupMenu,
+    workspace: gpui::WeakEntity<Workspace>,
+    conn: Entity<AgentConnection>,
+    session: SessionId,
+    title: String,
+) -> gpui_component::menu::PopupMenu {
+    let rename = (conn.clone(), session.clone());
+    let prompt = (workspace.clone(), conn.clone(), session.clone());
+    menu.item(
+        PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
+            let (conn, session) = rename.clone();
+            crate::ui::session::open_rename(conn, session, title.clone(), window, cx)
+        }),
+    )
+    .item(
+        PopupMenuItem::new("System prompt").on_click(move |_, window, cx| {
+            let (workspace, conn, session) = prompt.clone();
+            let _ = workspace.update(cx, |ws, cx| {
+                let info = conn
+                    .read(cx)
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == session)
+                    .cloned();
+                if let Some(info) = info {
+                    ws.open_session(conn.clone(), info, window, cx);
+                    ws.show_system_prompt(window, cx);
+                }
+            });
+        }),
+    )
+    .separator()
+    .item(
+        PopupMenuItem::new("Archive").on_click(move |_, window, cx| {
+            let _ = workspace.update(cx, |ws, cx| {
+                ws.archive_session(conn.clone(), session.clone(), window, cx)
+            });
+        }),
+    )
+}
+
 struct Pane {
     id: PaneId,
     tabs: TabList<Panel>,
 }
 
-struct SessionGroup {
+struct TabGroup {
     connection: Entity<AgentConnection>,
-    session: SessionId,
+    session: Option<SessionId>,
     panes: Vec<Pane>,
     layout: PaneGroup,
     active_pane: PaneId,
-    /// The session's task list, once the Tasks tab has shown it.
+    /// The current session's task list, once the Tasks tab has shown it.
     tasks: Option<Entity<TasksView>>,
 }
 
-impl SessionGroup {
-    fn new(connection: Entity<AgentConnection>, session: SessionId, pane: PaneId) -> Self {
+impl TabGroup {
+    fn new(connection: Entity<AgentConnection>, pane: PaneId) -> Self {
         Self {
             connection,
-            session,
+            session: None,
             panes: vec![Pane {
                 id: pane,
                 tabs: TabList::default(),
@@ -510,16 +562,36 @@ impl SessionGroup {
         }
     }
 
-    fn chat(&self) -> Option<Entity<SessionView>> {
+    fn chat(&self, cx: &App) -> Option<Entity<SessionView>> {
+        self.chat_of(self.session.as_ref()?, cx)
+    }
+
+    fn chats(&self) -> impl Iterator<Item = &Entity<SessionView>> {
         self.panes
             .iter()
             .flat_map(|pane| pane.tabs.iter())
-            .find_map(|(_, panel)| match panel {
-                Panel::Chat(view) => Some(view.clone()),
+            .filter_map(|(_, panel)| match panel {
+                Panel::Chat(view) => Some(view),
                 Panel::Terminal(_) | Panel::Diff(_) | Panel::File(_) | Panel::SystemPrompt(_) => {
                     None
                 }
             })
+    }
+
+    fn chat_of(&self, session: &SessionId, cx: &App) -> Option<Entity<SessionView>> {
+        self.chats()
+            .find(|view| view.read(cx).session_id(cx) == *session)
+            .cloned()
+    }
+
+    fn find_chat(&self, session: &SessionId, cx: &App) -> Option<(PaneId, usize)> {
+        self.panes.iter().find_map(|pane| {
+            pane.tabs
+                .find(|panel| {
+                    matches!(panel, Panel::Chat(view) if view.read(cx).session_id(cx) == *session)
+                })
+                .map(|ix| (pane.id, ix))
+        })
     }
 
     fn find_diff(&self, path: &PathBuf, kind: DiffKind, cx: &App) -> Option<(PaneId, usize)> {
@@ -533,8 +605,8 @@ impl SessionGroup {
         })
     }
 
-    fn is(&self, conn: &Entity<AgentConnection>, session: &SessionId) -> bool {
-        &self.connection == conn && &self.session == session
+    fn is(&self, conn: &Entity<AgentConnection>) -> bool {
+        &self.connection == conn
     }
 
     fn pane(&self, id: PaneId) -> Option<&Pane> {
@@ -630,9 +702,8 @@ pub struct Workspace {
     connecting: HashSet<(String, String)>,
     /// Why the last connection to an agent failed, by `(host, instance)`.
     connect_errors: HashMap<(String, String), String>,
-    show_archived: bool,
     active_connection: Option<Entity<AgentConnection>>,
-    groups: Vec<SessionGroup>,
+    groups: Vec<TabGroup>,
     active_group: Option<usize>,
     /// Each agent's notes, by its connection's entity, once the Notes tab
     /// has shown them.
@@ -642,8 +713,6 @@ pub struct Workspace {
     ports: HashMap<EntityId, Entity<PortsView>>,
     settings: HashMap<String, Entity<SettingsView>>,
     shown_settings: Option<Entity<SettingsView>>,
-    shown_archive: Option<Entity<crate::ui::archive_view::ArchiveView>>,
-    open_archives: HashSet<(String, String)>,
     drag_split: Option<(PaneId, Option<SplitDirection>)>,
     next_panel: PanelId,
     show_right: bool,
@@ -700,7 +769,6 @@ impl Workspace {
             connections: Vec::new(),
             connecting: HashSet::new(),
             connect_errors: HashMap::new(),
-            show_archived: false,
             active_connection: None,
             groups: Vec::new(),
             active_group: None,
@@ -708,7 +776,7 @@ impl Workspace {
             next_panel: 0,
             show_right: true,
             changes_cache: None,
-            right_tab: RightTab::Sessions,
+            right_tab: RightTab::Codespaces,
             file_trees: Vec::new(),
             poll_ticks: 0,
             focus: cx.focus_handle(),
@@ -722,8 +790,6 @@ impl Workspace {
             ports: HashMap::new(),
             settings: HashMap::new(),
             shown_settings: None,
-            shown_archive: None,
-            open_archives: HashSet::new(),
         };
         cx.on_app_quit(|this, cx| {
             this.save_layout(cx);
@@ -846,7 +912,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.active_group().is_none() {
-            notify::info(window, cx, "Open a session to view files.");
+            notify::info(window, cx, "Open a codespace to view files.");
             return;
         }
         let path = conn.read(cx).info.workspace.join(&relative);
@@ -959,10 +1025,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Entity<TasksView>> {
         let group = self.active_group_mut()?;
-        if let Some(view) = &group.tasks {
+        let session = group.session.clone()?;
+        if let Some(view) = &group.tasks
+            && *view.read(cx).session() == session
+        {
             return Some(view.clone());
         }
-        let (conn, session) = (group.connection.clone(), group.session.clone());
+        let conn = group.connection.clone();
         let view = cx.new(|cx| TasksView::new(conn, session, window, cx));
         self.active_group_mut()?.tasks = Some(view.clone());
         Some(view)
@@ -1000,7 +1069,7 @@ impl Workspace {
                 tree.update(cx, |tree, cx| tree.refresh(cx));
             }
         }
-        if let Some(chat) = self.active_group().and_then(SessionGroup::chat)
+        if let Some(chat) = self.active_group().and_then(|g| g.chat(cx))
             && let Some((provider, marker)) = chat.read(cx).usage_source(cx)
         {
             let conn = chat.read(cx).connection.clone();
@@ -1300,13 +1369,12 @@ impl Workspace {
                     }
                 }
                 ConnectionEvent::Failed(message) => notify::error(window, cx, message.clone()),
-                ConnectionEvent::SessionRemoved(id) => {
-                    let conn = conn.clone();
-                    let id = id.clone();
-                    this.remove_groups(window, cx, |g| g.is(&conn, &id));
+                ConnectionEvent::SessionRemoved(_) | ConnectionEvent::SessionChanged(_) => {
+                    this.sync_session_tabs(conn, window, cx);
                 }
                 ConnectionEvent::SessionsLoaded => {
                     this.restore_groups(conn, window, cx);
+                    this.sync_session_tabs(conn, window, cx);
                     this.sync_terminal_tabs(conn, &[], window, cx);
                 }
                 ConnectionEvent::TerminalsChanged { closed } => {
@@ -1334,9 +1402,11 @@ impl Workspace {
 
     /// How a tab is opened again after a restart, or `None` when it is not
     /// worth keeping (an ended terminal).
-    fn saved_tab(&self, group: &SessionGroup, panel: &Panel, cx: &App) -> Option<SavedTab> {
+    fn saved_tab(&self, group: &TabGroup, panel: &Panel, cx: &App) -> Option<SavedTab> {
         match panel {
-            Panel::Chat(_) => Some(SavedTab::Conversation),
+            Panel::Chat(view) => Some(SavedTab::Conversation {
+                session: view.read(cx).session_id(cx).0,
+            }),
             Panel::Terminal(view) => {
                 if let Some(saved) = self.restoring.get(&view.entity_id()) {
                     return Some(saved.clone());
@@ -1351,24 +1421,25 @@ impl Workspace {
                     id,
                 })
             }
-            Panel::Diff(view) => Some(view.read(cx).saved_tab()),
+            Panel::Diff(view) => Some(view.read(cx).saved_tab(cx)),
             Panel::File(view) => Some(SavedTab::File {
                 path: view.read(cx).relative().to_owned(),
             }),
-            Panel::SystemPrompt(_) => Some(SavedTab::SystemPrompt),
+            Panel::SystemPrompt(view) => Some(SavedTab::SystemPrompt {
+                session: view.read(cx).session().0.clone(),
+            }),
         }
     }
 
-    fn group_key(group: &SessionGroup, cx: &App) -> GroupKey {
+    fn group_key(group: &TabGroup, cx: &App) -> GroupKey {
         let conn = group.connection.read(cx);
         GroupKey {
             host: conn.host.name().to_owned(),
             workspace: conn.info.workspace.clone(),
-            session: group.session.0.clone(),
         }
     }
 
-    fn saved_group(&self, group: &SessionGroup, cx: &App) -> Option<SavedGroup> {
+    fn saved_group(&self, group: &TabGroup, cx: &App) -> Option<SavedGroup> {
         let mut order = Vec::new();
         let root = layout::save_member(&group.layout.root, &mut |id| {
             let pane = group.pane(id)?;
@@ -1426,8 +1497,8 @@ impl Workspace {
     }
 
     /// Reopens the saved tab groups of an agent's workspace once it has
-    /// listed its sessions. Groups of sessions that are gone or archived are
-    /// dropped.
+    /// listed its sessions. The tabs of sessions that are gone or archived
+    /// are dropped.
     fn restore_groups(
         &mut self,
         conn: &Entity<AgentConnection>,
@@ -1450,16 +1521,10 @@ impl Workspace {
             if active {
                 self.pending_active = None;
             }
-            let Some(info) = sessions
-                .iter()
-                .find(|s| s.id.0 == saved.key.session && !s.archived)
-            else {
-                continue;
-            };
-            if self.groups.iter().any(|g| g.is(conn, &info.id)) {
+            if self.groups.iter().any(|g| g.is(conn)) {
                 continue;
             }
-            if let Some(group) = self.restore_group(conn, info, &saved, window, cx) {
+            if let Some(group) = self.restore_group(conn, &sessions, &saved, window, cx) {
                 self.groups.push(group);
                 if active && self.active_group.is_none() {
                     self.activate_group(self.groups.len() - 1, window, cx);
@@ -1472,22 +1537,19 @@ impl Workspace {
     fn restore_group(
         &mut self,
         conn: &Entity<AgentConnection>,
-        info: &SessionInfo,
+        sessions: &[SessionInfo],
         saved: &SavedGroup,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<SessionGroup> {
+    ) -> Option<TabGroup> {
         let mut saved_panes = Vec::new();
         let root =
             layout::restore_member(&saved.root, &mut || self.alloc_panel(), &mut saved_panes)?;
-        let has_chat = saved_panes
-            .iter()
-            .any(|(_, pane)| pane.tabs.contains(&SavedTab::Conversation));
         let mut panes = Vec::new();
         for (id, pane) in saved_panes {
             let mut tabs = TabList::default();
             for tab in &pane.tabs {
-                if let Some(panel) = self.restore_panel(conn, info, tab, has_chat, window, cx) {
+                if let Some(panel) = self.restore_panel(conn, sessions, tab, window, cx) {
                     let panel_id = self.alloc_panel();
                     tabs.add(panel_id, panel, Some(tabs.len()));
                 }
@@ -1496,9 +1558,9 @@ impl Workspace {
             panes.push(Pane { id, tabs });
         }
         let order: Vec<PaneId> = panes.iter().map(|p| p.id).collect();
-        let mut group = SessionGroup {
+        let mut group = TabGroup {
             connection: conn.clone(),
-            session: info.id.clone(),
+            session: None,
             layout: PaneGroup::from_root(root),
             active_pane: order.get(saved.active_pane).copied().unwrap_or(order[0]),
             panes,
@@ -1513,21 +1575,31 @@ impl Workspace {
         for id in empty {
             group.remove_pane(id);
         }
+        group.session = match group.active_panel() {
+            Some(Panel::Chat(view)) => Some(view.read(cx).session_id(cx)),
+            _ => group
+                .chats()
+                .next()
+                .map(|view| view.read(cx).session_id(cx)),
+        };
         (!group.is_empty()).then_some(group)
     }
 
     fn restore_panel(
         &mut self,
         conn: &Entity<AgentConnection>,
-        info: &SessionInfo,
+        sessions: &[SessionInfo],
         tab: &SavedTab,
-        has_chat: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Panel> {
         let wrap = self.config.appearance.wrap_lines;
+        let open = |session: &str| sessions.iter().find(|s| s.id.0 == session && !s.archived);
         let panel = match tab {
-            SavedTab::Conversation => return Some(self.chat_panel(conn, info, window, cx)),
+            SavedTab::Conversation { session } => {
+                let info = open(session)?.clone();
+                return Some(self.chat_panel(conn, &info, window, cx));
+            }
             SavedTab::Terminal { instance, id } => {
                 return Some(Panel::Terminal(
                     self.restore_terminal(conn, instance, *id, window, cx),
@@ -1552,11 +1624,9 @@ impl Workspace {
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
                 Panel::Diff(view)
             }
-            // A session diff follows the conversation, which only a
-            // conversation tab keeps open.
-            SavedTab::SessionDiff { .. } if !has_chat => return None,
-            SavedTab::SessionDiff { path } => {
-                let conversation = conn.update(cx, |conn, cx| conn.conversation(info, cx));
+            SavedTab::SessionDiff { path, session } => {
+                let info = open(session)?.clone();
+                let conversation = conn.update(cx, |conn, cx| conn.conversation(&info, cx));
                 let title = display_path(path, &conn.read(cx).info.workspace);
                 let view =
                     cx.new(|cx| DiffView::session(conversation, path.clone(), title, wrap, cx));
@@ -1570,7 +1640,10 @@ impl Workspace {
                     .push(cx.observe(&view, |_, _, cx| cx.notify()));
                 Panel::File(view)
             }
-            SavedTab::SystemPrompt => self.system_prompt_panel(conn, info.id.clone(), window, cx),
+            SavedTab::SystemPrompt { session } => {
+                let id = open(session)?.id.clone();
+                self.system_prompt_panel(conn, id, window, cx)
+            }
         };
         Some(panel)
     }
@@ -1728,6 +1801,33 @@ impl Workspace {
         Panel::Chat(view)
     }
 
+    fn open_group(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        if let Some(ix) = self.groups.iter().position(|g| g.is(conn)) {
+            return ix;
+        }
+        let pane = self.alloc_panel();
+        self.groups.push(TabGroup::new(conn.clone(), pane));
+        let ix = self.groups.len() - 1;
+        self.sync_session_tabs(conn, window, cx);
+        self.sync_terminal_tabs(conn, &[], window, cx);
+        ix
+    }
+
+    pub(crate) fn show_group(
+        &mut self,
+        conn: Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ix = self.open_group(&conn, window, cx);
+        self.activate_group(ix, window, cx);
+    }
+
     pub(crate) fn open_session(
         &mut self,
         conn: Entity<AgentConnection>,
@@ -1735,28 +1835,83 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let ix = match self.groups.iter().position(|g| g.is(&conn, &info.id)) {
-            Some(ix) => ix,
-            None => {
-                let pane = self.alloc_panel();
-                self.groups
-                    .push(SessionGroup::new(conn.clone(), info.id.clone(), pane));
-                self.groups.len() - 1
-            }
-        };
-        if self.groups[ix].chat().is_none() {
+        let ix = self.open_group(&conn, window, cx);
+        if self.groups[ix].find_chat(&info.id, cx).is_none() {
             let panel = self.chat_panel(&conn, &info, window, cx);
             let id = self.alloc_panel();
             if let Some(pane) = self.groups[ix].active_mut() {
-                pane.tabs.add(id, panel, Some(0));
+                pane.tabs.add(id, panel, None);
             }
         }
+        if let Some((pane, tab)) = self.groups[ix].find_chat(&info.id, cx) {
+            let group = &mut self.groups[ix];
+            group.active_pane = pane;
+            if let Some(pane) = group.pane_mut(pane) {
+                pane.tabs.activate(tab);
+            }
+            group.session = Some(info.id.clone());
+        }
         self.activate_group(ix, window, cx);
-        // Terminals of other clients get tabs in the first group of their agent.
-        self.sync_terminal_tabs(&conn, &[], window, cx);
     }
 
-    fn active_group(&self) -> Option<&SessionGroup> {
+    fn sync_session_tabs(
+        &mut self,
+        conn: &Entity<AgentConnection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.groups.iter().any(|g| g.is(conn)) {
+            return;
+        }
+        let sessions: Vec<SessionInfo> = conn.read(cx).sessions.clone();
+        let open: HashSet<&SessionId> = sessions
+            .iter()
+            .filter(|s| !s.archived)
+            .map(|s| &s.id)
+            .collect();
+        let closed: Vec<PanelId> = self
+            .groups
+            .iter()
+            .filter(|g| g.is(conn))
+            .flat_map(|g| g.panes.iter())
+            .flat_map(|pane| pane.tabs.iter())
+            .filter(|(_, panel)| match panel {
+                Panel::Chat(view) => !open.contains(&view.read(cx).session_id(cx)),
+                _ => false,
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut changed = !closed.is_empty();
+        for id in closed {
+            self.close_panel(id, window, cx);
+        }
+        for info in sessions.iter().rev().filter(|s| !s.archived) {
+            let Some(gix) = self.groups.iter().position(|g| g.is(conn)) else {
+                return;
+            };
+            if self.groups[gix].find_chat(&info.id, cx).is_some() {
+                continue;
+            }
+            let panel = self.chat_panel(conn, info, window, cx);
+            let id = self.alloc_panel();
+            let group = &mut self.groups[gix];
+            let target = group
+                .panes
+                .iter()
+                .position(|pane| pane.tabs.find(|p| matches!(p, Panel::Chat(_))).is_some())
+                .or_else(|| group.panes.iter().position(|p| p.id == group.active_pane))
+                .unwrap_or(0);
+            group.panes[target].tabs.push_background(id, panel);
+            changed = true;
+        }
+        if changed {
+            self.update_current_sessions(cx);
+            self.see_active_session(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn active_group(&self) -> Option<&TabGroup> {
         self.active_group.and_then(|ix| self.groups.get(ix))
     }
 
@@ -1766,24 +1921,45 @@ impl Workspace {
         };
         self.active_group = Some(ix);
         self.shown_settings = None;
-        self.shown_archive = None;
         self.active_connection = Some(group.connection.clone());
         self.focus_active_panel(window, cx);
-        self.see_active_session(window, cx);
         cx.notify();
     }
 
-    /// Tells the agent that the user sees the active session, while the
-    /// window is active, so that a completed session becomes idle.
+    /// Tells the agent that the user sees the session of the active tab,
+    /// while the window is active, so that a completed session becomes idle.
     fn see_active_session(&mut self, window: &Window, cx: &mut Context<Self>) {
         if !window.is_window_active() {
             return;
         }
-        if let Some(group) = self.active_group() {
-            let session = group.session.clone();
+        if let Some(group) = self.active_group()
+            && let Some(Panel::Chat(view)) = group.active_panel()
+        {
+            let session = view.read(cx).session_id(cx);
             group
                 .connection
                 .update(cx, |conn, cx| conn.mark_seen(&session, cx));
+        }
+    }
+
+    fn update_current_sessions(&mut self, cx: &App) {
+        for group in &mut self.groups {
+            let active = match group.active_panel() {
+                Some(Panel::Chat(view)) => Some(view.read(cx).session_id(cx)),
+                _ => None,
+            };
+            let current = active.or_else(|| {
+                group
+                    .session
+                    .clone()
+                    .filter(|id| group.find_chat(id, cx).is_some())
+            });
+            group.session = current.or_else(|| {
+                group
+                    .chats()
+                    .next()
+                    .map(|view| view.read(cx).session_id(cx))
+            });
         }
     }
 
@@ -1791,9 +1967,11 @@ impl Workspace {
         if let Some(panel) = self.active_group().and_then(|g| g.active_panel()).cloned() {
             panel.focus(window, cx);
         }
+        self.update_current_sessions(cx);
+        self.see_active_session(window, cx);
     }
 
-    fn active_group_mut(&mut self) -> Option<&mut SessionGroup> {
+    fn active_group_mut(&mut self) -> Option<&mut TabGroup> {
         self.active_group.and_then(|g| self.groups.get_mut(g))
     }
 
@@ -1803,6 +1981,7 @@ impl Workspace {
             && group.pane(pane).is_some()
         {
             group.active_pane = pane;
+            self.update_current_sessions(cx);
             cx.notify();
         }
     }
@@ -1829,16 +2008,16 @@ impl Workspace {
         }
     }
 
-    fn release_panel(group: &SessionGroup, panel: &Panel, cx: &mut Context<Self>) {
+    fn release_panel(group: &TabGroup, panel: &Panel, cx: &mut Context<Self>) {
         match panel {
-            Panel::Chat(_) => {
-                let id = group.session.clone();
+            Panel::Chat(view) => {
+                let id = view.read(cx).session_id(cx);
                 group
                     .connection
                     .update(cx, |conn, _| conn.release_conversation(&id));
             }
             // Another client's terminal goes on there; it gets a tab in
-            // another session of the agent.
+            // another tab group of the agent.
             Panel::Terminal(view) if *view.read(cx).holder() != TerminalHolder::You => {
                 group.connection.update(cx, |conn, _| {
                     if let Some(id) = conn.terminal_id(view) {
@@ -1851,7 +2030,8 @@ impl Workspace {
     }
 
     /// Closes a tab of the active group that can be closed, after asking
-    /// what to do with its unsaved changes, if it has any.
+    /// what to do with its unsaved changes, if it has any. Closing a
+    /// session's tab archives the session.
     fn close_tab(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(group) = self.active_group() else {
             return;
@@ -1862,24 +2042,15 @@ impl Workspace {
         if !panel.closable(cx) {
             return;
         }
+        if let Panel::Chat(view) = panel {
+            let session = view.read(cx).session_id(cx);
+            let conn = group.connection.clone();
+            self.archive_session(conn, session, window, cx);
+            return;
+        }
         let unsaved: Vec<Unsaved> = panel.unsaved(cx).into_iter().collect();
         self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
             ws.close_panel(id, window, cx)
-        });
-    }
-
-    /// Closes a session's tabs, after asking what to do with unsaved
-    /// changes. The session stays on the agent.
-    fn close_session(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        id: SessionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let unsaved = self.unsaved_in(|g| g.is(&conn, &id), cx);
-        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
-            ws.remove_groups(window, cx, |g| g.is(&conn, &id));
         });
     }
 
@@ -1903,19 +2074,14 @@ impl Workspace {
         if target.tabs.is_empty() {
             group.remove_pane(pane);
         }
-        let empty = group.is_empty();
         let group = &self.groups[gix];
         Self::release_panel(group, &panel, cx);
-        if empty {
-            self.remove_group(gix, window, cx);
-        } else {
-            self.focus_active_panel(window, cx);
-        }
+        self.focus_active_panel(window, cx);
         cx.notify();
     }
 
     /// File views with unsaved changes in the groups that match.
-    fn unsaved_in(&self, pred: impl Fn(&SessionGroup) -> bool, cx: &App) -> Vec<Unsaved> {
+    fn unsaved_in(&self, pred: impl Fn(&TabGroup) -> bool, cx: &App) -> Vec<Unsaved> {
         self.groups
             .iter()
             .filter(|g| pred(g))
@@ -2068,8 +2234,6 @@ impl Workspace {
         if self.active_group.is_none() {
             self.focus.focus(window, cx);
         }
-        // Other clients' terminals of the agent go to another of its sessions.
-        self.sync_terminal_tabs(&group.connection, &[], window, cx);
         cx.notify();
     }
 
@@ -2077,7 +2241,7 @@ impl Workspace {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-        pred: impl Fn(&SessionGroup) -> bool,
+        pred: impl Fn(&TabGroup) -> bool,
     ) {
         while let Some(ix) = self.groups.iter().position(&pred) {
             self.remove_group(ix, window, cx);
@@ -2228,78 +2392,16 @@ impl Workspace {
         }
     }
 
-    fn delete_session(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        info: SessionInfo,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let unsaved = self.unsaved_in(|g| g.is(&conn, &info.id), cx);
-        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
-            ws.confirm_delete_session(conn, info, window, cx)
-        });
-    }
-
-    fn confirm_delete_session(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        info: SessionInfo,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let this = cx.entity();
-        let title = info
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
-        dialogs::confirm(
-            "Delete this session?",
-            format!(
-                "\"{title}\" and its whole history will be removed from the agent. This cannot be undone."
-            ),
-            "Delete",
-            move |window, cx| {
-                this.update(cx, |ws, cx| {
-                    ws.drop_session(conn.clone(), info.id.clone(), window, cx)
-                });
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// Closes a session's tabs and deletes the session on the agent.
-    pub(crate) fn drop_session(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        id: SessionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.remove_groups(window, cx, |g| g.is(&conn, &id));
-        conn.update(cx, |conn, cx| conn.delete_session(id, cx));
-    }
-
+    /// Archives a session on the agent. The agent then tells every client,
+    /// and each of them closes the session's tab.
     fn archive_session(
         &mut self,
         conn: Entity<AgentConnection>,
         id: SessionId,
-        archived: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let unsaved = if archived {
-            self.unsaved_in(|g| g.is(&conn, &id), cx)
-        } else {
-            Vec::new()
-        };
-        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
-            if archived {
-                ws.remove_groups(window, cx, |g| g.is(&conn, &id));
-            }
-            conn.update(cx, |conn, cx| conn.set_archived(id, archived, cx));
-        });
+        conn.update(cx, |conn, cx| conn.set_archived(id, true, cx));
     }
 
     fn new_session(
@@ -2334,15 +2436,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let Some(group) = self.active_group() else {
-            notify::info(
-                window,
-                cx,
-                "Open a session first; terminals belong to a session.",
-            );
+            notify::info(window, cx, "Open a codespace first.");
             return;
         };
         let conn = group.connection.clone();
-        let session = group.session.clone();
         let origin = group.active_pane;
         let read = conn.read(cx);
         let client = read.client.clone();
@@ -2365,7 +2462,7 @@ impl Workspace {
                     });
                     let panel_id = this.alloc_panel();
                     let new_pane = this.alloc_panel();
-                    let Some(gix) = this.groups.iter().position(|g| g.is(&conn, &session)) else {
+                    let Some(gix) = this.groups.iter().position(|g| g.is(&conn)) else {
                         return;
                     };
                     let group = &mut this.groups[gix];
@@ -2485,34 +2582,6 @@ impl Workspace {
         }
     }
 
-    /// Removes a disconnected agent from the panel, with its tabs. It comes
-    /// back if its host lists it again.
-    fn remove_agent(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let mut unsaved = self.unsaved_in(|g| g.connection == conn, cx);
-        unsaved.extend(self.unsaved_notes(Some(&conn), cx));
-        self.guard_unsaved(unsaved, window, cx, move |ws, window, cx| {
-            ws.remove_agent_now(conn, window, cx)
-        });
-    }
-
-    fn remove_agent_now(
-        &mut self,
-        conn: Entity<AgentConnection>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let read = conn.read(cx);
-        let (host, instance) = (read.host.name().to_owned(), read.info.instance.0.clone());
-        self.drop_connection(&conn, window, cx);
-        self.forget_agent(&host, &instance);
-        cx.notify();
-    }
-
     fn pair_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         open_form(
@@ -2621,19 +2690,24 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_toggle_sessions(&mut self, _: &ToggleSessions, _: &mut Window, cx: &mut Context<Self>) {
-        if self.show_right && self.right_tab == RightTab::Sessions {
+    fn on_toggle_codespaces(
+        &mut self,
+        _: &ToggleCodespaces,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.show_right && self.right_tab == RightTab::Codespaces {
             self.show_right = false;
         } else {
             self.show_right = true;
-            self.right_tab = RightTab::Sessions;
+            self.right_tab = RightTab::Codespaces;
         }
         cx.notify();
     }
 
-    fn on_show_sessions(&mut self, _: &ShowSessions, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_show_codespaces(&mut self, _: &ShowCodespaces, _: &mut Window, cx: &mut Context<Self>) {
         self.show_right = true;
-        self.right_tab = RightTab::Sessions;
+        self.right_tab = RightTab::Codespaces;
         cx.notify();
     }
 
@@ -2643,7 +2717,7 @@ impl Workspace {
     }
 
     fn session_changes(&mut self, cx: &mut Context<Self>) -> Option<Rc<Vec<FileChange>>> {
-        let chat = self.active_group().and_then(SessionGroup::chat)?;
+        let chat = self.active_group().and_then(|g| g.chat(cx))?;
         let conversation = chat.read(cx).conversation.clone();
         if conversation.read(cx).has_older {
             // The session's changes come from all of its tool calls; fetch the
@@ -2674,7 +2748,7 @@ impl Workspace {
             self.activate_tab(pane, ix, window, cx);
             return;
         }
-        let Some(chat) = group.chat() else {
+        let Some(chat) = group.chat(cx) else {
             return;
         };
         let conversation = chat.read(cx).conversation.clone();
@@ -2695,7 +2769,7 @@ impl Workspace {
     ) {
         let path = conn.read(cx).info.workspace.join(&change.path);
         if self.active_group().is_none() {
-            notify::info(window, cx, "Open a session to view diffs.");
+            notify::info(window, cx, "Open a codespace to view diffs.");
             return;
         }
         let kind = if committed {
@@ -2734,10 +2808,10 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The right panel: tabs for the agents list, the workspace's changes,
-    /// its files, the agent's notes, and the active session's tasks.
+    /// The right panel: tabs for the codespaces, the workspace's changes,
+    /// its files, the agent's notes, and the current session's tasks.
     /// Changes, files, and notes need a connection, and tasks a session;
-    /// agents need neither.
+    /// codespaces need neither.
     fn render_right_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let conn = self.changes_connection();
@@ -2823,7 +2897,7 @@ impl Workspace {
             }
         }
         let body = match (tab, &tree) {
-            (RightTab::Sessions, _) => self.render_sessions_panel(cx),
+            (RightTab::Codespaces, _) => self.render_codespaces_panel(cx),
             (RightTab::Notes, _) => match self.notes_view(window, cx) {
                 Some(view) => div().flex_1().min_h_0().child(view).into_any_element(),
                 None => div()
@@ -2860,7 +2934,7 @@ impl Workspace {
                 .p_3()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child("Connect to an agent in the Sessions tab to see its changes and files.")
+                .child("Open a codespace in the Codespaces tab to see its changes and files.")
                 .into_any_element(),
             _ => body,
         };
@@ -2876,15 +2950,15 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("right-sessions")
-                    .debug_selector(|| "right-sessions".into())
+                Button::new("right-codespaces")
+                    .debug_selector(|| "right-codespaces".into())
                     .ghost()
                     .xsmall()
-                    .label("Sessions")
-                    .selected(tab == RightTab::Sessions)
-                    .tooltip("Sessions, hosts, and agents (ctrl-shift-b)")
+                    .label("Codespaces")
+                    .selected(tab == RightTab::Codespaces)
+                    .tooltip("Codespaces and oracles (ctrl-shift-b)")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.right_tab = RightTab::Sessions;
+                        this.right_tab = RightTab::Codespaces;
                         cx.notify();
                     })),
             )
@@ -3011,8 +3085,19 @@ impl Workspace {
                         })),
                 )
             })
-            .when(tab == RightTab::Sessions, |el| {
+            .when(tab == RightTab::Codespaces, |el| {
                 el.child(
+                    Button::new("new-codespace")
+                        .debug_selector(|| "new-codespace".into())
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .tooltip("New codespace (ctrl-alt-n)")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.workspace_picker(window, cx)),
+                        ),
+                )
+                .child(
                     Button::new("pair")
                         .ghost()
                         .xsmall()
@@ -3371,16 +3456,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.active_group() {
-            let (conn, id) = (group.connection.clone(), group.session.clone());
-            self.archive_session(conn, id, true, window, cx);
+        if let Some(group) = self.active_group()
+            && let Some(id) = group.session.clone()
+        {
+            let conn = group.connection.clone();
+            self.archive_session(conn, id, window, cx);
         }
     }
 
-    fn on_close_session(&mut self, _: &CloseSession, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(group) = self.active_group() {
-            let (conn, id) = (group.connection.clone(), group.session.clone());
-            self.close_session(conn, id, window, cx);
+    fn on_resume_session(
+        &mut self,
+        _: &ResumeSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.changes_connection() {
+            Some(conn) => {
+                let workspace = cx.entity().downgrade();
+                crate::ui::resume::open(conn, workspace, window, cx)
+            }
+            None => notify::info(window, cx, "Open a codespace to resume a session in it."),
         }
     }
 
@@ -3390,7 +3485,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(chat) = self.active_group().and_then(SessionGroup::chat) else {
+        let Some(chat) = self.active_group().and_then(|g| g.chat(cx)) else {
             notify::info(window, cx, "Open a session to rename it.");
             return;
         };
@@ -3407,7 +3502,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_group().is_none() {
+        if self
+            .active_group()
+            .is_none_or(|group| group.session.is_none())
+        {
             notify::info(window, cx, "Open a session to see its system prompt.");
             return;
         }
@@ -3420,9 +3518,14 @@ impl Workspace {
         let Some(group) = self.active_group() else {
             return;
         };
+        let Some(session) = group.session.clone() else {
+            return;
+        };
         let found = group.panes.iter().find_map(|pane| {
             pane.tabs
-                .find(|panel| matches!(panel, Panel::SystemPrompt(_)))
+                .find(|panel| {
+                    matches!(panel, Panel::SystemPrompt(view) if *view.read(cx).session() == session)
+                })
                 .map(|ix| (pane.id, ix))
         });
         if let Some((pane, ix)) = found {
@@ -3434,7 +3537,7 @@ impl Workspace {
             }
             return;
         }
-        let (conn, session) = (group.connection.clone(), group.session.clone());
+        let conn = group.connection.clone();
         let panel = self.system_prompt_panel(&conn, session, window, cx);
         let id = self.alloc_panel();
         if let Some(pane) = self.active_group_mut().and_then(|g| g.active_mut()) {
@@ -3513,8 +3616,10 @@ impl Workspace {
     }
 
     fn on_choose_model(&mut self, _: &ChooseModel, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(group) = self.active_group() {
-            let (conn, id) = (group.connection.clone(), group.session.clone());
+        if let Some(group) = self.active_group()
+            && let Some(id) = group.session.clone()
+        {
+            let conn = group.connection.clone();
             dialogs::open_model_picker(conn, Some(id), window, cx);
         }
     }
@@ -3559,10 +3664,9 @@ impl Workspace {
     fn on_find_session(&mut self, _: &FindSession, window: &mut Window, cx: &mut Context<Self>) {
         let workspace = cx.entity().downgrade();
         let mut items = Vec::new();
-        let mut archived = Vec::new();
         for conn in &self.connections {
             let agent = conn.read(cx).title();
-            for info in &conn.read(cx).sessions {
+            for info in conn.read(cx).sessions.iter().filter(|s| !s.archived) {
                 let title = info
                     .title
                     .clone()
@@ -3572,14 +3676,9 @@ impl Workspace {
                     let (conn, info) = (conn.clone(), info2.clone());
                     let _ = workspace.update(cx, |ws, cx| ws.open_session(conn, info, window, cx));
                 });
-                if info.archived {
-                    archived.push(item.detail(format!("{agent} · archived")));
-                } else {
-                    items.push(item.detail(agent.clone()));
-                }
+                items.push(item.detail(agent.clone()));
             }
         }
-        items.extend(archived);
         open_picker("Sessions", "Find a session…", items, window, cx);
     }
 
@@ -3673,401 +3772,6 @@ impl Workspace {
         self.pair_dialog(window, cx);
     }
 
-    /// The agents the panel lists: every agent the hosts report, plus
-    /// connections to agents they no longer list.
-    fn panel_agents(&self, cx: &App) -> Vec<PanelAgent> {
-        let mut agents = Vec::new();
-        let mut seen = HashSet::new();
-        let link_of = |conn: Option<&Entity<AgentConnection>>, key: &(String, String)| match conn
-            .map(|c| c.read(cx).status.clone())
-        {
-            Some(LinkStatus::Connected) => Link::Connected,
-            _ if self.connecting.contains(key) => Link::Connecting,
-            Some(LinkStatus::Disconnected(reason)) => Link::Offline(Some(reason)),
-            None => Link::Offline(self.connect_errors.get(key).cloned()),
-        };
-        for (hix, host) in self.hosts.iter().enumerate() {
-            for agent in &host.agents {
-                let key = (host.entry.name().to_owned(), agent.instance.clone());
-                let conn = self.find_connection(host.entry.name(), &agent.instance, cx);
-                if let Some(conn) = &conn {
-                    seen.insert(conn.entity_id());
-                }
-                let path = agent
-                    .workspace
-                    .as_ref()
-                    .map(|w| w.display().to_string())
-                    .unwrap_or_else(|| format!("agent {}", short_id(&agent.instance)));
-                let link = link_of(conn.as_ref(), &key);
-                let sessions = match &conn {
-                    Some(c) if link == Link::Connected => c.read(cx).sessions.clone(),
-                    _ => self.codespace_sessions(&host.entry, &agent.instance, cx),
-                };
-                agents.push(PanelAgent {
-                    entry: AgentEntry {
-                        remote: host.entry.name().to_owned(),
-                        workspace: path,
-                        link,
-                        sessions,
-                    },
-                    host_ix: Some(hix),
-                    instance: agent.instance.clone(),
-                    conn,
-                });
-            }
-        }
-        for conn in &self.connections {
-            if seen.contains(&conn.entity_id()) {
-                continue;
-            }
-            let read = conn.read(cx);
-            let key = (read.host.name().to_owned(), read.info.instance.0.clone());
-            agents.push(PanelAgent {
-                entry: AgentEntry {
-                    remote: read.host.name().to_owned(),
-                    workspace: read.info.workspace.display().to_string(),
-                    link: link_of(Some(conn), &key),
-                    sessions: read.sessions.clone(),
-                },
-                host_ix: self.hosts.iter().position(|h| h.entry == read.host),
-                instance: read.info.instance.0.clone(),
-                conn: Some(conn.clone()),
-            });
-        }
-        agents
-    }
-
-    /// The Sessions tab: the sessions of the connected agents by state, then
-    /// the workspaces of the oracles.
-    fn render_sessions_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let agents = self.panel_agents(cx);
-        let entries: Vec<AgentEntry> = agents.iter().map(|a| a.entry.clone()).collect();
-        let groups = agent_list::group(&entries);
-        let mut list = v_flex().w_full().gap_0p5().p_2();
-        if groups.is_empty() {
-            list = list.child(
-                div()
-                    .px_1()
-                    .py_2()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .whitespace_normal()
-                    .child(
-                        "No sessions. To start one, click + next to a workspace under Workspaces.",
-                    ),
-            );
-        }
-        for (group, rows) in groups {
-            let collapsed = group == Group::Archived && !self.show_archived;
-            list = list.child(self.render_group_header(group, rows.len(), collapsed, cx));
-            if collapsed {
-                continue;
-            }
-            for (ix, row) in rows.into_iter().enumerate() {
-                list = list.child(self.render_session_row(
-                    group,
-                    ix,
-                    &agents[row.agent],
-                    row.session,
-                    cx,
-                ));
-            }
-        }
-        list = list.child(self.render_oracles(cx));
-        div()
-            .id("sessions-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(list)
-            .into_any_element()
-    }
-
-    fn render_group_header(
-        &self,
-        group: Group,
-        count: usize,
-        collapsed: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme();
-        let color = match group {
-            Group::NeedsApproval => theme.warning,
-            Group::Working => theme.info,
-            Group::Completed => theme.success,
-            _ => theme.muted_foreground,
-        };
-        h_flex()
-            .id(SharedString::from(format!("group-{group:?}")))
-            .w_full()
-            .gap_1()
-            .px_1()
-            .pt_2()
-            .text_xs()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(color)
-            .when(group == Group::Archived, |el| {
-                el.cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_archived = !this.show_archived;
-                        cx.notify();
-                    }))
-                    .child(
-                        Icon::new(if collapsed {
-                            IconName::ChevronRight
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .xsmall(),
-                    )
-            })
-            .child(group.title())
-            .child(
-                div()
-                    .text_color(theme.muted_foreground)
-                    .font_weight(FontWeight::NORMAL)
-                    .child(count.to_string()),
-            )
-            .into_any_element()
-    }
-
-    /// One session: its state, its name, and where it runs.
-    fn render_session_row(
-        &self,
-        group: Group,
-        ix: usize,
-        agent: &PanelAgent,
-        info: SessionInfo,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme().clone();
-        let conn = agent.conn.clone();
-        let activity = conn
-            .as_ref()
-            .and_then(|c| c.read(cx).open_conversation(&info.id))
-            .and_then(|c| c.read(cx).activity());
-        let title = info
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("Session {}", short_id(&info.id.0)));
-        let label = activity
-            .as_ref()
-            .map(Activity::label)
-            .unwrap_or_else(|| state_label(info.state).to_owned());
-        let (indicator, detail): (AnyElement, Option<(String, gpui::Hsla)>) = match group {
-            Group::NeedsApproval => (
-                Icon::new(IconName::TriangleAlert)
-                    .xsmall()
-                    .text_color(theme.warning)
-                    .into_any_element(),
-                Some((label, theme.warning)),
-            ),
-            Group::Working => (spinner(theme.info), Some((label, theme.info))),
-            Group::Completed => (
-                Icon::new(IconName::CircleCheck)
-                    .xsmall()
-                    .text_color(theme.success)
-                    .into_any_element(),
-                None,
-            ),
-            Group::Archived => (
-                Icon::new(gpui_kit_assets::IconName::Archive)
-                    .xsmall()
-                    .text_color(theme.muted_foreground)
-                    .into_any_element(),
-                None,
-            ),
-            Group::Idle => (dot(theme.success), None),
-        };
-        let active = conn
-            .as_ref()
-            .is_some_and(|c| self.active_group().is_some_and(|g| g.is(c, &info.id)));
-        let place = format!("{} · {}", agent.entry.remote, agent.entry.workspace);
-        let tooltip = SharedString::from(format!("{place}\n{}", state_label(info.state)));
-        let place = match self.host_color(&agent.entry.remote) {
-            Some(color) => StyledText::new(place).with_highlights([(
-                0..agent.entry.remote.len(),
-                gpui::HighlightStyle::color(color),
-            )]),
-            None => StyledText::new(place),
-        };
-        let click_conn = conn.clone();
-        let click_session = info.clone();
-        let click_agent = (agent.host_ix, agent.instance.clone());
-        h_flex()
-            .id(SharedString::from(format!("session-row-{group:?}-{ix}")))
-            .w_full()
-            .items_start()
-            .gap_2()
-            .px_1()
-            .py_1()
-            .rounded_md()
-            .when(active, |el| el.bg(theme.list_active))
-            .hover(|s| s.bg(theme.list_hover))
-            .cursor_pointer()
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                let (Some(conn), info) = (&click_conn, &click_session) else {
-                    if let (Some(host_ix), instance) = &click_agent {
-                        let id = click_session.id.clone();
-                        this.connect_then(
-                            *host_ix,
-                            instance.clone(),
-                            Box::new(move |ws, conn, window, cx| {
-                                let info =
-                                    conn.read(cx).sessions.iter().find(|s| s.id == id).cloned();
-                                if let Some(info) = info {
-                                    ws.open_session(conn, info, window, cx);
-                                }
-                            }),
-                            window,
-                            cx,
-                        );
-                    }
-                    return;
-                };
-                if event.click_count() >= 2 {
-                    crate::ui::session::open_rename(
-                        conn.clone(),
-                        info.id.clone(),
-                        info.title.clone().unwrap_or_default(),
-                        window,
-                        cx,
-                    )
-                } else {
-                    this.open_session(conn.clone(), info.clone(), window, cx)
-                }
-            }))
-            .child(div().h(px(20.)).flex().items_center().child(indicator))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .when(group == Group::Archived, |el| {
-                                el.text_color(theme.muted_foreground)
-                            })
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(place),
-                    )
-                    .when_some(detail, |el, (text, color)| {
-                        el.child(
-                            div()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .text_xs()
-                                .text_color(color)
-                                .child(text),
-                        )
-                    }),
-            )
-            .when_some(conn, |el, conn| {
-                let id = SharedString::from(format!("session-menu-{group:?}-{ix}"));
-                el.child(self.render_row_menu(id, conn, info, cx))
-            })
-            .into_any_element()
-    }
-
-    /// The menu of a session.
-    fn render_row_menu(
-        &self,
-        id: SharedString,
-        conn: Entity<AgentConnection>,
-        info: SessionInfo,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let workspace = cx.entity().downgrade();
-        let connected = conn.read(cx).status == LinkStatus::Connected;
-        div()
-            // The menu is inside the row, which must not see its clicks.
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                Button::new(id)
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Ellipsis)
-                    .dropdown_menu(move |mut menu, _, _| {
-                        let item = |label: &'static str, run: Rc<MenuAction>| {
-                            let workspace = workspace.clone();
-                            PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                                let run = run.clone();
-                                let _ = workspace.update(cx, |ws, cx| run(ws, window, cx));
-                            })
-                        };
-                        if !connected {
-                            let c = conn.clone();
-                            menu = menu.item(item(
-                                "Reconnect",
-                                Rc::new(move |ws, window, cx| ws.reconnect(&c, window, cx)),
-                            ));
-                            let c = conn.clone();
-                            return menu.separator().item(item(
-                                "Remove from list",
-                                Rc::new(move |ws, window, cx| {
-                                    ws.remove_agent(c.clone(), window, cx)
-                                }),
-                            ));
-                        }
-                        let c = conn.clone();
-                        menu = menu.item(item(
-                            "New session in this workspace",
-                            Rc::new(move |ws, window, cx| ws.new_session(c.clone(), window, cx)),
-                        ));
-                        let (c, i) = (conn.clone(), info.clone());
-                        menu = menu.item(item(
-                            "Rename…",
-                            Rc::new(move |_, window, cx| {
-                                crate::ui::session::open_rename(
-                                    c.clone(),
-                                    i.id.clone(),
-                                    i.title.clone().unwrap_or_default(),
-                                    window,
-                                    cx,
-                                )
-                            }),
-                        ));
-                        let (c, i) = (conn.clone(), info.clone());
-                        menu = menu.item(item(
-                            "System prompt",
-                            Rc::new(move |ws, window, cx| {
-                                ws.open_session(c.clone(), i.clone(), window, cx);
-                                ws.show_system_prompt(window, cx);
-                            }),
-                        ));
-                        let (c, id, archived) = (conn.clone(), info.id.clone(), info.archived);
-                        menu = menu.item(item(
-                            if archived { "Restore" } else { "Archive" },
-                            Rc::new(move |ws, window, cx| {
-                                ws.archive_session(c.clone(), id.clone(), !archived, window, cx)
-                            }),
-                        ));
-                        let (c, i) = (conn.clone(), info.clone());
-                        menu.item(item(
-                            "Delete…",
-                            Rc::new(move |ws, window, cx| {
-                                ws.delete_session(c.clone(), i.clone(), window, cx)
-                            }),
-                        ))
-                    }),
-            )
-            .into_any_element()
-    }
-
     /// The button that picks the color that marks a host's sessions.
     fn render_host_color_menu(&self, hix: usize, cx: &mut Context<Self>) -> AnyElement {
         let workspace = cx.entity().downgrade();
@@ -4117,9 +3821,6 @@ impl Workspace {
         if let Some(settings) = self.shown_settings.clone() {
             return self.render_settings(settings, cx);
         }
-        if let Some(archive) = self.shown_archive.clone() {
-            return self.render_archive(archive, cx);
-        }
         let Some(group) = self.active_group() else {
             return v_flex()
                 .size_full()
@@ -4128,10 +3829,10 @@ impl Workspace {
                 .gap_2()
                 .text_color(theme.muted_foreground)
                 .child(div().text_xl().child("Loom"))
-                .child("Open a session in the Sessions tab on the right, or start one with + next to a host.")
+                .child("Open a codespace in the Codespaces tab on the right, or start one with + there.")
                 .child(
                     div().text_sm().child(
-                        "ctrl-shift-p commands · ctrl-p sessions · ctrl-n new session · ctrl-` terminal · ctrl-b sessions panel",
+                        "ctrl-shift-p commands · ctrl-p sessions · ctrl-n new session · ctrl-` terminal · ctrl-b codespaces panel",
                     ),
                 )
                 .into_any_element();
@@ -4187,87 +3888,130 @@ impl Workspace {
         };
         let len = pane.tabs.len();
         let active = pane.tabs.active_index();
-        let panels: Vec<(PanelId, PanelKind, String, bool, bool)> = pane
+        let connection = self.active_group().map(|g| g.connection.clone());
+        type TabInfo = (
+            PanelId,
+            PanelKind,
+            String,
+            bool,
+            bool,
+            Option<(SessionId, SessionState)>,
+        );
+        let panels: Vec<TabInfo> = pane
             .tabs
             .iter()
             .map(|(id, panel)| {
                 let unsaved = panel.unsaved(cx).is_some();
                 let closable = panel.closable(cx);
-                (id, panel.kind(), panel.title(cx), unsaved, closable)
+                let session = match panel {
+                    Panel::Chat(view) => {
+                        let conversation = view.read(cx).conversation.read(cx);
+                        Some((conversation.info.id.clone(), conversation.state))
+                    }
+                    _ => None,
+                };
+                (
+                    id,
+                    panel.kind(),
+                    panel.title(cx),
+                    unsaved,
+                    closable,
+                    session,
+                )
             })
             .collect();
         let content = pane.tabs.active().cloned();
         let dim = multiple && !is_active;
-        let tabs =
-            panels
-                .into_iter()
-                .enumerate()
-                .map(|(ix, (id, kind, title, unsaved, closable))| {
-                    let dragged = DraggedTab {
-                        pane: pane_id,
-                        panel: id,
-                        ix,
-                        kind,
-                        title: title.clone().into(),
-                    };
-                    Tab::new(("tab", id as usize))
-                        .position(Tab::position_for(ix, len, active))
-                        .selected(ix == active)
-                        .start_slot(panel_icon(kind))
-                        .child(
+        let workspace = cx.entity().downgrade();
+        let tabs = panels.into_iter().enumerate().map(
+            |(ix, (id, kind, title, unsaved, closable, session))| {
+                let dragged = DraggedTab {
+                    pane: pane_id,
+                    panel: id,
+                    ix,
+                    kind,
+                    title: title.clone().into(),
+                };
+                let icon = match &session {
+                    Some((_, state)) => session_icon(*state, &theme),
+                    None => panel_icon(kind).into_any_element(),
+                };
+                let label = div()
+                    .id(("tab-label", id as usize))
+                    .max_w(px(240.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .when(dim, |el| el.text_color(theme.muted_foreground))
+                    .child(title.clone());
+                let label = match (session, connection.clone()) {
+                    (Some((session, _)), Some(conn)) => {
+                        let workspace = workspace.clone();
+                        label
+                            .context_menu(move |menu, _, _| {
+                                session_tab_menu(
+                                    menu,
+                                    workspace.clone(),
+                                    conn.clone(),
+                                    session.clone(),
+                                    title.clone(),
+                                )
+                            })
+                            .into_any_element()
+                    }
+                    _ => label.into_any_element(),
+                };
+                Tab::new(("tab", id as usize))
+                    .position(Tab::position_for(ix, len, active))
+                    .selected(ix == active)
+                    .start_slot(icon)
+                    .child(label)
+                    .when(unsaved, |tab| {
+                        tab.child(
                             div()
-                                .max_w(px(240.))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .when(dim, |el| el.text_color(theme.muted_foreground))
-                                .child(title),
+                                .debug_selector(move || format!("tab-unsaved-{id}"))
+                                .text_color(theme.muted_foreground)
+                                .child("●"),
                         )
-                        .when(unsaved, |tab| {
-                            tab.child(
-                                div()
-                                    .debug_selector(move || format!("tab-unsaved-{id}"))
-                                    .text_color(theme.muted_foreground)
-                                    .child("●"),
-                            )
-                        })
-                        .when(closable, |tab| {
-                            tab.end_slot(
-                                Button::new(("close-tab", id as usize))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_tab(pane_id, ix, window, cx)
-                                    })),
-                            )
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.activate_tab(pane_id, ix, window, cx)
-                        }))
-                        .on_middle_click(cx.listener(move |this, _, window, cx| {
-                            this.close_tab(pane_id, ix, window, cx)
-                        }))
-                        .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
-                        .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
-                            let theme = cx.theme();
-                            let style = style
-                                .bg(theme.drop_target)
-                                .border_color(theme.drag_border)
-                                .border_0();
-                            if dragged.pane != pane_id || ix < dragged.ix {
-                                style.border_l_2()
-                            } else if ix > dragged.ix {
-                                style.border_r_2()
-                            } else {
-                                style
-                            }
-                        })
-                        .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
-                            this.handle_tab_drop(dragged, pane_id, ix, window, cx)
-                        }))
-                });
+                    })
+                    .when(closable, |tab| {
+                        tab.end_slot(
+                            Button::new(("close-tab", id as usize))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(pane_id, ix, window, cx)
+                                })),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_tab(pane_id, ix, window, cx)
+                    }))
+                    .on_middle_click(cx.listener(move |this, _, window, cx| {
+                        this.close_tab(pane_id, ix, window, cx)
+                    }))
+                    .on_drag(dragged, |tab, _, _, cx| cx.new(|_| tab.clone()))
+                    .drag_over::<DraggedTab>(move |style, dragged: &DraggedTab, _, cx| {
+                        let theme = cx.theme();
+                        let style = style
+                            .bg(theme.drop_target)
+                            .border_color(theme.drag_border)
+                            .border_0();
+                        if dragged.pane != pane_id || ix < dragged.ix {
+                            style.border_l_2()
+                        } else if ix > dragged.ix {
+                            style.border_r_2()
+                        } else {
+                            style
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                        this.handle_tab_drop(dragged, pane_id, ix, window, cx)
+                    }))
+            },
+        );
         let tab_bar = h_flex()
             .w_full()
             .flex_none()
@@ -4304,15 +4048,36 @@ impl Workspace {
                     .border_l_1()
                     .border_color(theme.border)
                     .child(
-                        Button::new(("new-terminal", pane_id as usize))
+                        Button::new(("new-tab", pane_id as usize))
                             .ghost()
                             .xsmall()
-                            .icon(IconName::SquareTerminal)
-                            .tooltip("New terminal in this pane (ctrl-`)")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.set_active_pane(pane_id, cx);
-                                this.new_terminal(None, window, cx)
-                            })),
+                            .icon(IconName::Plus)
+                            .tooltip("New session or terminal")
+                            .dropdown_menu(move |menu, _, _| {
+                                let new_session = workspace.clone();
+                                let new_terminal = workspace.clone();
+                                menu.item(PopupMenuItem::new("New session").on_click(
+                                    move |_, window, cx| {
+                                        let _ = new_session.update(cx, |ws, cx| {
+                                            if let Some(conn) =
+                                                ws.active_group().map(|g| g.connection.clone())
+                                            {
+                                                ws.new_session(conn, window, cx);
+                                            }
+                                        });
+                                    },
+                                ))
+                                .item(
+                                    PopupMenuItem::new("New terminal").on_click(
+                                        move |_, window, cx| {
+                                            let _ = new_terminal.update(cx, |ws, cx| {
+                                                ws.set_active_pane(pane_id, cx);
+                                                ws.new_terminal(None, window, cx)
+                                            });
+                                        },
+                                    ),
+                                )
+                            }),
                     )
                     .child(
                         Button::new(("split-right", pane_id as usize))
@@ -4448,7 +4213,7 @@ impl Workspace {
                     .child("not connected"),
             );
         }
-        if let Some(tab) = self.active_group().and_then(SessionGroup::chat) {
+        if let Some(tab) = self.active_group().and_then(|g| g.chat(cx)) {
             right = right.children(SessionView::status_items(&tab, cx));
         }
         let show_right = self.show_right;
@@ -4553,7 +4318,7 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .on_action(cx.listener(Self::on_toggle_sessions))
+            .on_action(cx.listener(Self::on_toggle_codespaces))
             .on_action(cx.listener(Self::on_toggle_right))
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_find_session))
@@ -4565,8 +4330,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_oracle_settings))
             .on_action(cx.listener(Self::on_new_terminal))
             .on_action(cx.listener(Self::on_close_tab))
-            .on_action(cx.listener(Self::on_close_session))
             .on_action(cx.listener(Self::on_archive_session))
+            .on_action(cx.listener(Self::on_resume_session))
             .on_action(cx.listener(Self::on_rename_session))
             .on_action(cx.listener(Self::on_show_system_prompt))
             .on_action(cx.listener(Self::on_show_changes))
@@ -4605,7 +4370,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(Self::on_move_tab_left))
             .on_action(cx.listener(Self::on_move_tab_right))
-            .on_action(cx.listener(Self::on_show_sessions))
+            .on_action(cx.listener(Self::on_show_codespaces))
             .on_action(cx.listener(Self::on_providers))
             .on_action(cx.listener(Self::on_choose_model))
             .on_action(cx.listener(Self::on_pair))
@@ -5006,8 +4771,11 @@ mod tests {
             })
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("oracle-workspace-0-0").is_some());
+        assert!(cx.debug_bounds("oracle-0").is_some());
+        assert!(cx.debug_bounds("codespace-0").is_none());
         assert!(!has_dialog(cx));
+
+        assert!(cx.debug_bounds("new-codespace").is_some());
 
         let link = ws.read_with(cx, |ws, _| ws.hosts[0].oracle.clone().unwrap());
         ws.update_in(cx, |ws, window, cx| {
@@ -5037,11 +4805,10 @@ mod tests {
     }
 
     #[gpui::test]
-    fn an_oracle_shows_the_archive_of_closed_codespaces_read_only(cx: &mut TestAppContext) {
+    fn the_codespaces_panel_lists_codespaces_and_their_sessions(cx: &mut TestAppContext) {
         use crate::oracle::tests::{TestOracle, wait};
         use loom_client::oracle_proto::{CodespaceState, Role, SessionSummary};
-        use loom_client::proto::{ContentPart, SequencedEvent, SessionEvent};
-        use loom_oracle::store::{ArchiveRow, CodespaceRow};
+        use loom_oracle::store::CodespaceRow;
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -5050,7 +4817,7 @@ mod tests {
         let store = test.oracle.store();
         let host = store.peers(Some(Role::Host)).unwrap()[0].id;
         let workspace = store.create_workspace("acme", host, &[], &[]).unwrap();
-        let mut row = CodespaceRow {
+        let row = CodespaceRow {
             id: "k3x9".into(),
             workspace: workspace.id,
             workspace_name: "acme".into(),
@@ -5059,7 +4826,7 @@ mod tests {
             preset: None,
             preset_name: None,
             peer: None,
-            state: CodespaceState::Provisioning,
+            state: CodespaceState::Stopped,
             cpus: 2,
             memory_mib: 4096,
             instance: "loom-k3x9".into(),
@@ -5080,13 +4847,12 @@ mod tests {
             archive: None,
         };
         store.insert_codespace(&row, &[]).unwrap();
-        row.state = CodespaceState::Closed;
-        row.archive = Some(ArchiveRow {
-            size: 4096,
-            saved_at: Some(loom_oracle::store::now_unix()),
-            error: None,
-        });
-        store.save_codespace(&row).unwrap();
+        let closed = CodespaceRow {
+            id: "c0de".into(),
+            state: CodespaceState::Closed,
+            ..row.clone()
+        };
+        store.insert_codespace(&closed, &[]).unwrap();
         let summary = SessionSummary {
             id: "s1".into(),
             title: Some("Fix the build".into()),
@@ -5099,27 +4865,6 @@ mod tests {
         store
             .put_sessions("k3x9", std::slice::from_ref(&summary), &[], true)
             .unwrap();
-        let archive = root.join("oracle/data/loom/oracle/archive/k3x9");
-        std::fs::create_dir_all(&archive).unwrap();
-        let conn = rusqlite::Connection::open(archive.join("0a.sqlite")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY);
-             CREATE TABLE events (session_id TEXT, seq INTEGER, event BLOB);
-             INSERT INTO sessions VALUES ('s1');",
-        )
-        .unwrap();
-        let event = SequencedEvent {
-            seq: 0,
-            event: SessionEvent::UserMessage {
-                content: vec![ContentPart::text("Please fix the build")],
-            },
-        };
-        conn.execute(
-            "INSERT INTO events VALUES ('s1', 0, ?1)",
-            [loom_client::proto::encode(&event).unwrap()],
-        )
-        .unwrap();
-        drop(conn);
 
         cx.update(|cx| {
             gpui_component::init(cx);
@@ -5144,40 +4889,39 @@ mod tests {
         wait(cx, |cx| {
             ws.read(cx).hosts[0].oracle.as_ref().is_some_and(|link| {
                 let link = link.read(cx);
-                !link.archived_codespaces("acme").is_empty() && !link.sessions.is_empty()
+                link.codespaces.len() == 2 && !link.sessions.is_empty()
             })
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("archives-0-0").is_some());
-        assert!(cx.debug_bounds("archived-0-0-0").is_none());
-        click("archives-0-0", cx);
-        assert!(cx.debug_bounds("archived-0-0-0").is_some());
-        click("archived-0-0-0", cx);
-        wait(cx, |cx| {
-            ws.read(cx)
-                .shown_archive
-                .as_ref()
-                .is_some_and(|view| view.read(cx).is_loaded())
+        assert!(cx.debug_bounds("codespace-0").is_some());
+        assert!(cx.debug_bounds("codespace-1").is_none());
+        assert!(cx.debug_bounds("oracle-0").is_some());
+        let infos = ws.read_with(cx, |ws, cx| {
+            let link = ws.hosts[0].oracle.clone().unwrap();
+            let link = link.read(cx);
+            let codespace = link.codespaces.iter().find(|c| c.id == "k3x9").unwrap();
+            ws.codespace_session_infos(link, codespace, cx)
         });
-        let (busy, items) = ws.read_with(cx, |ws, cx| {
-            let view = ws.shown_archive.clone().unwrap();
-            let conversation = view.read(cx).conversation().read(cx);
-            (conversation.is_busy(), conversation.item_keys().len())
-        });
-        assert!(!busy && items > 0);
-        assert!(cx.debug_bounds("archive-view").is_some());
-        ws.update_in(cx, |ws, window, cx| ws.close_archive(window, cx));
-        assert!(ws.read_with(cx, |ws, _| ws.shown_archive.is_none()));
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].title.as_deref(), Some("Fix the build"));
     }
 
     #[test]
-    fn keymaps_naming_the_old_left_panel_action_still_work() {
-        assert_eq!(ToggleSessions.name(), "loom::ToggleSessions");
+    fn keymaps_naming_the_old_panel_actions_still_work() {
+        assert_eq!(ToggleCodespaces.name(), "loom::ToggleCodespaces");
         assert_eq!(
-            ToggleSessions::deprecated_aliases(),
-            ["loom::ToggleLeftDock", "loom::ToggleAgents"]
+            ToggleCodespaces::deprecated_aliases(),
+            [
+                "loom::ToggleSessions",
+                "loom::ToggleLeftDock",
+                "loom::ToggleAgents"
+            ]
         );
-        assert_eq!(ShowSessions::deprecated_aliases(), ["loom::ShowAgents"]);
+        assert_eq!(
+            ShowCodespaces::deprecated_aliases(),
+            ["loom::ShowSessions", "loom::ShowAgents"]
+        );
+        assert_eq!(ArchiveSession::deprecated_aliases(), ["loom::CloseSession"]);
     }
 
     #[gpui::test]
@@ -5287,22 +5031,139 @@ mod tests {
     }
 
     #[gpui::test]
-    fn archiving_a_session_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+    fn archiving_a_session_closes_only_its_tab(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
         cx.simulate_input("x");
         let (conn, session) = ws.read_with(cx, |ws, _| {
             let group = ws.active_group().unwrap();
-            (group.connection.clone(), group.session.clone())
+            (group.connection.clone(), group.session.clone().unwrap())
+        });
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.groups[0].find_chat(&session, cx).is_some());
         });
         ws.update_in(cx, |ws, window, cx| {
-            ws.archive_session(conn.clone(), session.clone(), true, window, cx)
+            ws.archive_session(conn.clone(), session.clone(), window, cx)
         });
-        assert!(has_dialog(cx));
+        assert!(!has_dialog(cx));
+        wait_until(cx, |cx| {
+            ws.read(cx).groups[0].find_chat(&session, cx).is_none()
+        });
         assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
-        click("unsaved-discard", cx);
-        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 0);
+        assert!(ws.read_with(cx, |ws, _| ws.groups[0].session.is_none()));
+        assert!(cx.update(|_, cx| file_view(&ws, cx)).is_some());
+    }
+
+    #[gpui::test]
+    fn a_codespace_group_has_a_tab_for_each_session_across_restarts(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, conn, cx) = connected(&agent, cx);
+        for _ in 0..2 {
+            ws.update_in(cx, |ws, window, cx| {
+                ws.new_session(conn.clone(), window, cx)
+            });
+        }
+        wait_until(cx, |cx| {
+            ws.read(cx)
+                .groups
+                .first()
+                .is_some_and(|g| g.chats().count() == 2)
+        });
+        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
+        let current = ws.read_with(cx, |ws, _| ws.groups[0].session.clone().unwrap());
+
+        let (phone, _phone_notes) = agent.client("loom-android");
+        let added = agent.block_on({
+            let phone = phone.clone();
+            async move { phone.create_session(None).await.unwrap() }
+        });
+        wait_until(cx, |cx| ws.read(cx).groups[0].chats().count() == 3);
+        ws.read_with(cx, |ws, cx| {
+            assert_eq!(ws.groups[0].session.as_ref(), Some(&current));
+            match ws.groups[0].active_panel() {
+                Some(Panel::Chat(view)) => assert_eq!(view.read(cx).session_id(cx), current),
+                _ => panic!("the session tab lost the focus"),
+            }
+        });
+        agent.block_on({
+            let phone = phone.clone();
+            let id = added.id.clone();
+            async move { phone.archive_session(&id, true).await.unwrap() }
+        });
+        wait_until(cx, |cx| ws.read(cx).groups[0].chats().count() == 2);
+
+        let saved = ws.read_with(cx, |ws, cx| ws.saved_group(&ws.groups[0], cx).unwrap());
+        let layout::SavedMember::Pane(pane) = &saved.root else {
+            panic!("one pane, not {:?}", saved.root);
+        };
+        let sessions: Vec<String> = pane
+            .tabs
+            .iter()
+            .filter_map(|tab| match tab {
+                SavedTab::Conversation { session } => Some(session.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&current.0));
+        assert_eq!(
+            saved.key.workspace,
+            conn.read_with(cx, |conn, _| conn.info.workspace.clone())
+        );
+
+        ws.update_in(cx, |ws, window, cx| {
+            ws.remove_groups(window, cx, |_| true);
+            let sessions = conn.read(cx).sessions.clone();
+            let group = ws
+                .restore_group(&conn, &sessions, &saved, window, cx)
+                .unwrap();
+            assert_eq!(group.chats().count(), 2);
+            assert_eq!(group.session.as_ref(), Some(&current));
+            let gone = layout::SavedTab::Conversation {
+                session: added.id.0.clone(),
+            };
+            assert!(
+                ws.restore_panel(&conn, &sessions, &gone, window, cx)
+                    .is_none()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn the_resume_dialog_opens_an_archived_session_as_a_tab(cx: &mut TestAppContext) {
+        let agent = TestAgent::start();
+        let (ws, conn, cx) = connected(&agent, cx);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.new_session(conn.clone(), window, cx)
+        });
+        wait_until(cx, |cx| ws.read(cx).active_group.is_some());
+        let archived = agent.archived_session("s-old", "Fix the parser");
+        wait_until(cx, |cx| {
+            conn.read(cx)
+                .sessions
+                .iter()
+                .any(|s| s.id == archived && s.archived)
+        });
+        assert!(ws.read_with(cx, |ws, cx| ws.groups[0].find_chat(&archived, cx).is_none()));
+
+        cx.dispatch_action(ResumeSession);
+        for _ in 0..1000 {
+            cx.run_until_parked();
+            if has_dialog(cx) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(has_dialog(cx));
+        cx.simulate_keystrokes("enter");
+        wait_until(cx, |cx| {
+            ws.read(cx).groups[0].session.as_ref() == Some(&archived)
+        });
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.groups[0].find_chat(&archived, cx).is_some());
+            assert_eq!(ws.groups[0].chats().count(), 2);
+        });
     }
 
     /// The active agent's notes view, once the Notes tab has shown it.
@@ -5350,7 +5211,7 @@ mod tests {
         let first = edit_notes(&ws, "plan", cx);
         let (conn, session) = ws.read_with(cx, |ws, _| {
             let group = ws.active_group().unwrap();
-            (group.connection.clone(), group.session.clone())
+            (group.connection.clone(), group.session.clone().unwrap())
         });
         assert_eq!(
             first.read_with(cx, |view, _| view.connection().clone()),
@@ -5363,7 +5224,7 @@ mod tests {
         wait_until(cx, |cx| {
             ws.read(cx)
                 .active_group()
-                .is_some_and(|g| g.session != session)
+                .is_some_and(|g| g.session.as_ref() != Some(&session))
         });
         cx.run_until_parked();
         // The sessions of one agent share its notes, edits and all.
@@ -5372,7 +5233,9 @@ mod tests {
             .expect("no notes view");
         assert_eq!(second, first);
         assert!(first.read_with(cx, |view, _| view.is_dirty()));
-        let other = ws.read_with(cx, |ws, _| ws.active_group().unwrap().session.clone());
+        let other = ws.read_with(cx, |ws, _| {
+            ws.active_group().unwrap().session.clone().unwrap()
+        });
         click("right-tasks", cx);
         let second_tasks = cx
             .update(|_, cx| tasks_view(&ws, cx))
@@ -5382,14 +5245,12 @@ mod tests {
             second_tasks.read_with(cx, |view, _| view.session().clone()),
             other
         );
-        assert_eq!(
-            first_tasks.read_with(cx, |view, _| view.session().clone()),
-            session
-        );
+        let _ = first_tasks;
+        assert_ne!(other, session);
     }
 
     #[gpui::test]
-    fn closing_a_session_keeps_the_agents_unsaved_notes(cx: &mut TestAppContext) {
+    fn archiving_a_session_keeps_the_agents_unsaved_notes(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         agent.write("a.txt", "one\n");
         let (ws, cx) = open_file(&agent, "a.txt", cx);
@@ -5399,17 +5260,17 @@ mod tests {
         assert!(has_dialog(cx));
         click("unsaved-cancel", cx);
 
-        // Closing the session does not ask about the notes, which belong to
+        // Archiving the session does not ask about the notes, which belong to
         // the agent and stay.
         let (conn, session) = ws.read_with(cx, |ws, _| {
             let group = ws.active_group().unwrap();
-            (group.connection.clone(), group.session.clone())
+            (group.connection.clone(), group.session.clone().unwrap())
         });
         ws.update_in(cx, |ws, window, cx| {
-            ws.close_session(conn, session, window, cx)
+            ws.archive_session(conn, session, window, cx)
         });
         assert!(!has_dialog(cx));
-        wait_until(cx, |cx| ws.read(cx).groups.is_empty());
+        wait_until(cx, |cx| ws.read(cx).groups[0].chats().next().is_none());
         assert_eq!(cx.update(|_, cx| notes_view(&ws, cx)), Some(view.clone()));
         assert!(view.read_with(cx, |view, _| view.is_dirty()));
         let saved = view.update_in(cx, |view, window, cx| view.save(window, cx));
@@ -5531,7 +5392,13 @@ mod tests {
 
         cx.dispatch_action(ShowSystemPrompt);
         cx.run_until_parked();
-        assert_eq!(saved(&ws, cx), [SavedTab::SystemPrompt]);
+        let session = ws.read_with(cx, |ws, _| {
+            ws.active_group().unwrap().session.clone().unwrap().0
+        });
+        let prompt = SavedTab::SystemPrompt {
+            session: session.clone(),
+        };
+        assert_eq!(saved(&ws, cx), std::slice::from_ref(&prompt));
         assert_eq!(active_tabs(&ws, cx).1, 1);
         wait_until(cx, |cx| {
             match ws.read(cx).active_group().and_then(|g| g.active_panel()) {
@@ -5546,7 +5413,7 @@ mod tests {
         });
         cx.dispatch_action(ShowSystemPrompt);
         cx.run_until_parked();
-        assert_eq!(saved(&ws, cx), [SavedTab::SystemPrompt]);
+        assert_eq!(saved(&ws, cx), [prompt]);
         assert_eq!(active_tabs(&ws, cx).1, 1);
     }
 
@@ -5684,7 +5551,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn conversations_and_other_clients_terminals_cannot_be_closed(cx: &mut TestAppContext) {
+    fn closing_a_session_tab_archives_it_and_other_clients_terminals_stay(cx: &mut TestAppContext) {
         let agent = TestAgent::start();
         let (ws, cx) = open_three_files(&agent, cx);
         let pane = ws.read_with(cx, |ws, _| ws.active_group().unwrap().active_pane);
@@ -5693,13 +5560,6 @@ mod tests {
             cx.run_until_parked();
         };
 
-        // The conversation stays, by click, ctrl-w, or the command palette.
-        close(0, cx);
-        assert_eq!(active_tabs(&ws, cx).0.len(), 4);
-        ws.update_in(cx, |ws, window, cx| ws.activate_tab(pane, 0, window, cx));
-        cx.dispatch_action(CloseTab);
-        cx.run_until_parked();
-        assert_eq!(active_tabs(&ws, cx).0.len(), 4);
         let kinds = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
             cx.update(|_, cx| {
                 let pane = ws.read(cx).active_group().unwrap().active().unwrap();
@@ -5711,7 +5571,7 @@ mod tests {
                 tabs
             })
         };
-        assert!(kinds(&ws, cx)[0] == (PanelKind::Chat, false));
+        assert!(kinds(&ws, cx)[0] == (PanelKind::Chat, true));
 
         // A terminal of another client stays until it is taken over.
         let (phone, _phone_notes) = agent.client("loom-android");
@@ -5739,8 +5599,9 @@ mod tests {
                 .all(|t| t.id != terminal)
         });
 
-        // Closing a session moves another client's terminal to another
-        // session of the agent, and the terminal goes on.
+        // A new session gets a tab in the same group. Closing the tab of a
+        // session archives it, by click or by ctrl-w, and another client's
+        // terminal goes on.
         let other = agent.block_on({
             let phone = phone.clone();
             async move { phone.open_terminal(80, 24, 7).await.unwrap() }
@@ -5748,22 +5609,36 @@ mod tests {
         wait_until(cx, |cx| terminal_tabs(&ws, cx).len() == 1);
         let (conn, first) = ws.read_with(cx, |ws, _| {
             let group = ws.active_group().unwrap();
-            (group.connection.clone(), group.session.clone())
+            (group.connection.clone(), group.session.clone().unwrap())
         });
         ws.update_in(cx, |ws, window, cx| {
             ws.new_session(conn.clone(), window, cx)
         });
-        wait_until(cx, |cx| ws.read(cx).groups.len() == 2);
-        assert!(cx.update(|_, cx| terminal_tabs(&ws, cx).is_empty()));
-        ws.update_in(cx, |ws, window, cx| {
-            ws.close_session(conn, first, window, cx)
+        wait_until(cx, |cx| ws.read(cx).groups[0].chats().count() == 2);
+        assert_eq!(ws.read_with(cx, |ws, _| ws.groups.len()), 1);
+        let ix = ws.read_with(cx, |ws, cx| {
+            let (pane, ix) = ws.groups[0].find_chat(&first, cx).unwrap();
+            assert_eq!(pane, ws.groups[0].active_pane);
+            ix
         });
+        close(ix, cx);
         wait_until(cx, |cx| {
-            ws.read(cx).groups.len() == 1 && terminal_tabs(&ws, cx).len() == 1
+            ws.read(cx).groups[0].find_chat(&first, cx).is_none()
         });
+        assert_eq!(cx.update(|_, cx| terminal_tabs(&ws, cx).len()), 1);
+        let sessions = conn.read_with(cx, |conn, _| conn.sessions.clone());
+        assert!(sessions.iter().all(|s| s.id != first));
         let terminals = agent.block_on(async move { phone.terminals().await.unwrap() });
         assert_eq!(terminals.len(), 1);
         assert_eq!(terminals[0].id, other);
+
+        let chat = kinds(&ws, cx)
+            .iter()
+            .position(|kind| *kind == (PanelKind::Chat, true))
+            .unwrap();
+        ws.update_in(cx, |ws, window, cx| ws.activate_tab(pane, chat, window, cx));
+        cx.dispatch_action(CloseTab);
+        wait_until(cx, |cx| ws.read(cx).groups[0].chats().next().is_none());
     }
 
     #[gpui::test]
@@ -5790,11 +5665,11 @@ mod tests {
 
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();
-        assert!(right(cx) == (true, RightTab::Sessions));
+        assert!(right(cx) == (true, RightTab::Codespaces));
         // Showing is not toggling: a second press keeps the panel.
         cx.simulate_keystrokes("ctrl-shift-b");
         cx.run_until_parked();
-        assert!(right(cx) == (true, RightTab::Sessions));
+        assert!(right(cx) == (true, RightTab::Codespaces));
     }
 
     #[gpui::test]
@@ -5911,7 +5786,7 @@ mod tests {
             DiffKind::Committed
         );
         wait_until(cx, |cx| view.read(cx).counts() == (1, 0));
-        let saved = view.read_with(cx, |view, _| view.saved_tab());
+        let saved = view.read_with(cx, |view, cx| view.saved_tab(cx));
         assert!(matches!(
             saved,
             SavedTab::GitDiff {

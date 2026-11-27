@@ -1,4 +1,3 @@
-pub mod archive_view;
 pub mod close_codespace;
 pub mod code;
 pub mod dialogs;
@@ -16,6 +15,7 @@ pub mod panes;
 pub mod picker;
 pub mod ports_view;
 pub mod prompt_view;
+pub mod resume;
 pub mod session;
 pub mod settings;
 pub mod tab;

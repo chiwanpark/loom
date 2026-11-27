@@ -443,6 +443,11 @@ pub enum Command {
         body: String,
         draft: bool,
     },
+    ListArchivedSessions,
+    ResumeSession {
+        session: SessionId,
+        codespace: Option<String>,
+    },
 }
 
 /// The most bytes in one [`Command::UploadChunk`].
@@ -577,6 +582,23 @@ pub enum Payload {
     Rewound(Vec<ContentPart>),
     Repositories(Vec<RepositoryStatus>),
     PullRequests(Vec<PullRequestResult>),
+    ArchivedSessions(Vec<ArchivedSessionInfo>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedSessionInfo {
+    pub id: SessionId,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub location: ArchivedLocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArchivedLocation {
+    Agent,
+    Codespace { codespace: String, branch: String },
 }
 
 /// Older events of a session, from [`Command::GetHistory`].

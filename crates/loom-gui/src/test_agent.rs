@@ -103,6 +103,25 @@ impl TestAgent {
         futures::executor::block_on(self.backend.run(future)).unwrap()
     }
 
+    pub fn archived_session(&self, id: &str, message: &str) -> loom_client::proto::SessionId {
+        let id = loom_client::proto::SessionId(id.into());
+        let stored = loom_agent_core::store::StoredSession {
+            id: id.clone(),
+            created_at: 1,
+            updated_at: 2,
+            state: loom_agent_core::store::SessionState {
+                history: vec![loom_llm::Message::user_text(message)],
+                ..Default::default()
+            },
+            events: Vec::new(),
+            notes: String::new(),
+            tasks: Default::default(),
+        };
+        self.agent.import_session(stored).unwrap();
+        self.agent.set_archived(&id, true).unwrap();
+        id
+    }
+
     pub fn write(&self, path: &str, content: impl AsRef<[u8]>) {
         std::fs::write(self.workspace.join(path), content).unwrap();
     }

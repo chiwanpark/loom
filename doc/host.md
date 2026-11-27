@@ -217,7 +217,7 @@ git:
 ```
 
 4. Create a workspace with its host and repositories on **Workspaces**.
-5. Under **Workspaces** in the Sessions panel (or in the Android app), click **+** next to the workspace to start a codespace.
+5. Click **+** in the header of the Codespaces panel (or in the Android app), and select the workspace to start a codespace.
 
 You can give a first message when you create the codespace: the agent starts a session with it when the codespace is ready, without a connected client.
 
