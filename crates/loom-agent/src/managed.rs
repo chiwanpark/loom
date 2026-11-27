@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, oneshot, watch};
 
 use crate::codespace_agent::{
-    OracleCredentials, PresetPaths, SECRETS_FILE, first_wait, report_activity, report_notes,
-    report_sessions, start_first_message, write_preset,
+    OracleArchive, OracleCredentials, PresetPaths, SECRETS_FILE, first_wait, report_activity,
+    report_notes, report_sessions, start_first_message, write_preset,
 };
 use crate::codespace_git::{GitPaths, ManagedClone, apply_all, serve_credentials};
 use crate::codespace_repos::{CodespaceRepositories, RepositoryClone};
@@ -626,6 +626,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<i32> {
     let loader: loom_agent_core::ConfigLoader =
         Arc::new(move |path: &Path, dirs: &Dirs| managed_config(path, dirs, &settings));
     let credentials = OracleCredentials::new(client_watch.clone());
+    let archive = OracleArchive::new(client_watch.clone());
     let fetched = credentials.fetch().await;
     if let Err(err) = &fetched {
         tracing::warn!(error = %format!("{err:#}"), "cannot get the model credentials");
@@ -664,6 +665,7 @@ pub async fn serve_managed(options: ManagedOptions) -> anyhow::Result<i32> {
         dirs,
         ready: Some(ready),
         repositories: Some(Arc::new(repositories)),
+        archive: Some(archive),
         credentials: Some(CredentialStore::from_source(credentials)),
         config_loader: Some(loader),
         repository_dirs,

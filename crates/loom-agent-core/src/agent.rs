@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex, Weak};
 
 use loom_config::{AgentConfig, Dirs};
 use loom_llm::{Auth, CredentialStore, HttpClient, LlmProvider, ModelRef, http_client};
-use loom_proto::{ConfigReload, FileVersion, SessionEvent, SessionId, SessionInfo, Task};
+use loom_proto::{
+    ArchivedLocation, ArchivedSessionInfo, ConfigReload, FileVersion, SessionEvent, SessionId,
+    SessionInfo, Task,
+};
 use loom_tools::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -16,7 +19,7 @@ use crate::notes::{AgentNotes, merge_session_notes};
 use crate::observer::{Observers, SessionObserver};
 use crate::runtime::{Runtime, RuntimeCell};
 use crate::session::{Session, SessionParams};
-use crate::store::{EventStore, Stored, store_path};
+use crate::store::{EventStore, Stored, StoredSession, store_path};
 use crate::terminals::Terminals;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,7 +435,60 @@ impl Agent {
 
     pub fn set_archived(&self, id: &SessionId, archived: bool) -> Result<SessionInfo> {
         let session = self.session(id)?;
+        if archived && session.is_empty() {
+            let mut info = session.info();
+            info.archived = true;
+            self.delete_session(id)?;
+            return Ok(info);
+        }
         session.set_archived(archived);
+        let info = session.info();
+        self.notify(AgentNotice::SessionUpdated(Box::new(info.clone())));
+        Ok(info)
+    }
+
+    pub fn archived_sessions(&self) -> Vec<ArchivedSessionInfo> {
+        let mut sessions: Vec<ArchivedSessionInfo> = self
+            .sessions()
+            .iter()
+            .filter(|session| session.is_archived())
+            .map(|session| {
+                let info = session.info();
+                ArchivedSessionInfo {
+                    id: info.id,
+                    title: info.title,
+                    model: info.model,
+                    created_at: info.created_at,
+                    updated_at: session.updated_at(),
+                    location: ArchivedLocation::Agent,
+                }
+            })
+            .collect();
+        sessions.sort_by(|a, b| (b.updated_at, &b.id).cmp(&(a.updated_at, &a.id)));
+        sessions
+    }
+
+    pub fn import_session(&self, mut stored: StoredSession) -> Result<SessionInfo> {
+        let taken = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&stored.id);
+        if taken {
+            stored.id = SessionId(uuid::Uuid::new_v4().to_string());
+        }
+        stored.state.archived = false;
+        if let Some(store) = &self.inner.store {
+            store.save_session(&stored.id, stored.created_at, &stored.state);
+            for event in &stored.events {
+                store.append(&stored.id, event);
+            }
+            store.save_tasks(&stored.id, &stored.tasks);
+        }
+        let session = Session::restore(self.session_params(None), stored);
+        self.insert(session.clone());
+        self.inner.observer.session_created(session.id());
         let info = session.info();
         self.notify(AgentNotice::SessionUpdated(Box::new(info.clone())));
         Ok(info)

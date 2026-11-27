@@ -40,6 +40,7 @@ workspace = true
 [dev-dependencies]
 loom-agent = { path = "../loom-agent" }
 loom-agent-core = { path = "../loom-agent-core" }
+loom-llm = { path = "../loom-llm" }
 loom-oracle = { path = "../loom-oracle" }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 tempfile = "3.27.0"

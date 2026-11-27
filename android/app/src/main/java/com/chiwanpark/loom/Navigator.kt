@@ -14,17 +14,26 @@ sealed interface OracleScreen {
 
 /** A place in the app. */
 sealed interface Screen {
-    /** Every session of every agent on the paired hosts. */
+    /** The codespaces of the paired oracles. */
     data object Home : Screen
 
-    /** The paired hosts, to rename or remove them. */
+    /** The paired oracles, to refresh, rename, or remove them. */
     data object Hosts : Screen
 
     /** Pairing with a host, with a link that came from outside the app. */
     data class Pair(val link: String = "") : Screen
 
-    data class Conversation(override val host: String, override val instance: String, val session: String) :
-        Screen, AgentScreen
+    data class Codespace(
+        override val host: String,
+        override val instance: String,
+        val session: String? = null,
+        val terminal: Int? = null,
+    ) : Screen, AgentScreen {
+        val stateKey: String get() = "Codespace($host, $instance)"
+
+        fun shows(host: String, session: String): Boolean =
+            this.host == host && terminal == null && this.session == session
+    }
 
     /** The agent's notes, which its sessions share. */
     data class Notes(override val host: String, override val instance: String) : Screen, AgentScreen
@@ -63,13 +72,6 @@ sealed interface Screen {
         val oldPath: String? = null,
         val session: String? = null,
     ) : Screen, AgentScreen
-
-    /**
-     * A terminal on the agent's host, by its number on the agent (one that
-     * another client holds too); 0 opens a new one.
-     */
-    data class Terminal(override val host: String, override val instance: String, val number: Int = 0) :
-        Screen, AgentScreen
 
     /** The ports programs listen on, on the agent's host, and the phone's ports forwarded to them. */
     data class Ports(override val host: String, override val instance: String) : Screen, AgentScreen
@@ -110,15 +112,8 @@ class Navigator {
         stack.add(Screen.Home)
     }
 
-    /** Drops the conversation of a session that is gone, with the screens opened from it. */
-    fun leaveSession(host: String, instance: String, session: String) {
-        val first = stack.indexOfFirst {
-            it is Screen.Conversation && it.host == host && it.instance == instance && it.session == session
-        }
-        if (first > 0) {
-            while (stack.size > first) stack.removeAt(stack.lastIndex)
-        }
-    }
+    fun follows(host: String, instance: String): Boolean =
+        stack.any { it is Screen.Codespace && it.host == host && it.instance == instance }
 
     /** Drops the screens of `host`, as when it is removed. */
     fun leaveHost(host: String) {

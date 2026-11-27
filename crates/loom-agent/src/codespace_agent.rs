@@ -7,11 +7,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use async_trait::async_trait;
-use loom_agent_core::{Agent, AgentNotice};
+use loom_agent_core::store::{SessionState as StoredState, StoredSession};
+use loom_agent_core::tasks::TaskList;
+use loom_agent_core::{Agent, AgentNotice, SessionArchive};
 use loom_client::OracleClient;
-use loom_client::oracle_proto::{CodespaceMetrics, PresetBundle, Secret, SessionSummary};
+use loom_client::oracle_proto::{
+    ArchivedSession, CodespaceMetrics, PresetBundle, Secret, SessionSummary,
+};
 use loom_llm::{CredentialLock, CredentialSource, Credentials, LlmError};
-use loom_proto::{ContentPart, SessionInfo, SessionState};
+use loom_proto::{
+    ApiError, ArchivedLocation, ArchivedSessionInfo, ContentPart, ErrorCode, SessionId,
+    SessionInfo, SessionState,
+};
 use tokio::sync::{Notify, broadcast, watch};
 
 pub const SECRETS_FILE: &str = "secrets.env";
@@ -446,6 +453,103 @@ pub async fn start_first_message(agent: &Agent, client: &OracleClient) {
     match session.send_prompt(vec![ContentPart::text(message.text)]) {
         Ok(()) => tracing::info!(session = %session.id(), "started the first message"),
         Err(err) => tracing::error!(error = %err, "cannot send the first message"),
+    }
+}
+
+pub struct OracleArchive {
+    clients: watch::Receiver<OracleClient>,
+}
+
+impl OracleArchive {
+    pub fn new(clients: watch::Receiver<OracleClient>) -> Arc<Self> {
+        Arc::new(Self { clients })
+    }
+
+    fn client(&self) -> OracleClient {
+        self.clients.borrow().clone()
+    }
+}
+
+fn oracle_error(err: loom_client::ClientError) -> ApiError {
+    match &err {
+        loom_client::ClientError::Oracle(oracle) => {
+            let code = match oracle.code {
+                loom_client::oracle_proto::ErrorCode::NotFound => ErrorCode::NotFound,
+                loom_client::oracle_proto::ErrorCode::BadRequest => ErrorCode::BadRequest,
+                loom_client::oracle_proto::ErrorCode::Conflict => ErrorCode::Conflict,
+                _ => ErrorCode::Internal,
+            };
+            ApiError::new(code, oracle.message.clone())
+        }
+        _ => ApiError::new(
+            ErrorCode::Internal,
+            format!("cannot reach the oracle: {err}"),
+        ),
+    }
+}
+
+fn archived_info(session: ArchivedSession) -> ArchivedSessionInfo {
+    ArchivedSessionInfo {
+        id: SessionId(session.id),
+        title: session.title,
+        model: session.model,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
+        location: ArchivedLocation::Codespace {
+            codespace: session.codespace,
+            branch: session.branch,
+        },
+    }
+}
+
+#[async_trait]
+impl SessionArchive for OracleArchive {
+    async fn list(&self) -> Result<Vec<ArchivedSessionInfo>, ApiError> {
+        let sessions = self
+            .client()
+            .archived_sessions()
+            .await
+            .map_err(oracle_error)?;
+        Ok(sessions.into_iter().map(archived_info).collect())
+    }
+
+    async fn fetch(&self, codespace: &str, session: &SessionId) -> Result<StoredSession, ApiError> {
+        let client = self.client();
+        let data = client
+            .archived_session(codespace, &session.0)
+            .await
+            .map_err(oracle_error)?;
+        let state: StoredState = serde_json::from_slice(&data.state).map_err(|err| {
+            ApiError::new(
+                ErrorCode::Internal,
+                format!("cannot read the archived session: {err}"),
+            )
+        })?;
+        let tasks: TaskList = data
+            .tasks
+            .as_deref()
+            .and_then(|tasks| serde_json::from_str(tasks).ok())
+            .unwrap_or_default();
+        let events = client
+            .archived_events(codespace, &session.0)
+            .await
+            .map_err(oracle_error)?;
+        Ok(StoredSession {
+            id: session.clone(),
+            created_at: data.session.created_at,
+            updated_at: data.session.updated_at,
+            state,
+            events,
+            notes: String::new(),
+            tasks,
+        })
+    }
+
+    async fn resumed(&self, codespace: &str, session: &SessionId) -> Result<(), ApiError> {
+        self.client()
+            .mark_session_resumed(codespace, &session.0)
+            .await
+            .map_err(oracle_error)
     }
 }
 

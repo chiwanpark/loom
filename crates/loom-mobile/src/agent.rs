@@ -16,9 +16,9 @@ use tokio::sync::Notify;
 use crate::error::{LoomError, Result};
 use crate::hosts::CLIENT_NAME;
 use crate::records::{
-    Agent, AgentUpdate, ApprovalDecision, ConversationUpdate, Delivery, ImageData, Model, Notes,
-    Policy, Reasoning, SessionSummary, SystemPromptInfo, TakenBack, TaskEdit, TaskItem,
-    notice_message, parse_version, task_items, version_text,
+    Agent, AgentUpdate, ApprovalDecision, ArchivedSession, ConversationUpdate, Delivery, ImageData,
+    Model, Notes, Policy, Reasoning, SessionSummary, SystemPromptInfo, TakenBack, TaskEdit,
+    TaskItem, notice_message, parse_version, task_items, version_text,
 };
 use crate::runtime::{run, spawn};
 use crate::terminal::{TermShared, Terminals};
@@ -136,7 +136,8 @@ impl State {
         }
         match self.sessions.iter_mut().find(|s| s.id == info.id) {
             Some(known) => *known = info,
-            None => self.sessions.push(info),
+            None if !info.archived => self.sessions.push(info),
+            None => {}
         }
         self.sessions_changed = true;
     }
@@ -661,11 +662,33 @@ impl AgentConnection {
         Ok(())
     }
 
-    pub async fn delete_session(self: Arc<Self>, session: String) -> Result<()> {
-        with_client(&self.shared, move |client| async move {
-            Ok(client.delete_session(&session_id(session)).await?)
+    pub async fn list_archived_sessions(self: Arc<Self>) -> Result<Vec<ArchivedSession>> {
+        let sessions = with_client(&self.shared, move |client| async move {
+            Ok(client.list_archived_sessions().await?)
         })
-        .await
+        .await?;
+        let now = crate::records::now_unix();
+        Ok(sessions
+            .iter()
+            .map(|session| ArchivedSession::of(now, session))
+            .collect())
+    }
+
+    pub async fn resume_session(
+        self: Arc<Self>,
+        session: String,
+        codespace: Option<String>,
+    ) -> Result<SessionSummary> {
+        let info = with_client(&self.shared, move |client| async move {
+            Ok(client
+                .resume_session(&session_id(session), codespace)
+                .await?)
+        })
+        .await?;
+        let summary = SessionSummary::from(&info);
+        self.shared.lock().session_updated(info);
+        self.shared.wake.notify_one();
+        Ok(summary)
     }
 
     /// Follows a session's conversation; its updates then come from

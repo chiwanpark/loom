@@ -5,13 +5,13 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use loom_oracle_proto::{
-    ArchiveChunk, ArchiveFile, ArchiveFiles, ArchivePage, CodespaceArchive, CodespaceState,
-    ErrorCode, HostCall, OracleError, valid_archive_file,
+    ARCHIVE_CHUNK, ArchiveChunk, ArchiveFile, ArchiveFiles, ArchivePage, ArchivedSession,
+    ArchivedSessionPart, CodespaceArchive, CodespaceState, ErrorCode, HostCall, OracleError,
+    valid_archive_file,
 };
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-use super::codespaces::conflict;
 use super::{Oracle, bad_request, not_found};
 use crate::store::{ArchiveRow, CodespaceRow, now_unix};
 
@@ -20,6 +20,7 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 const MAX_PAGE: usize = 1024 * 1024;
 const PARTIAL: &str = ".partial";
+const TITLE_CHARS: usize = 80;
 
 fn internal(message: impl Into<String>) -> OracleError {
     OracleError::new(ErrorCode::Internal, message)
@@ -89,21 +90,27 @@ fn merge(dir: &Path) -> Result<u64, OracleError> {
     Ok(size)
 }
 
-fn read_page(
-    dir: &Path,
-    session: &str,
-    after: Option<u64>,
-) -> Result<Option<ArchivePage>, OracleError> {
+fn sqlite(err: rusqlite::Error) -> OracleError {
+    internal(format!("cannot read the archive: {err}"))
+}
+
+fn stores(dir: &Path) -> Result<Vec<PathBuf>, OracleError> {
     let mut stores: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|err| io_error("cannot read the archive", err))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().is_some_and(|e| e == "sqlite"))
         .collect();
     stores.sort();
-    let sqlite = |err: rusqlite::Error| internal(format!("cannot read the archive: {err}"));
-    for path in stores {
-        let conn =
-            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(sqlite)?;
+    Ok(stores)
+}
+
+fn open_store(path: &Path) -> Result<Connection, OracleError> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(sqlite)
+}
+
+fn store_with(dir: &Path, session: &str) -> Result<Option<Connection>, OracleError> {
+    for path in stores(dir)? {
+        let conn = open_store(&path)?;
         let known: bool = conn
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ?1)
@@ -112,32 +119,175 @@ fn read_page(
                 |row| row.get(0),
             )
             .map_err(sqlite)?;
-        if !known {
-            continue;
+        if known {
+            return Ok(Some(conn));
         }
-        let after = after.map_or(-1, |seq| i64::try_from(seq).unwrap_or(i64::MAX));
-        let mut statement = conn
-            .prepare(
-                "SELECT seq, event FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq",
-            )
-            .map_err(sqlite)?;
-        let mut rows = statement.query(params![session, after]).map_err(sqlite)?;
-        let mut page = ArchivePage::default();
-        let mut bytes = 0;
-        while let Some(row) = rows.next().map_err(sqlite)? {
-            if bytes >= MAX_PAGE {
-                page.more = true;
-                break;
-            }
-            let seq: i64 = row.get(0).map_err(sqlite)?;
-            let event: Vec<u8> = row.get(1).map_err(sqlite)?;
-            bytes += event.len();
-            page.events.push(STANDARD.encode(event));
-            page.last = u64::try_from(seq).ok();
-        }
-        return Ok(Some(page));
     }
     Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredSession {
+    id: String,
+    title: Option<String>,
+    model: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+}
+
+fn first_line(history: &[serde_json::Value]) -> Option<String> {
+    history
+        .iter()
+        .filter(|message| message.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .find_map(|message| {
+            message.get("content")?.as_array()?.iter().find_map(|part| {
+                let text = part.get("text")?.as_str()?;
+                let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+                Some(line.chars().take(TITLE_CHARS).collect())
+            })
+        })
+}
+
+fn stored_session(
+    id: String,
+    created_at: i64,
+    updated_at: i64,
+    state: &str,
+) -> Option<StoredSession> {
+    let state: serde_json::Value = serde_json::from_str(state).ok()?;
+    let list = |key: &str| {
+        state
+            .get(key)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let history = list("history");
+    if history.is_empty() && list("pending").is_empty() {
+        return None;
+    }
+    let text = |key: &str| {
+        state
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+    Some(StoredSession {
+        id,
+        title: text("title").or_else(|| first_line(&history)),
+        model: text("model"),
+        created_at: u64::try_from(created_at).unwrap_or_default(),
+        updated_at: u64::try_from(updated_at).unwrap_or_default(),
+    })
+}
+
+fn read_sessions(dir: &Path) -> Result<Vec<StoredSession>, OracleError> {
+    let mut sessions = Vec::new();
+    for path in stores(dir)? {
+        let conn = open_store(&path)?;
+        let mut statement = conn
+            .prepare("SELECT id, created_at, updated_at, state FROM sessions")
+            .map_err(sqlite)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sqlite)?;
+        for row in rows {
+            let (id, created_at, updated_at, state) = row.map_err(sqlite)?;
+            sessions.extend(stored_session(id, created_at, updated_at, &state));
+        }
+    }
+    Ok(sessions)
+}
+
+fn read_page(
+    dir: &Path,
+    session: &str,
+    after: Option<u64>,
+) -> Result<Option<ArchivePage>, OracleError> {
+    let Some(conn) = store_with(dir, session)? else {
+        return Ok(None);
+    };
+    let after = after.map_or(-1, |seq| i64::try_from(seq).unwrap_or(i64::MAX));
+    let mut statement = conn
+        .prepare("SELECT seq, event FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq")
+        .map_err(sqlite)?;
+    let mut rows = statement.query(params![session, after]).map_err(sqlite)?;
+    let mut page = ArchivePage::default();
+    let mut bytes = 0;
+    while let Some(row) = rows.next().map_err(sqlite)? {
+        if bytes >= MAX_PAGE {
+            page.more = true;
+            break;
+        }
+        let seq: i64 = row.get(0).map_err(sqlite)?;
+        let event: Vec<u8> = row.get(1).map_err(sqlite)?;
+        bytes += event.len();
+        page.events.push(STANDARD.encode(event));
+        page.last = u64::try_from(seq).ok();
+    }
+    Ok(Some(page))
+}
+
+fn read_part(
+    dir: &Path,
+    session: &str,
+    offset: u64,
+) -> Result<Option<(StoredSession, ArchivedSessionPart)>, OracleError> {
+    let Some(conn) = store_with(dir, session)? else {
+        return Ok(None);
+    };
+    let row = conn
+        .query_row(
+            "SELECT created_at, updated_at, state FROM sessions WHERE id = ?1",
+            [session],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sqlite)?;
+    let Some((created_at, updated_at, state)) = row else {
+        return Ok(None);
+    };
+    let Some(stored) = stored_session(session.to_owned(), created_at, updated_at, &state) else {
+        return Ok(None);
+    };
+    let tasks: Option<String> = conn
+        .query_row(
+            "SELECT list FROM tasks WHERE session_id = ?1",
+            [session],
+            |row| row.get(0),
+        )
+        .optional()
+        .or_else(|err| match err {
+            rusqlite::Error::SqliteFailure(..) => Ok(None),
+            other => Err(other),
+        })
+        .map_err(sqlite)?;
+    let bytes = state.as_bytes();
+    let start = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(bytes.len());
+    let end = start.saturating_add(ARCHIVE_CHUNK).min(bytes.len());
+    let part = ArchivedSessionPart {
+        session: ArchivedSession::default(),
+        state: STANDARD.encode(&bytes[start..end]),
+        size: bytes.len() as u64,
+        tasks,
+    };
+    Ok(Some((stored, part)))
 }
 
 impl Oracle {
@@ -343,24 +493,87 @@ impl Oracle {
         Ok(())
     }
 
-    pub fn archive_events(
+    fn has_archive(row: &CodespaceRow) -> bool {
+        row.state == CodespaceState::Closed
+            && row.archive.as_ref().is_some_and(|a| a.saved_at.is_some())
+    }
+
+    fn workspace_archive(
         &self,
+        peer: u64,
         codespace: &str,
-        session: &str,
-        after: Option<u64>,
-    ) -> Result<ArchivePage, OracleError> {
-        let row = self
-            .store
-            .codespace(codespace)?
-            .ok_or_else(|| not_found(format!("no codespace has the ID {codespace}")))?;
-        if row.archive.as_ref().and_then(|a| a.saved_at).is_none() {
-            return Err(not_found(format!(
-                "the codespace {codespace} has no session archive"
-            )));
+    ) -> Result<(CodespaceRow, CodespaceRow, PathBuf), OracleError> {
+        let caller = self.codespace_of_peer(peer)?;
+        let missing = || {
+            not_found(format!(
+                "no closed codespace of this workspace has the ID {codespace}"
+            ))
+        };
+        let row = self.store.codespace(codespace)?.ok_or_else(missing)?;
+        if row.workspace != caller.workspace || !Self::has_archive(&row) {
+            return Err(missing());
         }
         let dir = self
             .archive_dir(codespace)
             .ok_or_else(|| not_found("the oracle keeps no session archive"))?;
+        Ok((caller, row, dir))
+    }
+
+    pub fn archived_sessions(&self, peer: u64) -> Result<Vec<ArchivedSession>, OracleError> {
+        let caller = self.codespace_of_peer(peer)?;
+        let mut sessions = Vec::new();
+        for row in self.store.codespaces()? {
+            if row.workspace != caller.workspace || row.id == caller.id || !Self::has_archive(&row)
+            {
+                continue;
+            }
+            let Some(dir) = self.archive_dir(&row.id) else {
+                continue;
+            };
+            let stored = match read_sessions(&dir) {
+                Ok(stored) => stored,
+                Err(err) => {
+                    tracing::warn!(codespace = %row.id, error = %err.message, "cannot read the session archive");
+                    continue;
+                }
+            };
+            let resumed = self.store.resumed_sessions(&row.id)?;
+            sessions.extend(
+                stored
+                    .into_iter()
+                    .filter(|session| !resumed.contains(&session.id))
+                    .map(|session| archived(&row, session)),
+            );
+        }
+        sessions.sort_by(|a, b| (b.updated_at, &b.id).cmp(&(a.updated_at, &a.id)));
+        Ok(sessions)
+    }
+
+    pub fn archived_session(
+        &self,
+        peer: u64,
+        codespace: &str,
+        session: &str,
+        offset: u64,
+    ) -> Result<ArchivedSessionPart, OracleError> {
+        let (_, row, dir) = self.workspace_archive(peer, codespace)?;
+        let (stored, mut part) = read_part(&dir, session, offset)?.ok_or_else(|| {
+            not_found(format!(
+                "the archive of {codespace} has no session {session}"
+            ))
+        })?;
+        part.session = archived(&row, stored);
+        Ok(part)
+    }
+
+    pub fn archive_events(
+        &self,
+        peer: u64,
+        codespace: &str,
+        session: &str,
+        after: Option<u64>,
+    ) -> Result<ArchivePage, OracleError> {
+        let (_, _, dir) = self.workspace_archive(peer, codespace)?;
         read_page(&dir, session, after)?.ok_or_else(|| {
             not_found(format!(
                 "the archive of {codespace} has no session {session}"
@@ -368,26 +581,41 @@ impl Oracle {
         })
     }
 
-    pub fn delete_archive(&self, codespace: &str, by: Option<u64>) -> Result<(), OracleError> {
-        let row = self
-            .store
-            .codespace(codespace)?
-            .ok_or_else(|| not_found(format!("no codespace has the ID {codespace}")))?;
-        if row.state != CodespaceState::Closed {
-            return Err(conflict(format!("the codespace {codespace} is not closed")));
-        }
-        if row.archive.is_none() {
+    pub fn mark_session_resumed(
+        &self,
+        peer: u64,
+        codespace: &str,
+        session: &str,
+    ) -> Result<(), OracleError> {
+        let (caller, _, dir) = self.workspace_archive(peer, codespace)?;
+        if store_with(&dir, session)?.is_none() {
             return Err(not_found(format!(
-                "the codespace {codespace} has no session archive"
+                "the archive of {codespace} has no session {session}"
             )));
         }
-        self.remove_archive(codespace);
-        self.change_codespace(codespace, false, |row| {
-            row.archive = None;
-            true
-        })?;
-        self.audit(by, "archive_deleted", &format!("codespace {codespace}"));
+        self.store
+            .mark_session_resumed(codespace, session, &caller.id)?;
+        self.audit(
+            Some(peer),
+            "session_resumed",
+            &format!(
+                "session {session} of codespace {codespace} in codespace {}",
+                caller.id
+            ),
+        );
         Ok(())
+    }
+}
+
+fn archived(row: &CodespaceRow, session: StoredSession) -> ArchivedSession {
+    ArchivedSession {
+        codespace: row.id.clone(),
+        branch: row.branch.clone(),
+        id: session.id,
+        title: session.title,
+        model: session.model,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
     }
 }
 
@@ -447,5 +675,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("0a.sqlite"), b"not sqlite").unwrap();
         assert!(merge(dir.path()).is_err());
+    }
+
+    #[test]
+    fn archived_sessions_take_their_title_from_the_first_user_message() {
+        let state = serde_json::json!({
+            "model": "openai/gpt-5",
+            "history": [
+                {"role": "assistant", "content": [{"type": "text", "text": "no"}]},
+                {"role": "user", "content": [
+                    {"type": "image", "mime_type": "image/png", "data": ""},
+                    {"type": "text", "text": "\n  Fix the parser  \nplease"},
+                ]},
+            ],
+        });
+        let stored = stored_session("s1".into(), 1, 2, &state.to_string()).unwrap();
+        assert_eq!(stored.title.as_deref(), Some("Fix the parser"));
+        assert_eq!(stored.model.as_deref(), Some("openai/gpt-5"));
+        assert_eq!((stored.created_at, stored.updated_at), (1, 2));
+
+        let titled = serde_json::json!({"title": "Mine", "history": [], "pending": [{"id": 1}]});
+        let stored = stored_session("s2".into(), 1, 2, &titled.to_string()).unwrap();
+        assert_eq!(stored.title.as_deref(), Some("Mine"));
+        assert_eq!(stored.model, None);
+
+        for empty in [
+            "{}",
+            r#"{"history": [], "pending": []}"#,
+            r#"{"title": "Empty"}"#,
+            "not json",
+        ] {
+            assert_eq!(stored_session("s3".into(), 1, 2, empty), None, "{empty}");
+        }
     }
 }

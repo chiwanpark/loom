@@ -10,6 +10,7 @@ use loom_client::{
     ClientError, ClientIdentity, NewCodespace, OracleClient, OracleEndpoint, OracleEvents,
     RelayHost,
 };
+use loom_view_model::codespace_list::{self, Activity};
 use loom_view_model::codespaces::{
     self, can_stop, directories, format_memory, new_codespace_defaults, parse_memory, session_info,
     state_label, work_text,
@@ -54,6 +55,25 @@ impl From<CodespaceState> for CodespaceStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CodespaceActivity {
+    NeedsApproval,
+    Working,
+    Completed,
+    Idle,
+}
+
+impl From<Activity> for CodespaceActivity {
+    fn from(activity: Activity) -> Self {
+        match activity {
+            Activity::NeedsApproval => Self::NeedsApproval,
+            Activity::Working => Self::Working,
+            Activity::Completed => Self::Completed,
+            Activity::Idle => Self::Idle,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct OracleRepository {
     pub url: String,
@@ -92,6 +112,9 @@ pub struct Codespace {
     pub step: Option<String>,
     pub error: Option<String>,
     pub sessions: u32,
+    pub title: String,
+    pub detail: String,
+    pub activity: Option<CodespaceActivity>,
     pub instance: Option<String>,
     pub repositories: Vec<String>,
     pub created_at: u64,
@@ -101,7 +124,8 @@ pub struct Codespace {
 }
 
 impl Codespace {
-    fn of(codespace: &oracle::Codespace, sessions: u32) -> Self {
+    fn of(codespace: &oracle::Codespace, sessions: &[loom_client::proto::SessionInfo]) -> Self {
+        let row = codespace_list::row("", codespace, sessions);
         Self {
             id: codespace.id.clone(),
             workspace: codespace.workspace.clone(),
@@ -114,7 +138,10 @@ impl Codespace {
             memory: format_memory(codespace.memory_mib),
             step: codespace.step.clone(),
             error: codespace.error.clone(),
-            sessions,
+            sessions: row.sessions as u32,
+            title: row.title,
+            detail: row.detail,
+            activity: row.activity.map(CodespaceActivity::from),
             instance: codespace.agent.as_ref().and_then(|a| a.instance.clone()),
             repositories: directories(&codespace.repositories),
             created_at: codespace.created_at,
@@ -522,18 +549,19 @@ impl Shared {
     fn lists(&self) -> OracleLists {
         let state = self.lock();
         let lists = &state.lists;
-        let count = |id: &str| {
+        let infos = |id: &str| -> Vec<loom_client::proto::SessionInfo> {
             lists
                 .sessions
                 .iter()
-                .filter(|s| s.codespace == id && !s.session.archived)
-                .count() as u32
+                .filter(|s| s.codespace == id)
+                .map(|s| session_info(&s.session))
+                .collect()
         };
         let mut codespaces: Vec<Codespace> = lists
             .codespaces
             .iter()
             .filter(|c| codespaces::is_listed(c))
-            .map(|c| Codespace::of(c, count(&c.id)))
+            .map(|c| Codespace::of(c, &infos(&c.id)))
             .collect();
         codespaces.sort_by_key(|c| std::cmp::Reverse(c.created_at));
         let mut workspaces: Vec<OracleWorkspace> = lists
@@ -865,7 +893,7 @@ impl OracleConnection {
             drop(state);
             shared.wake.notify_one();
             Ok(CreatedCodespace {
-                codespace: Codespace::of(&created.codespace, 0),
+                codespace: Codespace::of(&created.codespace, &[]),
                 warnings: created.warnings,
             })
         })
@@ -876,7 +904,7 @@ impl OracleConnection {
         let client = self.shared.client()?;
         run(async move {
             let codespace = client.close_codespace(&id).await.map_err(oracle_error)?;
-            Ok(Codespace::of(&codespace, 0))
+            Ok(Codespace::of(&codespace, &[]))
         })
         .await
     }
@@ -885,7 +913,7 @@ impl OracleConnection {
         let client = self.shared.client()?;
         run(async move {
             let codespace = client.stop_codespace(&id).await.map_err(oracle_error)?;
-            Ok(Codespace::of(&codespace, 0))
+            Ok(Codespace::of(&codespace, &[]))
         })
         .await
     }
@@ -894,7 +922,7 @@ impl OracleConnection {
         let client = self.shared.client()?;
         run(async move {
             let codespace = client.resume_codespace(&id).await.map_err(oracle_error)?;
-            Ok(Codespace::of(&codespace, 0))
+            Ok(Codespace::of(&codespace, &[]))
         })
         .await
     }

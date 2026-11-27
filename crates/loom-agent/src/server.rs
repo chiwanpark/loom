@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use loom_agent_core::{Agent, Connection, Flow, Repositories};
+use loom_agent_core::{Agent, Connection, Flow, Repositories, SessionArchive};
 use loom_proto::{
     AgentInfo, ApiError, ClientMessage, ErrorCode, ServerMessage, decode, encode,
     undecodable_request_id,
@@ -19,6 +19,7 @@ pub struct ServerContext {
     pub agent: Agent,
     pub info: AgentInfo,
     pub repositories: Option<std::sync::Arc<dyn Repositories>>,
+    pub archive: Option<std::sync::Arc<dyn SessionArchive>>,
 }
 
 impl ServerContext {
@@ -27,6 +28,7 @@ impl ServerContext {
             agent,
             info,
             repositories: None,
+            archive: None,
         }
     }
 }
@@ -54,6 +56,7 @@ pub async fn serve_stream(ctx: ServerContext, stream: FrameStream) {
 
     let mut connection = Connection::new(ctx.agent, ctx.info, out)
         .with_repositories(ctx.repositories)
+        .with_archive(ctx.archive)
         .with_client_label(match &peer {
             PeerInfo::Relay { label, .. } => Some(label.clone()),
             _ => None,

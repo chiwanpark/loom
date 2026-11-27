@@ -97,6 +97,7 @@ pub struct UsedModel {
 pub struct StoredSession {
     pub id: SessionId,
     pub created_at: u64,
+    pub updated_at: u64,
     pub state: SessionState,
     pub events: Vec<SequencedEvent>,
     /// The session's own notes, from before the agent's notes; empty when
@@ -317,13 +318,15 @@ impl EventStore {
 
 fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
     let mut sessions = Vec::new();
-    let mut stmt =
-        conn.prepare("SELECT id, created_at, state FROM sessions ORDER BY created_at, id")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, updated_at, state FROM sessions ORDER BY created_at, id",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     let mut events_stmt =
@@ -336,7 +339,7 @@ fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
     )?;
     let mut tasks_stmt = conn.prepare("SELECT list FROM tasks WHERE session_id = ?1")?;
     for row in rows {
-        let (id, created_at, state) = row?;
+        let (id, created_at, updated_at, state) = row?;
         let state: SessionState = match serde_json::from_str(&state) {
             Ok(state) => state,
             Err(err) => {
@@ -374,6 +377,7 @@ fn load(conn: &Connection) -> Result<Vec<StoredSession>, StoreError> {
         sessions.push(StoredSession {
             id: SessionId(id),
             created_at: created_at as u64,
+            updated_at: updated_at as u64,
             state,
             events,
             notes,

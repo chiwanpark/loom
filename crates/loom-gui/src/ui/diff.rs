@@ -160,10 +160,11 @@ impl DiffView {
     }
 
     /// How to open this view again after a restart.
-    pub fn saved_tab(&self) -> SavedTab {
+    pub fn saved_tab(&self, cx: &gpui::App) -> SavedTab {
         match &self.source {
-            Source::Session { .. } => SavedTab::SessionDiff {
+            Source::Session { conversation, .. } => SavedTab::SessionDiff {
                 path: self.path.clone(),
+                session: conversation.read(cx).info.id.0.clone(),
             },
             Source::Git {
                 relative,

@@ -183,7 +183,14 @@ When a codespace closes, the oracle keeps a read-only copy of its sessions. This
 
 If the host is not connected, the archive and the delete wait for the host. If the archive fails for a different cause, for example because the sessions are larger than `codespaces.archive_max_size`, the host deletes the instance and the codespace shows the error.
 
-In the desktop app, open **Archive** below a workspace. Click a closed codespace to read its last session, or select a session in its menu. A lost codespace has no archive, because its instance is not there.
+A lost codespace has no archive, because its instance is not there.
+
+Only the agents of the same workspace read an archive. Clients do not read it. To continue a session of a closed codespace, resume it in an open codespace of the same workspace:
+
+- In the desktop client, click **Resume** below the prompt box. See [Resume a session](desktop.md#resume-a-session).
+- In the Android app, choose **Resume a session** in the menu of a session.
+
+The list shows the sessions of the archives that have a conversation. The agent copies the session with its conversation, events, and tasks. The oracle then marks the session as resumed, and the list does not show it again. The archive does not change, and the oracle deletes it after `codespaces.archive_retention`.
 
 ## Git providers
 
@@ -402,6 +409,10 @@ Commands of codespace agents:
 | `codespace_notes` | `text` | |
 | `session_summaries` | `sessions`, `removed`, `full` | With `full`, the oracle removes the sessions that are not in the list. |
 | `take_first_message` | | `message`, or no message. The oracle gives the first message only once. |
+| `list_archived_sessions` | | `sessions`: the sessions of the archives of the closed codespaces of the same workspace that have a conversation and were not resumed, newest first. Each has `codespace`, `branch`, `id`, `title`, `model`, `created_at`, and `updated_at`. |
+| `get_archived_session` | `codespace`, `session`, optional `offset` | `session`, `state` (a part of at most 1 MiB of the session state from `offset`, in base64), `size` (the size of the whole state), and `tasks` |
+| `archive_events` | `codespace`, `session`, optional `after` | `events` (in base64), `last`, `more` |
+| `mark_session_resumed` | `codespace`, `session` | |
 
 A codespace has one of these states: `provisioning`, `starting`, `ready`, `closing`, `closed`, `failed`, and `lost`.
 

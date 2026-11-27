@@ -48,7 +48,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.chiwanpark.loom.LinkState
 import com.chiwanpark.loom.LoomApplication
 import com.chiwanpark.loom.Screen
 import com.chiwanpark.loom.core.Host
@@ -74,7 +76,7 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
 
     Scaffold(
         topBar = {
-            LoomTopBar("Hosts", onBack = { app.navigator.pop() }) {
+            LoomTopBar("Oracles", onBack = { app.navigator.pop() }) {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
@@ -101,8 +103,11 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(padding)) {
                 items(hosts, key = { it.name }) { host ->
+                    val oracle = app.oracles.get(loom, host.name)
                     HostRow(
                         host,
+                        state = oracle.state,
+                        onRefresh = oracle::retryNow,
                         onRename = { renaming = host },
                         onColor = { coloring = host },
                         onRemove = { removing = host },
@@ -171,23 +176,40 @@ fun HostsScreen(app: LoomApplication, loom: Loom) {
 @Composable
 private fun HostRow(
     host: Host,
+    state: LinkState,
+    onRefresh: () -> Unit,
     onRename: () -> Unit,
     onColor: () -> Unit,
     onRemove: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    val status = when (state) {
+        LinkState.Connected -> "connected"
+        LinkState.Connecting -> "connecting…"
+        is LinkState.Down -> state.message
+    }
     CompactListItem(
         modifier = Modifier.clickable { menu = true },
         leadingContent = { ColorDot(hostColor(host.color)) },
         headlineContent = { Text(host.name, color = hostColor(host.color) ?: Color.Unspecified) },
         supportingContent = {
-            Text("Oracle · " + host.relayUrl.substringAfter("://"))
+            Text(
+                host.relayUrl.substringAfter("://") + " · " + status,
+                color = if (state is LinkState.Down) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         },
         trailingContent = {
             Box {
                 IconButton(onClick = { menu = true }) { LoomIcon(LoomIcons.More, "More") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     val close = { menu = false }
+                    MenuEntry("Refresh", LoomIcons.Refresh, close, onRefresh)
                     MenuEntry("Rename", LoomIcons.Pencil, close, onRename)
                     MenuEntry("Color…", LoomIcons.Palette, close, onColor)
                     MenuEntry("Remove", LoomIcons.Trash, close, onRemove)

@@ -1,9 +1,10 @@
-//! The session tab groups and pane layouts, saved across restarts.
+//! The codespace tab groups and pane layouts, saved across restarts.
 //!
-//! The file names each group by host, workspace, and session rather than by
-//! agent instance, because a restarted agent gets a new instance ID. A group
-//! is restored once its agent is connected and has listed its sessions;
-//! until then it stays in the file as it was.
+//! The file names each group by host and workspace rather than by agent
+//! instance, because a restarted agent gets a new instance ID. A group is
+//! restored once its agent is connected and has listed its sessions; until
+//! then it stays in the file as it was. A file of an older version is not
+//! converted: the client starts with an empty layout once.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::ui::panes::{Axis, Member, PaneAxis, PaneId};
 
 pub const FILE_NAME: &str = "layout.json";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedLayout {
@@ -36,7 +37,6 @@ impl Default for SavedLayout {
 pub struct GroupKey {
     pub host: String,
     pub workspace: PathBuf,
-    pub session: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,7 +96,9 @@ impl SavedPane {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SavedTab {
-    Conversation,
+    Conversation {
+        session: String,
+    },
     /// A terminal is reattached when its agent instance still runs it, and
     /// replaced by a new one otherwise.
     Terminal {
@@ -112,16 +114,19 @@ pub enum SavedTab {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         committed: bool,
     },
-    /// The changes the session made to a file, by absolute path.
+    /// The changes a session made to a file, by absolute path.
     SessionDiff {
         path: PathBuf,
+        session: String,
     },
     /// A read-only file, by path relative to the workspace.
     File {
         path: String,
     },
-    /// The session's system prompt and tools.
-    SystemPrompt,
+    /// A session's system prompt and tools.
+    SystemPrompt {
+        session: String,
+    },
 }
 
 pub fn path(state_dir: &Path) -> PathBuf {
@@ -266,7 +271,7 @@ mod tests {
         group.split(1, 2, SplitDirection::Right);
         group.split(2, 3, SplitDirection::Down);
         let tabs = |id: PaneId| match id {
-            1 => Some(pane(vec![SavedTab::Conversation], 0)),
+            1 => Some(pane(vec![conversation()], 0)),
             2 => Some(pane(
                 vec![
                     SavedTab::Terminal {
@@ -351,7 +356,7 @@ mod tests {
         group.split(2, 3, SplitDirection::Down);
         // Pane 3 has nothing to save, so the vertical split collapses.
         let saved = save_member(&group.root, &mut |id| {
-            (id != 3).then(|| pane(vec![SavedTab::Conversation], 0))
+            (id != 3).then(|| pane(vec![conversation()], 0))
         })
         .unwrap();
         let SavedMember::Split { axis, members } = &saved else {
@@ -364,13 +369,19 @@ mod tests {
             axis: SavedAxis::Vertical,
             members: vec![
                 SavedMember::Pane(pane(Vec::new(), 0)),
-                SavedMember::Pane(pane(vec![SavedTab::Conversation], 0)),
+                SavedMember::Pane(pane(vec![conversation()], 0)),
             ],
         };
         let mut panes = Vec::new();
         let root = restore_member(&saved, &mut || 7, &mut panes).unwrap();
         assert_eq!(root, Member::Pane(7));
         assert_eq!(panes.len(), 1);
+    }
+
+    fn conversation() -> SavedTab {
+        SavedTab::Conversation {
+            session: "s1".into(),
+        }
     }
 
     #[test]
@@ -382,6 +393,19 @@ mod tests {
         assert_eq!(load(&file), SavedLayout::default());
         std::fs::write(&file, r#"{"version": 99, "groups": [], "active": null}"#).unwrap();
         assert_eq!(load(&file), SavedLayout::default());
+        let version_1 = r#"{
+            "version": 1,
+            "groups": [{
+                "host": "local",
+                "workspace": "/w",
+                "session": "s1",
+                "root": {"type": "pane", "tabs": [{"kind": "conversation"}], "active": 0},
+                "active_pane": 0
+            }],
+            "active": {"host": "local", "workspace": "/w", "session": "s1"}
+        }"#;
+        std::fs::write(&file, version_1).unwrap();
+        assert_eq!(load(&file), SavedLayout::default());
 
         let layout = SavedLayout {
             version: VERSION,
@@ -389,12 +413,15 @@ mod tests {
                 key: GroupKey {
                     host: "local".into(),
                     workspace: "/w".into(),
-                    session: "s1".into(),
                 },
                 root: SavedMember::Pane(pane(
-                    vec![SavedTab::SessionDiff {
-                        path: "/w/a.rs".into(),
-                    }],
+                    vec![
+                        conversation(),
+                        SavedTab::SessionDiff {
+                            path: "/w/a.rs".into(),
+                            session: "s1".into(),
+                        },
+                    ],
                     0,
                 )),
                 active_pane: 0,

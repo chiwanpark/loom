@@ -128,7 +128,13 @@ import org.intellij.markdown.ast.getTextInNode
 
 /** A session's conversation: what the agent does, and what the user asks of it. */
 @Composable
-fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
+fun ConversationScreen(
+    app: LoomApplication,
+    link: AgentLink,
+    session: String,
+    onTerminal: () -> Unit,
+    onSession: (String) -> Unit,
+) {
     val conversation = link.conversation(session)
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -138,6 +144,8 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     var pickPolicy by remember { mutableStateOf(false) }
     var pickCommentGuard by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var resuming by remember { mutableStateOf(false) }
     var rewinding by remember { mutableStateOf<Long?>(null) }
     var draft by rememberSaveable { mutableStateOf("") }
 
@@ -156,7 +164,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
     }
     DisposableEffect(session) {
         onDispose {
-            val stillThere = app.navigator.stack.any { it is Screen.Conversation && it.session == session }
+            val stillThere = app.navigator.follows(link.host, link.instance)
             if (!stillThere) app.scope.launch { link.closeSession(session) }
         }
     }
@@ -204,10 +212,7 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                     MenuEntry("Files", LoomIcons.Folder, close) {
                         app.navigator.push(Screen.Files(link.host, link.instance))
                     }
-                    MenuEntry("Terminal", LoomIcons.Terminal, close) {
-                        // Another client's terminal shows first when the app has none.
-                        app.navigator.push(Screen.Terminal(link.host, link.instance, link.defaultTerminal() ?: 0))
-                    }
+                    MenuEntry("Terminal", LoomIcons.Terminal, close, onTerminal)
                     MenuEntry("Ports", LoomIcons.Plug, close) {
                         app.navigator.push(Screen.Ports(link.host, link.instance))
                     }
@@ -219,6 +224,8 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
                         scope.attempt(snackbar) { link.connection().compactSession(session) }
                     }
                     MenuEntry("Clear the conversation", LoomIcons.Eraser, close) { clearing = true }
+                    MenuEntry("Rename the session", LoomIcons.Pencil, close) { renaming = true }
+                    MenuEntry("Resume a session", LoomIcons.ArchiveRestore, close) { resuming = true }
                 }
             }
         },
@@ -300,6 +307,27 @@ fun ConversationScreen(app: LoomApplication, link: AgentLink, session: String) {
             confirm = "Clear",
             onConfirm = { scope.attempt(snackbar) { link.connection().clearSession(session) } },
             onDismiss = { clearing = false },
+        )
+    }
+    if (renaming) {
+        TextInputDialog(
+            title = "Rename session",
+            initial = link.sessions.firstOrNull { it.id == session }?.title.orEmpty(),
+            label = "Title (empty for the first message)",
+            confirm = "Rename",
+            onConfirm = { title ->
+                scope.attempt(snackbar) {
+                    link.connection().renameSession(session, title.trim().ifEmpty { null })
+                }
+            },
+            onDismiss = { renaming = false },
+        )
+    }
+    if (resuming) {
+        ResumeDialog(
+            link,
+            onResumed = { resumed -> onSession(resumed.id) },
+            onDismiss = { resuming = false },
         )
     }
     rewinding?.let { key ->

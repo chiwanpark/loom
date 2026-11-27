@@ -64,9 +64,9 @@ class MainActivity : ComponentActivity() {
         if (app.directory.hosts.isEmpty()) app.directory.refresh(loom)
         app.links.expect(loom, host, instance, intent.getStringExtra(Push.EXTRA_WORKSPACE))
         val current = app.navigator.current
-        if (current is Screen.Conversation && current.host == host && current.session == session) return
+        if (current is Screen.Codespace && current.shows(host, session)) return
         app.navigator.home()
-        app.navigator.push(Screen.Conversation(host, instance, session))
+        app.navigator.push(Screen.Codespace(host, instance, session))
     }
 
     /** Asks to show notifications, once there is a host to send them. */

@@ -48,6 +48,10 @@ pub struct SystemPromptView {
 }
 
 impl SystemPromptView {
+    pub fn session(&self) -> &SessionId {
+        &self.session
+    }
+
     pub fn new(
         connection: Entity<AgentConnection>,
         session: SessionId,

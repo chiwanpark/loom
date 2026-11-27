@@ -67,7 +67,13 @@ private val NO_MODIFIERS = KeyModifiers(ctrl = false, alt = false, shift = false
  * desktop app) holds, which the app can take over; 0 opens a new terminal.
  */
 @Composable
-fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
+fun TerminalScreen(
+    app: LoomApplication,
+    link: AgentLink,
+    number: Int,
+    onShow: (Int) -> Unit,
+    onClosed: () -> Unit,
+) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -83,7 +89,7 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
         failed = null
         try {
             val tab = link.openTerminal(80, 24)
-            app.navigator.replace(Screen.Terminal(link.host, link.instance, tab.number))
+            onShow(tab.number)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -92,8 +98,9 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
     }
     val tab = if (number == 0) null else link.terminal(number)
     val place = if (number == 0) null else link.place(number)
-    fun newTerminal() = app.navigator.replace(Screen.Terminal(link.host, link.instance))
-    fun show(target: Int) = app.navigator.replace(Screen.Terminal(link.host, link.instance, target))
+    fun show(target: Int) = onShow(target)
+    fun newTerminal() = show(0)
+    fun closed() = onClosed()
     val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
 
     // Moves a terminal here from the client that holds it, or from none, with the button over it.
@@ -154,7 +161,7 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
                         }
                         MenuEntry("Close the terminal", LoomIcons.X, close) {
                             link.closeTerminal(tab)
-                            app.navigator.pop()
+                            closed()
                         }
                     }
                 }
@@ -195,7 +202,7 @@ fun TerminalScreen(app: LoomApplication, link: AgentLink, number: Int) {
                         onNew = ::newTerminal,
                         onClose = {
                             link.closeTerminal(tab)
-                            app.navigator.pop()
+                            closed()
                         },
                     )
                 }

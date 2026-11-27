@@ -1011,6 +1011,22 @@ impl Render for SessionView {
                                         })),
                                 ),
                             )
+                            .child(
+                                div().debug_selector(|| "resume-button".into()).child(
+                                    Button::new("resume")
+                                        .ghost()
+                                        .small()
+                                        .icon(Icon::new(gpui_kit_assets::IconName::ArchiveRestore))
+                                        .label("Resume")
+                                        .tooltip("Open an archived session of this workspace")
+                                        .on_click(|_, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(crate::ui::workspace::ResumeSession),
+                                                cx,
+                                            )
+                                        }),
+                                ),
+                            )
                             .child(div().flex_1())
                             .child(
                                 Button::new("interrupt")

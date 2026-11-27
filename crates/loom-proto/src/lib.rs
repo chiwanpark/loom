@@ -612,6 +612,44 @@ mod tests {
     }
 
     #[test]
+    fn archived_session_messages_roundtrip() {
+        for command in [
+            Command::ListArchivedSessions,
+            Command::ResumeSession {
+                session: SessionId("s1".into()),
+                codespace: None,
+            },
+            Command::ResumeSession {
+                session: SessionId("s2".into()),
+                codespace: Some("k3x9".into()),
+            },
+        ] {
+            message_roundtrip(ClientMessage::Request { id: 1, command });
+        }
+        let session = |id: &str, location| ArchivedSessionInfo {
+            id: SessionId(id.into()),
+            title: Some("Fix the parser".into()),
+            model: Some("openai/gpt-5".into()),
+            created_at: 10,
+            updated_at: 20,
+            location,
+        };
+        message_roundtrip(ServerMessage::Response {
+            id: 2,
+            result: Ok(Payload::ArchivedSessions(vec![
+                session("s1", ArchivedLocation::Agent),
+                session(
+                    "s2",
+                    ArchivedLocation::Codespace {
+                        codespace: "k3x9".into(),
+                        branch: "loom/k3x9".into(),
+                    },
+                ),
+            ])),
+        });
+    }
+
+    #[test]
     fn terminal_lists_roundtrip() {
         let terminals = vec![
             TerminalInfo {

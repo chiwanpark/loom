@@ -254,6 +254,15 @@ ALTER TABLE codespaces ADD COLUMN archive_error TEXT;
     "
 DROP TABLE relay_hosts;
 ",
+    "
+CREATE TABLE resumed_sessions (
+    codespace TEXT NOT NULL REFERENCES codespaces (id) ON DELETE CASCADE,
+    session TEXT NOT NULL,
+    resumed_by TEXT,
+    resumed_at INTEGER NOT NULL,
+    PRIMARY KEY (codespace, session)
+);
+",
 ];
 
 const KEY_CHECK: &str = "master_key_check";

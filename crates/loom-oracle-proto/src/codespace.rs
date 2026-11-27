@@ -495,6 +495,39 @@ pub struct ArchivePage {
     pub more: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedSession {
+    pub codespace: String,
+    #[serde(default)]
+    pub branch: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub created_at: u64,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedSessions {
+    #[serde(default)]
+    pub sessions: Vec<ArchivedSession>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedSessionPart {
+    pub session: ArchivedSession,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<String>,
+}
+
 pub const ARCHIVE_CHUNK: usize = 1024 * 1024;
 
 pub fn valid_archive_file(name: &str) -> bool {

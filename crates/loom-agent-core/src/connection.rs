@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentNotice};
+use crate::archive::SessionArchive;
 use crate::convert;
 use crate::events::Subscription;
 use crate::repositories::Repositories;
@@ -37,6 +38,7 @@ pub struct Connection {
     logins: Arc<Mutex<HashMap<String, CancellationToken>>>,
     tasks: Vec<JoinHandle<()>>,
     repositories: Option<Arc<dyn Repositories>>,
+    archive: Option<Arc<dyn SessionArchive>>,
     connection_id: ConnectionId,
     /// The label of a client that comes through a relay, to tell people where
     /// its terminals are open.
@@ -65,6 +67,7 @@ impl Connection {
             logins: Arc::default(),
             tasks: Vec::new(),
             repositories: None,
+            archive: None,
             connection_id,
             client_label: None,
             program: String::new(),
@@ -81,6 +84,11 @@ impl Connection {
 
     pub fn with_repositories(mut self, repositories: Option<Arc<dyn Repositories>>) -> Self {
         self.repositories = repositories;
+        self
+    }
+
+    pub fn with_archive(mut self, archive: Option<Arc<dyn SessionArchive>>) -> Self {
+        self.archive = archive;
         self
     }
 
@@ -240,6 +248,16 @@ impl Connection {
                         .map(|()| Payload::Ok)
                         .map_err(|e| convert::api_error(&e))
                 });
+            }
+            Command::ListArchivedSessions => {
+                let agent = self.agent.clone();
+                let archive = self.archive.clone();
+                self.spawn_reply(id, list_archived(agent, archive));
+            }
+            Command::ResumeSession { session, codespace } => {
+                let agent = self.agent.clone();
+                let archive = self.archive.clone();
+                self.spawn_reply(id, resume_session(agent, archive, session, codespace));
             }
             Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
@@ -723,6 +741,8 @@ impl Connection {
             | Command::PushRepositories(_)
             | Command::OpenPullRequests { .. }
             | Command::DeleteSession { .. }
+            | Command::ListArchivedSessions
+            | Command::ResumeSession { .. }
             | Command::GetWorkspaceChanges
             | Command::GetFileDiff { .. }
             | Command::ListDirectory { .. }
@@ -786,6 +806,48 @@ async fn manage_repositories(repositories: Option<&dyn Repositories>, command: C
             "command routed to the wrong handler",
         )),
     }
+}
+
+async fn list_archived(agent: Agent, archive: Option<Arc<dyn SessionArchive>>) -> Reply {
+    let mut sessions = agent.archived_sessions();
+    if let Some(archive) = archive {
+        match archive.list().await {
+            Ok(more) => sessions.extend(more),
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot list the archived sessions of the workspace");
+            }
+        }
+    }
+    sessions.sort_by(|a, b| (b.updated_at, &b.id).cmp(&(a.updated_at, &a.id)));
+    Ok(Payload::ArchivedSessions(sessions))
+}
+
+async fn resume_session(
+    agent: Agent,
+    archive: Option<Arc<dyn SessionArchive>>,
+    session: SessionId,
+    codespace: Option<String>,
+) -> Reply {
+    let Some(codespace) = codespace else {
+        return agent
+            .set_archived(&session, false)
+            .map(Payload::Session)
+            .map_err(|e| convert::api_error(&e));
+    };
+    let Some(archive) = archive else {
+        return Err(ApiError::new(
+            ErrorCode::Unsupported,
+            "this agent cannot read the archives of other codespaces",
+        ));
+    };
+    let stored = archive.fetch(&codespace, &session).await?;
+    let info = agent
+        .import_session(stored)
+        .map_err(|e| convert::api_error(&e))?;
+    if let Err(err) = archive.resumed(&codespace, &session).await {
+        tracing::warn!(error = %err, %codespace, %session, "cannot mark the archived session as resumed");
+    }
+    Ok(Payload::Session(info))
 }
 
 async fn slow_command(

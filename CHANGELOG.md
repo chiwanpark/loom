@@ -4,9 +4,21 @@ All notable changes to Loom are listed here, newest first. Versions follow [Sema
 
 ## Unreleased
 
+### Upgrade notes
+
+- **New layout file.** The desktop client does not read the tab layout of an earlier version. After the update, it starts with no open tabs one time. Open a codespace in the Codespaces panel to get its tabs again.
+- **Archive calls of the oracle.** The oracle no longer accepts `archive_events` and `delete_archive` from devices. Only agents of the same workspace read an archive. Update the oracle, the agents, and the clients together.
+
 ### New features
 
 - **Preset form.** The desktop app shows the `agent.yaml` of a preset in a form. You can set the model, the policy rules, the tools, the environment, the Git credentials, the secrets, and the other settings without YAML. **YAML** opens the text editor. See [Preset form](doc/desktop.md#preset-form).
+- **Codespaces panel and session tabs.** The **Sessions** panel of the desktop client is now the **Codespaces** panel. It shows one row for each codespace, with what its sessions do. Each codespace has one group of tabs: its sessions, terminals, files, and diffs. A new session, also from a different client, gets a tab. See [Tabs of a codespace](doc/desktop.md#tabs-of-a-codespace).
+- **Resume a session.** **Resume** below the prompt box lists the archived sessions of the codespace and the sessions of the closed codespaces of the same workspace. The agent copies a session from a closed codespace with its conversation and tasks. See [Resume a session](doc/desktop.md#resume-a-session).
+- **Codespaces and tabs in the Android app.** The start screen of the Android app shows the codespaces. A codespace shows its sessions and terminals as tabs. The **Oracles** screen shows the status of each oracle. See [Sessions](doc/android.md#sessions).
+
+### Changes
+
+- **Closing a session tab archives the session.** An empty session is deleted instead. The clients no longer delete sessions, and the desktop client no longer shows the archive of a closed codespace. The command `session: close` is now `session: archive`.
 
 ## 0.7.1
 
